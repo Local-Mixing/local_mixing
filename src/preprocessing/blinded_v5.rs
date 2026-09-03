@@ -60,6 +60,13 @@ pub struct BlindedV5Params {
     /// `true` = local-adaptive rerand (trial-and-error, shuffle-agnostic);
     /// `false` = structural rerand at mask-free boundaries.
     pub adaptive_rerand: bool,
+    /// Seed mask ancillas ONLY from data wires `0..active_wires` — the wires
+    /// that carry live input on the honest input distribution. `0` (or
+    /// `>= np`) means all `np` data wires. For a 2n-wire sliced sandwich used
+    /// on its zero slice (x on the low n, zeros on the high n), set this to `n`:
+    /// otherwise ~half the aux are seeded from the zeroed high wires and
+    /// collapse to constant 0, gutting the masking on the actual usage.
+    pub active_wires: usize,
 }
 
 impl BlindedV5Params {
@@ -77,6 +84,7 @@ impl BlindedV5Params {
             rerand_dose: 0,
             discipline: 2,
             adaptive_rerand: false,
+            active_wires: 0, // caller sets = n for a zero-slice sandwich
         }
     }
 }
@@ -312,6 +320,170 @@ fn blinded_pols(p1: bool, p2: bool) -> (bool, bool, bool) {
     }
 }
 
+/// Local-clearing band refresh (RC's algorithm, 2026-09-03): sprinkle `dose`
+/// band-update gates `b ^= data_d & aux_c` MID-computation to continuously
+/// refresh the band values as the computation proceeds. Each update is inserted
+/// at a random point P and made safe PER-IDENTITY: only the identities (an LGI
+/// mask's apply+remove, or a read-gadget block, tagged by `id_of`) whose uses of
+/// `b` straddle P have those uses commuted to one side — every other identity is
+/// left in place, so identities before P keep the old `b` and identities after
+/// see the new `b`, and `b` genuinely evolves through the run. (Consolidating
+/// ALL of b's uses instead would shove the update to b's lifetime edge and
+/// refresh nothing — the rejected "all-one-side" variant.) `b` is chosen light
+/// (fewest control-gates) so few gates move; a commutation blocker aborts the
+/// attempt (the partial, commutation-valid moves keep the circuit ≡) and retries.
+/// `id_of` is kept parallel to `gates` through every swap. Returns (accepted, blockers).
+fn local_clearing_per_identity(
+    gates: &mut Vec<XGate>,
+    id_of: &mut Vec<i64>,
+    np: usize,
+    band: &[u16],
+    dose: usize,
+    rng: &mut StdRng,
+) -> (usize, usize) {
+    use std::collections::{HashMap, HashSet};
+    const SENT: u16 = u16::MAX; // sentinel marks the insert point (replaced before return)
+    let band_lo = band.iter().copied().min().unwrap_or(0);
+    // Precompute each band wire's control-gate count ONCE, then keep it current
+    // incrementally (each accepted update adds one control-use of its `c` wire).
+    let mut counts: HashMap<u16, usize> = band.iter().map(|&w| (w, 0usize)).collect();
+    for g in gates.iter() {
+        for &(w, _) in &g.ctrls {
+            if let Some(c) = counts.get_mut(&w) {
+                *c += 1;
+            }
+        }
+    }
+    let _ = band_lo;
+    let mut accepted = 0usize;
+    let mut blockers = 0usize;
+    let cap = dose.saturating_mul(60).max(dose + 30_000);
+    let mut attempts = 0usize;
+    while accepted < dose && attempts < cap {
+        attempts += 1;
+        let len = gates.len();
+        if len < 2 {
+            break;
+        }
+        let p = rng.random_range(1..len);
+        // light band wire: fewest control-gates among a few samples (precomputed)
+        let mut b = band[rng.random_range(0..band.len())];
+        let mut best = usize::MAX;
+        for _ in 0..6 {
+            let cand = band[rng.random_range(0..band.len())];
+            let cnt = counts[&cand];
+            if cnt < best {
+                best = cnt;
+                b = cand;
+            }
+        }
+        gates.insert(p, XGate::x_gate(SENT));
+        id_of.insert(p, -2);
+        let mut sp = p;
+        // which tagged identities have b-uses on both sides of sp?
+        let mut sides: HashMap<i64, (bool, bool)> = HashMap::new();
+        for (i, g) in gates.iter().enumerate() {
+            if i == sp || id_of[i] < 0 {
+                continue;
+            }
+            if g.ctrls.iter().any(|&(w, _)| w == b) {
+                let e = sides.entry(id_of[i]).or_insert((false, false));
+                if i < sp {
+                    e.0 = true;
+                } else {
+                    e.1 = true;
+                }
+            }
+        }
+        let straddle: HashSet<i64> = sides
+            .iter()
+            .filter(|(_, (bf, af))| *bf && *af)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut good = true;
+        for &id in &straddle {
+            // b-gates of this identity, split by the CURRENT sentinel position
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for (i, g) in gates.iter().enumerate() {
+                if i == sp {
+                    continue;
+                }
+                if id_of[i] == id && g.ctrls.iter().any(|&(w, _)| w == b) {
+                    if i < sp {
+                        before.push(i);
+                    } else {
+                        after.push(i);
+                    }
+                }
+            }
+            if before.is_empty() || after.is_empty() {
+                continue;
+            }
+            if before.len() <= after.len() {
+                before.sort_unstable_by(|a, c| c.cmp(a));
+                for &start in &before {
+                    let mut i = start;
+                    while i < sp {
+                        if XGate::collides(&gates[i], &gates[i + 1]) {
+                            good = false;
+                            break;
+                        }
+                        gates.swap(i, i + 1);
+                        id_of.swap(i, i + 1);
+                        i += 1;
+                    }
+                    if !good {
+                        break;
+                    }
+                    sp -= 1;
+                }
+            } else {
+                after.sort_unstable();
+                for &start in &after {
+                    let mut i = start;
+                    while i > sp {
+                        if XGate::collides(&gates[i], &gates[i - 1]) {
+                            good = false;
+                            break;
+                        }
+                        gates.swap(i, i - 1);
+                        id_of.swap(i, i - 1);
+                        i -= 1;
+                    }
+                    if !good {
+                        break;
+                    }
+                    sp += 1;
+                }
+            }
+            if !good {
+                break;
+            }
+        }
+        let spos = gates.iter().position(|g| g.target == SENT).unwrap();
+        if !good {
+            gates.remove(spos);
+            id_of.remove(spos);
+            blockers += 1;
+            continue;
+        }
+        let d = rng.random_range(0..np) as u16;
+        let mut c = band[rng.random_range(0..band.len())];
+        while c == b {
+            c = band[rng.random_range(0..band.len())];
+        }
+        gates[spos] =
+            XGate::conj(b, [(d, rng.random_bool(0.5)), (c, rng.random_bool(0.5))]).unwrap();
+        id_of[spos] = -1;
+        if let Some(cc) = counts.get_mut(&c) {
+            *cc += 1; // the new update reads aux_c as a control
+        }
+        accepted += 1;
+    }
+    (accepted, blockers)
+}
+
 /// Gadgetize `src` (a circuit on wires `0..np`) with persistent LGI masking and
 /// the blinded/plain read. See [`BlindedV5Params`]. The output computes the same
 /// function as `src` on its `np` data wires (aux start and end at 0).
@@ -324,6 +496,13 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let rerand_dose = p.rerand_dose;
     assert!(r >= k, "R must be >= K");
 
+    // Seed mask ancillas only from the honest-input active wires (0..active),
+    // so none are seeded from wires that are constant on the actual usage.
+    let active = if p.active_wires == 0 || p.active_wires > np {
+        np
+    } else {
+        p.active_wires
+    };
     let np_u = np as u16;
     let anc: Vec<u16> = (np_u..np_u + r as u16).collect();
     let scratch = np_u + r as u16; // change-1 scratch aux (=0)
@@ -332,14 +511,37 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let mut out: Vec<XGate> = Vec::new();
     let mut atoms = 0usize;
 
-    // seed ancillas: each = (x_i AND NOT x_j)
+    // Identity tag per emitted gate (for the local-clearing band refresh). A
+    // persistent mask (apply + its later remove, re-emissions of the same cycle)
+    // shares one id via `live_id[w]`; each blinded/plain read gadget is one block
+    // id; seeds and structural rerand are untagged (-1). `emit`/`emitn` push a
+    // gate + its tag in lock-step so `id_of` stays parallel to `out`.
+    let mut id_of: Vec<i64> = Vec::new();
+    let mut next_id: i64 = 0;
+    let mut live_id: Vec<i64> = vec![-1; np];
+    macro_rules! emit {
+        ($g:expr, $t:expr) => {{
+            out.push($g);
+            id_of.push($t);
+        }};
+    }
+    macro_rules! emitn {
+        ($gs:expr, $t:expr) => {{
+            for g in $gs.iter().cloned() {
+                out.push(g);
+                id_of.push($t);
+            }
+        }};
+    }
+
+    // seed ancillas: each = (x_i AND NOT x_j), i,j drawn from the active wires
     for &aw in &anc {
-        let i1 = rng.random_range(0..np) as u16;
-        let mut i2 = rng.random_range(0..np) as u16;
+        let i1 = rng.random_range(0..active) as u16;
+        let mut i2 = rng.random_range(0..active) as u16;
         while i2 == i1 {
-            i2 = rng.random_range(0..np) as u16;
+            i2 = rng.random_range(0..active) as u16;
         }
-        out.push(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap());
+        emit!(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap(), -1);
     }
 
     let mut live: Vec<Vec<XGate>> = vec![Vec::new(); np];
@@ -347,9 +549,12 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     for w in 0..np {
         let cy = sample_k(&anc, k, &mut rng);
         let h = cycle_on(w as u16, &cy);
-        out.extend(h.iter().cloned());
+        let id = next_id;
+        next_id += 1;
+        emitn!(h, id);
         live[w] = h;
         live_cy[w] = cy;
+        live_id[w] = id;
         atoms += 1;
     }
 
@@ -357,8 +562,9 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let extra = n_target.saturating_sub(base_est);
     let slots = src.len() + 1;
     let churn_per_slot = extra as f64 / slots as f64;
-    // structural rerand runs inline; adaptive rerand runs as a post-pass below
-    let rerand_per_slot = if adaptive { 0.0 } else { rerand_dose as f64 / slots as f64 };
+    // rerand is a post-pass now (clearing by default, adaptive if selected); the
+    // old inline free-aux structural rerand is disabled (superseded).
+    let rerand_per_slot = 0.0f64;
     let mut churn_acc = 0.0f64;
     let mut rerand_acc = 0.0f64;
     let mut rerand_done = 0usize;
@@ -382,9 +588,10 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 while ac == at {
                     ac = anc[rng.random_range(0..r)];
                 }
-                out.push(
+                emit!(
                     XGate::conj(at, [(dd, rng.random_bool(0.5)), (ac, rng.random_bool(0.5))])
                         .unwrap(),
+                    -1
                 );
                 rerand_done += 1;
             }
@@ -398,10 +605,13 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let w = rng.random_range(0..np);
             let cy = sample_k(&anc, k, &mut rng);
             let nh = cycle_on(w as u16, &cy);
-            out.extend(nh.iter().cloned());
-            out.extend(live[w].iter().cloned());
+            let id = next_id;
+            next_id += 1;
+            emitn!(nh, id); // apply new mask
+            emitn!(live[w], live_id[w]); // remove old mask (shares its id)
             live[w] = nh;
             live_cy[w] = cy;
+            live_id[w] = id;
             atoms += 1;
         }
 
@@ -422,16 +632,24 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let cy = sample_k(&anc, k, &mut rng);
             let s1 = cycle_on(w1, &cy);
             let s2 = cycle_on(w2, &cy);
-            out.extend(s1.iter().cloned());
-            out.extend(live[w1 as usize].iter().cloned());
+            let id1 = next_id;
+            next_id += 1;
+            emitn!(s1, id1); // new mask on w1
+            emitn!(live[w1 as usize], live_id[w1 as usize]); // remove old w1 mask
             live[w1 as usize] = s1;
             live_cy[w1 as usize] = cy.clone();
+            live_id[w1 as usize] = id1;
             atoms += 1;
-            out.extend(s2.iter().cloned());
-            out.extend(live[w2 as usize].iter().cloned());
+            let id2 = next_id;
+            next_id += 1;
+            emitn!(s2, id2); // new mask on w2
+            emitn!(live[w2 as usize], live_id[w2 as usize]); // remove old w2 mask
             live[w2 as usize] = s2.clone();
             live_cy[w2 as usize] = cy.clone();
+            live_id[w2 as usize] = id2;
             atoms += 1;
+            let block = next_id; // the read gadget is one identity block
+            next_id += 1;
             let (bpol, f1p, f2p) = blinded_pols(p1, p2);
             if p.tpin {
                 // t-pin read: a fresh pin `tp_w` (a band wire holding a stable
@@ -448,44 +666,48 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 }
                 for (i, &op) in [w1, w2].iter().enumerate() {
                     let tp = if i == 0 { f1p } else { true };
-                    out.push(XGate::cnot(tp_w, op)); // t ^= op  (t = w+op+u)
+                    emit!(XGate::cnot(tp_w, op), block); // t ^= op  (t = w+op+u)
                     // blind w2 with b.lit(t,!tp) (annihilated by the cofactor lit(t,tp))
-                    out.push(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap());
-                    out.extend(s2.iter().cloned()); // unmask w2 (w2 = e)
-                    let mut pay =
-                        XGate::conj(g.target, [(tp_w, tp), (w2, f2p)]).unwrap();
+                    emit!(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap(), block);
+                    emitn!(s2, id2); // unmask w2 (w2 = e) -- w2 mask toggle
+                    let mut pay = XGate::conj(g.target, [(tp_w, tp), (w2, f2p)]).unwrap();
                     if i == 0 {
                         pay.comp = g.comp; // complement applied once
                     }
-                    out.push(pay); // c ^= lit(t,tp) . lit(e,f2p)
-                    out.extend(s2.iter().cloned()); // remask w2
-                    out.push(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap()); // unblind
-                    out.push(XGate::cnot(tp_w, op)); // restore t (t = w)
+                    emit!(pay, block); // c ^= lit(t,tp) . lit(e,f2p)
+                    emitn!(s2, id2); // remask w2 -- w2 mask toggle
+                    emit!(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap(), block); // unblind
+                    emit!(XGate::cnot(tp_w, op), block); // restore t (t = w)
                 }
             } else {
                 // single-CNOT blinded read (leaks d+e at k=2)
-                out.push(XGate::cnot(w1, w2));
-                out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
-                out.extend(s2.iter().cloned());
+                emit!(XGate::cnot(w1, w2), block);
+                emit!(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap(), block);
+                emitn!(s2, id2);
                 let mut pay = XGate::conj(g.target, [(w1, f1p), (w2, f2p)]).unwrap();
                 pay.comp = g.comp;
-                out.push(pay);
-                out.extend(s2.iter().cloned());
-                out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
-                out.push(XGate::cnot(w1, w2));
+                emit!(pay, block);
+                emitn!(s2, id2);
+                emit!(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap(), block);
+                emit!(XGate::cnot(w1, w2), block);
             }
         } else {
+            let block = next_id;
+            next_id += 1;
             for &w in &touched {
-                out.extend(live[w as usize].iter().cloned());
+                emitn!(live[w as usize], live_id[w as usize]); // unmask
                 atoms += 1;
             }
-            out.push(g.clone());
+            emit!(g.clone(), block); // the raw source gate
             for &w in &touched {
                 let cy = sample_k(&anc, k, &mut rng);
                 let h = cycle_on(w, &cy);
-                out.extend(h.iter().cloned());
+                let id = next_id;
+                next_id += 1;
+                emitn!(h, id); // remask
                 live[w as usize] = h;
                 live_cy[w as usize] = cy;
+                live_id[w as usize] = id;
                 atoms += 1;
             }
         }
@@ -493,24 +715,29 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
 
     // final unmask
     for w in 0..np {
-        out.extend(live[w].iter().cloned());
+        emitn!(live[w], live_id[w]);
         atoms += 1;
     }
 
-    // CHANGE 2, adaptive (RC directive): FIRST float the whole circuit globally
-    // (commuting_shuffle dissolves the construction-time block layout), THEN run
-    // the incremental local-adaptive rerand on the floated circuit. Floating
-    // first is what forces the rerand placement to be local-adaptive: the mask
-    // schedule it would otherwise exploit has been shuffled away.
-    if adaptive && rerand_dose > 0 {
-        commuting_shuffle(&mut out, &mut rng);
-        let inputs: Vec<[u64; 4]> = (0..np)
-            .map(|_| [rng.random(), rng.random(), rng.random(), rng.random()])
-            .collect();
-        let (new_out, acc) =
-            adaptive_rerand_incremental(&out, np, np + r, &anc, rerand_dose, &inputs, &mut rng);
-        out = new_out;
-        rerand_done = acc;
+    // CHANGE 2 (band refresh): sprinkle rerand gates through the compute. Default
+    // = the local-clearing PER-IDENTITY pass (mid-computation refresh, uses the
+    // `id_of` identity tags). `adaptive` selects the older shuffle-then-incremental
+    // path instead (float first, then a structure-blind sound check — lower yield).
+    if rerand_dose > 0 {
+        if adaptive {
+            commuting_shuffle(&mut out, &mut rng);
+            let inputs: Vec<[u64; 4]> = (0..np)
+                .map(|_| [rng.random(), rng.random(), rng.random(), rng.random()])
+                .collect();
+            let (new_out, acc) =
+                adaptive_rerand_incremental(&out, np, np + r, &anc, rerand_dose, &inputs, &mut rng);
+            out = new_out;
+            rerand_done = acc;
+        } else {
+            let (acc, _blk) =
+                local_clearing_per_identity(&mut out, &mut id_of, np, &anc, rerand_dose, &mut rng);
+            rerand_done = acc;
+        }
     }
 
     if discipline > 0 {

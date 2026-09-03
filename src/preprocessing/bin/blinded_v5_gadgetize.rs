@@ -16,7 +16,8 @@ fn main() {
     if a.len() < 3 {
         eprintln!(
             "usage: blinded_v5_gadgetize <src> <out> [K=16] [R=0(auto=n)] [N=0(floor)] \
-             [seed=1] [blinded|cnot|plain] [rerand_dose=0] [discipline=0|1|2] [structural|adaptive]\n\
+             [seed=1] [blinded|cnot|plain] [rerand_dose=0] [discipline=0|1|2] [structural|adaptive] \
+             [active_wires=0(all; set to n for a 2n-wire zero-slice sandwich)]\n\
              modes: blinded = t-pin read (k2->k3); cnot = single-CNOT blinded read (leaks d+e at k2); \
              plain = unmask-read-remask (leaks k1)"
         );
@@ -32,6 +33,7 @@ fn main() {
     let rerand_dose: usize = a.get(8).map(|s| s.parse().unwrap()).unwrap_or(0);
     let discipline: usize = a.get(9).map(|s| s.parse().unwrap()).unwrap_or(2);
     let rerand_mode = a.get(10).map(|s| s.as_str()).unwrap_or("structural");
+    let active_wires: usize = a.get(11).map(|s| s.parse().unwrap()).unwrap_or(0);
 
     let (src, np) = read_mpmct(src_path).expect("read source");
     let params = BlindedV5Params {
@@ -44,6 +46,7 @@ fn main() {
         rerand_dose,
         discipline,
         adaptive_rerand: rerand_mode == "adaptive",
+        active_wires,
     };
     let g = gadgetize_blinded_v5(&src, np, &params);
     write_mpmct(out_path, &g.gates, g.num_wires).expect("write out");
