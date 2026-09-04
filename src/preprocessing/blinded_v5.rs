@@ -18,12 +18,16 @@
 //!      STRADDLE rerands (close the masks straddling the update -- thins masking
 //!      past a ~1024 knee) and `rerand_repair` REPAIR rerands (re-derive each
 //!      straddling mask across the update so it stays open -- no thinning).
-//!   4. Interleave A in same-active-wire WOVEN BATCHES. Gates sharing an active
-//!      wire COMMUTE (XOR target, operands elsewhere), so A is scheduled into
-//!      same-target batches (respecting cross-wire data hazards) and each batch's
-//!      fire-monomials are round-robin woven -- no gate's increment lands on the
-//!      active wire in isolation (else the wire's before/after XOR across a gate
-//!      = the true gate increment, leaking which gate fired). At each gate the
+//!   4. Interleave A with a per-active-wire FIRING MASK (hidden-firing fix).
+//!      An atomic, mask-restoring gate module would leak which gate fired: the
+//!      active wire's before/after XOR across it equals the true gate increment.
+//!      So each active wire carries a chained scaffold-style LGI-mask `g57(c,f1,f2)`
+//!      opened mid-fire and closed at the next A-gate on `c` (repaired across any
+//!      rerand of `f1,f2`), straddling the module boundary -- the module's net XOR
+//!      on `c` is thus `Delta ^ (secret band-mask)`, never a bare increment, for
+//!      EVERY gate. (Additionally, same-active-wire gates COMMUTE, so A is
+//!      scheduled into same-target batches and their fires round-robin woven where
+//!      possible -- a free bonus on top of the firing mask.) At each gate the
 //!      MASKED read: LINEARISE each control (emit the reverse g57 of every
 //!      net-open mask so the wire carries `operand + rho`, rho linear in band
 //!      wires), then realise `c ^= comp ^ lit(a)&lit(b)` via
@@ -639,6 +643,13 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         .map(|b| margin + ((b as u64 * span as u64) / (bcount.max(1) as u64)) as usize)
         .collect();
     let mut open_g57: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
+    // FIRING MASK (hidden-firing fix): per active wire, one chained scaffold-style
+    // LGI-mask `g57(c,f1,f2)` opened mid-fire and closed at the NEXT A-gate on c,
+    // so it straddles the module boundary and the module's net XOR on c is
+    // Delta ^ (secret band-mask), never a bare gate increment (RC: use the buffer
+    // gates). Tracked separately from open_g57; repaired across rerand updates
+    // (below) exactly like the scaffold's own masks.
+    let mut pend: Vec<Option<(u16, u16)>> = vec![None; np];
     let diag = std::env::var("BV5_DIAG").is_ok();
     let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
     let mut bi = 0usize;
@@ -658,6 +669,18 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                     let (mut rho, added) = linearize(w, &netopen, &mut out);
                     for gg in added.into_iter().rev() {
                         undo.push(gg);
+                    }
+                    // complete this wire's firing mask (if any) so it reads linear
+                    if let Some((f1, f2)) = pend[w as usize] {
+                        out.push(g57(w, f2, f1));
+                        undo.push(g57(w, f2, f1));
+                        for x in [f1, f2] {
+                            if let Some(pp) = rho.iter().position(|&v| v == x) {
+                                rho.remove(pp);
+                            } else {
+                                rho.push(x);
+                            }
+                        }
                     }
                     // On-demand: add COMPLETE fresh linear pairs (both g57 halves
                     // = self-contained r1^r2, fed straight into rho -- NOT through
@@ -708,7 +731,26 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 fire_lists.push(fires);
                 undos.push(undo);
             }
-            weave(&fire_lists, &mut out);
+            // weave the batch's fires, and MID-WEAVE toggle the active wire's
+            // firing mask: close the previous one, open a fresh one. The mask
+            // straddles this module's boundary, so its net XOR on c is
+            // (sum of Delta) ^ mask and no clean cut inside isolates a bare gate.
+            let c = src[batch[0]].target;
+            let mut woven: Vec<XGate> = Vec::new();
+            weave(&fire_lists, &mut woven);
+            let half = woven.len() / 2;
+            out.extend_from_slice(&woven[..half]);
+            if let Some((f1, f2)) = pend[c as usize] {
+                out.push(g57(c, f1, f2)); // close previous firing mask
+            }
+            let f1 = band[rng.random_range(0..r)];
+            let mut f2 = band[rng.random_range(0..r)];
+            while f2 == f1 {
+                f2 = band[rng.random_range(0..r)];
+            }
+            out.push(g57(c, f1, f2)); // open fresh firing mask
+            pend[c as usize] = Some((f1, f2));
+            out.extend_from_slice(&woven[half..]);
             for undo in undos.into_iter().rev() {
                 for gg in undo {
                     out.push(gg);
@@ -717,15 +759,44 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         }
         if idx < scaffold.len() {
             let g = &scaffold[idx];
-            if let Some((w, pair)) = as_g57(g, np) {
-                if !open_g57[w].insert(pair) {
-                    open_g57[w].remove(&pair);
+            if (g.target as usize) >= np {
+                // rerand update (targets a band wire b): REPAIR every open firing
+                // mask reading b across it (old-b removed, b updated, new-b
+                // re-added), exactly as the scaffold repairs its own masks.
+                let b = g.target;
+                for c in 0..np {
+                    if let Some((f1, f2)) = pend[c] {
+                        if b == f1 || b == f2 {
+                            out.push(g57(c as u16, f1, f2));
+                        }
+                    }
                 }
+                out.push(g.clone());
+                for c in 0..np {
+                    if let Some((f1, f2)) = pend[c] {
+                        if b == f1 || b == f2 {
+                            out.push(g57(c as u16, f1, f2));
+                        }
+                    }
+                }
+            } else {
+                if let Some((w, pair)) = as_g57(g, np) {
+                    if !open_g57[w].insert(pair) {
+                        open_g57[w].remove(&pair);
+                    }
+                }
+                out.push(g.clone());
             }
-            out.push(g.clone());
         }
     }
     debug_assert!(bi == bcount);
+    // close every still-open firing mask so the data wires end at A's true output
+    for w in 0..np {
+        if let Some((f1, f2)) = pend[w] {
+            out.push(g57(w as u16, f1, f2));
+            pend[w] = None;
+        }
+    }
     if diag {
         eprintln!(
             "[bv5-diag] control reads={n_reads}  BARE (rho empty)={n_bare} ({:.3}%)  \
