@@ -18,13 +18,18 @@
 //!      STRADDLE rerands (close the masks straddling the update -- thins masking
 //!      past a ~1024 knee) and `rerand_repair` REPAIR rerands (re-derive each
 //!      straddling mask across the update so it stays open -- no thinning).
-//!   4. Interleave A evenly. At each gate the MASKED read: LINEARISE each
-//!      control (emit the reverse g57 of every net-open mask so the wire carries
-//!      `operand + rho`, rho linear in band wires), then realise
-//!      `c ^= comp ^ lit(a)&lit(b)` via `(a'+rho_a)(b'+rho_b)` using ONLY the
-//!      masked control wires and band wires -- never a bare operand or `a^b` --
-//!      then DE-LINEARISE. Single-control gates reduce to the linear part.
-//!   5. No discipline pass.
+//!   4. Interleave A in same-active-wire WOVEN BATCHES. Gates sharing an active
+//!      wire COMMUTE (XOR target, operands elsewhere), so A is scheduled into
+//!      same-target batches (respecting cross-wire data hazards) and each batch's
+//!      fire-monomials are round-robin woven -- no gate's increment lands on the
+//!      active wire in isolation (else the wire's before/after XOR across a gate
+//!      = the true gate increment, leaking which gate fired). At each gate the
+//!      MASKED read: LINEARISE each control (emit the reverse g57 of every
+//!      net-open mask so the wire carries `operand + rho`, rho linear in band
+//!      wires), then realise `c ^= comp ^ lit(a)&lit(b)` via
+//!      `(a'+rho_a)(b'+rho_b)` using ONLY the masked control wires and band wires
+//!      -- never a bare operand or `a^b` -- then DE-LINEARISE. Single-control
+//!      gates reduce to the linear part.
 //!
 //! Verified EXHAUSTIVELY (all 2^n inputs x many band settings, k in 2..=5, all
 //! max_open and rerand levels) in `scratchpad/v6` (compute_g57); n-independent.
@@ -65,6 +70,13 @@ pub struct BlindedV5Params {
     /// so the input/output boundary is pure masking, not a bare low-degree
     /// fringe. `0` = A spread over the whole scaffold (old behaviour).
     pub a_margin: usize,
+    /// Max A-gates per same-active-wire WOVEN batch (hidden-firing fix). Gates
+    /// sharing an active wire are scheduled together and their fire-monomials
+    /// round-robin woven, so no gate's increment lands on the active wire in
+    /// isolation (else the wire's before/after XOR across a gate's module = the
+    /// true gate increment, exposing which gate fired). `>= 2` to hide firing;
+    /// `1` = atomic per-gate modules (old behaviour, leaks firing).
+    pub window: usize,
 }
 
 impl BlindedV5Params {
@@ -85,6 +97,7 @@ impl BlindedV5Params {
             active_wires: 0,
             extra_lgis: 0,
             a_margin: 0,
+            window: 4,
         }
     }
 }
@@ -304,6 +317,107 @@ pub fn seed_band(np: usize, r: usize, active_wires: usize, seed: u64) -> Vec<XGa
     out
 }
 
+/// Schedule `A`'s gates into batches that share an active wire (target) so each
+/// batch's fires can be woven (hidden-firing fix). Gates with the same target
+/// COMMUTE (XOR into the target, operands elsewhere), so a batch may reorder
+/// them; the schedule still respects cross-wire data hazards so the overall
+/// permutation preserves `A`'s semantics. Since same-target writes are NOT
+/// chained (no WAW edge), both hazards run against the FULL per-wire history:
+/// a read is ordered after every earlier write of the wire, and a write after
+/// every earlier read of it (never cleared -- else a later commuting writer
+/// could slip before a read of an earlier value). Greedy: seed from the target
+/// with the most ready gates, take up to `w` of them with pairwise-disjoint
+/// controls.
+fn schedule_batches(src: &[XGate], np: usize, w: usize) -> Vec<Vec<usize>> {
+    let m = src.len();
+    let w = w.max(1);
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); m];
+    let mut wrs: Vec<Vec<usize>> = vec![Vec::new(); np]; // all writes of a wire, in order
+    let mut rds: Vec<Vec<usize>> = vec![Vec::new(); np]; // all reads of a wire, in order
+    for k in 0..m {
+        for &(cw, _) in &src[k].ctrls {
+            let wi = cw as usize;
+            if wi < np {
+                for &g in &wrs[wi] {
+                    deps[k].push(g); // RAW
+                }
+                rds[wi].push(k);
+            }
+        }
+        let t = src[k].target as usize;
+        for &r in &rds[t] {
+            deps[k].push(r); // WAR
+        }
+        wrs[t].push(k);
+    }
+    let mut indeg = vec![0usize; m];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for k in 0..m {
+        deps[k].sort_unstable();
+        deps[k].dedup();
+        for &g in &deps[k] {
+            dependents[g].push(k);
+            indeg[k] += 1;
+        }
+    }
+    let mut ready: BTreeSet<usize> = (0..m).filter(|&k| indeg[k] == 0).collect();
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    while !ready.is_empty() {
+        let mut per_target: HashMap<u16, Vec<usize>> = HashMap::new();
+        for &k in &ready {
+            per_target.entry(src[k].target).or_default().push(k);
+        }
+        let seed_t = *per_target
+            .iter()
+            .max_by_key(|(t, v)| (v.len(), std::cmp::Reverse(**t)))
+            .map(|(t, _)| t)
+            .unwrap();
+        let cands = &per_target[&seed_t];
+        let mut used: HashSet<u16> = HashSet::new();
+        used.insert(seed_t);
+        let mut batch: Vec<usize> = Vec::new();
+        for &k in cands {
+            if batch.len() >= w {
+                break;
+            }
+            if src[k].ctrls.iter().any(|&(c, _)| used.contains(&c)) {
+                continue;
+            }
+            batch.push(k);
+            for &(c, _) in &src[k].ctrls {
+                used.insert(c);
+            }
+        }
+        for &k in &batch {
+            ready.remove(&k);
+            for &d in &dependents[k] {
+                indeg[d] -= 1;
+                if indeg[d] == 0 {
+                    ready.insert(d);
+                }
+            }
+        }
+        batches.push(batch);
+    }
+    debug_assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), m);
+    batches
+}
+
+/// Round-robin weave of per-gate fire-monomial lists into `out`: step 0 of every
+/// list, then step 1, ... so each gate's last monomial is immediately followed
+/// by other gates' monomials -- the active wire is "clean" only after the WHOLE
+/// batch, never between two gates' completions.
+fn weave(lists: &[Vec<XGate>], out: &mut Vec<XGate>) {
+    let maxlen = lists.iter().map(|l| l.len()).max().unwrap_or(0);
+    for step in 0..maxlen {
+        for l in lists {
+            if step < l.len() {
+                out.push(l[step].clone());
+            }
+        }
+    }
+}
+
 /// Gadgetize `A` (`src`, on wires `0..np`) into a `np + r`-wire circuit with the
 /// masked read. The band wires `np..np+r` are READ, never seeded here -- the
 /// caller pipelines in [`seed_band`] (or the pipeline's band-fill module). The
@@ -494,79 +608,111 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         }
     }
 
-    // 4. interleave A with the masked read. Confine A's gates to
-    // [margin, |scaffold|-margin] so the boundary is pure masking (no bare
-    // low-degree fringe). margin defaults to ~2 LGIs per wire (2*K*np gates).
-    let m = src.len();
+    // 4. interleave A in same-active-wire WOVEN BATCHES with the masked read.
+    // Gates sharing an active wire commute, so A is scheduled into same-target
+    // batches (schedule_batches) and each batch's fires are round-robin woven --
+    // no gate's increment lands on the active wire alone (hidden-firing fix).
+    // Batches are spread over [margin, |scaffold|-margin] so the I/O boundary
+    // stays pure masking. Per batch: linearize every gate's controls up-front
+    // (disjoint controls across the batch -> no interference), weave the fires,
+    // then de-linearize.
     let margin = p.a_margin.min(scaffold.len() / 4); // 0 = no cushion; cap at half
     let span = scaffold.len().saturating_sub(2 * margin).max(1);
-    let mut pos: Vec<usize> = (0..m)
-        .map(|j| margin + ((j as u64 * span as u64) / (m.max(1) as u64)) as usize)
+    let batches = schedule_batches(src, np, p.window);
+    let bcount = batches.len();
+    if std::env::var("BV5_DIAG").is_ok() {
+        let mut hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for b in &batches {
+            *hist.entry(b.len()).or_insert(0) += 1;
+        }
+        let woven: usize = batches.iter().filter(|b| b.len() >= 2).map(|b| b.len()).sum();
+        eprintln!(
+            "[bv5-diag] A-gates={} batches={} woven(in size>=2 batch)={} ({:.1}%)  batch-size histogram={:?}",
+            src.len(),
+            bcount,
+            woven,
+            100.0 * woven as f64 / src.len().max(1) as f64,
+            hist
+        );
+    }
+    let bpos: Vec<usize> = (0..bcount)
+        .map(|b| margin + ((b as u64 * span as u64) / (bcount.max(1) as u64)) as usize)
         .collect();
-    pos.sort_unstable();
     let mut open_g57: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
     let diag = std::env::var("BV5_DIAG").is_ok();
     let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
-    let mut ai = 0usize;
+    let mut bi = 0usize;
     for idx in 0..=scaffold.len() {
-        while ai < m && pos[ai] == idx {
-            let g = &src[ai];
-            ai += 1;
-            let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
-            let mut undo: Vec<XGate> = Vec::new();
-            for &(w, pol) in &g.ctrls {
-                let netopen: Vec<(u16, u16)> = open_g57[w as usize].iter().copied().collect();
-                let (mut rho, added) = linearize(w, &netopen, &mut out);
-                for gg in added.into_iter().rev() {
-                    undo.push(gg);
-                }
-                // On-demand: add COMPLETE fresh linear pairs (both g57 halves =
-                // self-contained r1^r2, fed straight into rho -- NOT through
-                // linearize, so no collision with open pairs) so the mask spans
-                // >= max_open pairs and rho is NEVER empty (no bare read).
-                let mut extra = max_open.saturating_sub(netopen.len());
-                if extra == 0 && rho.is_empty() {
-                    extra = 1;
-                }
-                let mut guard = 0;
-                loop {
-                    for _ in 0..extra {
-                        let r1 = band[rng.random_range(0..r)];
-                        let mut r2 = band[rng.random_range(0..r)];
-                        while r2 == r1 {
-                            r2 = band[rng.random_range(0..r)];
-                        }
-                        out.push(g57(w, r1, r2));
-                        out.push(g57(w, r2, r1));
-                        undo.push(g57(w, r2, r1));
-                        undo.push(g57(w, r1, r2));
-                        for x in [r1, r2] {
-                            if let Some(pp) = rho.iter().position(|&v| v == x) {
-                                rho.remove(pp);
-                            } else {
-                                rho.push(x);
+        while bi < bcount && bpos[bi] == idx {
+            let batch = &batches[bi];
+            bi += 1;
+            let mut fire_lists: Vec<Vec<XGate>> = Vec::with_capacity(batch.len());
+            let mut undos: Vec<Vec<XGate>> = Vec::with_capacity(batch.len());
+            for &gi in batch {
+                let g = &src[gi];
+                let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
+                let mut undo: Vec<XGate> = Vec::new();
+                for &(w, pol) in &g.ctrls {
+                    let netopen: Vec<(u16, u16)> =
+                        open_g57[w as usize].iter().copied().collect();
+                    let (mut rho, added) = linearize(w, &netopen, &mut out);
+                    for gg in added.into_iter().rev() {
+                        undo.push(gg);
+                    }
+                    // On-demand: add COMPLETE fresh linear pairs (both g57 halves
+                    // = self-contained r1^r2, fed straight into rho -- NOT through
+                    // linearize, so no collision) so the mask spans >= max_open
+                    // pairs and rho is NEVER empty (no bare read).
+                    let mut extra = max_open.saturating_sub(netopen.len());
+                    if extra == 0 && rho.is_empty() {
+                        extra = 1;
+                    }
+                    let mut guard = 0;
+                    loop {
+                        for _ in 0..extra {
+                            let r1 = band[rng.random_range(0..r)];
+                            let mut r2 = band[rng.random_range(0..r)];
+                            while r2 == r1 {
+                                r2 = band[rng.random_range(0..r)];
+                            }
+                            out.push(g57(w, r1, r2));
+                            out.push(g57(w, r2, r1));
+                            undo.push(g57(w, r2, r1));
+                            undo.push(g57(w, r1, r2));
+                            for x in [r1, r2] {
+                                if let Some(pp) = rho.iter().position(|&v| v == x) {
+                                    rho.remove(pp);
+                                } else {
+                                    rho.push(x);
+                                }
                             }
                         }
+                        extra = 0;
+                        if !rho.is_empty() || guard > 3 {
+                            break;
+                        }
+                        extra = 1;
+                        guard += 1;
                     }
-                    extra = 0;
-                    if !rho.is_empty() || guard > 3 {
-                        break;
+                    if diag {
+                        n_reads += 1;
+                        if rho.is_empty() {
+                            n_bare += 1;
+                        }
+                        rho_sum += rho.len();
                     }
-                    extra = 1;
-                    guard += 1;
+                    ctrls.push((w, pol, rho));
                 }
-                if diag {
-                    n_reads += 1;
-                    if rho.is_empty() {
-                        n_bare += 1;
-                    }
-                    rho_sum += rho.len();
-                }
-                ctrls.push((w, pol, rho));
+                let mut fires = Vec::new();
+                masked_fire(g.target, &ctrls, g.comp, &mut fires);
+                fire_lists.push(fires);
+                undos.push(undo);
             }
-            masked_fire(g.target, &ctrls, g.comp, &mut out);
-            for gg in undo {
-                out.push(gg);
+            weave(&fire_lists, &mut out);
+            for undo in undos.into_iter().rev() {
+                for gg in undo {
+                    out.push(gg);
+                }
             }
         }
         if idx < scaffold.len() {
@@ -579,7 +725,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             out.push(g.clone());
         }
     }
-    debug_assert!(ai == m);
+    debug_assert!(bi == bcount);
     if diag {
         eprintln!(
             "[bv5-diag] control reads={n_reads}  BARE (rho empty)={n_bare} ({:.3}%)  \

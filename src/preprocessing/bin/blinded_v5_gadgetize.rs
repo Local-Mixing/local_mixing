@@ -5,7 +5,7 @@
 //!
 //! Usage: blinded_v5_gadgetize <src.mpmct1> <out.mpmct1> [K=2] [R=0(auto=n)]
 //!            [seed=1] [rerand_level=0] [max_open=3] [active_wires=0]
-//!            [extra_lgis=2] [a_margin=0] [rerand_repair=0]
+//!            [extra_lgis=2] [a_margin=0] [rerand_repair=0] [window=4]
 
 use local_mixing::engine::format::{read_mpmct, write_mpmct};
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
@@ -32,6 +32,7 @@ fn main() {
     let extra_lgis: usize = a.get(9).map(|s| s.parse().unwrap()).unwrap_or(2);
     let a_margin: usize = a.get(10).map(|s| s.parse().unwrap()).unwrap_or(0);
     let rerand_repair: usize = a.get(11).map(|s| s.parse().unwrap()).unwrap_or(0);
+    let window: usize = a.get(12).map(|s| s.parse().unwrap()).unwrap_or(4);
 
     let (src, np) = read_mpmct(src_path).expect("read source");
     let params = BlindedV5Params {
@@ -44,6 +45,7 @@ fn main() {
         active_wires,
         extra_lgis,
         a_margin,
+        window,
     };
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).
