@@ -48,6 +48,10 @@ naive commutation-back (STRADDLE closes straddling masks; REPAIR re-derives them
 across the update with no thinning); and `A` is embedded via a **hidden
 unmasking** of control wires at each gate — the operand is spread over band wires
 (never bare), the gate fires as an expansion over the masked wires, then re-masks.
+The LGI masks, the band updates and the A-gate placements are **co-sampled** in
+one pass, so every gate's firing is hidden — its fire straddles one of its active
+wire's LGI opens, making the module's net XOR `Δ ⊕ secret-mask` rather than the
+bare gate increment — at no size cost, reusing the wire's existing LGI budget.
 
 Production preset: `K=2` (band wires per LGI; affine/deg-2-neutral across K, so
 smallest wins — read cost is quadratic in `max_open·K`), `max_open=3`, rerand

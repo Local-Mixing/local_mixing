@@ -3,6 +3,7 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
 \usepackage{parskip}
@@ -21,238 +22,183 @@
 \begin{document}
 \maketitle
 
-\noindent\emph{Blinded-V5 is a drop-in alternative to the drip \doc{route\_fire}
-compute: it takes a reversible circuit $A$ on $n$ wires (the sliced sandwich)
-and emits an equivalent circuit $A'$ on $2n$ wires (data $0..n$, band $n..2n$)
-whose body is a shuffled cloud of long masking identities with $A$'s gates
-threaded through it. Everything else in the 5-step gadgetization is unchanged.
-Source: \doc{src/preprocessing/blinded\_v5.rs}. The Markdown twin of this
-document is \doc{BLINDED\_V5\_LGI\_DESIGN.md}.}
+\section*{Where it fits in the pipeline}
+
+The GSS gadgetization of a secret circuit $C$ on $n$ wires is a \textbf{5-stage}
+sandwich, each stage on $2n$ wires (data $0..n$, band/junk $n..2n$):
+(1) \textbf{slice} --- a junk-guard zero-slice keyed on the band; (2) \textbf{seed
+the band wires} --- each band wire set to $x_i \land \lnot x_j$ from the honest
+inputs; (3) \textbf{compute} --- realise $A$ (the sliced sandwich of $C$) on the
+$2n$ wires so the data half carries $A$'s output and the band is only read;
+(4) \textbf{re-seed / re-randomise the band}, interleaved with the compute;
+(5) \textbf{re-slice} --- the closing junk-guard slice.
+
+\textbf{Blinded-V5 is a drop-in alternative for stages 3--4} (the compute and its
+band re-randomisation), replacing the drip \doc{route\_fire} compute. It takes
+$A$ on $n$ wires and emits an equivalent $A'$ on $2n$ wires whose body is a cloud
+of long masking identities with $A$'s gates threaded through by a masked read.
+Stages 1, 2 and 5 are unchanged. Source: \doc{src/preprocessing/blinded\_v5.rs};
+the Markdown twin of this document is \doc{BLINDED\_V5\_LGI\_DESIGN.md}.
 
 \section{Why this design --- the rationale}
 
-The compute stage must move the circuit's intermediate state as far as possible
-from the plaintext computation $A$, while keeping $A'$ exactly equivalent to $A$
-on the data wires. The design is a chain of forced moves.
+The compute stage must move the intermediate state as far as possible from the
+plaintext computation $A$ while keeping $A'$ exactly equivalent to $A$ on the data
+wires. The design is a chain of forced moves.
 
-\paragraph{(a) Long identities are the only thing that moves the state
-substantially.} Across the HD (Hamming-distance) and affine heatmaps, short
-local edits barely displace the state: the ridge of recoverable structure only
-recedes when the masking identity woven through a wire is \emph{long} ---
-comparable to the circuit itself. Short masks are peeled off locally; a long
-identity has no local seam to peel.
+\paragraph{(a) Long identities are the only thing that moves the state.} Across
+the HD and affine heatmaps, short local edits barely displace the state; the ridge
+of recoverable structure only recedes when the masking identity woven through a
+wire is \emph{long} --- comparable to the circuit itself.
 
-\paragraph{(b) The only long identity we know that actually moves the state is
-the commutative structure of an identity with a single active wire.} Take one
-data (``active'') wire $w$ and a set of control wires; a sequence of gates that
-all target $w$ and read only the controls is an identity iff the per-gate
-increments \textsc{xor} to zero, and --- crucially --- \emph{all of its gates
-commute} (same target, disjoint from the controls' evolution). Commutativity is
-what lets the identity be arbitrarily long and be reordered or interleaved
-freely without changing its value. A single active wire is what makes the whole
-run a clean identity on that wire.
+\paragraph{(b) The only long identity that moves the state is the commutative
+structure of an identity with a single active wire.} A run of gates all targeting
+one active wire $w$ and reading only controls is an identity iff the increments
+\textsc{xor} to zero, and \emph{all its gates commute} --- which lets it be
+arbitrarily long and freely interleaved.
 
-\paragraph{(c) We entangle identities on different active wires by separating
-the control wires from the active wires, then sharing the same control wires
-across many identities at once --- again using commutativity.} Each data wire
-$w$ gets its own family of single-active-wire identities, but they all draw
-their controls from a common \textbf{band} ($n..2n$). Because every identity
-targets a data wire and reads only band wires, identities on \emph{different}
-active wires also commute with each other. The scaffold is therefore one large
-commuting cloud: many long identities, on many active wires, sharing controls,
-interleaved arbitrarily. The shared controls are what ``entangle'' the
-identities --- a band wire's value participates in the masks of many data wires
-simultaneously.
+\paragraph{(c) Entangle identities on different active wires by sharing the
+control wires --- the band.} Every identity targets a data wire and reads only the
+band ($n..2n$), so identities on different active wires also commute; a band wire
+participates in the masks of many data wires at once.
 
-\paragraph{(d) After entangling by commutation, we add random updates of the
-control wires from the active wires.} A pure commuting cloud has a weakness: an
-adversary can commute the identities back apart, because nothing couples the
-control wires to time or to the data. So we sprinkle in gates that \emph{update}
-band wires, half controlled by live data wires ($b \mathrel{\xor}= \mathit{data}
-\land \mathit{aux}$) and half by other band wires ($b \mathrel{\xor}=
-\mathit{aux} \land \mathit{aux}$). These updates serve two purposes at once:
-\begin{enumerate}
-\item they \textbf{re-randomize} the control wires (fresh band entropy
-  throughout the run, not just at the seed); and
-\item they \textbf{break naive commutation-back}: once a band wire has been
-  updated mid-run, the identities that read it before and after the update no
-  longer commute past it, so the cloud cannot be trivially un-shuffled ---
-  \emph{without ruining correctness}, because each identity is repaired across
-  the update (\S\ref{sec:construction}, \textsc{repair}) or closed before it
-  (\textsc{straddle}).
-\end{enumerate}
+\paragraph{(d) Add random updates of the control wires from the active wires.}
+Band updates (half live-data-controlled $b \mathrel{\xor}= \mathit{data} \land
+\mathit{aux}$, half band-only) \textbf{re-randomise} the controls and \textbf{break
+naive commutation-back}, without ruining correctness (each identity is closed
+before the update or re-derived across it).
 
-\paragraph{(e) Finally we build one identity longer than the entire input
-circuit and embed $A$ inside it, using a hidden unmasking of the control wires.}
-The scaffold above is, in effect, a single enormous \lgi{} spread over all
-wires. We thread $A$'s gates through it so that each gate fires \emph{from
-inside the mask}: at each gate we momentarily and reversibly \textbf{unmask} its
-operands into a linear combination of band wires (never the bare operand), fire
-the gate as an expansion over those masked wires, and re-mask. The circuit is
-embedded inside a single very long identity: \textbf{when an $A$-gate fires, its
-operands are read only as linear combinations of band wires --- never bare}
-(measured 0.000\% bare reads, \S4). This is a fire-time property of the
-operands; the residual plaintext a \emph{global} adversary can still recover is
-the public I/O fringe of \S4.2 (input $x$ and the delivered $C(x)$), not an
-artifact of the embedding.
+\paragraph{(e) Embed $A$ inside one circuit-spanning identity via hidden
+unmasking.} Each gate fires from inside the mask: its operands are momentarily and
+reversibly unmasked into a linear combination of band wires (never bare), it fires
+as an expansion over those masked wires, then re-masks.
 
-\section{The construction}\label{sec:construction}
+\paragraph{(f) Co-sample masking, band updates, and $A$-placement together.}
+Building them in one pass --- rather than a fixed scaffold threaded afterwards ---
+lets every $A$-gate be straddled by a real, rerand-protected \lgi{} opened exactly
+when the gate needs it (\S3), which makes the firing-hiding complete at no cost.
 
-$A$ has $n$ wires and $m$ gates. $A'$ has $2n$ wires. Let $u_w$ be the number of
-times wire $w$ is used (target or control) in $A$.
+\section{The construction}
 
-\paragraph{Step 0 --- band seed (separate module).} Each band wire is seeded
-$x_i \land \lnot x_j$ from the honest active inputs by \doc{seed\_band},
-pipelined in front of the compute. The compute does \textbf{not} seed the band
-(module 0 does); it reads the band as \lgi{} controls and re-randomises it in
-place via the Step-3 updates.
+$A$ has $n$ wires and $m$ gates; $A'$ has $2n$. Let $u_w$ be the uses of wire $w$
+in $A$ and $w_w$ its writes.
 
-\paragraph{Step 1 --- \lgi{} scaffold.} For each data wire $w$, build $u_w + 1$
-identities. Each identity is a set of $K$ band wires (``the \lgi's controls'')
-realised as $\lfloor K/2 \rfloor$ \textbf{disjoint \g{} pairs}
-$\g(w, r_{2i}, r_{2i+1})$, where $\g(w,x,y) = w \mathrel{\xor}= 1 \xor (\lnot x
-\land y)$ (comp $=1$). Applying the pair once and removing it once is the
-identity; the mask it carries between apply and remove is a disjoint degree-2
-form $\bigoplus_i (1 \xor \lnot r_{2i} \land r_{2i+1})$ --- the optimal
-sparse-mask shape. All $\approx K(3m+n)$ scaffold gates commute (data targets,
-band controls).
+\paragraph{Masking atom.} $\g(w,x,y) = w \mathrel{\xor}= 1 \xor (\lnot x \land y)$
+(data target, band controls). A disjoint-pair \lgi{} $\bigoplus_i \g(w,
+cy_{2i}, cy_{2i+1})$ is a deg-2 mask; a \g{} and its reverse \textbf{linearise},
+$\g(w,r_1,r_2) \xor \g(w,r_2,r_1) = w \xor r_1 \xor r_2$ (\textsc{and} monomials do
+not). Disjoint pairs, not a $K$-cycle (which would telescope to a bare operand);
+$K \ge 2$.
 
-\emph{Why disjoint pairs, not a $K$-cycle:} a \g{} gate and its reverse
-\textbf{linearise}, $\g(w,r_1,r_2) \xor \g(w,r_2,r_1) = w \xor r_1 \xor r_2$
-(\textsc{and} monomials are symmetric and do not linearise). Under the read's
-pair-completion, a full $K$-\emph{cycle} telescopes to $\bigoplus (r_i \xor
-r_{i+1}) = 0$ around the cycle --- the operand would go \textbf{bare}. Disjoint
-pairs linearise to a nonzero $\bigoplus_i (r_{2i} \xor r_{2i+1})$, so the operand
-is always masked. (Measured: cycle form $\to$ 6.3\% bare reads; disjoint pairs
-$\to$ 0.13\%; with on-demand top-up $\to$ 0.000\%.)
+\paragraph{Co-sampled forward pass.} The \lgi s, the band updates and $A$'s gates
+are emitted together. Each active wire $w$ gets $u_w+1$ \lgi s, $\le \doc{max\_open}$
+open at once --- the SAME masking budget as a fixed scaffold, so the same
+statistics, at no cost. Of $w$'s opens, $w_w$ are \textbf{STRADDLE} opens generated
+on demand as $A$'s gates on $w$ are placed, and the rest (\,$\mathrm{reads}_w+1$\,)
+are \textbf{FILLER} opens. $A$'s gates are placed in a data-hazard-valid order
+(a read after every earlier write of a wire, a write after every earlier read;
+same-target XOR writes commute, no WAW edge).
 
-\paragraph{Step 2 --- ordering.} Emit the identities with at most \doc{max\_open}
-open per wire (a rolling window), interleaving the per-wire Open/Close event
-streams randomly.
+At each $A$-gate on active wire $c$: the \textbf{masked read} linearises each
+control (emit the reverse \g{} of every open mask so the wire carries
+$\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires; a
+fresh-pair top-up keeps $\rho$ non-empty $\Rightarrow$ no bare read), realises
+$c \mathrel{\xor}= \mathit{comp} \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as
+$(a'\xor\rho_a)(b'\xor\rho_b)$ over only the masked controls and band wires
+(0/1/2 controls, all polarities), then de-linearises; and the \textbf{hidden
+firing} of \S3 straddles one of $c$'s \lgi{} opens.
 
-\paragraph{Step 3 --- control-wire updates (rerand), two kinds.} Splice band
-updates $b \mathrel{\xor}= \mathrm{lit} \land \mathrm{lit}$ at sorted positions,
-each kind's total split half data-control / half band-only:
-\begin{itemize}
-\item \textbf{\textsc{straddle}} (\doc{rerand\_level}): before the update,
-  \emph{close} the open identities that read $b$ so none carries a stale $b$
-  across it. Heavy straddle doses thin the masking (empirical knee $\approx
-  1024$).
-\item \textbf{\textsc{repair}} (\doc{rerand\_repair}): re-derive each straddling
-  identity across the update --- emit its $b$-reading \g{} with old-$b$
-  (removing its contribution), the update, then again with new-$b$ (re-adding
-  it). Old-$b$ cancels, new-$b$ re-derives; the identity \emph{stays open}, so
-  \textsc{repair} adds band turnover with \emph{no} thinning. Data controls draw
-  only from live-data wires ($0..\mathit{active}$), which in the sandwich is the
-  honest low half --- never the dead zero slice.
-\end{itemize}
-
-\paragraph{Step 4 --- embed $A$ with the masked (hidden-unmasking) read.}
-Interleave $A$'s gates evenly through the scaffold. At each gate, for every
-control:
-\begin{enumerate}
-\item \textbf{linearise} --- emit the reverse \g{} of every net-open mask so the
-  wire carries $\mathit{operand} \xor \rho$, with $\rho$ a linear \textsc{xor}
-  of band wires; top up on-demand with fresh complete linear pairs until the
-  mask spans $\ge \doc{max\_open}$ pairs and $\rho$ is never empty (guarantees
-  no bare read);
-\item \textbf{fire} --- realise $c \mathrel{\xor}= \mathit{comp} \xor
-  \mathrm{lit}(a) \land \mathrm{lit}(b)$ as the expansion $(a' \xor \rho_a)(b'
-  \xor \rho_b)$ using only the masked control wires and band wires, never the
-  bare $a$, $b$, or $a \xor b$ (0/1/2-control gates and all polarities handled;
-  the 0-control fire is $\mathit{comp} \xor \textsc{and}(\emptyset) = \lnot
-  \mathit{comp}$);
-\item \textbf{de-linearise} --- undo (1) in reverse.
-\end{enumerate}
-
-\paragraph{Step 5 --- no discipline pass.} The surrounding pipeline (junk-guard
-zero-slice guards as modules 1 and 5) is unchanged.
+\paragraph{Band re-randomisation} is woven through the same pass: \doc{rerand\_level}
+STRADDLE updates (close the masks reading the updated band wire first --- thins
+masking past a $\approx1024$ knee) and \doc{rerand\_repair} REPAIR updates
+(re-derive each such mask across the update so it stays open --- no thinning);
+being in the same pass, it protects the straddle opens automatically.
 
 \paragraph{Correctness} is verified exhaustively over all $2^n$ inputs $\times$
 many band settings for $n \le 6$, $K \in 2..5$, all \doc{max\_open} and both
-rerand kinds (\doc{scratchpad/v6}, 594 gadgets, 0 mismatches), and end-to-end in
-\doc{gen\_sandwich\_gadget} (forward $+$ reverse-honesty sample-verify PASS).
-$K \ge 2$ is required (a \g{} 1-cycle is a degenerate constant flip).
+rerand kinds (\doc{scratchpad/v6}: 891 gadgets, 0 mismatches, plus a 360-case
+reorder-preserves-$A$ check), and end-to-end in \doc{gen\_sandwich\_gadget}
+(forward + reverse-honesty sample-verify PASS).
+
+\section{Hidden firing}
+
+An \emph{atomic}, mask-restoring gate module would leak which gate fired: the
+active wire's before/after XOR across it equals the true increment $\Delta =
+\mathit{comp} \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$. That per-module increment
+is a robust invariant that survives the downstream mixing, so an adversary who
+segments the mixed circuit at module boundaries reads off $A$'s gate list.
+
+The fix uses the abundant masking gates on the \emph{same} active wire: split the
+fire and emit one of $c$'s \lgi{} \textbf{opens between the halves}. It toggles
+$c$ mid-fire and stays open past the module, so the net XOR on $c$ is $\Delta \xor
+(\text{secret band-mask})$ --- never the bare increment. Because everything is
+co-sampled, the straddling \lgi{} is a real, rerand-protected scaffold \lgi{}
+opened exactly when the gate is placed, so \textbf{every} gate is covered, reusing
+the wire's $u_w+1$ budget at \textbf{no size cost} (measured: 7920/7920 gates on
+the n=128 sandwich). Earlier attempts --- $A$-gate weaving ($\sim$23\%), an
+injected firing mask (100\% but +43\% size), straddling fixed-scaffold slots
+(60--70\%, tail slot-starved) --- are superseded by generating the slot on demand.
 
 \section{Parameters and why}
 
-\begin{table}[H]\centering
-\small
-\begin{tabular}{@{}lcL{4.1cm}L{6.3cm}@{}}
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}lcL{3.9cm}L{6.2cm}@{}}
 \toprule
 knob & prod. & meaning & why this value \\
 \midrule
 $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
-  ($\lfloor K/2\rfloor$ disjoint pairs; $|\rho| \approx \doc{max\_open}\cdot K$)
-  --- \emph{not} the identity's temporal length & affine- and deg-2-neutral
-  across $K$ (\S4); smallest is
-  best. Size grows $\sim$linearly in $K$, and the read cost is
-  \emph{quadratic in $|\rho| \approx \doc{max\_open}\cdot K$}, so large $K$
-  explodes: K2 $\approx$ 654k g, K4 $\approx$ 1.9M, K8 $\approx$ 5.8M,
-  \textbf{K16 $\approx$ 18M (unusable)}. Odd $K$ wastes a wire (K3 $\equiv$ K2). \\
+  ($\lfloor K/2\rfloor$ pairs; $|\rho|\approx\doc{max\_open}\cdot K$) --- not the
+  temporal length & affine/deg-2-neutral across $K$ (\S5); smallest is best. Size
+  $\sim$linear, read cost quadratic in $|\rho|$, so large $K$ explodes. Odd $K$
+  wastes a wire. \\
 \addlinespace
-\doc{max\_open} & \textbf{3} & rolling cap on open \lgi s per wire; also the
-  on-demand read-mask width floor & wider $\rho$ = more local hiding, but read
-  cost is quadratic in $|\rho|$. 3 is the knee. \\
+\doc{max\_open} & \textbf{3} & rolling cap on open \lgi s per wire; read-mask
+  width floor & wider $\rho$ = more local hiding, read cost quadratic; 3 is the
+  knee. \\
 \addlinespace
-\doc{rerand\_level} & \textbf{1000} & \textsc{straddle} updates (close
-  straddling masks) & at the safe side of the $\approx 1024$ thinning knee. \\
+\doc{rerand\_level} & \textbf{1000} & \textsc{straddle} band updates & at the safe
+  side of the $\approx1024$ thinning knee. \\
 \addlinespace
-\doc{rerand\_repair} & \textbf{3000} & \textsc{repair} updates (re-derive
-  straddling masks; no thinning) & stacks band turnover on top of straddle at
-  zero masking cost (grows size only). \\
-\addlinespace
-rerand split & half/half & data-control vs band-only, per kind & data controls
-  read live data (breaks commutation-back and couples band to data); band-only
-  controls add pure band entropy. \\
+\doc{rerand\_repair} & \textbf{3000} & \textsc{repair} band updates (no thinning)
+  & band turnover on top of straddle at no masking cost. \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\noindent $K$ sets each \lgi's \textbf{mask width} (control wires per \lgi),
-\emph{not} its temporal length --- the identity's circuit-spanning length is
-fixed by the scaffold (\S1e), which is what makes it ``one identity longer than
-the whole circuit.'' $K$ is exposed as \doc{-{}-bv5-k} in \doc{gss\_mix.sh}.
+\noindent $K$ sets each \lgi's mask \emph{width}, not its temporal length --- the
+identity's circuit-spanning length is a property of the whole scaffold (\S1e).
 
 \section{Measurements}
 
-\subsection{Global affine / degree-2 ridge (hiding of source-$C$ segments)}
+On the current co-sampled build (n=128, $|C|=|D|=3000$, K=2); they match the
+pre-firing-fix baseline (the hidden-firing change did not move them).
 
-Adversary: least-squares recovery of each source-$C$ wire-segment from a bounded
-set of gadget wires (\doc{hmap\_affine -{}-degree 1/2}, ridge read with
-\doc{reports/plot\_hmap\_ridge.py}). $\mathrm{meanH}$: $0 =$ recoverable,
-$0.5 =$ fully hidden.
-\begin{itemize}
-\item $\mathrm{meanH} \approx 0.498$ for every config $\Rightarrow$ $C$-segments
-  hidden overall.
-\item Affine ridge depth $\approx 0.055$, degree-2 $\approx 0.07$ (quadratic
-  reaches $\sim0.02$ deeper into the low-degree I/O fringe). Both are
-  \textbf{flat across $K = 2,4,8,16$} --- a wider per-\lgi{} mask buys no
-  additional hiding, which is why the smallest $K$ wins.
-\end{itemize}
-\noindent (This sweeps $K$ = the mask \emph{width}; the identity's temporal
-\emph{length} --- \S1(a) --- is held fixed circuit-spanning by the scaffold in
-every config, so it is not the axis being varied here. The length claim of
-\S1(a) rests on the HD/affine heatmap observation that short masks recede
-locally and long ones do not, which is what motivated the circuit-spanning
-scaffold.)
+\subsection{Affine ridge}
 
-\subsection{Linearly-exposed source-$C$ segments --- the public-I/O fringe}
+\begin{center}\includegraphics[width=0.82\textwidth]{blindedv5_affine.png}\end{center}
+\noindent $\mathrm{meanH}\approx0.498$, ridge depth $\approx0.05$; the interior
+($\sim$78\% of rows) is fully hidden ($H\approx0.49$), and the only recovery is a
+thin fringe at the two endpoints.
 
-$\approx 8$--$10\%$ of source-$C$ segments are substantially linearly exposed
-($\min$-$H < 0.25$ over cuts), flat across $K$ and $n$. They are \emph{not
-scattered}: they are two smooth monotone ramps at the diagonal \textbf{endpoints}
---- the input side (segments affine in the \emph{known} input $x$, which the
-adversary computes anyway) and the output side (converging on the delivered
-$C(x)$). The interior \textbf{78\% of segments are fully hidden} ($H \approx
-0.5$). This fringe is \textbf{unavoidable public I/O}, not a leak; the
-boundary-cushion knobs (\doc{extra\_lgis}, \doc{a\_margin}) measured no effect
-and are off by default. Fringe width $\approx 2 n_C$ gates = $C$'s
-degree-growth depth.
+\subsection{The exposed fringe is public I/O --- input segments are not leaked}
 
-\subsection{Rerand: repair vs straddle ($n_A = 256$, affine deg-1)}
+The $\approx$6--10\% of source-$C$ segments that are linearly exposed
+($\min$-$H<0.25$--$0.35$) are the two corners of the diagonal. The \textbf{input
+side is masked as soon as the compute begins} --- recovery is confined to the
+extreme top-left corner, i.e. the raw input port where $x$ is public \emph{before}
+any masking. The output side is the necessarily-delivered $C(x)$. So the input
+wire segments show a \textbf{lack of linear exposure} beyond the trivial public
+input; the boundary-cushion knobs measured no effect because the fringe is
+unavoidable public I/O, not a leak.
 
-Same total dose, straddle vs repair:
+\subsection{Degree-2 recovery}
+
+\begin{center}\includegraphics[width=0.82\textwidth]{blindedv5_deg2.png}\end{center}
+\noindent $\mathrm{meanH}\approx0.497$, depth $\approx0.05$. The quadratic
+adversary reaches only $\sim$0.01 deeper than affine, into the same low-degree I/O
+fringe; the interior stays fully hidden. Degree-2 is flat across $K$, like affine.
+
+\subsection{Rerand: repair vs straddle ($n_A=256$, affine deg-1)}
+
 \begin{table}[H]\centering
 \begin{tabular}{@{}rrrrr@{}}
 \toprule
@@ -266,63 +212,31 @@ straddle & repair & gadget & meanH & affDepth \\
 \end{tabular}
 \end{table}
 \noindent Heavy \textsc{straddle} thins (meanH $\downarrow$, ridge $\uparrow$,
-gadget \emph{shrinks} as masks close); heavy \textsc{repair} does not (both =
-baseline, gadget \emph{grows} from the pre/post pairs). The production
-$1000 + 3000$ sits at the baseline floor.
+gadget shrinks); heavy \textsc{repair} does not. Production $1000+3000$ sits at the
+baseline floor.
 
-\subsection{Through the GSS pipeline ($K = 2$ vs $K = 4$)}
+\subsection{Through the GSS pipeline ($K=2$ vs $K=4$)}
 
-\emph{Pending --- from the \doc{gss\_mix.sh -{}-gadgetization-mode blinded-v5}
-runs ($n = 128$, half-size $|C| = |D| = 3000$; phase-A grow-to-$2\times$ then
-hold $\approx 10$ effs; snapshot at 2 effs). To be appended: affine ridge and
-count of linearly-exposed $C$-segments at the 2-eff snapshot and at the end of
-the pipeline, for $K = 2$ and $K = 4$, with the gadget / phase-A / split /
-crossing sizes.}
+\emph{Pending --- from the co-sampled \doc{gss\_mix.sh -{}-gadgetization-mode
+blinded-v5} runs (n=128, half-size $|C|=|D|=3000$; grow-to-$2\times$ then hold
+$\approx10$ effs, 2-eff snapshot; then split, crossing, fcompress), $K=2$ and
+$K=4$: affine ridge and exposed-$C$ count at the 2-eff snapshot and at the end,
+with stage sizes.}
 
 \section{Tradeoffs and the current choices}
 
 \begin{itemize}
-\item \textbf{Mask width $K$ vs size.} Larger $K$ widens each per-\lgi{} mask
-  ($|\rho| \approx \doc{max\_open}\cdot K$) --- it does \emph{not} lengthen the
-  identity's temporal reach, which the scaffold fixes circuit-spanning (\S1e).
-  Empirically the hiding statistics (affine and degree-2 ridge, meanH,
-  exposed-fringe fraction) are \emph{flat in $K$}: widening the local mask buys
-  no additional hiding, while size grows $\sim$linearly and the masked-read cost
-  grows \emph{quadratically} in $|\rho| \approx \doc{max\_open}\cdot K$. K16 (the
-  historical choice) produces an $\sim$18M-gate gadget with no measured hiding
-  gain over K2's $\sim$650k. \textbf{We choose K2}; K4 is available only when a
-  wider read-mask ($\rho \approx 13$ vs $7$) is wanted. (The temporal-length
-  lever of \S1(a) is not $K$ --- it is the scaffold spanning the whole circuit,
-  on by construction.)
-\item \textbf{Band turnover vs size (straddle vs repair).} More control-wire
-  updates = more band re-randomisation and stronger resistance to
-  commutation-back. But \textsc{straddle} updates \emph{thin} the masking past
-  $\approx 1024$ (they close masks), degrading the ridge; \textsc{repair}
-  updates preserve masking but \emph{grow} the gadget. We take \textbf{1000
-  straddle} (at the safe knee) $+$ \textbf{3000 repair} (turnover without
-  thinning), balancing band entropy against size.
-\item \textbf{Read-mask width (\doc{max\_open}) vs read cost.} A wider $\rho$
-  spreads each operand over more band wires locally, but the fire expands to
-  $O(|\rho|^2)$ terms. $\doc{max\_open} = 3$ is the knee.
-\item \textbf{The residual fringe is I/O, not a knob.} The $\sim$10\% exposed
-  segments are the public input/output boundary; no parameter removes them (they
-  are what the adversary already knows), so we do not pay size to chase them.
+\item \textbf{Mask width $K$ vs size.} Larger $K$ widens each mask, not the
+  temporal length; hiding is flat in $K$ while size grows $\sim$linearly and the
+  read cost quadratically, so \textbf{K=2}; K=4 only for a wider read-mask.
+\item \textbf{Band turnover vs size (straddle vs repair).} STRADDLE thins past
+  $\approx1024$, REPAIR grows the gadget; \textbf{1000 straddle + 3000 repair}
+  balances at the baseline floor.
+\item \textbf{Firing-hiding is free} in the co-sampled build (it reuses the
+  existing \lgi{} budget); earlier fixed-scaffold approaches paid coverage
+  (23--70\%) or +43\% size.
+\item \textbf{The residual fringe is I/O, not a knob} --- no parameter removes the
+  public input/output boundary.
 \end{itemize}
-
-\section{Running it}
-
-\begin{verbatim}
-# one arm of the pipeline, LGI compute, K=2, half-size n=128 sandwich
-scripts/gss_mix.sh -n 128 --mcd 3000 \
-  --gadgetization-mode blinded-v5 --bv5-k 2 \
-  --expand 2 --hold 10 -o RUNDIR
-# (K=4: --bv5-k 4). fmix stages require FROZEN_DB_DIR (+ FROZEN_CURATED_DIR).
-
-# just the gadget (stage 2), or the standalone driver:
-scripts/gss_mix.sh -n 128 --mcd 3000 --gadgetization-mode blinded-v5 \
-  --bv5-k 2 --stop-after 2 -o RUNDIR
-blinded_v5_gadgetize src.mpmct1 out.mpmct1 <K> 0 <seed> \
-  <straddle> 3 <active> 2 0 <repair>
-\end{verbatim}
 
 \end{document}
