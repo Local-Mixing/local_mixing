@@ -35,7 +35,7 @@ use local_mixing::circuit::U1024;
 use local_mixing::circuit::random_circuit;
 use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shuffle};
 use local_mixing::engine::format::write_mpmct;
-use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5};
+use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
 use local_mixing::preprocessing::gadgets::{
     CnotCircuit, MaskConfig, ProdConfig, slice_zero_junk_guard_dims,
     gadgetize_xgates_with_slice_zero_ccnot,
@@ -413,6 +413,8 @@ fn main() {
             k: envu("BV5_K", base.k),
             rerand_level: envu("BV5_RERAND", base.rerand_level),
             max_open: envu("BV5_MAX_OPEN", base.max_open),
+            extra_lgis: envu("BV5_EXTRA_LGIS", base.extra_lgis),
+            a_margin: envu("BV5_A_MARGIN", base.a_margin),
             ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
@@ -427,15 +429,19 @@ fn main() {
         let gc = slice_gates.max(nondata);
         let open = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
         let close = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
+        // Module 2: band-seeding pipelined between the input slice guard (dead
+        // on the zero band) and the compute (which only reads the band).
+        let band_seed = seed_band(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C);
         println!(
             "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} | {} atoms, \
-             + {} slice-guard gates each side",
+             + {} band-seed + {} slice-guard gates each side",
             params.k, bv5.r_used, params.max_open, params.active_wires, bv5.atoms,
-            open.gates.len()
+            band_seed.len(), open.gates.len()
         );
-        let mut gates = open.gates;
-        gates.extend(bv5.gates);
-        gates.extend(close.gates);
+        let mut gates = open.gates; // module 1: input slice guard
+        gates.extend(band_seed); // module 2: band seed
+        gates.extend(bv5.gates); // modules 3-4: compute + rerand
+        gates.extend(close.gates); // module 5: final slice guard
         CnotCircuit {
             gates,
             num_wires: bv5.num_wires.max(np + nondata),

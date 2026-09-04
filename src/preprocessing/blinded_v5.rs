@@ -47,10 +47,19 @@ pub struct BlindedV5Params {
     pub max_open: usize,
     /// Seed the band ONLY from data wires `0..active_wires`. `0` = all `np`.
     pub active_wires: usize,
+    /// Extra LGIs per wire beyond `u_w+1` (RC: 2), so masks are reliably open at
+    /// the ends where A is cushioned away from the boundary.
+    pub extra_lgis: usize,
+    /// Cushion, in scaffold-gate units, kept free of A-gates at each end (RC:
+    /// ~2K B-gates). A's gates are confined to `[a_margin, |scaffold|-a_margin]`
+    /// so the input/output boundary is pure masking, not a bare low-degree
+    /// fringe. `0` = A spread over the whole scaffold (old behaviour).
+    pub a_margin: usize,
 }
 
 impl BlindedV5Params {
-    /// Settled preset: K=16, R=n (auto), max_open=3, no rerand.
+    /// Settled preset: K=16, R=n (auto), max_open=3, no rerand. The boundary
+    /// cushion (`extra_lgis`, `a_margin`) is off by default and opt-in.
     pub fn production(seed: u64) -> Self {
         Self {
             k: 16,
@@ -59,6 +68,8 @@ impl BlindedV5Params {
             rerand_level: 0,
             max_open: 3,
             active_wires: 0,
+            extra_lgis: 0,
+            a_margin: 0,
         }
     }
 }
@@ -101,9 +112,14 @@ fn as_g57(g: &XGate, np: usize) -> Option<(usize, (u16, u16))> {
     }
 }
 
+/// One LGI on wire `w`: DISJOINT g57 pairs over `cy`, i.e. `g57(w,cy[2i],cy[2i+1])`
+/// for each pair. A cycle would telescope to 0 under the read's pair-completion
+/// (`Σ cy[i]⊕cy[i+1]` around a cycle = 0 -> a BARE operand); disjoint pairs
+/// linearise to a nonzero `Σ cy[2i]⊕cy[2i+1]` instead. The deg-2 masking each
+/// gate `1⊕(¬cy[2i]∧cy[2i+1])` gives is disjoint deg-2 piling-up (the optimal
+/// sparse-mask shape). Needs `k >= 2`; an odd trailing wire is dropped.
 fn cycle_g57(w: u16, cy: &[u16]) -> Vec<XGate> {
-    let k = cy.len();
-    (0..k).map(|i| g57(w, cy[i], cy[(i + 1) % k])).collect()
+    (0..cy.len() / 2).map(|i| g57(w, cy[2 * i], cy[2 * i + 1])).collect()
 }
 
 fn conj(t: u16, lits: &[(u16, bool)]) -> XGate {
@@ -157,7 +173,8 @@ fn linearize(w: u16, netopen: &[(u16, u16)], out: &mut Vec<XGate>) -> (Vec<u16>,
 fn masked_fire(c: u16, ctrls: &[(u16, bool, Vec<u16>)], comp: bool, out: &mut Vec<XGate>) {
     match ctrls.len() {
         0 => {
-            if comp {
+            // 0 controls: fire = comp ^ AND(empty) = comp ^ 1 = !comp
+            if !comp {
                 out.push(XGate::x_gate(c));
             }
         }
@@ -211,35 +228,44 @@ fn masked_fire(c: u16, ctrls: &[(u16, bool, Vec<u16>)], comp: bool, out: &mut Ve
     }
 }
 
+/// The band-seeding module (module 2 of the 5-step pipeline): each band wire
+/// `np..np+r` set to `x_i & !x_j` from the honest active input wires. Emitted
+/// SEPARATELY and pipelined in front of the compute -- the compute only READS
+/// the band. `active_wires` = 0 means all `np` data wires.
+pub fn seed_band(np: usize, r: usize, active_wires: usize, seed: u64) -> Vec<XGate> {
+    let active = if active_wires == 0 || active_wires > np {
+        np
+    } else {
+        active_wires
+    };
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut out = Vec::with_capacity(r);
+    for aw in (np as u16)..((np + r) as u16) {
+        let i1 = rng.random_range(0..active) as u16;
+        let mut i2 = rng.random_range(0..active) as u16;
+        while i2 == i1 {
+            i2 = rng.random_range(0..active) as u16;
+        }
+        out.push(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap());
+    }
+    out
+}
+
 /// Gadgetize `A` (`src`, on wires `0..np`) into a `np + r`-wire circuit with the
-/// masked read. The `np` data wires end holding `A`'s output; the band wires are
-/// seeded from the input and left dirty.
+/// masked read. The band wires `np..np+r` are READ, never seeded here -- the
+/// caller pipelines in [`seed_band`] (or the pipeline's band-fill module). The
+/// `np` data wires end holding `A`'s output; the band is left dirty.
 pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> BlindedV5Output {
     let k = p.k.max(2); // g57 1-cycle is a degenerate constant flip
     let r = if p.r == 0 { np } else { p.r };
     assert!(r >= k, "R must be >= K");
     assert!(np >= 2, "need at least two data wires");
-    let active = if p.active_wires == 0 || p.active_wires > np {
-        np
-    } else {
-        p.active_wires
-    };
     let total = np + r;
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..total as u16).collect();
     let max_open = p.max_open.max(1);
     let mut rng = StdRng::seed_from_u64(p.seed);
     let mut out: Vec<XGate> = Vec::new();
-
-    // 0. band seed
-    for &aw in &band {
-        let i1 = rng.random_range(0..active) as u16;
-        let mut i2 = rng.random_range(0..active) as u16;
-        while i2 == i1 {
-            i2 = rng.random_range(0..active) as u16;
-        }
-        out.push(conj(aw, &[(i1, true), (i2, false)]));
-    }
 
     // 1. LGI pool
     let mut u = vec![0usize; np];
@@ -254,7 +280,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let atoms: usize = u.iter().map(|&c| c + 1).sum();
     let mut pool: Vec<Vec<Vec<u16>>> = vec![Vec::new(); np];
     for w in 0..np {
-        for _ in 0..(u[w] + 1) {
+        for _ in 0..(u[w] + 1 + p.extra_lgis) {
             pool[w].push(sample_k(&band, k, &mut rng));
         }
     }
@@ -339,13 +365,19 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         scaffold = built;
     }
 
-    // 4. interleave A with the masked read
+    // 4. interleave A with the masked read. Confine A's gates to
+    // [margin, |scaffold|-margin] so the boundary is pure masking (no bare
+    // low-degree fringe). margin defaults to ~2 LGIs per wire (2*K*np gates).
     let m = src.len();
+    let margin = p.a_margin.min(scaffold.len() / 4); // 0 = no cushion; cap at half
+    let span = scaffold.len().saturating_sub(2 * margin).max(1);
     let mut pos: Vec<usize> = (0..m)
-        .map(|j| ((j as u64 * scaffold.len() as u64) / (m.max(1) as u64)) as usize)
+        .map(|j| margin + ((j as u64 * span as u64) / (m.max(1) as u64)) as usize)
         .collect();
     pos.sort_unstable();
     let mut open_g57: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
+    let diag = std::env::var("BV5_DIAG").is_ok();
+    let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
     let mut ai = 0usize;
     for idx in 0..=scaffold.len() {
         while ai < m && pos[ai] == idx {
@@ -355,9 +387,51 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let mut undo: Vec<XGate> = Vec::new();
             for &(w, pol) in &g.ctrls {
                 let netopen: Vec<(u16, u16)> = open_g57[w as usize].iter().copied().collect();
-                let (rho, added) = linearize(w, &netopen, &mut out);
+                let (mut rho, added) = linearize(w, &netopen, &mut out);
                 for gg in added.into_iter().rev() {
                     undo.push(gg);
+                }
+                // On-demand: add COMPLETE fresh linear pairs (both g57 halves =
+                // self-contained r1^r2, fed straight into rho -- NOT through
+                // linearize, so no collision with open pairs) so the mask spans
+                // >= max_open pairs and rho is NEVER empty (no bare read).
+                let mut extra = max_open.saturating_sub(netopen.len());
+                if extra == 0 && rho.is_empty() {
+                    extra = 1;
+                }
+                let mut guard = 0;
+                loop {
+                    for _ in 0..extra {
+                        let r1 = band[rng.random_range(0..r)];
+                        let mut r2 = band[rng.random_range(0..r)];
+                        while r2 == r1 {
+                            r2 = band[rng.random_range(0..r)];
+                        }
+                        out.push(g57(w, r1, r2));
+                        out.push(g57(w, r2, r1));
+                        undo.push(g57(w, r2, r1));
+                        undo.push(g57(w, r1, r2));
+                        for x in [r1, r2] {
+                            if let Some(pp) = rho.iter().position(|&v| v == x) {
+                                rho.remove(pp);
+                            } else {
+                                rho.push(x);
+                            }
+                        }
+                    }
+                    extra = 0;
+                    if !rho.is_empty() || guard > 3 {
+                        break;
+                    }
+                    extra = 1;
+                    guard += 1;
+                }
+                if diag {
+                    n_reads += 1;
+                    if rho.is_empty() {
+                        n_bare += 1;
+                    }
+                    rho_sum += rho.len();
                 }
                 ctrls.push((w, pol, rho));
             }
@@ -377,6 +451,14 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         }
     }
     debug_assert!(ai == m);
+    if diag {
+        eprintln!(
+            "[bv5-diag] control reads={n_reads}  BARE (rho empty)={n_bare} ({:.3}%)  \
+             mean |rho| (band wires masking the operand)={:.2}",
+            100.0 * n_bare as f64 / n_reads.max(1) as f64,
+            rho_sum as f64 / n_reads.max(1) as f64
+        );
+    }
 
     BlindedV5Output {
         gates: out,
