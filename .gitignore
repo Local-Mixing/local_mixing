@@ -6,6 +6,8 @@ db
 *.txt
 *.sh*
 *.png*
+!docs/blindedv5_affine.png
+!docs/blindedv5_deg2.png
 .venv/
 *.svg
 rocksdb*
