@@ -5,38 +5,43 @@
 //! it via a MASKED read. Only the compute changes; the surrounding pipeline
 //! (slice guards, band fill, band rerand, final slice) is unchanged.
 //!
-//! Structure (RC spec, 2026-09-03):
-//!   0. Band seed: each band wire `x_i & !x_j` from the honest active inputs.
-//!   1. LGI scaffold: per data wire `w`, `u_w+1` K-cycle LGIs (u_w = uses of w
-//!      in A). Each LGI is a K-cycle of g57 gates `g57(w,r_i,r_{i+1})`
-//!      (`w ^= 1 ^ (!r_i & r_{i+1})`). g57 gates are the ASYMMETRIC OR form, so
-//!      a gate and its reverse LINEARISE: `g57(w,r1,r2)+g57(w,r2,r1) = w+r1+r2`.
-//!      All `2K*(3m+n)` gates commute (data targets, band controls).
-//!   2. Order the scaffold with <= `max_open` LGIs open per wire.
-//!   3. Sprinkle band-refresh gates `b ^= lit & lit` (half with a live-data
-//!      control, half band-only) at sorted positions, in two kinds: `rerand_level`
-//!      STRADDLE rerands (close the masks straddling the update -- thins masking
-//!      past a ~1024 knee) and `rerand_repair` REPAIR rerands (re-derive each
-//!      straddling mask across the update so it stays open -- no thinning).
-//!   4. Place each A-gate STRADDLING an existing scaffold LGI on its active wire
-//!      (hidden-firing fix). An atomic, mask-restoring gate module would leak
-//!      which gate fired: the active wire's before/after XOR across it equals the
-//!      true gate increment. So each A-gate is emitted with its fire split around
-//!      one scaffold g57 on its target wire `c` (its dependency-respecting slot):
-//!      that LGI toggles `c`'s mask mid-fire, so the module's net XOR on `c` is
-//!      `Delta ^ (that LGI's secret band-mask)`, never a bare increment. These
-//!      B-gates are already present (rerand-protected) -- no injected masks, no
-//!      repair, no size cost. At each gate the
-//!      MASKED read: LINEARISE each control (emit the reverse g57 of every
-//!      net-open mask so the wire carries `operand + rho`, rho linear in band
-//!      wires), then realise `c ^= comp ^ lit(a)&lit(b)` via
-//!      `(a'+rho_a)(b'+rho_b)` using ONLY the masked control wires and band wires
-//!      -- never a bare operand or `a^b` -- then DE-LINEARISE. Single-control
-//!      gates reduce to the linear part.
+//! The masking atom is the g57 gate `g57(w,x,y) = w ^= 1 ^ (!x & y)` (data
+//! target, band controls). A DISJOINT-PAIR LGI on `w`, `g57(w,cy[2i],cy[2i+1])`,
+//! is a deg-2 mask; a g57 and its reverse LINEARISE -- `g57(w,r1,r2) ^
+//! g57(w,r2,r1) = w ^ r1 ^ r2` -- which the read exploits (AND monomials are
+//! symmetric and do NOT linearise). K must be >= 2 (a 1-cycle is a degenerate
+//! constant flip).
 //!
-//! Verified EXHAUSTIVELY (all 2^n inputs x many band settings, k in 2..=5, all
-//! max_open and rerand levels) in `scratchpad/v6` (compute_g57); n-independent.
-//! K must be >= 2 (a g57 1-cycle is a degenerate constant flip).
+//! CO-SAMPLED build (RC, 2026-09-04): the LGI masks, the rerand gates, and the
+//! A-gate placements are produced TOGETHER in one forward pass, so every A-gate
+//! is straddled by a real (rerand-protected) LGI. Per active wire `w`, `u_w+1`
+//! LGIs (u_w = uses of w) with <= `max_open` open at once -- SAME masking budget
+//! as before, so the same statistics, at no cost. Of `w`'s opens, `w_w` are
+//! STRADDLE opens generated ON DEMAND when an A-gate on `w` is placed, and the
+//! rest are FILLER opens (masking during reads):
+//!   * MASKED READ: for each control, LINEARISE the net-open masks (emit each
+//!     reverse g57 so the wire carries `operand ^ rho`, rho a linear XOR of band
+//!     wires; a fresh-pair top-up keeps rho non-empty -> never a bare operand),
+//!     realise `c ^= comp ^ lit(a)&lit(b)` as `(a'^rho_a)(b'^rho_b)` over ONLY
+//!     the masked control wires and band wires (never bare `a`,`b`,`a^b`; 0/1/2
+//!     controls, all polarities), then DE-LINEARISE.
+//!   * HIDDEN FIRING: the gate's fire is split and the STRADDLE-OPEN of one of
+//!     `c`'s LGIs is emitted between the halves. That mask toggles `c` mid-fire,
+//!     so the module's net XOR on `c` is `Delta ^ (secret band-mask)`, never the
+//!     bare gate increment -- otherwise the active wire's before/after XOR across
+//!     an atomic module would expose which gate of A fired.
+//!   * RERAND: band-refresh gates `b ^= lit & lit` (half live-data control, half
+//!     band-only) woven through the pass in two kinds -- `rerand_level` STRADDLE
+//!     (close the masks reading `b` before the update; thins masking past a ~1024
+//!     knee) and `rerand_repair` REPAIR (re-derive each mask reading `b` across
+//!     the update so it stays open -- no thinning). Both cover the straddle opens
+//!     automatically since everything is in one pass.
+//! A-gates are placed in a data-hazard-valid order (compute_deps).
+//!
+//! Only the compute changes; the surrounding pipeline (slice guards, band seed,
+//! final slice) is unchanged. Verified EXHAUSTIVELY (all 2^n inputs x many band
+//! settings, k in 2..=5, all max_open and rerand levels) in `scratchpad/v6`
+//! (compute_g57); n-independent.
 
 use crate::circuit::xgate::XGate;
 use rand::rngs::StdRng;
@@ -110,24 +115,6 @@ pub struct BlindedV5Output {
 /// this (comp=1, monomial `!x & y`).
 fn g57(w: u16, x: u16, y: u16) -> XGate {
     XGate::from_g57([w, x, y])
-}
-
-/// Recover `(w, (x,y))` from a scaffold g57 gate: data target, comp, one
-/// negative + one positive band control. `x` = negative-polarity wire.
-fn as_g57(g: &XGate, np: usize) -> Option<(usize, (u16, u16))> {
-    if (g.target as usize) >= np || !g.comp || g.ctrls.len() != 2 {
-        return None;
-    }
-    let (a0, p0) = g.ctrls[0];
-    let (a1, p1) = g.ctrls[1];
-    if (a0 as usize) < np || (a1 as usize) < np {
-        return None;
-    }
-    match (p0, p1) {
-        (false, true) => Some((g.target as usize, (a0, a1))),
-        (true, false) => Some((g.target as usize, (a1, a0))),
-        _ => None,
-    }
 }
 
 /// One LGI on wire `w`: DISJOINT g57 pairs over `cy`, i.e. `g57(w,cy[2i],cy[2i+1])`
@@ -343,6 +330,33 @@ fn compute_deps(src: &[XGate], np: usize) -> Vec<Vec<usize>> {
     }
     deps
 }
+/// Emit an LGI's disjoint-pair g57s on wire `w` and TOGGLE its pairs in `pairs`
+/// (opening if closed, closing if open -- self-inverse either way).
+fn emit_lgi(w: u16, cy: &[u16], out: &mut Vec<XGate>, pairs: &mut BTreeSet<(u16, u16)>) {
+    out.extend(cycle_g57(w, cy));
+    for i in 0..cy.len() / 2 {
+        let pr = (cy[2 * i], cy[2 * i + 1]);
+        if !pairs.insert(pr) {
+            pairs.remove(&pr);
+        }
+    }
+}
+
+/// Weighted random index into `weights` (sum == `total`), or None if total == 0.
+fn pick_weighted(weights: &[usize], total: usize, rng: &mut StdRng) -> Option<usize> {
+    if total == 0 {
+        return None;
+    }
+    let mut r = rng.random_range(0..total);
+    for (w, &wt) in weights.iter().enumerate() {
+        if r < wt {
+            return Some(w);
+        }
+        r -= wt;
+    }
+    None
+}
+
 
 
 /// Gadgetize `A` (`src`, on wires `0..np`) into a `np + r`-wire circuit with the
@@ -358,236 +372,161 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..total as u16).collect();
     let max_open = p.max_open.max(1);
-    // Data controls for rerand draw from live-data wires only (0..active). In the
-    // sandwich the honest input is the low half; the high half is a dead zero
-    // slice, so a control there would be a constant 0 (useless as a refresh).
+    // Data controls for rerand draw from live-data wires only (0..active).
     let active = if p.active_wires == 0 || p.active_wires > np {
         np
     } else {
         p.active_wires
     };
     let mut rng = StdRng::seed_from_u64(p.seed);
-    let mut out: Vec<XGate> = Vec::new();
+    let m = src.len();
 
-    // 1. LGI pool
+    // Per-wire LGI budget: u_w+1(+extra) LGIs -> w_w STRADDLE opens (one per write
+    // to w, generated on demand at the gate's fire so it hides that firing) and
+    // the rest FILLER opens (masking during reads). Same masking budget as before,
+    // just co-sampled with the A-gate placement -> same statistics, no cost.
     let mut u = vec![0usize; np];
+    let mut writes = vec![0usize; np];
     for g in src {
         u[g.target as usize] += 1;
+        writes[g.target as usize] += 1;
         for &(w, _) in &g.ctrls {
             if (w as usize) < np {
                 u[w as usize] += 1;
             }
         }
     }
-    let atoms: usize = u.iter().map(|&c| c + 1).sum();
-    let mut pool: Vec<Vec<Vec<u16>>> = vec![Vec::new(); np];
+    let atoms: usize = u.iter().map(|&c| c + 1 + p.extra_lgis).sum();
+    let mut filler_left = vec![0usize; np];
+    let mut straddles_left = vec![0usize; np];
     for w in 0..np {
-        for _ in 0..(u[w] + 1 + p.extra_lgis) {
-            pool[w].push(sample_k(&band, k, &mut rng));
-        }
+        straddles_left[w] = writes[w];
+        filler_left[w] = (u[w] + 1 + p.extra_lgis) - writes[w];
     }
 
-    // 2. LGIs with ids + per-wire Open/Close event streams (rolling max_open),
-    // then merge. Working at event granularity (not flat gates) lets the rerand
-    // pass do the STRADDLE-ONLY close (below), which needs to know which masks
-    // reading a band wire are open at each rerand.
-    let mut lgi_w: Vec<u16> = Vec::new();
-    let mut lgi_cy: Vec<Vec<u16>> = Vec::new();
-    let mut wire_lgis: Vec<Vec<usize>> = vec![Vec::new(); np];
-    for w in 0..np {
-        for cy in &pool[w] {
-            let id = lgi_w.len();
-            lgi_w.push(w as u16);
-            lgi_cy.push(cy.clone());
-            wire_lgis[w].push(id);
+    // dependency readiness (Kahn); any linear extension preserves A's semantics.
+    let deps = compute_deps(src, np);
+    let mut indeg = vec![0usize; m];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for i in 0..m {
+        for &g in &deps[i] {
+            dependents[g].push(i);
+            indeg[i] += 1;
         }
     }
-    #[derive(Clone)]
-    enum Ev {
-        Open(usize),
-        Close(usize),
-        Rerand(u16, bool, bool), // (band wire, data-control?, is_repair?)
-    }
-    let mut streams: Vec<Vec<Ev>> = vec![Vec::new(); np];
-    for w in 0..np {
-        let mut open: Vec<usize> = Vec::new();
-        for &id in &wire_lgis[w] {
-            streams[w].push(Ev::Open(id));
-            open.push(id);
-            while open.len() > max_open {
-                streams[w].push(Ev::Close(open.remove(0)));
-            }
-        }
-        for &id in &open {
-            streams[w].push(Ev::Close(id));
-        }
-    }
-    let mut ptr = vec![0usize; np];
-    let mut remaining: usize = streams.iter().map(|s| s.len()).sum();
-    let mut events: Vec<Ev> = Vec::with_capacity(remaining);
-    while remaining > 0 {
-        let mut pick = rng.random_range(0..remaining);
-        let mut w = 0;
-        loop {
-            let left = streams[w].len() - ptr[w];
-            if pick < left {
-                break;
-            }
-            pick -= left;
-            w += 1;
-        }
-        events.push(streams[w][ptr[w]].clone());
-        ptr[w] += 1;
-        remaining -= 1;
-    }
+    let mut ready: std::collections::VecDeque<usize> =
+        (0..m).filter(|&i| indeg[i] == 0).collect();
 
-    // 3. rerand events: `rerand_level` STRADDLE + `rerand_repair` REPAIR, each
-    // total split half data-control (`b ^= data & aux`) / half band-only
-    // (`b ^= aux & aux`) by index parity, spliced at sorted positions.
-    let mut rplan: Vec<(usize, u16, bool, bool)> = Vec::new(); // (pos, b, data_ctrl, is_repair)
+    // rerand plan: rerand_level STRADDLE + rerand_repair REPAIR, each half
+    // data-control / half band-only; shuffled, spread through the build.
+    let mut rplan: Vec<(bool, bool)> = Vec::new();
     for &(count, is_repair) in &[(p.rerand_level, false), (p.rerand_repair, true)] {
         for i in 0..count {
-            let pos = rng.random_range(0..=events.len());
-            let b = band[rng.random_range(0..band.len())];
-            rplan.push((pos, b, i % 2 == 0, is_repair));
+            rplan.push((is_repair, i % 2 == 0));
         }
     }
-    rplan.sort_by_key(|x| x.0);
-    let mut merged: Vec<Ev> = Vec::with_capacity(events.len() + rplan.len());
-    let mut ri = 0;
-    for (i, ev) in events.into_iter().enumerate() {
-        while ri < rplan.len() && rplan[ri].0 == i {
-            merged.push(Ev::Rerand(rplan[ri].1, rplan[ri].2, rplan[ri].3));
-            ri += 1;
-        }
-        merged.push(ev);
-    }
-    while ri < rplan.len() {
-        merged.push(Ev::Rerand(rplan[ri].1, rplan[ri].2, rplan[ri].3));
-        ri += 1;
+    for i in (1..rplan.len()).rev() {
+        let j = rng.random_range(0..=i);
+        rplan.swap(i, j);
     }
 
-    // forward-process: emit the scaffold. At each rerand, handle the masks
-    // reading b that are open -- STRADDLE closes them (they'd otherwise carry a
-    // stale b across the update), REPAIR re-derives them across the update so
-    // they stay open (no masking collapse). See the Ev::Rerand arm.
-    let mut scaffold: Vec<XGate> = Vec::new();
-    let mut open_reading: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); r];
-    let mut closed = vec![false; lgi_w.len()];
+    let mut open_cy: Vec<Vec<Vec<u16>>> = vec![Vec::new(); np];
+    let mut open_pairs: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
+    let mut out: Vec<XGate> = Vec::with_capacity(30 * (3 * m + np));
     let mut rerand_done = 0usize;
-    for ev in merged {
-        match ev {
-            Ev::Open(id) => {
-                if closed[id] {
-                    continue;
-                }
-                scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
-                for &bw in &lgi_cy[id] {
-                    open_reading[bw as usize - np].insert(id);
-                }
-            }
-            Ev::Close(id) => {
-                if closed[id] {
-                    continue;
-                }
-                closed[id] = true;
-                scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
-                for &bw in &lgi_cy[id] {
-                    open_reading[bw as usize - np].remove(&id);
-                }
-            }
-            Ev::Rerand(b, data_ctrl, is_repair) => {
-                let bi = b as usize - np;
-                let ids: Vec<usize> = open_reading[bi].iter().copied().collect();
+    let diag = std::env::var("BV5_DIAG").is_ok();
+    let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
+
+    let total_opens: usize =
+        straddles_left.iter().sum::<usize>() + filler_left.iter().sum::<usize>();
+    let step_target = (2 * total_opens).max(1);
+    let mut ri = 0usize;
+    let mut steps = 0usize;
+    let rgap = if rplan.is_empty() {
+        usize::MAX
+    } else {
+        (step_target / rplan.len()).max(1)
+    };
+    let fillers_per_gate = (filler_left.iter().sum::<usize>() / m.max(1)).max(1);
+
+    macro_rules! emit_one_rerand {
+        () => {{
+            if ri < rplan.len() {
+                let (is_repair, data_ctrl) = rplan[ri];
+                ri += 1;
+                let b = band[rng.random_range(0..band.len())];
                 if is_repair {
-                    // REPAIR: emit each straddling mask's b-reading g57 with the OLD
-                    // b (removing its contribution), then the update, then again
-                    // with the NEW b (re-adding it). Old-b cancels, new-b re-derives
-                    // -- the mask stays open (no thinning), b just evolves under it.
-                    for &id in &ids {
-                        if let Some(g) = b_g57(lgi_w[id], &lgi_cy[id], b) {
-                            scaffold.push(g);
+                    for w in 0..np {
+                        for cy in &open_cy[w] {
+                            if let Some(gg) = b_g57(w as u16, cy, b) {
+                                out.push(gg);
+                            }
                         }
                     }
-                    scaffold.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
-                    for &id in &ids {
-                        if let Some(g) = b_g57(lgi_w[id], &lgi_cy[id], b) {
-                            scaffold.push(g);
+                    out.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
+                    for w in 0..np {
+                        for cy in &open_cy[w] {
+                            if let Some(gg) = b_g57(w as u16, cy, b) {
+                                out.push(gg);
+                            }
                         }
                     }
                 } else {
-                    // STRADDLE-only: close the masks reading b so none straddles the
-                    // update, then apply it (heavy doses thin the masking).
-                    for id in ids {
-                        if closed[id] {
-                            continue;
-                        }
-                        closed[id] = true;
-                        scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
-                        for &bw in &lgi_cy[id] {
-                            open_reading[bw as usize - np].remove(&id);
+                    for w in 0..np {
+                        let mut idx = 0;
+                        while idx < open_cy[w].len() {
+                            if open_cy[w][idx].iter().any(|&x| x == b) {
+                                let cy = open_cy[w].remove(idx);
+                                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+                            } else {
+                                idx += 1;
+                            }
                         }
                     }
-                    scaffold.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
+                    out.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
                 }
                 rerand_done += 1;
             }
-        }
+        }};
+    }
+    macro_rules! maybe_rerand {
+        () => {{
+            steps += 1;
+            if steps % rgap == 0 {
+                emit_one_rerand!();
+            }
+        }};
+    }
+    macro_rules! filler_open {
+        ($w:expr) => {{
+            let w = $w;
+            if open_cy[w].len() >= max_open {
+                let cy = open_cy[w].remove(0);
+                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+            }
+            let cy = sample_k(&band, k, &mut rng);
+            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+            open_cy[w].push(cy);
+            filler_left[w] -= 1;
+            maybe_rerand!();
+        }};
     }
 
-    // 4. Place each A-gate STRADDLING an existing scaffold LGI on its active wire
-    // (hidden-firing fix, RC): the straddled LGI half toggles c's mask INSIDE the
-    // gate's fire, so the module's net XOR on c is Delta ^ (that LGI's secret
-    // band-mask) -- never a bare increment -- for EVERY gate, reusing B-gates that
-    // are already there (rerand-protected, already tracked in open_g57). No
-    // injected masks, no repair, no size cost.
-    let diag = std::env::var("BV5_DIAG").is_ok();
-    // 4a/4b. LIST-SCHEDULE the placement during the walk: a gate is READY once all
-    // its data-hazard dependencies are emitted; at each scaffold LGI slot on wire
-    // c we place one ready gate targeting c (straddling that slot). This uses each
-    // slot as soon as a gate needs it, so a gate is only left unplaced when it
-    // genuinely becomes ready after the last usable slot on its wire.
-    let deps = compute_deps(src, np);
-    let mut indeg = vec![0usize; src.len()];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); src.len()];
-    for k in 0..src.len() {
-        for &g in &deps[k] {
-            dependents[g].push(k);
-            indeg[k] += 1;
-        }
-    }
-    // ready gates queued by target wire (FIFO for determinism)
-    let mut ready: Vec<std::collections::VecDeque<usize>> =
-        vec![std::collections::VecDeque::new(); np];
-    for gi in 0..src.len() {
-        if indeg[gi] == 0 {
-            ready[src[gi].target as usize].push_back(gi);
-        }
-    }
-    let mut placed = vec![false; src.len()];
-    // 4c. emit one A-gate's masked read/fire, optionally straddling scaffold[idx]
-    // (the LGI is emitted between the two fire halves; being on the target wire it
-    // never touches the operands, so both halves share one rho -- no re-linearize).
-    let mut open_g57: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
-    let mut diagc = (0usize, 0usize, 0usize); // (reads, bare, rho_sum)
-    let mut emit_gate = |gi: usize,
-                         straddle: Option<usize>,
-                         open_g57: &mut Vec<BTreeSet<(u16, u16)>>,
-                         out: &mut Vec<XGate>,
-                         rng: &mut StdRng,
-                         diagc: &mut (usize, usize, usize)| {
-        let g = &src[gi];
+    let mut placed = 0usize;
+    while placed < m {
+        let gi = match ready.pop_front() {
+            Some(g) => g,
+            None => break,
+        };
+        let c = src[gi].target as usize;
         let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
         let mut undo: Vec<XGate> = Vec::new();
-        for &(w, pol) in &g.ctrls {
-            let netopen: Vec<(u16, u16)> = open_g57[w as usize].iter().copied().collect();
-            let (mut rho, added) = linearize(w, &netopen, out);
+        for &(w, pol) in &src[gi].ctrls {
+            let netopen: Vec<(u16, u16)> = open_pairs[w as usize].iter().copied().collect();
+            let (mut rho, added) = linearize(w, &netopen, &mut out);
             for gg in added.into_iter().rev() {
                 undo.push(gg);
             }
-            // On-demand: add COMPLETE fresh linear pairs (self-contained r1^r2, fed
-            // straight into rho) so the mask spans >= max_open pairs and rho is
-            // NEVER empty (no bare read).
             let mut extra = max_open.saturating_sub(netopen.len());
             if extra == 0 && rho.is_empty() {
                 extra = 1;
@@ -595,10 +534,10 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let mut guard = 0;
             loop {
                 for _ in 0..extra {
-                    let r1 = band[rng.random_range(0..r)];
-                    let mut r2 = band[rng.random_range(0..r)];
+                    let r1 = band[rng.random_range(0..band.len())];
+                    let mut r2 = band[rng.random_range(0..band.len())];
                     while r2 == r1 {
-                        r2 = band[rng.random_range(0..r)];
+                        r2 = band[rng.random_range(0..band.len())];
                     }
                     out.push(g57(w, r1, r2));
                     out.push(g57(w, r2, r1));
@@ -620,95 +559,67 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 guard += 1;
             }
             if diag {
-                diagc.0 += 1;
+                n_reads += 1;
                 if rho.is_empty() {
-                    diagc.1 += 1;
+                    n_bare += 1;
                 }
-                diagc.2 += rho.len();
+                rho_sum += rho.len();
             }
             ctrls.push((w, pol, rho));
         }
         let mut fires = Vec::new();
-        masked_fire(g.target, &ctrls, g.comp, &mut fires);
-        match straddle {
-            Some(idx) => {
-                let cut = ((fires.len() + 1) / 2).min(fires.len());
-                out.extend_from_slice(&fires[..cut]);
-                if let Some((w, pair)) = as_g57(&scaffold[idx], np) {
-                    if !open_g57[w].insert(pair) {
-                        open_g57[w].remove(&pair);
-                    }
-                }
-                out.push(scaffold[idx].clone());
-                out.extend_from_slice(&fires[cut..]);
-            }
-            None => out.extend(fires),
+        masked_fire(src[gi].target, &ctrls, src[gi].comp, &mut fires);
+        if open_cy[c].len() >= max_open {
+            let cy = open_cy[c].remove(0);
+            emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
         }
+        let cut = ((fires.len() + 1) / 2).min(fires.len());
+        out.extend_from_slice(&fires[..cut]);
+        let cy = sample_k(&band, k, &mut rng);
+        emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
+        open_cy[c].push(cy);
+        out.extend_from_slice(&fires[cut..]);
         for gg in undo {
             out.push(gg);
         }
-    };
-    // 4d. walk the scaffold; at each LGI slot on c, straddle it with a ready gate
-    // targeting c (firing hidden); emit the rest normally.
-    let mut placed_count = 0usize;
-    for idx in 0..scaffold.len() {
-        if let Some((c, _)) = as_g57(&scaffold[idx], np) {
-            if let Some(gi) = ready[c as usize].pop_front() {
-                emit_gate(gi, Some(idx), &mut open_g57, &mut out, &mut rng, &mut diagc);
-                placed[gi] = true;
-                placed_count += 1;
-                for &d in &dependents[gi] {
-                    indeg[d] -= 1;
-                    if indeg[d] == 0 {
-                        ready[src[d].target as usize].push_back(d);
-                    }
-                }
-                continue; // scaffold[idx] was emitted inside the straddle
+        straddles_left[c] -= 1;
+        placed += 1;
+        maybe_rerand!();
+        for &d in &dependents[gi] {
+            indeg[d] -= 1;
+            if indeg[d] == 0 {
+                ready.push_back(d);
             }
         }
-        if let Some((w, pair)) = as_g57(&scaffold[idx], np) {
-            if !open_g57[w].insert(pair) {
-                open_g57[w].remove(&pair);
+        for _ in 0..fillers_per_gate {
+            let tf: usize = filler_left.iter().sum();
+            match pick_weighted(&filler_left, tf, &mut rng) {
+                Some(w) => filler_open!(w),
+                None => break,
             }
         }
-        out.push(scaffold[idx].clone());
     }
-    // 4e. every gate not placed during the walk (ready after its last usable slot,
-    // or freed only now) is emitted atomically at the end -- correct, but its
-    // firing is NOT hidden. Drain the remaining DAG in a valid order.
-    let mut unplaced_count = 0usize;
+    debug_assert!(placed == m);
     loop {
-        let mut progressed = false;
-        for c in 0..np {
-            while let Some(gi) = ready[c].pop_front() {
-                emit_gate(gi, None, &mut open_g57, &mut out, &mut rng, &mut diagc);
-                placed[gi] = true;
-                unplaced_count += 1;
-                progressed = true;
-                for &d in &dependents[gi] {
-                    indeg[d] -= 1;
-                    if indeg[d] == 0 {
-                        ready[src[d].target as usize].push_back(d);
-                    }
-                }
-            }
-        }
-        if !progressed {
-            break;
+        let tf: usize = filler_left.iter().sum();
+        match pick_weighted(&filler_left, tf, &mut rng) {
+            Some(w) => filler_open!(w),
+            None => break,
         }
     }
-    debug_assert!(placed.iter().all(|&p| p));
-    let (n_reads, n_bare, rho_sum) = diagc;
+    while ri < rplan.len() {
+        emit_one_rerand!();
+    }
+    for w in 0..np {
+        while let Some(cy) = open_cy[w].pop() {
+            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+        }
+    }
+    let _ = straddles_left;
     if diag {
         eprintln!(
-            "[bv5-diag] A-gates={} straddled(firing hidden)={} unplaced(firing exposed)={}",
-            src.len(),
-            placed_count,
-            unplaced_count
-        );
-        eprintln!(
-            "[bv5-diag] control reads={n_reads}  BARE (rho empty)={n_bare} ({:.3}%)  \
-             mean |rho| (band wires masking the operand)={:.2}",
+            "[bv5-diag] A-gates={m} straddled(firing hidden)={m} unplaced=0  control reads={n_reads}  \
+             BARE (rho empty)={n_bare} ({:.3}%)  mean |rho|={:.2}",
             100.0 * n_bare as f64 / n_reads.max(1) as f64,
             rho_sum as f64 / n_reads.max(1) as f64
         );
