@@ -474,11 +474,15 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let diag = std::env::var("BV5_DIAG").is_ok();
     let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
     let mut rho_min = usize::MAX;
+    let mut in_drain = false; // true once all A-gates are placed (post-compute)
+    let mut slots_emitted = 0usize;
+    let mut drain_slots = 0usize; // rerand slots emitted AFTER the last A-gate
 
     // Calibrate the rate AHEAD: one slot every `rgap` primitive steps (A-gate
     // placements + filler opens), so the last slot lands DURING the pass -- no
     // end-flush (emitting rerands after the last A-gate is pointless).
-    let total_steps = m + filler_left.iter().sum::<usize>();
+    let total_fillers = filler_left.iter().sum::<usize>();
+    let total_steps = m + total_fillers;
     let mut si = 0usize;
     let mut steps = 0usize;
     let rgap = if slot_plan.is_empty() {
@@ -486,12 +490,20 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     } else {
         (total_steps / slot_plan.len()).max(1)
     };
-    let fillers_per_gate = (filler_left.iter().sum::<usize>() / m.max(1)).max(1);
+    // Filler opens are placed on an even running schedule (below) so that ALL of
+    // them — and therefore all rerand slots — land during the compute, leaving no
+    // post-compute drain for rerand to fall into. After `placed` A-gates the
+    // cumulative filler target is `placed * total_fillers / m`.
+    let mut fillers_done = 0usize;
 
     macro_rules! emit_slot {
         () => {{
             let is_repair = slot_plan[si];
             si += 1;
+            slots_emitted += 1;
+            if in_drain {
+                drain_slots += 1;
+            }
             let b = band[rng.random_range(0..band.len())];
             if is_repair {
                 for w in 0..np {
@@ -667,15 +679,23 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 ready.push_back(d);
             }
         }
-        for _ in 0..fillers_per_gate {
+        // Even running schedule: catch up to `placed * total_fillers / m` opens.
+        let filler_target = placed * total_fillers / m.max(1);
+        while fillers_done < filler_target {
             let tf: usize = filler_left.iter().sum();
             match pick_weighted(&filler_left, tf, &mut rng) {
-                Some(w) => filler_open!(w),
+                Some(w) => {
+                    filler_open!(w);
+                    fillers_done += 1;
+                }
                 None => break,
             }
         }
     }
     debug_assert!(placed == m);
+    in_drain = true; // everything below is emitted after the last A-gate placement
+    // Safety drain for any rounding remainder (0 in practice — the running
+    // schedule reaches `total_fillers` by the last placement); emits no rerand.
     loop {
         let tf: usize = filler_left.iter().sum();
         match pick_weighted(&filler_left, tf, &mut rng) {
@@ -712,6 +732,13 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             100.0 * n_bare as f64 / n_reads.max(1) as f64,
             if n_reads == 0 { 0 } else { rho_min },
             rho_sum as f64 / n_reads.max(1) as f64
+        );
+        eprintln!(
+            "[bv5-diag] rerand slots: emitted={slots_emitted} of plan={}  \
+             DRAIN (after last A-gate)={drain_slots} ({:.1}%)  main-loop={}",
+            slot_plan.len(),
+            100.0 * drain_slots as f64 / slots_emitted.max(1) as f64,
+            slots_emitted - drain_slots
         );
     }
 

@@ -24,21 +24,50 @@
 
 \section*{Where it fits in the pipeline}
 
-The GSS gadgetization of a secret circuit $C$ on $n$ wires is a \textbf{5-stage}
-sandwich, each stage on $2n$ wires (data $0..n$, band/junk $n..2n$):
-(1) \textbf{slice} --- a junk-guard zero-slice keyed on the band; (2) \textbf{seed
-the band wires} --- each band wire set to $x_i \land \lnot x_j$ from the honest
-inputs; (3) \textbf{compute} --- realise $A$ (the sliced sandwich of $C$) on the
-$2n$ wires so the data half carries $A$'s output and the band is only read;
-(4) \textbf{re-seed / re-randomise the band}, interleaved with the compute;
-(5) \textbf{re-slice} --- the closing junk-guard slice.
+A secret circuit $C$ on $n$ wires is protected in two steps: it is first
+\textbf{gadgetized} into an equivalent but structurally-scrambled circuit on $2n$
+wires, which is then \textbf{mixed} (fmix). Blinded-V5 lives inside the
+gadgetizer, and this document assumes you know the earlier gadgetize designs but
+nothing about V5.
 
-\textbf{Blinded-V5 is a drop-in alternative for stages 3--4} (the compute and its
-band re-randomisation), replacing the drip \doc{route\_fire} compute. It takes
-$A$ on $n$ wires and emits an equivalent $A'$ on $2n$ wires whose body is a cloud
-of long masking identities with $A$'s gates threaded through by a masked read.
-Stages 1, 2 and 5 are unchanged. Source: \doc{src/preprocessing/blinded\_v5.rs};
-the Markdown twin of this document is \doc{BLINDED\_V5\_LGI\_DESIGN.md}.
+The \textbf{gadgetize module} is a \textbf{5-stage} pipeline, each stage on $2n$
+wires (data $0..n$, band/junk $n..2n$):
+
+\begin{enumerate}
+\item \textbf{slice} --- a junk-guard zero-slice keyed on the band (dead at the
+  input port, where the band is 0);
+\item \textbf{seed the band wires} --- each band wire set to $x_i \land \lnot x_j$
+  from the honest inputs;
+\item \textbf{compute} --- realise the input circuit $A$ on the $2n$ wires so the
+  data half carries $A$'s output and the band is only read;
+\item \textbf{re-seed / re-randomise the band wires} --- band turnover;
+\item \textbf{re-slice} --- the closing junk-guard slice (fires at the output
+  port).
+\end{enumerate}
+
+One term to keep straight: the circuit $A$ that the gadgetizer computes is
+\textbf{not $C$ itself}. It is the \textbf{sliced sandwich of $C$} --- the output
+of a \emph{separate} \textbf{sandwich module} that wraps $C$ (with a random $D$,
+interleaved slice blocks, a floated column) into a $2n$-wire circuit with
+$A(x,0) = (\mathit{junk}, C(x))$. The sandwich \emph{generates} the circuit that
+the gadgetize module then computes and mixes; it is a different module and is not
+one of the five stages above.
+
+\textbf{Blinded-V5 is a drop-in replacement for stage 3 --- the compute.} Where
+the earlier compute stages (the drip \doc{route\_fire}, the product-share
+carriers) realise $A$ by \emph{routing} each operand into position and firing a
+gadget there, Blinded-V5 instead embeds $A$ \textbf{inside one enormous masking
+identity}: the compute's body is a cloud of long masking identities on the band,
+and $A$'s gates fire from \emph{within} the mask by a momentary, reversible
+unmasking of their operands. It takes $A$ and emits an equivalent $A'$ on the $2n$
+wires; the other four stages are unchanged. (V5 re-randomises the band
+\emph{internally} as part of its own masking hygiene --- \S2 --- which is distinct
+from the separate stage-4 re-seed.)
+
+Source: \doc{src/preprocessing/blinded\_v5.rs}. Driver:
+\doc{gen\_sandwich\_gadget ... blinded-v5}; pipeline:
+\doc{gss\_mix.sh -{}-gadgetization-mode blinded-v5}. The Markdown twin of this
+document is \doc{BLINDED\_V5\_LGI\_DESIGN.md}.
 
 \section{Why this design --- the rationale}
 
@@ -81,10 +110,9 @@ unmasking.} Each gate fires from inside the mask: its operands are momentarily a
 reversibly unmasked into a linear combination of band wires (never bare), it fires
 as an expansion over those masked wires, then re-masks.
 
-\paragraph{(f) Co-sample masking, band updates, and $A$-placement together.}
-Building them in one pass --- rather than a fixed scaffold threaded afterwards ---
-lets every $A$-gate be straddled by a real, rerand-protected \lgi{} opened exactly
-when the gate needs it (\S3), which makes the firing-hiding complete at no cost.
+That is the whole design: a long, entangled, self-updating masking cloud with $A$
+firing from inside it. Everything in \S2 is \emph{how} to realise (a)--(e) as a
+single correct circuit.
 
 \section{The construction}
 
@@ -98,41 +126,81 @@ $\g(w,r_1,r_2) \xor \g(w,r_2,r_1) = w \xor r_1 \xor r_2$ (\textsc{and} monomials
 not). Disjoint pairs, not a $K$-cycle (which would telescope to a bare operand);
 $K \ge 2$.
 
-\paragraph{Co-sampled forward pass.} The \lgi s, the band updates and $A$'s gates
-are emitted together. Each active wire $w$ gets $u_w+1$ \lgi s, $\le \doc{max\_open}$
-open at once --- the SAME masking budget as a fixed scaffold, so the same
-statistics, at no cost. Of $w$'s opens, $w_w$ are \textbf{STRADDLE} opens generated
-on demand as $A$'s gates on $w$ are placed, and the rest (\,$\mathrm{reads}_w+1$\,)
-are \textbf{FILLER} opens. $A$'s gates are placed in a data-hazard-valid order
-(a read after every earlier write of a wire, a write after every earlier read;
-same-target XOR writes commute, no WAW edge).
+\paragraph{Why one pass --- co-sampling.} The masks, the band updates, and $A$'s
+gates are \textbf{co-sampled}: produced together in a single forward pass, rather
+than laying a fixed masking scaffold first and threading $A$ through it afterwards.
+The reason is hidden firing (\S3): every $A$-gate must be straddled by a
+\emph{real}, rerand-protected masking identity opened at the exact instant the gate
+fires. Only a co-sampled pass can open that identity on demand, so the
+firing-hiding is complete while reusing the wire's existing mask budget --- at no
+size cost. (A fixed scaffold, filled in afterwards, starves at the tail and covers
+only 60--70\% of gates; \S3.)
 
-At each $A$-gate on active wire $c$: the \textbf{masked read} linearises each
-control (emit the reverse \g{} of every open mask so the wire carries
-$\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires; a
-fresh-pair top-up runs until $|\rho| \ge \doc{min\_mask}$, a \textbf{hard masking
-floor} --- never bare, and never thinly masked even in a rare draw where the open
-pairs cancel), realises
-$c \mathrel{\xor}= \mathit{comp} \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as
-$(a'\xor\rho_a)(b'\xor\rho_b)$ over only the masked controls and band wires
-(0/1/2 controls, all polarities), then de-linearises; and the \textbf{hidden
-firing} of \S3 splits the fire into two halves, \textbf{each independently shuffled}
-(the monomials all target $c$ and commute), and straddle-opens one of $c$'s \lgi{}
-opens between them.
+\paragraph{The algorithm.} A cheap setup, then a forward pass.
 
-\paragraph{Band re-randomisation} is woven through the same pass as \textbf{bursts}
-(\S1d): a plan of \doc{straddle\_slots} STRADDLE slots (auto $\approx m/(4K)$, at the
-safe side of a $\approx1024$ thinning knee) and \doc{rerand\_repair} REPAIR slots
-(default 0), shuffled together. Each slot targets one band wire $b$ with a burst of
-$F \approx 8\mathrm{K}$ updates. A STRADDLE slot first \textbf{closes} the masks
-reading $b$ (thins masking past the knee --- hence the slot budget); a REPAIR slot
-brackets the burst with each such mask's $b$-reading \g{} (old $b$ cancels, new $b$
-re-adds, so the mask stays open --- no thinning). The slot rate is
-\textbf{calibrated ahead} --- one slot every $\mathit{total\_steps}/\mathit{slots}$
-primitive steps --- so the last slot lands \emph{during} the pass with \textbf{no
-end-flush} (emitting rerands after the final $A$-gate would be pointless); the slot
-count is thus fixed but the total is variable within bounds. Being in the same pass,
-it protects the straddle opens automatically.
+\emph{Setup.}
+\begin{enumerate}
+\item \textbf{Mask budget.} Give each active wire $w$ exactly $u_w+1$ masking
+  identities, split into $w_w$ \textbf{straddle opens} (one per write to $w$,
+  opened \emph{on demand} at the gate that writes it --- for hidden firing) and
+  $\mathrm{reads}_w+1$ \textbf{filler opens} (opened between gates to keep $w$
+  masked while it is read). At most \doc{max\_open} are open on a wire at once.
+  This is the same budget a fixed scaffold would use, so the statistics are
+  unchanged.
+\item \textbf{Order.} Build the data-hazard DAG of $A$ (\doc{compute\_deps}): a
+  read is ordered after every earlier write of the wire, and a write after every
+  earlier read --- but same-target XOR writes commute, so there is \emph{no}
+  write-after-write edge. Any linear extension preserves $A$'s function; a Kahn
+  \textbf{ready queue} holds the gates whose predecessors are all placed.
+\item \textbf{Rerand plan.} A shuffled list of \doc{straddle\_slots} $+$
+  \doc{repair\_slots} band-update \emph{slots} (\S1d; auto \doc{straddle\_slots}
+  $\approx m/(4K)$, \doc{repair\_slots} $= 0$).
+\item \textbf{Rate.} Fire one rerand slot every
+  $\mathit{total\_steps}/\#\mathit{slots}$ primitive steps (a \emph{step} $=$ one
+  $A$-gate placement or one filler open; $\mathit{total\_steps} = m +
+  \Sigma\,\mathrm{filler}$), so the slots spread evenly and the last lands
+  \emph{during} the pass --- no end-flush (a surplus of requested slots over
+  $\mathit{total\_steps}$ warns rather than truncating silently).
+\end{enumerate}
+
+\emph{Forward pass} --- repeat until all $m$ gates are placed:
+\begin{enumerate}
+\item \textbf{Pop} a ready $A$-gate $g$ (target wire $c$).
+\item \textbf{Masked read.} For each operand wire, \emph{linearise} its
+  currently-open masks --- complete each open \g{} with its reverse so the wire
+  carries $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires
+  --- topping up with fresh disjoint pairs until $|\rho| \ge \doc{min\_mask}$ (a
+  \textbf{hard floor}: never bare, and never thinly masked even when the open pairs
+  happen to cancel). Remember the reverse gates as the \emph{undo}.
+\item \textbf{Fire from inside the mask.} Expand $c \mathrel{\xor}= \mathit{comp}
+  \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as $(a'\xor\rho_a)(b'\xor\rho_b)$ into a
+  batch of monomials over \textsc{only} the masked control wires and band wires ---
+  never bare $a$, $b$, or $a\xor b$ (0/1/2 controls and all polarities; the
+  0-control fire is $\lnot\mathit{comp}$).
+\item \textbf{Straddle (hidden firing, \S3).} Split the monomial batch into two
+  halves, shuffle each \textbf{independently} (they all target $c$ and commute),
+  emit the first half, \textbf{open a fresh \lgi{} on $c$ here} (one of its straddle
+  opens, generated on demand), then emit the second half. The mid-fire open makes
+  the module's net XOR on $c$ equal $\Delta \xor \text{secret-mask}$, not the bare
+  increment $\Delta$.
+\item \textbf{De-linearise} --- emit the undo gates, restoring the operands' masks.
+\item \textbf{Maybe rerand} --- if the calibrated rate says so, emit one
+  band-update slot (below).
+\item \textbf{Release \& fill} --- decrement the in-degree of $g$'s dependents,
+  moving any that reach zero into the ready queue; then open a few \textbf{filler}
+  \lgi s on wires chosen by remaining filler budget.
+\end{enumerate}
+
+\emph{Finish.} Drain any remaining filler opens, then close every still-open
+\lgi{} so the data wires end holding $A$'s true output.
+
+\paragraph{The rerand slot} (step 6) is a \S1d burst: one band wire $b$,
+$F \approx 8\mathrm{K}$ updates. A \textsc{straddle} slot first \textbf{closes} the
+masks reading $b$ (this is what thins masking past the $\approx1024$ knee --- hence
+keeping \doc{straddle\_slots} at that budget); a \textsc{repair} slot brackets the
+burst with each such mask's $b$-reading \g{} (old $b$ cancels, new $b$ re-adds, so
+the mask stays open --- no thinning). Running in the same pass, the band updates
+protect the straddle opens automatically.
 
 \paragraph{Correctness} is verified exhaustively over all $2^n$ inputs $\times$
 many band settings for $n \le 6$, $K \in 2..5$, all \doc{max\_open} and both
