@@ -28,6 +28,35 @@ Run the supported pipeline with `cargo run --release -- gss`; the command reads
 the editable marked block in `docs/GSS_MIX.md` and delegates stage execution to
 the script.
 
+### Compute stage: the LGI (blinded-V5) alternative
+
+The default stage-2 compute is the drip `route_fire` gadgetizer. **Blinded-V5**
+([`preprocessing/blinded_v5.rs`](preprocessing/blinded_v5.rs)) is a drop-in
+alternative for *only the compute part*: it takes the `n`-wire sliced sandwich
+`A` and emits an equivalent `2n`-wire circuit whose body is one very long
+**locally-geodesic-identity (LGI)** with `A` embedded inside it. The rest of the
+5-step gadgetization (junk-guard slice guards as modules 1 and 5, band seed as
+module 2) is unchanged.
+
+The core ideas: long masking identities are the only thing that moves the state
+substantially (HD/affine heatmaps); the only long identity we know that actually
+moves the state is the commuting run of a **single-active-wire** identity;
+identities on different active wires are **entangled** by sharing one **band** of
+control wires (they still commute because they target data and read band); random
+**control-wire updates** from live data then re-randomise the band and block
+naive commutation-back (STRADDLE closes straddling masks; REPAIR re-derives them
+across the update with no thinning); and `A` is embedded via a **hidden
+unmasking** of control wires at each gate — the operand is spread over band wires
+(never bare), the gate fires as an expansion over the masked wires, then re-masks.
+
+Production preset: `K=2` (band wires per LGI; affine/deg-2-neutral across K, so
+smallest wins — read cost is quadratic in `max_open·K`), `max_open=3`, rerand
+`1000` straddle `+ 3000` repair. Drive it through the pipeline with
+`gss_mix.sh --gadgetization-mode blinded-v5 --bv5-k K`, or build the gadget alone
+with `gen_sandwich_gadget … blinded-v5` / the `blinded_v5_gadgetize` bin. Full
+rationale, parameters, and measurements:
+[`docs/BLINDED_V5_LGI_DESIGN.md`](../docs/BLINDED_V5_LGI_DESIGN.md).
+
 ## Folder responsibilities
 
 | folder | responsibility |

@@ -8,8 +8,9 @@
 #        (gen_sandwich_gadget; |C| = |D| = round(n·(log2 n)^2), the library
 #        convention; the production preset — mask plan [2,2,2,3] + Gray fold —
 #        is the tool default)
-#   3    fmix phase A: --gss --phase-a --profile 3,(3+HOLD),(+20),R1,R2
-#        with R2 = 1 + (R1-1)/2
+#   3    fmix phase A: --gss --phase-a --profile 3,(3+HOLD),(3+HOLD),R1,R1
+#        (no compression leg since 2026-08-17: it only simplified the
+#        circuit — it made sense before phase B existed, not anymore)
 #   4    fmix phase B part 1: the split stage, current defaults, to exhaustion
 #   5    fmix phase B part 2: the crossing walk (resumes the split state;
 #        numerical defaults reflect the X-panel, but deliverable-promotion
@@ -34,10 +35,13 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
                  share an input; label such outputs calibration-only.
   --mcd M        override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
   --gadgetization-mode MODE
-                  stage-2 representation: product-2223, nonlinear193, or
-                  nonlinear291 [product-2223; legacy alias: 2223]
+                  stage-2 representation: product-2223, nonlinear193,
+                  nonlinear291, or blinded-v5 (LGI compute) [product-2223;
+                  legacy alias: 2223]
+  --bv5-k K      blinded-v5 only: band wires per LGI (LGI length lever).
+                 Exported as BV5_K to gen_sandwich_gadget [gen default 2]
   --expand R     phase-A max expansion factor R1          [2]
-  --hold E       phase-A hold duration in effs            [30]
+  --hold E       phase-A hold duration in effs            [27 -> profile 3,30,30,2,2]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
   --xb B         stage-5 width-damper base                [3   — X-panel calibrated]
   --xc C         stage-5 width-damper threshold           [1   — X-panel calibrated]
@@ -48,10 +52,13 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
   --force-from K rebuild from stage K even if artifacts exist
 env:
   FROZEN_DB_DIR       required for stage 3 (the frozen replacement store)
-  FROZEN_CURATED_DIR  recommended for stage 3 (curated-first cascade)
+  FROZEN_CURATED_DIR  recommended for stage 3 (curated-first cascade).
+                      Standard store: ~/frozen_curated_m1_m11_native (the FULL
+                      untruncated curated DB, NATIVE convention; band stores
+                      are opt-in by explicit path only)
   FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
                       only for a historical pre-2ed0222a curated store;
-                      leave unset for current native stores
+                      NEVER with the standard native store above
   PROD_PRESET         product-2223-only preset: production (default), no-gray-phase-a,
                       micro-gray, sentinel-gray, no-gray-post-exact,
                       no-gray-post-native, five-carrier,
@@ -66,8 +73,9 @@ EOF
   exit "${1:-1}"
 }
 
-N=""; RUN=""; SEED=""; EXPAND=2; HOLD=30; MCD=0
+N=""; RUN=""; SEED=""; EXPAND=2; HOLD=27; MCD=0
 GADGETIZATION_MODE=product-2223
+BV5_K_ARG=""
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -78,6 +86,7 @@ while [ $# -gt 0 ]; do
     -s) SEED=$2; shift 2 ;;
     --mcd) MCD=$2; shift 2 ;;
     --gadgetization-mode) GADGETIZATION_MODE=$2; shift 2 ;;
+    --bv5-k) BV5_K_ARG=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -95,13 +104,19 @@ case "$GADGETIZATION_MODE" in
   product-2223) ;;
   2223) GADGETIZATION_MODE=product-2223 ;;
   nonlinear193|nonlinear291) ;;
+  blinded-v5|blinded_v5) GADGETIZATION_MODE=blinded-v5 ;;
   *)
-    echo "FATAL: --gadgetization-mode must be product-2223, nonlinear193, or nonlinear291 (2223 is a compatibility alias)" >&2
+    echo "FATAL: --gadgetization-mode must be product-2223, nonlinear193, nonlinear291, or blinded-v5 (2223 is a compatibility alias)" >&2
     exit 2
     ;;
 esac
+[ -n "$BV5_K_ARG" ] && [ "$GADGETIZATION_MODE" != blinded-v5 ] && {
+  echo "FATAL: --bv5-k is only valid with --gadgetization-mode blinded-v5" >&2; exit 2; }
 if [ "$GADGETIZATION_MODE" != product-2223 ]; then
-  mapfile -t product_override_names < <(compgen -A variable PROD_ || true)
+  product_override_names=()
+  while IFS= read -r _pvar; do
+    [ -n "$_pvar" ] && product_override_names+=("$_pvar")
+  done < <(compgen -A variable PROD_ || true)
   [ "${#product_override_names[@]}" -eq 0 ] || {
     echo "FATAL: all PROD_* controls must be unset outside --gadgetization-mode product-2223: ${product_override_names[*]}" >&2
     exit 2
@@ -204,6 +219,11 @@ FINAL=$RUN/final.mpmct1
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   if [ "$GADGETIZATION_MODE" = product-2223 ]; then
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
+  elif [ "$GADGETIZATION_MODE" = blinded-v5 ]; then
+    # blinded-v5 (LGI compute) reads its knobs from env; K is the LGI-length
+    # lever. Rerand stays at the production preset (1000 straddle + 3000 repair).
+    [ -n "$BV5_K_ARG" ] && export BV5_K="$BV5_K_ARG"
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, rerand=1000straddle+3000repair)"
   else
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
   fi
@@ -227,9 +247,13 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$PHASEA" ]; then
   read -r PROFILE A_MOVES <<< "$(python3 -I - "$EXPAND" "$HOLD" "$G_IN" <<'EOF'
 import sys
 r1, hold, g = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
-n0, comp = 3.0, 20.0
-n1 = n0 + hold; n2 = n1 + comp
-r2 = 1.0 + (r1 - 1.0) / 2.0
+# No compression leg (2026-08-17): it only simplified the circuit. It made
+# sense when phase A was the whole pipeline; with phase B following, the run
+# ends at the held size (N2 = N1, R2 = R1 — a zero-length leg is valid,
+# prof_target never enters the interpolation branch).
+n0 = 3.0
+n1 = n0 + hold; n2 = n1
+r2 = r1
 # move ceiling: effs x peak size x margin
 print(f"{n0:g},{n1:g},{n2:g},{r1:g},{r2:g}", round(n2 * r1 * g * 1.3))
 EOF

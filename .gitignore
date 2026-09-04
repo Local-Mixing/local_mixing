@@ -19,6 +19,7 @@ sgc
 scripts
 *.md
 !docs/FULL_CURATED_DB.md
+!docs/BLINDED_V5_LGI_DESIGN.md
 !CODE_LAYOUT.md
 !src/README.md
 !benchmarks/README.md
