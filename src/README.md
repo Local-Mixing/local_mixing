@@ -49,13 +49,18 @@ across the update with no thinning); and `A` is embedded via a **hidden
 unmasking** of control wires at each gate — the operand is spread over band wires
 (never bare), the gate fires as an expansion over the masked wires, then re-masks.
 The LGI masks, the band updates and the A-gate placements are **co-sampled** in
-one pass, so every gate's firing is hidden — its fire straddles one of its active
-wire's LGI opens, making the module's net XOR `Δ ⊕ secret-mask` rather than the
-bare gate increment — at no size cost, reusing the wire's existing LGI budget.
+one pass, so every gate's firing is hidden — its fire (split into two
+independently-shuffled halves) straddles one of its active wire's LGI opens,
+making the module's net XOR `Δ ⊕ secret-mask` rather than the bare gate increment
+— at no size cost, reusing the wire's existing LGI budget. Each operand read is
+held to a **masking floor** (`|ρ| ≥ min_mask`, auto = `max_open`), never bare and
+never thinly masked. Band re-randomisation is emitted in **bursts** (one slot =
+`F ≈ 8K` gates on a single band wire), rate-calibrated with no end-flush, so the
+band mixes hard in few slots and carries a data-wire-like activity signature.
 
 Production preset: `K=2` (band wires per LGI; affine/deg-2-neutral across K, so
 smallest wins — read cost is quadratic in `max_open·K`), `max_open=3`, rerand
-`1000` straddle `+ 3000` repair. Drive it through the pipeline with
+auto (`≈ m/4K` straddle slots × `F=8K`, no repair). Drive it through the pipeline with
 `gss_mix.sh --gadgetization-mode blinded-v5 --bv5-k K`, or build the gadget alone
 with `gen_sandwich_gadget … blinded-v5` / the `blinded_v5_gadgetize` bin. Full
 rationale, parameters, and measurements:

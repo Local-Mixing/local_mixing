@@ -403,8 +403,8 @@ fn main() {
         // drives it. active_wires = n: the sandwich's honest input is the zero
         // slice (x on the low n wires, zeros on the high n), so seed the band
         // only from the low n or ~half the band collapses to 0 on the usage.
-        // Sweep overrides (testing): BV5_K, BV5_RERAND (straddle), BV5_REPAIR
-        // (repair), BV5_MAX_OPEN.
+        // Sweep overrides (testing): BV5_K, BV5_RERAND (straddle slots), BV5_REPAIR
+        // (repair slots), BV5_BURST (F gates/slot), BV5_MAX_OPEN.
         let envu = |k: &str, d: usize| {
             std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
         };
@@ -414,7 +414,9 @@ fn main() {
             k: envu("BV5_K", base.k),
             rerand_level: envu("BV5_RERAND", base.rerand_level),
             rerand_repair: envu("BV5_REPAIR", base.rerand_repair),
+            rerand_burst: envu("BV5_BURST", base.rerand_burst),
             max_open: envu("BV5_MAX_OPEN", base.max_open),
+            min_mask: envu("BV5_MIN_MASK", base.min_mask),
             extra_lgis: envu("BV5_EXTRA_LGIS", base.extra_lgis),
             ..base
         };

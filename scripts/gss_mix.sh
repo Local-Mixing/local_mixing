@@ -223,7 +223,7 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
     # blinded-v5 (LGI compute) reads its knobs from env; K is the LGI-length
     # lever. Rerand stays at the production preset (1000 straddle + 3000 repair).
     [ -n "$BV5_K_ARG" ] && export BV5_K="$BV5_K_ARG"
-    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, rerand=1000straddle+3000repair)"
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
   else
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
   fi

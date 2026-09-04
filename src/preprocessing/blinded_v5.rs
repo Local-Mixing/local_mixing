@@ -57,17 +57,28 @@ pub struct BlindedV5Params {
     pub r: usize,
     /// Deterministic seed.
     pub seed: u64,
-    /// STRADDLE-only band-refresh dose (total; split half data-control, half
-    /// band-only). Each such rerand CLOSES the masks straddling it, so heavy
-    /// doses thin the masking (knee ~1024). `0` = off.
+    /// STRADDLE rerand SLOTS. Each slot is a BURST of `rerand_burst` band-refresh
+    /// gates on ONE band wire; a straddle slot CLOSES the masks reading it once,
+    /// so the SLOT count is what thins the masking (knee ~1024). `0` = auto =
+    /// `m/(4k)` (~875 for the n=128 sandwich, just under the knee).
     pub rerand_level: usize,
-    /// REPAIR band-refresh dose (total; split half data-control, half band-only).
-    /// A repair rerand re-derives every straddling mask across the update (old-b
-    /// cancels, new-b re-adds), so masks STAY open -- no thinning. Stack these on
-    /// top of the straddle dose for extra band turnover. `0` = off.
+    /// REPAIR rerand SLOTS (bursts). A repair slot re-derives every mask reading
+    /// the band wire once around the whole burst (old-b cancels, new-b re-adds),
+    /// so masks stay open -- no thinning. `0` = off.
     pub rerand_repair: usize,
+    /// Rerand BURST size F -- band-refresh gates per slot, all on the same band
+    /// wire with independently-random data-or-band controls (so the band shows a
+    /// data-wire-like activity burst). `0` = auto = `8k`; slots*F ~ 2m gates.
+    pub rerand_burst: usize,
     /// Soft cap on simultaneously-open LGIs per wire (RC: `<= 3`).
     pub max_open: usize,
+    /// HARD floor on `|rho|` -- the number of band wires masking each operand at
+    /// its read. The read tops up fresh disjoint g57 pairs until `|rho| >=
+    /// min_mask`, so even a low-probability draw where the open masks cancel down
+    /// can never expose an operand under fewer than `min_mask` masking wires. `0`
+    /// = auto = `max_open` (mean |rho| ~6 at max_open=3, so the floor rarely adds
+    /// gates). Must stay `>= 1` (a 0 floor would permit a bare read).
+    pub min_mask: usize,
     /// Seed the band ONLY from data wires `0..active_wires`. `0` = all `np`.
     pub active_wires: usize,
     /// Extra LGIs per wire beyond `u_w+1`. Adds straddle SLOTS for the
@@ -79,18 +90,20 @@ pub struct BlindedV5Params {
 impl BlindedV5Params {
     /// Settled preset: K=2 (band wires per LGI -> 1 disjoint pair; affine- and
     /// deg-2-neutral across K, so smallest is best), R=n (auto), max_open=3.
-    /// Rerand: 1K STRADDLE (at the safe knee -- straddle-only thins masking past
-    /// ~1024) topped off with 3K REPAIR (repair doesn't thin, so it adds band
-    /// turnover cheaply), each split half data-control / half band-only (RC,
-    /// 2026-09-03). `extra_lgis` adds straddle slots for the hidden-firing fix.
+    /// Rerand: auto STRADDLE bursts -- `m/(4k)` slots (~875, under the ~1024 knee)
+    /// x `8k` gates each ~= 2m band-refresh gates, no repair (RC, 2026-09-04);
+    /// bursts concentrate the band mixing in few slots (less LGI interference) and
+    /// give the band a data-wire-like activity signature.
     pub fn production(seed: u64) -> Self {
         Self {
             k: 2,
             r: 0,
             seed,
-            rerand_level: 1000,
-            rerand_repair: 3000,
+            rerand_level: 0,
+            rerand_repair: 0,
+            rerand_burst: 0,
             max_open: 3,
+            min_mask: 0,
             active_wires: 0,
             extra_lgis: 0,
         }
@@ -140,29 +153,37 @@ fn b_g57(w: u16, cy: &[u16], b: u16) -> Option<XGate> {
     None
 }
 
-/// A band-refresh update `b ^= lit & lit`. `data_ctrl`: one control is a LIVE
-/// data wire (`0..active`, so it carries moving data, not a dead 0); otherwise
-/// both controls are band wires. `active` = the low honest half in the sandwich.
-fn rerand_gate(b: u16, data_ctrl: bool, active: usize, band: &[u16], rng: &mut StdRng) -> XGate {
-    let (c1, c2) = if data_ctrl {
-        let d = rng.random_range(0..active) as u16;
-        let mut c = band[rng.random_range(0..band.len())];
-        while c == b {
-            c = band[rng.random_range(0..band.len())];
+/// One band-refresh gate `b ^= lit(c1) & lit(c2)` for a rerand BURST: each
+/// control is independently a LIVE data wire (`0..active`) or a band wire, so a
+/// burst spans all of data-data / band-band / data-band -- making the band wire
+/// look like a data wire (a burst of activity with mixed controls). `active` =
+/// the low honest half in the sandwich.
+fn burst_gate(b: u16, active: usize, band: &[u16], rng: &mut StdRng) -> XGate {
+    let pick = |rng: &mut StdRng| -> u16 {
+        if active > 0 && rng.random_bool(0.5) {
+            rng.random_range(0..active) as u16
+        } else {
+            band[rng.random_range(0..band.len())]
         }
-        (d, c)
-    } else {
-        let mut a1 = band[rng.random_range(0..band.len())];
-        while a1 == b {
-            a1 = band[rng.random_range(0..band.len())];
-        }
-        let mut a2 = band[rng.random_range(0..band.len())];
-        while a2 == b || a2 == a1 {
-            a2 = band[rng.random_range(0..band.len())];
-        }
-        (a1, a2)
     };
+    let mut c1 = pick(rng);
+    while c1 == b {
+        c1 = pick(rng);
+    }
+    let mut c2 = pick(rng);
+    while c2 == b || c2 == c1 {
+        c2 = pick(rng);
+    }
     conj(b, &[(c1, rng.random_bool(0.5)), (c2, rng.random_bool(0.5))])
+}
+
+/// In-place Fisher-Yates shuffle (the masked-fire monomials commute, so each
+/// half of a fire batch can be emitted in an independently random order).
+fn shuffle_slice(s: &mut [XGate], rng: &mut StdRng) {
+    for i in (1..s.len()).rev() {
+        let j = rng.random_range(0..=i);
+        s.swap(i, j);
+    }
 }
 
 fn conj(t: u16, lits: &[(u16, bool)]) -> XGate {
@@ -372,6 +393,14 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..total as u16).collect();
     let max_open = p.max_open.max(1);
+    // Hard floor on masking wires per read (never below 1 = never bare). `|ρ|`
+    // toggles in steps of 2 (disjoint pairs) so it is structurally EVEN, and the
+    // band supplies at most `r` distinct wires: clamp the floor to the largest
+    // even value `≤ r` so it is always reachable (`r ≥ k ≥ 2` ⇒ cap ≥ 2). At
+    // production `r = n` (=128) this is a no-op.
+    let min_mask = (if p.min_mask == 0 { max_open } else { p.min_mask })
+        .max(1)
+        .min(r - (r % 2));
     // Data controls for rerand draw from live-data wires only (0..active).
     let active = if p.active_wires == 0 || p.active_wires > np {
         np
@@ -417,17 +446,25 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let mut ready: std::collections::VecDeque<usize> =
         (0..m).filter(|&i| indeg[i] == 0).collect();
 
-    // rerand plan: rerand_level STRADDLE + rerand_repair REPAIR, each half
-    // data-control / half band-only; shuffled, spread through the build.
-    let mut rplan: Vec<(bool, bool)> = Vec::new();
-    for &(count, is_repair) in &[(p.rerand_level, false), (p.rerand_repair, true)] {
-        for i in 0..count {
-            rplan.push((is_repair, i % 2 == 0));
-        }
-    }
-    for i in (1..rplan.len()).rev() {
+    // rerand SLOTS (bursts): `straddle_slots` STRADDLE (auto = m/(4k), within the
+    // ~1024 thinning knee) + `rerand_repair` REPAIR (default off). Each slot is a
+    // BURST of `burst` (=F=8k) band-refresh gates on ONE band wire, so total gates
+    // ~ slots*F ~ 2m and the band shows a data-wire-like activity burst; straddle
+    // closes the masks reading b once per slot, repair re-derives them once around
+    // the whole burst. Shuffled, spread through the build.
+    let burst = if p.rerand_burst > 0 { p.rerand_burst } else { 8 * k };
+    let straddle_slots = if p.rerand_level > 0 {
+        p.rerand_level
+    } else {
+        m / (4 * k)
+    };
+    let repair_slots = p.rerand_repair;
+    let mut slot_plan: Vec<bool> = Vec::new(); // is_repair per slot
+    slot_plan.extend(std::iter::repeat(false).take(straddle_slots));
+    slot_plan.extend(std::iter::repeat(true).take(repair_slots));
+    for i in (1..slot_plan.len()).rev() {
         let j = rng.random_range(0..=i);
-        rplan.swap(i, j);
+        slot_plan.swap(i, j);
     }
 
     let mut open_cy: Vec<Vec<Vec<u16>>> = vec![Vec::new(); np];
@@ -436,64 +473,69 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let mut rerand_done = 0usize;
     let diag = std::env::var("BV5_DIAG").is_ok();
     let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
+    let mut rho_min = usize::MAX;
 
-    let total_opens: usize =
-        straddles_left.iter().sum::<usize>() + filler_left.iter().sum::<usize>();
-    let step_target = (2 * total_opens).max(1);
-    let mut ri = 0usize;
+    // Calibrate the rate AHEAD: one slot every `rgap` primitive steps (A-gate
+    // placements + filler opens), so the last slot lands DURING the pass -- no
+    // end-flush (emitting rerands after the last A-gate is pointless).
+    let total_steps = m + filler_left.iter().sum::<usize>();
+    let mut si = 0usize;
     let mut steps = 0usize;
-    let rgap = if rplan.is_empty() {
+    let rgap = if slot_plan.is_empty() {
         usize::MAX
     } else {
-        (step_target / rplan.len()).max(1)
+        (total_steps / slot_plan.len()).max(1)
     };
     let fillers_per_gate = (filler_left.iter().sum::<usize>() / m.max(1)).max(1);
 
-    macro_rules! emit_one_rerand {
+    macro_rules! emit_slot {
         () => {{
-            if ri < rplan.len() {
-                let (is_repair, data_ctrl) = rplan[ri];
-                ri += 1;
-                let b = band[rng.random_range(0..band.len())];
-                if is_repair {
-                    for w in 0..np {
-                        for cy in &open_cy[w] {
-                            if let Some(gg) = b_g57(w as u16, cy, b) {
-                                out.push(gg);
-                            }
+            let is_repair = slot_plan[si];
+            si += 1;
+            let b = band[rng.random_range(0..band.len())];
+            if is_repair {
+                for w in 0..np {
+                    for cy in &open_cy[w] {
+                        if let Some(gg) = b_g57(w as u16, cy, b) {
+                            out.push(gg);
                         }
                     }
-                    out.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
-                    for w in 0..np {
-                        for cy in &open_cy[w] {
-                            if let Some(gg) = b_g57(w as u16, cy, b) {
-                                out.push(gg);
-                            }
-                        }
-                    }
-                } else {
-                    for w in 0..np {
-                        let mut idx = 0;
-                        while idx < open_cy[w].len() {
-                            if open_cy[w][idx].iter().any(|&x| x == b) {
-                                let cy = open_cy[w].remove(idx);
-                                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
-                            } else {
-                                idx += 1;
-                            }
-                        }
-                    }
-                    out.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
                 }
-                rerand_done += 1;
+                for _ in 0..burst {
+                    out.push(burst_gate(b, active, &band, &mut rng));
+                    rerand_done += 1;
+                }
+                for w in 0..np {
+                    for cy in &open_cy[w] {
+                        if let Some(gg) = b_g57(w as u16, cy, b) {
+                            out.push(gg);
+                        }
+                    }
+                }
+            } else {
+                for w in 0..np {
+                    let mut idx = 0;
+                    while idx < open_cy[w].len() {
+                        if open_cy[w][idx].iter().any(|&x| x == b) {
+                            let cy = open_cy[w].remove(idx);
+                            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+                        } else {
+                            idx += 1;
+                        }
+                    }
+                }
+                for _ in 0..burst {
+                    out.push(burst_gate(b, active, &band, &mut rng));
+                    rerand_done += 1;
+                }
             }
         }};
     }
     macro_rules! maybe_rerand {
         () => {{
             steps += 1;
-            if steps % rgap == 0 {
-                emit_one_rerand!();
+            if si < slot_plan.len() && steps % rgap == 0 {
+                emit_slot!();
             }
         }};
     }
@@ -527,8 +569,12 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             for gg in added.into_iter().rev() {
                 undo.push(gg);
             }
+            // Top up fresh disjoint g57 pairs until |rho| >= min_mask (each pair
+            // toggles two band wires in rho). First bring the open count up to
+            // max_open, then keep adding single pairs until the masking floor is
+            // met -- so no operand is ever read under fewer than min_mask wires.
             let mut extra = max_open.saturating_sub(netopen.len());
-            if extra == 0 && rho.is_empty() {
+            if extra == 0 && rho.len() < min_mask {
                 extra = 1;
             }
             let mut guard = 0;
@@ -552,17 +598,43 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                     }
                 }
                 extra = 0;
-                if !rho.is_empty() || guard > 3 {
+                if rho.len() >= min_mask || guard > 40 {
                     break;
                 }
                 extra = 1;
                 guard += 1;
+            }
+            // Deterministic floor finisher: the random top-up above usually meets
+            // the floor, but `|ρ|` is structurally even and a random walk can
+            // stall below the target (odd `min_mask`, or a `min_mask` near `r`).
+            // If it fell short, add guaranteed-FRESH disjoint pairs (both wires
+            // not currently in `ρ`) so `|ρ|` provably grows by 2 each step until
+            // `≥ min_mask` — making the floor a real, fail-closed guarantee. It is
+            // a no-op at production params (the loop already reaches `|ρ| ≥ 4`),
+            // so the production circuit is unchanged; it fires only in the
+            // degenerate/misconfig regime the clamp on `min_mask` keeps feasible.
+            while rho.len() < min_mask {
+                let mut r1 = band[rng.random_range(0..band.len())];
+                while rho.contains(&r1) {
+                    r1 = band[rng.random_range(0..band.len())];
+                }
+                let mut r2 = band[rng.random_range(0..band.len())];
+                while r2 == r1 || rho.contains(&r2) {
+                    r2 = band[rng.random_range(0..band.len())];
+                }
+                out.push(g57(w, r1, r2));
+                out.push(g57(w, r2, r1));
+                undo.push(g57(w, r2, r1));
+                undo.push(g57(w, r1, r2));
+                rho.push(r1);
+                rho.push(r2);
             }
             if diag {
                 n_reads += 1;
                 if rho.is_empty() {
                     n_bare += 1;
                 }
+                rho_min = rho_min.min(rho.len());
                 rho_sum += rho.len();
             }
             ctrls.push((w, pol, rho));
@@ -573,7 +645,11 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let cy = open_cy[c].remove(0);
             emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
         }
+        // straddle: fire-part-1, OPEN a fresh LGI on c (mid-fire), fire-part-2 --
+        // each half emitted in an independently random order (monomials commute).
         let cut = ((fires.len() + 1) / 2).min(fires.len());
+        shuffle_slice(&mut fires[..cut], &mut rng);
+        shuffle_slice(&mut fires[cut..], &mut rng);
         out.extend_from_slice(&fires[..cut]);
         let cy = sample_k(&band, k, &mut rng);
         emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
@@ -607,8 +683,21 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             None => break,
         }
     }
-    while ri < rplan.len() {
-        emit_one_rerand!();
+    // No end-flush: the rate above calibrates the slots to land during the pass,
+    // so `si` reaches `slot_plan.len()` whenever the plan fits the step budget
+    // (`slots ≤ total_steps`, always true for the auto `m/(4K)` plan). If an
+    // explicit over-large `rerand_level`/`rerand_repair` requested more slots than
+    // there are placement steps, `rgap` floors to 1 and the surplus cannot land;
+    // warn rather than truncate the band mixing silently (RC: no silent caps).
+    if si < slot_plan.len() {
+        eprintln!(
+            "[bv5] WARN: {} of {} rerand slots undelivered (requested slots > {} \
+             placement steps); band under-mixed — lower rerand_level/rerand_repair \
+             or raise the circuit size",
+            slot_plan.len() - si,
+            slot_plan.len(),
+            total_steps
+        );
     }
     for w in 0..np {
         while let Some(cy) = open_cy[w].pop() {
@@ -619,8 +708,9 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     if diag {
         eprintln!(
             "[bv5-diag] A-gates={m} straddled(firing hidden)={m} unplaced=0  control reads={n_reads}  \
-             BARE (rho empty)={n_bare} ({:.3}%)  mean |rho|={:.2}",
+             BARE (rho empty)={n_bare} ({:.3}%)  min |rho|={} (floor {min_mask})  mean |rho|={:.2}",
             100.0 * n_bare as f64 / n_reads.max(1) as f64,
+            if n_reads == 0 { 0 } else { rho_min },
             rho_sum as f64 / n_reads.max(1) as f64
         );
     }

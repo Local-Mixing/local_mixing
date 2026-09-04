@@ -62,11 +62,19 @@ control wires --- the band.} Every identity targets a data wire and reads only t
 band ($n..2n$), so identities on different active wires also commute; a band wire
 participates in the masks of many data wires at once.
 
-\paragraph{(d) Add random updates of the control wires from the active wires.}
-Band updates (half live-data-controlled $b \mathrel{\xor}= \mathit{data} \land
-\mathit{aux}$, half band-only) \textbf{re-randomise} the controls and \textbf{break
-naive commutation-back}, without ruining correctness (each identity is closed
-before the update or re-derived across it).
+\paragraph{(d) Add random updates of the control wires from the active wires ---
+in bursts.} Band updates \textbf{re-randomise} the controls (fresh band entropy
+throughout the run, not just at the seed) and \textbf{break naive commutation-back}
+(once a band wire is updated mid-run, the identities reading it before and after no
+longer commute past it), without ruining correctness (each straddling identity is
+closed before the update or re-derived across it). The updates are emitted in
+\textbf{bursts}: one \emph{slot} is $F \approx 8\mathrm{K}$ gates all targeting a
+single band wire $b$, each control drawn independently as a live-data or a band wire
+(so a burst spans $b \mathrel{\xor}= \mathit{data} \land \mathit{aux}$, $b
+\mathrel{\xor}= \mathit{aux} \land \mathit{aux}$, and $b \mathrel{\xor}= \mathit{data}
+\land \mathit{data}$). Bursting \textbf{concentrates} the band mixing into few slots
+(so fewer straddle-closures interfere with the \lgi s) and gives each band wire a
+\textbf{data-wire-like burst-of-activity signature}.
 
 \paragraph{(e) Embed $A$ inside one circuit-spanning identity via hidden
 unmasking.} Each gate fires from inside the mask: its operands are momentarily and
@@ -102,17 +110,29 @@ same-target XOR writes commute, no WAW edge).
 At each $A$-gate on active wire $c$: the \textbf{masked read} linearises each
 control (emit the reverse \g{} of every open mask so the wire carries
 $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires; a
-fresh-pair top-up keeps $\rho$ non-empty $\Rightarrow$ no bare read), realises
+fresh-pair top-up runs until $|\rho| \ge \doc{min\_mask}$, a \textbf{hard masking
+floor} --- never bare, and never thinly masked even in a rare draw where the open
+pairs cancel), realises
 $c \mathrel{\xor}= \mathit{comp} \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as
 $(a'\xor\rho_a)(b'\xor\rho_b)$ over only the masked controls and band wires
 (0/1/2 controls, all polarities), then de-linearises; and the \textbf{hidden
-firing} of \S3 straddles one of $c$'s \lgi{} opens.
+firing} of \S3 splits the fire into two halves, \textbf{each independently shuffled}
+(the monomials all target $c$ and commute), and straddle-opens one of $c$'s \lgi{}
+opens between them.
 
-\paragraph{Band re-randomisation} is woven through the same pass: \doc{rerand\_level}
-STRADDLE updates (close the masks reading the updated band wire first --- thins
-masking past a $\approx1024$ knee) and \doc{rerand\_repair} REPAIR updates
-(re-derive each such mask across the update so it stays open --- no thinning);
-being in the same pass, it protects the straddle opens automatically.
+\paragraph{Band re-randomisation} is woven through the same pass as \textbf{bursts}
+(\S1d): a plan of \doc{straddle\_slots} STRADDLE slots (auto $\approx m/(4K)$, at the
+safe side of a $\approx1024$ thinning knee) and \doc{rerand\_repair} REPAIR slots
+(default 0), shuffled together. Each slot targets one band wire $b$ with a burst of
+$F \approx 8\mathrm{K}$ updates. A STRADDLE slot first \textbf{closes} the masks
+reading $b$ (thins masking past the knee --- hence the slot budget); a REPAIR slot
+brackets the burst with each such mask's $b$-reading \g{} (old $b$ cancels, new $b$
+re-adds, so the mask stays open --- no thinning). The slot rate is
+\textbf{calibrated ahead} --- one slot every $\mathit{total\_steps}/\mathit{slots}$
+primitive steps --- so the last slot lands \emph{during} the pass with \textbf{no
+end-flush} (emitting rerands after the final $A$-gate would be pointless); the slot
+count is thus fixed but the total is variable within bounds. Being in the same pass,
+it protects the straddle opens automatically.
 
 \paragraph{Correctness} is verified exhaustively over all $2^n$ inputs $\times$
 many band settings for $n \le 6$, $K \in 2..5$, all \doc{max\_open} and both
@@ -142,7 +162,7 @@ injected firing mask (100\% but +43\% size), straddling fixed-scaffold slots
 \section{Parameters and why}
 
 \begin{table}[H]\centering\small
-\begin{tabular}{@{}lcL{3.9cm}L{6.2cm}@{}}
+\begin{tabular}{@{}lcL{3.4cm}L{5.0cm}@{}}
 \toprule
 knob & prod. & meaning & why this value \\
 \midrule
@@ -152,15 +172,29 @@ $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
   $\sim$linear, read cost quadratic in $|\rho|$, so large $K$ explodes. Odd $K$
   wastes a wire. \\
 \addlinespace
-\doc{max\_open} & \textbf{3} & rolling cap on open \lgi s per wire; read-mask
-  width floor & wider $\rho$ = more local hiding, read cost quadratic; 3 is the
-  knee. \\
+\doc{max\_open} & \textbf{3} & rolling cap on simultaneously-open \lgi s per wire
+  & wider $\rho$ = more local hiding, but read cost is quadratic in $|\rho|$; 3 is
+  the knee. \\
 \addlinespace
-\doc{rerand\_level} & \textbf{1000} & \textsc{straddle} band updates & at the safe
-  side of the $\approx1024$ thinning knee. \\
+\doc{min\_mask} & \textbf{auto\,$=\doc{max\_open}=3$} & \textbf{hard floor} on
+  $|\rho|$ (masking wires) per operand read & guarantees no operand is ever read
+  under fewer than 3 masking wires, even in a rare draw where the open pairs cancel
+  (worst read $|\rho|$ rises $2\to4$; mean $|\rho|\approx5.9$ unchanged; +0.2\%
+  gates). \\
 \addlinespace
-\doc{rerand\_repair} & \textbf{3000} & \textsc{repair} band updates (no thinning)
-  & band turnover on top of straddle at no masking cost. \\
+\doc{rerand\_level} & \textbf{auto\,$=m/(4K)$} ($\approx$875) &
+  close-straddling-masks band-update \textbf{slots} & at the safe side of the
+  $\approx1024$ thinning knee; the \emph{slot} count (not the gate count) is what
+  thins. \\
+\addlinespace
+\doc{rerand\_repair} & \textbf{0} & re-derive-across-update band-update slots (no
+  thinning) & off by default; add slots for extra band turnover at no masking cost.
+  \\
+\addlinespace
+\doc{rerand\_burst} ($F$) & \textbf{auto\,$=8\mathrm{K}$} (=16 at $K{=}2$) &
+  band-update gates \textbf{per slot} (the burst) & comparable to a data wire's
+  write-burst (tens of gates), so band wires carry a data-wire-like activity
+  signature; $\mathit{slots}\times F\approx2m$. \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -169,8 +203,12 @@ identity's circuit-spanning length is a property of the whole scaffold (\S1e).
 
 \section{Measurements}
 
-On the current co-sampled build (n=128, $|C|=|D|=3000$, K=2); they match the
-pre-firing-fix baseline (the hidden-firing change did not move them).
+All measurements are on the current co-sampled build with \textbf{burst rerand $+$
+the masking floor} (n=128, $|C|=|D|=3000$, K=2). They match the pre-firing-fix
+baseline to within noise --- neither the hidden-firing redesign nor the burst/floor
+refinements moved them (the burst change touches only the band wires, so it cannot
+move the data-wire ridge): degree-1 $\mathrm{meanH}=0.4966$, degree-2
+$\mathrm{meanH}=0.4967$, exposed-$C<0.35\approx5.6$--$5.7\%$.
 
 \subsection{Affine ridge}
 
@@ -197,7 +235,13 @@ unavoidable public I/O, not a leak.
 adversary reaches only $\sim$0.01 deeper than affine, into the same low-degree I/O
 fringe; the interior stays fully hidden. Degree-2 is flat across $K$, like affine.
 
-\subsection{Rerand: repair vs straddle ($n_A=256$, affine deg-1)}
+\subsection{Rerand: bursts, straddle vs repair ($n_A=256$, affine deg-1)}
+
+Each rerand slot is a \textbf{burst} of $F\approx8\mathrm{K}$ gates on one band wire;
+the \textbf{slot} count --- not the gate count --- drives the effect, since a
+straddle slot closes the masks reading $b$ exactly once per slot. An early
+single-gate-dose study fixes where the thinning knee is (dose $=$ total
+straddle/repair \emph{gates}):
 
 \begin{table}[H]\centering
 \begin{tabular}{@{}rrrrr@{}}
@@ -205,15 +249,21 @@ fringe; the interior stays fully hidden. Degree-2 is flat across $K$, like affin
 straddle & repair & gadget & meanH & affDepth \\
 \midrule
 0 & 0 & 670k & 0.4979 & 0.0550 \\
-\textbf{1000} & \textbf{3000} & 668k & 0.4959 & \textbf{0.0514} \\
+1000 & 3000 & 668k & 0.4959 & 0.0514 \\
 8000 & 0 & 607k & \textbf{0.4878} & \textbf{0.0681} \\
 0 & 8000 & 780k & 0.4985 & 0.0549 \\
 \bottomrule
 \end{tabular}
 \end{table}
-\noindent Heavy \textsc{straddle} thins (meanH $\downarrow$, ridge $\uparrow$,
-gadget shrinks); heavy \textsc{repair} does not. Production $1000+3000$ sits at the
-baseline floor.
+\noindent Heavy \textsc{straddle} thins (meanH $\downarrow$, ridge $\uparrow$, gadget
+\emph{shrinks} as masks close); heavy \textsc{repair} does not (both $=$ baseline,
+gadget \emph{grows} from the pre/post pairs). The production plan keeps straddle
+\textbf{slots} on the safe side of the $\approx1024$ knee: auto $\approx m/(4K)$
+($\sim$875 for the half-size sandwich) $\times\,F=8\mathrm{K}\approx2m$ band-refresh
+gates, \textbf{no repair}. Fewer, fatter slots mix the band as hard as many single
+updates while interfering less with the \lgi s (and give the band its data-wire
+signature), and --- because the thinning is driven by the \emph{slot} count --- they
+sit at the baseline floor (deg-1 $\mathrm{meanH}=0.4966$, deg-2 $0.4967$).
 
 \subsection{Through the GSS pipeline ($K=2$ vs $K=4$)}
 
@@ -229,9 +279,17 @@ with stage sizes.}
 \item \textbf{Mask width $K$ vs size.} Larger $K$ widens each mask, not the
   temporal length; hiding is flat in $K$ while size grows $\sim$linearly and the
   read cost quadratically, so \textbf{K=2}; K=4 only for a wider read-mask.
-\item \textbf{Band turnover vs size (straddle vs repair).} STRADDLE thins past
-  $\approx1024$, REPAIR grows the gadget; \textbf{1000 straddle + 3000 repair}
-  balances at the baseline floor.
+\item \textbf{Band turnover vs size (bursts, slots vs $F$).} More band updates $=$
+  more entropy and stronger resistance to commutation-back, but STRADDLE
+  \textbf{slots} thin the masking past $\approx1024$ and REPAIR slots grow the
+  gadget. Bursting decouples the two knobs: $F$ (gates/slot) sets how hard each band
+  wire is stirred and how data-like its activity looks, while the \textbf{slot
+  count} ($\approx m/4K$, held under the knee) sets the thinning. Auto $m/4K$ slots
+  $\times\,F=8\mathrm{K}$, no repair, sits at the baseline floor.
+\item \textbf{Masking floor is a cheap hedge.} \doc{min\_mask} guarantees every
+  operand is read under $\ge3$ masking wires (worst-case $|\rho|$ $2\to4$; mean
+  unchanged); it fires only on the rare under-floor draw, costing $\sim$0.2\% gates
+  --- a hedge against a low-probability thin-masking event, not a routine cost.
 \item \textbf{Firing-hiding is free} in the co-sampled build (it reuses the
   existing \lgi{} budget); earlier fixed-scaffold approaches paid coverage
   (23--70\%) or +43\% size.

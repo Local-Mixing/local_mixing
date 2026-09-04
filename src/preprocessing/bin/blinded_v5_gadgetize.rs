@@ -4,8 +4,9 @@
 //! `gen_sandwich_gadget` as the `blinded-v5` mode with the production preset.
 //!
 //! Usage: blinded_v5_gadgetize <src.mpmct1> <out.mpmct1> [K=2] [R=0(auto=n)]
-//!            [seed=1] [rerand_level=0] [max_open=3] [active_wires=0]
-//!            [extra_lgis=2] [rerand_repair=0]
+//!            [seed=1] [rerand_level=0(auto=m/4k slots)] [max_open=3]
+//!            [active_wires=0] [extra_lgis=2] [rerand_repair=0] [rerand_burst=0(auto=8k)]
+//!            [min_mask=0(auto=max_open)]
 
 use local_mixing::engine::format::{read_mpmct, write_mpmct};
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
@@ -15,9 +16,10 @@ fn main() {
     if a.len() < 3 {
         eprintln!(
             "usage: blinded_v5_gadgetize <src> <out> [K=2] [R=0(auto=n)] [seed=1] \
-             [rerand_level=0] [max_open=3] \
+             [rerand_level=0(auto=m/4k slots)] [max_open=3] \
              [active_wires=0(all; set to n for a 2n-wire zero-slice sandwich)] \
-             [extra_lgis=2] [a_margin=0] [rerand_repair=0]"
+             [extra_lgis=2] [rerand_repair=0] [rerand_burst=0(auto=8k)] \
+             [min_mask=0(auto=max_open)]"
         );
         std::process::exit(2);
     }
@@ -31,6 +33,8 @@ fn main() {
     let active_wires: usize = a.get(8).map(|s| s.parse().unwrap()).unwrap_or(0);
     let extra_lgis: usize = a.get(9).map(|s| s.parse().unwrap()).unwrap_or(2);
     let rerand_repair: usize = a.get(10).map(|s| s.parse().unwrap()).unwrap_or(0);
+    let rerand_burst: usize = a.get(11).map(|s| s.parse().unwrap()).unwrap_or(0);
+    let min_mask: usize = a.get(12).map(|s| s.parse().unwrap()).unwrap_or(0);
 
     let (src, np) = read_mpmct(src_path).expect("read source");
     let params = BlindedV5Params {
@@ -39,7 +43,9 @@ fn main() {
         seed,
         rerand_level,
         rerand_repair,
+        rerand_burst,
         max_open,
+        min_mask,
         active_wires,
         extra_lgis,
     };
@@ -50,7 +56,8 @@ fn main() {
     gates.extend(g.gates.iter().cloned());
     write_mpmct(out_path, &gates, g.num_wires).expect("write out");
     println!(
-        "{out_path}: K={k} R={} rerand={}/(straddle {rerand_level}+repair {rerand_repair}) \
+        "{out_path}: K={k} R={} rerand={} gates \
+         (straddle {rerand_level}+repair {rerand_repair} slots x burst {rerand_burst}[0=auto 8k]) \
          max_open={max_open} | \
          {} gates ({} +band-seed), {} atoms, {} wires (src {} gates / {np} wires)",
         g.r_used,
