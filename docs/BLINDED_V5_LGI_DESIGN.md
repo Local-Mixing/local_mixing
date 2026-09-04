@@ -304,11 +304,33 @@ they sit at the baseline floor (deg-1 `meanH = 0.4966`, deg-2 `0.4967`).
 
 ### 5.5 Through the GSS pipeline (K = 2 vs K = 4)
 
-*Pending — from the `gss_mix.sh --gadgetization-mode blinded-v5` runs
-(n = 128, half-size |C| = |D| = 3000; phase-A grow-to-2× then hold ≈ 10 effs,
-2-eff snapshot; then split, crossing, fcompress), K = 2 and K = 4. To be
-appended: affine ridge and exposed-C count at the 2-eff snapshot and at the end
-of the pipeline, with the stage sizes.*
+Four arms through `gss_mix.sh --gadgetization-mode blinded-v5` (n = 128,
+half-size |C| = |D| = 3000, `--expand 2`, fresh independent CSPRNG seeds),
+measured at the **2-eff snapshot** (the phase-A grow to ≈1.7×, an early mixing
+checkpoint; `hmap_affine --degree 1`, 92 C-segments):
+
+| arm | gadget `g_in` | 2-eff gates | meanH | exposed-C `<0.25` | `<0.35` |
+|---|---|---|---|---|---|
+| K = 2, hold 10 | 563,946 | 962,598 | 0.4945 | 6/92 | 11/92 |
+| K = 2, hold 20 | 564,394 | 969,380 | 0.4942 | 6/92 | 11/92 |
+| K = 2, hold 30 | 564,674 | 960,670 | 0.4951 | 6/92 | 9/92 |
+| K = 4, hold 10 | 1,362,010 | 2,300,885 | 0.4965 | 6/92 | 10/92 |
+
+- **meanH ≈ 0.494–0.497 for both K** — affine-neutral across `K` through the
+  pipeline, matching the raw-gadget measurements (§5.1) and the pre-firing-fix
+  baseline. (These are also the corrected build with burst rerand + the masking
+  floor + the even-filler / no-drain schedule; the pipeline statistics are
+  unchanged from the earlier build, as the band-only refinements predict.)
+- The exposed-C count (6/92 at `<0.25`, ~9–11/92 at `<0.35`) is the same public
+  **I/O boundary** of §5.2, confirmed by the per-segment profile: min-H ≈ 0 only
+  at the input port (raw `x`) and output port (`C(x)`), climbing onto the hidden
+  plateau within ~5 % of `C` — the interior is not recovered.
+- The three K = 2 arms agree because the 2-eff snapshot **precedes the hold
+  phase**, so it is hold-independent — a seed-level consistency check.
+
+*End-of-pipeline numbers (post split / crossing / fcompress, and the deeper
+hold-20 / hold-30 mixing) are pending — the arms are mid phase-A; this section
+will be completed when they finish.*
 
 ---
 

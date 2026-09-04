@@ -335,11 +335,41 @@ sit at the baseline floor (deg-1 $\mathrm{meanH}=0.4966$, deg-2 $0.4967$).
 
 \subsection{Through the GSS pipeline ($K=2$ vs $K=4$)}
 
-\emph{Pending --- from the co-sampled \doc{gss\_mix.sh -{}-gadgetization-mode
-blinded-v5} runs (n=128, half-size $|C|=|D|=3000$; grow-to-$2\times$ then hold
-$\approx10$ effs, 2-eff snapshot; then split, crossing, fcompress), $K=2$ and
-$K=4$: affine ridge and exposed-$C$ count at the 2-eff snapshot and at the end,
-with stage sizes.}
+Four arms through \doc{gss\_mix.sh -{}-gadgetization-mode blinded-v5} (n=128,
+half-size $|C|=|D|=3000$, \doc{-{}-expand 2}, fresh independent CSPRNG seeds),
+measured at the \textbf{2-eff snapshot} (phase-A grow to ${\approx}1.7\times$, an
+early mixing checkpoint; \doc{hmap\_affine -{}-degree 1}, 92 $C$-segments):
+
+\begin{table}[H]\centering
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+arm & gadget $g_\mathrm{in}$ & 2-eff gates & meanH & exp.\ $<0.25$ & $<0.35$ \\
+\midrule
+$K{=}2$, hold 10 & 563{,}946 & 962{,}598 & 0.4945 & 6/92 & 11/92 \\
+$K{=}2$, hold 20 & 564{,}394 & 969{,}380 & 0.4942 & 6/92 & 11/92 \\
+$K{=}2$, hold 30 & 564{,}674 & 960{,}670 & 0.4951 & 6/92 & 9/92 \\
+$K{=}4$, hold 10 & 1{,}362{,}010 & 2{,}300{,}885 & 0.4965 & 6/92 & 10/92 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+\item \textbf{meanH ${\approx}0.494$--$0.497$ for both $K$} --- affine-neutral
+  across $K$ through the pipeline, matching the raw-gadget measurements
+  (\S5.1) and the pre-firing-fix baseline. (This is the corrected build with
+  burst rerand $+$ the masking floor $+$ the even-filler / no-drain schedule; the
+  pipeline statistics are unchanged, as the band-only refinements predict.)
+\item The exposed-$C$ count (6/92 at $<0.25$, ${\sim}9$--$11/92$ at $<0.35$) is
+  the public \textbf{I/O boundary} of \S5.2, confirmed by the per-segment
+  profile: min-H ${\approx}0$ only at the input port (raw $x$) and output port
+  ($C(x)$), climbing onto the hidden plateau within ${\sim}5\%$ of $C$.
+\item The three $K{=}2$ arms agree because the 2-eff snapshot \textbf{precedes the
+  hold phase}, so it is hold-independent --- a seed-level consistency check.
+\end{itemize}
+
+\noindent\emph{End-of-pipeline numbers (post split / crossing / fcompress, and
+the deeper hold-20 / hold-30 mixing) are pending --- the arms are mid phase-A;
+this section will be completed when they finish.}
 
 \section{Tradeoffs and the current choices}
 
