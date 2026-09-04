@@ -414,10 +414,8 @@ fn main() {
             k: envu("BV5_K", base.k),
             rerand_level: envu("BV5_RERAND", base.rerand_level),
             rerand_repair: envu("BV5_REPAIR", base.rerand_repair),
-            window: envu("BV5_WINDOW", base.window),
             max_open: envu("BV5_MAX_OPEN", base.max_open),
             extra_lgis: envu("BV5_EXTRA_LGIS", base.extra_lgis),
-            a_margin: envu("BV5_A_MARGIN", base.a_margin),
             ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
