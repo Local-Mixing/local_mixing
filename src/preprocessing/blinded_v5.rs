@@ -13,8 +13,11 @@
 //!      a gate and its reverse LINEARISE: `g57(w,r1,r2)+g57(w,r2,r1) = w+r1+r2`.
 //!      All `2K*(3m+n)` gates commute (data targets, band controls).
 //!   2. Order the scaffold with <= `max_open` LGIs open per wire.
-//!   3. Sprinkle `rerand_level` band-refresh gates `b ^= data & aux`, placed by
-//!      a SORTED left-to-right pull-forward filler (full dose, never blocks).
+//!   3. Sprinkle band-refresh gates `b ^= lit & lit` (half with a live-data
+//!      control, half band-only) at sorted positions, in two kinds: `rerand_level`
+//!      STRADDLE rerands (close the masks straddling the update -- thins masking
+//!      past a ~1024 knee) and `rerand_repair` REPAIR rerands (re-derive each
+//!      straddling mask across the update so it stays open -- no thinning).
 //!   4. Interleave A evenly. At each gate the MASKED read: LINEARISE each
 //!      control (emit the reverse g57 of every net-open mask so the wire carries
 //!      `operand + rho`, rho linear in band wires), then realise
@@ -41,8 +44,15 @@ pub struct BlindedV5Params {
     pub r: usize,
     /// Deterministic seed.
     pub seed: u64,
-    /// Band-refresh dose. `0` = off.
+    /// STRADDLE-only band-refresh dose (total; split half data-control, half
+    /// band-only). Each such rerand CLOSES the masks straddling it, so heavy
+    /// doses thin the masking (knee ~1024). `0` = off.
     pub rerand_level: usize,
+    /// REPAIR band-refresh dose (total; split half data-control, half band-only).
+    /// A repair rerand re-derives every straddling mask across the update (old-b
+    /// cancels, new-b re-adds), so masks STAY open -- no thinning. Stack these on
+    /// top of the straddle dose for extra band turnover. `0` = off.
+    pub rerand_repair: usize,
     /// Soft cap on simultaneously-open LGIs per wire (RC: `<= 3`).
     pub max_open: usize,
     /// Seed the band ONLY from data wires `0..active_wires`. `0` = all `np`.
@@ -58,14 +68,19 @@ pub struct BlindedV5Params {
 }
 
 impl BlindedV5Params {
-    /// Settled preset: K=16, R=n (auto), max_open=3, no rerand. The boundary
-    /// cushion (`extra_lgis`, `a_margin`) is off by default and opt-in.
+    /// Settled preset: K=2 (band wires per LGI -> 1 disjoint pair; affine- and
+    /// deg-2-neutral across K, so smallest is best), R=n (auto), max_open=3.
+    /// Rerand: 1K STRADDLE (at the safe knee -- straddle-only thins masking past
+    /// ~1024) topped off with 3K REPAIR (repair doesn't thin, so it adds band
+    /// turnover cheaply), each split half data-control / half band-only (RC,
+    /// 2026-09-03). The boundary cushion (`extra_lgis`, `a_margin`) is opt-in.
     pub fn production(seed: u64) -> Self {
         Self {
-            k: 16,
+            k: 2,
             r: 0,
             seed,
-            rerand_level: 0,
+            rerand_level: 1000,
+            rerand_repair: 3000,
             max_open: 3,
             active_wires: 0,
             extra_lgis: 0,
@@ -82,7 +97,7 @@ pub struct BlindedV5Output {
     pub num_wires: usize,
     /// LGI atoms laid down (`3m + n`).
     pub atoms: usize,
-    /// Band-refresh updates inserted (== `rerand_level`).
+    /// Band-refresh updates inserted (straddle + repair).
     pub rerand_done: usize,
     /// Effective band pool used.
     pub r_used: usize,
@@ -120,6 +135,44 @@ fn as_g57(g: &XGate, np: usize) -> Option<(usize, (u16, u16))> {
 /// sparse-mask shape). Needs `k >= 2`; an odd trailing wire is dropped.
 fn cycle_g57(w: u16, cy: &[u16]) -> Vec<XGate> {
     (0..cy.len() / 2).map(|i| g57(w, cy[2 * i], cy[2 * i + 1])).collect()
+}
+
+/// The disjoint-pair g57 of an LGI on wire `w` (cycle `cy`) that READS band `b`,
+/// i.e. the applied gate whose value changes when `b` flips. `None` if `b` is
+/// only the odd-K trailing (unpaired) wire -- then no applied gate reads it, so
+/// a `b`-update needs no repair on this mask.
+fn b_g57(w: u16, cy: &[u16], b: u16) -> Option<XGate> {
+    for i in 0..cy.len() / 2 {
+        if cy[2 * i] == b || cy[2 * i + 1] == b {
+            return Some(g57(w, cy[2 * i], cy[2 * i + 1]));
+        }
+    }
+    None
+}
+
+/// A band-refresh update `b ^= lit & lit`. `data_ctrl`: one control is a LIVE
+/// data wire (`0..active`, so it carries moving data, not a dead 0); otherwise
+/// both controls are band wires. `active` = the low honest half in the sandwich.
+fn rerand_gate(b: u16, data_ctrl: bool, active: usize, band: &[u16], rng: &mut StdRng) -> XGate {
+    let (c1, c2) = if data_ctrl {
+        let d = rng.random_range(0..active) as u16;
+        let mut c = band[rng.random_range(0..band.len())];
+        while c == b {
+            c = band[rng.random_range(0..band.len())];
+        }
+        (d, c)
+    } else {
+        let mut a1 = band[rng.random_range(0..band.len())];
+        while a1 == b {
+            a1 = band[rng.random_range(0..band.len())];
+        }
+        let mut a2 = band[rng.random_range(0..band.len())];
+        while a2 == b || a2 == a1 {
+            a2 = band[rng.random_range(0..band.len())];
+        }
+        (a1, a2)
+    };
+    conj(b, &[(c1, rng.random_bool(0.5)), (c2, rng.random_bool(0.5))])
 }
 
 fn conj(t: u16, lits: &[(u16, bool)]) -> XGate {
@@ -264,6 +317,14 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..total as u16).collect();
     let max_open = p.max_open.max(1);
+    // Data controls for rerand draw from live-data wires only (0..active). In the
+    // sandwich the honest input is the low half; the high half is a dead zero
+    // slice, so a control there would be a constant 0 (useless as a refresh).
+    let active = if p.active_wires == 0 || p.active_wires > np {
+        np
+    } else {
+        p.active_wires
+    };
     let mut rng = StdRng::seed_from_u64(p.seed);
     let mut out: Vec<XGate> = Vec::new();
 
@@ -285,26 +346,44 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         }
     }
 
-    // 2. scaffold, rolling <= max_open per wire, merged
-    let mut streams: Vec<Vec<XGate>> = vec![Vec::new(); np];
+    // 2. LGIs with ids + per-wire Open/Close event streams (rolling max_open),
+    // then merge. Working at event granularity (not flat gates) lets the rerand
+    // pass do the STRADDLE-ONLY close (below), which needs to know which masks
+    // reading a band wire are open at each rerand.
+    let mut lgi_w: Vec<u16> = Vec::new();
+    let mut lgi_cy: Vec<Vec<u16>> = Vec::new();
+    let mut wire_lgis: Vec<Vec<usize>> = vec![Vec::new(); np];
     for w in 0..np {
-        let cys = &pool[w];
+        for cy in &pool[w] {
+            let id = lgi_w.len();
+            lgi_w.push(w as u16);
+            lgi_cy.push(cy.clone());
+            wire_lgis[w].push(id);
+        }
+    }
+    #[derive(Clone)]
+    enum Ev {
+        Open(usize),
+        Close(usize),
+        Rerand(u16, bool, bool), // (band wire, data-control?, is_repair?)
+    }
+    let mut streams: Vec<Vec<Ev>> = vec![Vec::new(); np];
+    for w in 0..np {
         let mut open: Vec<usize> = Vec::new();
-        for i in 0..cys.len() {
-            streams[w].extend(cycle_g57(w as u16, &cys[i]));
-            open.push(i);
+        for &id in &wire_lgis[w] {
+            streams[w].push(Ev::Open(id));
+            open.push(id);
             while open.len() > max_open {
-                let old = open.remove(0);
-                streams[w].extend(cycle_g57(w as u16, &cys[old]));
+                streams[w].push(Ev::Close(open.remove(0)));
             }
         }
-        for &i in &open {
-            streams[w].extend(cycle_g57(w as u16, &cys[i]));
+        for &id in &open {
+            streams[w].push(Ev::Close(id));
         }
     }
     let mut ptr = vec![0usize; np];
     let mut remaining: usize = streams.iter().map(|s| s.len()).sum();
-    let mut scaffold: Vec<XGate> = Vec::with_capacity(remaining);
+    let mut events: Vec<Ev> = Vec::with_capacity(remaining);
     while remaining > 0 {
         let mut pick = rng.random_range(0..remaining);
         let mut w = 0;
@@ -316,53 +395,103 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             pick -= left;
             w += 1;
         }
-        scaffold.push(streams[w][ptr[w]].clone());
+        events.push(streams[w][ptr[w]].clone());
         ptr[w] += 1;
         remaining -= 1;
     }
 
-    // 3. rerand: sorted pull-forward filler
-    let mut plan: Vec<(usize, XGate, u16)> = (0..p.rerand_level)
-        .map(|_| {
-            let pos = rng.random_range(0..scaffold.len().max(1));
+    // 3. rerand events: `rerand_level` STRADDLE + `rerand_repair` REPAIR, each
+    // total split half data-control (`b ^= data & aux`) / half band-only
+    // (`b ^= aux & aux`) by index parity, spliced at sorted positions.
+    let mut rplan: Vec<(usize, u16, bool, bool)> = Vec::new(); // (pos, b, data_ctrl, is_repair)
+    for &(count, is_repair) in &[(p.rerand_level, false), (p.rerand_repair, true)] {
+        for i in 0..count {
+            let pos = rng.random_range(0..=events.len());
             let b = band[rng.random_range(0..band.len())];
-            let d = rng.random_range(0..np) as u16;
-            let mut c = band[rng.random_range(0..band.len())];
-            while c == b {
-                c = band[rng.random_range(0..band.len())];
-            }
-            (pos, conj(b, &[(d, rng.random_bool(0.5)), (c, rng.random_bool(0.5))]), b)
-        })
-        .collect();
-    plan.sort_by_key(|x| x.0);
+            rplan.push((pos, b, i % 2 == 0, is_repair));
+        }
+    }
+    rplan.sort_by_key(|x| x.0);
+    let mut merged: Vec<Ev> = Vec::with_capacity(events.len() + rplan.len());
+    let mut ri = 0;
+    for (i, ev) in events.into_iter().enumerate() {
+        while ri < rplan.len() && rplan[ri].0 == i {
+            merged.push(Ev::Rerand(rplan[ri].1, rplan[ri].2, rplan[ri].3));
+            ri += 1;
+        }
+        merged.push(ev);
+    }
+    while ri < rplan.len() {
+        merged.push(Ev::Rerand(rplan[ri].1, rplan[ri].2, rplan[ri].3));
+        ri += 1;
+    }
+
+    // forward-process: emit the scaffold. At each rerand, handle the masks
+    // reading b that are open -- STRADDLE closes them (they'd otherwise carry a
+    // stale b across the update), REPAIR re-derives them across the update so
+    // they stay open (no masking collapse). See the Ev::Rerand arm.
+    let mut scaffold: Vec<XGate> = Vec::new();
+    let mut open_reading: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); r];
+    let mut closed = vec![false; lgi_w.len()];
     let mut rerand_done = 0usize;
-    if !plan.is_empty() {
-        let mut consumed = vec![false; scaffold.len()];
-        let mut built = Vec::with_capacity(scaffold.len() + plan.len());
-        let mut cursor = 0usize;
-        for (pos, cand, b) in &plan {
-            while cursor < *pos {
-                if !consumed[cursor] {
-                    built.push(scaffold[cursor].clone());
-                    consumed[cursor] = true;
+    for ev in merged {
+        match ev {
+            Ev::Open(id) => {
+                if closed[id] {
+                    continue;
                 }
-                cursor += 1;
-            }
-            for j in cursor..scaffold.len() {
-                if !consumed[j] && scaffold[j].reads(*b) {
-                    built.push(scaffold[j].clone());
-                    consumed[j] = true;
+                scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
+                for &bw in &lgi_cy[id] {
+                    open_reading[bw as usize - np].insert(id);
                 }
             }
-            built.push(cand.clone());
-            rerand_done += 1;
-        }
-        for j in cursor..scaffold.len() {
-            if !consumed[j] {
-                built.push(scaffold[j].clone());
+            Ev::Close(id) => {
+                if closed[id] {
+                    continue;
+                }
+                closed[id] = true;
+                scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
+                for &bw in &lgi_cy[id] {
+                    open_reading[bw as usize - np].remove(&id);
+                }
+            }
+            Ev::Rerand(b, data_ctrl, is_repair) => {
+                let bi = b as usize - np;
+                let ids: Vec<usize> = open_reading[bi].iter().copied().collect();
+                if is_repair {
+                    // REPAIR: emit each straddling mask's b-reading g57 with the OLD
+                    // b (removing its contribution), then the update, then again
+                    // with the NEW b (re-adding it). Old-b cancels, new-b re-derives
+                    // -- the mask stays open (no thinning), b just evolves under it.
+                    for &id in &ids {
+                        if let Some(g) = b_g57(lgi_w[id], &lgi_cy[id], b) {
+                            scaffold.push(g);
+                        }
+                    }
+                    scaffold.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
+                    for &id in &ids {
+                        if let Some(g) = b_g57(lgi_w[id], &lgi_cy[id], b) {
+                            scaffold.push(g);
+                        }
+                    }
+                } else {
+                    // STRADDLE-only: close the masks reading b so none straddles the
+                    // update, then apply it (heavy doses thin the masking).
+                    for id in ids {
+                        if closed[id] {
+                            continue;
+                        }
+                        closed[id] = true;
+                        scaffold.extend(cycle_g57(lgi_w[id], &lgi_cy[id]));
+                        for &bw in &lgi_cy[id] {
+                            open_reading[bw as usize - np].remove(&id);
+                        }
+                    }
+                    scaffold.push(rerand_gate(b, data_ctrl, active, &band, &mut rng));
+                }
+                rerand_done += 1;
             }
         }
-        scaffold = built;
     }
 
     // 4. interleave A with the masked read. Confine A's gates to
