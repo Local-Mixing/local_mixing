@@ -12552,7 +12552,7 @@ pub(crate) fn try_slice_zero_preblock_dims(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> Result<CnotCircuit, String> {
-    try_slice_zero_block_dims(n, n, nondata, gate_count, rng)
+    try_slice_zero_block_dims(n, 0, n, nondata, gate_count, rng)
 }
 
 /// The junk-half slice guard (see [`ProdConfig::close_slice`]): a slice
@@ -12582,14 +12582,37 @@ pub fn slice_zero_junk_guard_dims(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
-    try_slice_zero_block_dims(n, n / 2, nondata, gate_count, rng)
+    try_slice_zero_block_dims(n, 0, n / 2, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The balanced-sandwich counterpart of [`slice_zero_junk_guard_dims`]: an
+/// otherwise-identical junk-half slice guard whose targets are restricted to the
+/// HIGH data half (`n/2..n`) instead of the low half. The balanced sandwich
+/// carries its forward payload C(x) on the LOW half (classic keeps it on the
+/// upper), so at the OUTPUT port the CLOSING guard must junk the HIGH
+/// (forward-junk) half, leaving the low-half payload intact. Band-gating (identity
+/// iff the band is 0) is unchanged — only which data half is disturbed differs.
+/// The OPENING guard stays low-half (its reverse still junks low), so this pairs
+/// with an unmodified [`slice_zero_junk_guard_dims`] on the input port.
+pub fn slice_zero_junk_guard_dims_high(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    try_slice_zero_block_dims(n, n / 2, n, nondata, gate_count, rng)
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Shared generator for the opening/closing slice blocks: targets are drawn
-/// from `0..target_hi`, slice controls from the `nondata` wires above `n`.
+/// from `target_lo..target_hi`, slice controls from the `nondata` wires above
+/// `n`. Classic guards target the LOW data half (`0..n/2`); the balanced
+/// closing guard targets the HIGH half (`n/2..n`) — see
+/// [`slice_zero_junk_guard_dims`] and [`slice_zero_junk_guard_dims_high`].
 fn try_slice_zero_block_dims(
     n: usize,
+    target_lo: usize,
     target_hi: usize,
     nondata: usize,
     gate_count: usize,
@@ -12600,9 +12623,10 @@ fn try_slice_zero_block_dims(
             "slice_zero_ccnot_preblock requires n >= 3, got {n}"
         ));
     }
-    if !(3..=n).contains(&target_hi) {
+    if !(3..=n).contains(&target_hi) || target_lo >= target_hi {
         return Err(format!(
-            "slice block targets need 3 <= target_hi <= {n}, got {target_hi}"
+            "slice block targets need 3 <= target_hi <= {n} and target_lo < target_hi, \
+             got [{target_lo}, {target_hi})"
         ));
     }
     let total = n
@@ -12634,7 +12658,7 @@ fn try_slice_zero_block_dims(
         slice_ctrl.shuffle(rng);
         let mut gates: Vec<XGate> = Vec::with_capacity(gate_count);
         for (i, &w) in slice_ctrl.iter().enumerate() {
-            let target = rng.random_range(0..target_hi);
+            let target = rng.random_range(target_lo..target_hi);
             let data_ctrls = if i < cnots {
                 0
             } else if i < cnots + ccnots {

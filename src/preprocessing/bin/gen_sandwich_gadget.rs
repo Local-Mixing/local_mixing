@@ -48,6 +48,7 @@ use local_mixing::engine::format::write_mpmct;
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
 use local_mixing::preprocessing::gadgets::{
     CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, slice_zero_junk_guard_dims,
+    slice_zero_junk_guard_dims_high,
     gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier,
@@ -74,39 +75,6 @@ fn mask_bits(bits: usize) -> U1024 {
         U1024::MAX
     } else {
         (U1024::one() << bits) - U1024::one()
-    }
-}
-
-/// Mirror a junk-half slice guard from the LOW data half to the HIGH half by
-/// swapping the two data halves (`0..half` <-> `half..total`) in every gate's
-/// wires; band controls (>= `total`) are left untouched, so the band-gating
-/// (identity iff band = 0) is preserved and the guard now junks the HIGH half.
-/// The swap is a bijection on `0..total`, so a gate's target stays distinct from
-/// its controls. Used for the CLOSING guard of the balanced sandwich, whose
-/// forward payload lives on the low half and so must survive the output port.
-fn swap_data_halves(c: CnotCircuit, half: usize, total: usize) -> CnotCircuit {
-    let remap = |w: u16| -> u16 {
-        let wu = w as usize;
-        if wu < total {
-            ((wu + half) % total) as u16
-        } else {
-            w
-        }
-    };
-    let gates = c
-        .gates
-        .into_iter()
-        .map(|g| {
-            let lits = g.ctrls.iter().map(|&(w, p)| (remap(w), p));
-            let mut ng = local_mixing::circuit::xgate::XGate::conj(remap(g.target), lits)
-                .expect("half-swap is a bijection, so controls stay distinct");
-            ng.comp = g.comp;
-            ng
-        })
-        .collect();
-    CnotCircuit {
-        gates,
-        num_wires: c.num_wires,
     }
 }
 
@@ -493,19 +461,17 @@ fn main() {
         let np = sandwich.num_wires; // = 2n
         let nondata = bv5.r_used; // band width
         let gc = slice_gates.max(nondata);
+        // Per-port guard selection. The OPENING guard always junks the LOW half
+        // (dead forward on the honest slice; its reverse junks the low half). The
+        // CLOSING guard junks the sandwich's forward-junk half at the output port:
+        // the LOW half for classic (payload on the upper), the HIGH half for
+        // balanced (payload on the low). This is not V5-specific — it's the
+        // gadgetize guard adapting to which half the sandwich designates as junk.
         let open = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
-        let close = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
-        // Per-port mirror for the balanced sandwich: its forward payload C(x) is
-        // on the LOW half (classic keeps it on the upper), so the CLOSING guard —
-        // which fires on the junked band at the output port — must junk the HIGH
-        // half instead, leaving the low-half payload intact. The OPENING guard is
-        // unchanged (dead forward on the honest slice; its reverse still junks the
-        // low half). This is not V5-specific — it's the gadgetize guard adapting
-        // to which half the sandwich designates as junk.
         let close = if variant.is_balanced() {
-            swap_data_halves(close, np / 2, np)
+            slice_zero_junk_guard_dims_high(np, nondata, gc, &mut rng)
         } else {
-            close
+            slice_zero_junk_guard_dims(np, nondata, gc, &mut rng)
         };
         // Module 2: band-seeding pipelined between the input slice guard (dead
         // on the zero band) and the compute (which only reads the band).
