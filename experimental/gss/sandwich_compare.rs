@@ -12,7 +12,7 @@ use local_mixing::circuit::random_circuit;
 use local_mixing::preprocessing::gadgets::{
     compose_a, gadgetize, gadgetize_xgates_with_slice_zero_ccnot, sandwich_default_s,
     MaskConfig, ProdConfig,
-    sliced_sandwich_with_d,
+    SandwichVariant, sliced_sandwich_with_d,
 };
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
@@ -86,7 +86,10 @@ fn main() {
 
     // ---- NEW pipeline: sliced sandwich -> new-gadgetize (double slice) ----
     let d_xgates: Vec<XGate> = d.gates.iter().map(|&g| XGate::from_g57(g)).collect();
-    let sandwich = sliced_sandwich_with_d(&c, &d_xgates, n, s, &mut rng);
+    // The A/B is against the legacy compose_A sandwich, which has no balanced
+    // counterpart: this arm is always the classic construction.
+    let sandwich =
+        sliced_sandwich_with_d(&c, &d_xgates, n, s, SandwichVariant::Classic, &mut rng);
     println!(
         "[compare] NEW sliced sandwich: {} gates, {} wires",
         sandwich.gates.len(),

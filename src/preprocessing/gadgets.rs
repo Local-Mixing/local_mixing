@@ -10750,7 +10750,7 @@ mod drip_tests {
             let m = 100;
             let c = random_circuit(n_c, m);
             let s = sandwich_default_s(n_c);
-            let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+            let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
             let sn = sandwich.num_wires;
             let g = gadgetize_drip_layered(&sandwich.gates, sn, nr, &mut rng);
             let total = g.num_wires;
@@ -10775,7 +10775,7 @@ mod drip_tests {
         let m = 100;
         let c = random_circuit(n_c, m);
         let s = sandwich_default_s(n_c);
-        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
         let sn = sandwich.num_wires;
         let g = gadgetize_drip_persist(&sandwich.gates, sn, &mut rng);
         let total = g.num_wires;
@@ -10799,7 +10799,7 @@ mod drip_tests {
         let m = 120;
         let c = random_circuit(n_c, m);
         let s = sandwich_default_s(n_c);
-        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
         let sn = sandwich.num_wires;
         let wrapped = wrap_drip_delivery(&sandwich.gates, sn, 4, 4 * sn, &mut rng);
         let total = wrapped.num_wires;
@@ -10832,7 +10832,7 @@ mod drip_tests {
         let m = 400;
         let c = random_circuit(n_c, m);
         let s = sandwich_default_s(n_c);
-        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
         let sn = sandwich.num_wires; // 64
         write_mpmct(&format!("{dir}/sd_sandwich.mpmct1"), &sandwich.gates, sn).unwrap();
         // Drip gadget for several aux-rerandomization densities.
@@ -10867,7 +10867,7 @@ mod drip_tests {
         let m = 3000;
         let c = random_circuit(n_c, m);
         let s = sandwich_default_s(n_c);
-        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
         let sn = sandwich.num_wires;
         let raw = sandwich.gates.len();
         let half = sn / 2;
@@ -10919,7 +10919,7 @@ mod drip_tests {
         let m = 3000;
         let c = random_circuit(n_c, m);
         let s = sandwich_default_s(n_c);
-        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, &mut rng);
+        let sandwich = sliced_sandwich_cnot(&c, n_c, m, s, SandwichVariant::Classic, &mut rng);
         let sn = sandwich.num_wires; // 256
         let raw = sandwich.gates.len();
 
@@ -14287,6 +14287,49 @@ pub fn compose_a(c: &CircuitSeq, d: &CircuitSeq, n: usize) -> CircuitSeq {
     CircuitSeq { gates }
 }
 
+/// Which sliced-sandwich construction to build: the choice bit selecting the
+/// classic layout or its balanced mirror. See [`sliced_sandwich_cnot`] for the
+/// full slice algebra of each.
+///
+/// * [`SandwichVariant::Classic`] — N copies UP (`y ^= x`), D shares the low
+///   half with C, and both slice blocks target the low half. The high half is
+///   a pure answer register, and BOTH directions read out there on the SAME
+///   zero slice `y = 0`.
+/// * [`SandwichVariant::Balanced`] — N copies DOWN (`x ^= y`) and D sits on
+///   the high half, so each half hosts one computation. S2 mirrors with D
+///   (targets the high half, reads the low half), which is what keeps a slice
+///   contract at all. Forward reads out on the LOW half at `y = 0`; the
+///   inverse reads out on the HIGH half at the MIRRORED slice `x = 0`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SandwichVariant {
+    #[default]
+    Classic,
+    Balanced,
+}
+
+impl SandwichVariant {
+    /// Parse the CLI / positional-argument spelling.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "classic" | "original" => Some(Self::Classic),
+            "balanced" | "mirror" => Some(Self::Balanced),
+            _ => None,
+        }
+    }
+
+    /// The canonical spelling, for logs and provenance lines.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Balanced => "balanced",
+        }
+    }
+
+    pub fn is_balanced(self) -> bool {
+        self == Self::Balanced
+    }
+}
+
 /// Default slice-block size s = round(n * log2 n), floored at n.
 pub fn sandwich_default_s(n: usize) -> usize {
     ((n as f64) * (n as f64).log2()).round().max(n as f64) as usize
@@ -14299,21 +14342,34 @@ pub fn sandwich_default_m(n: usize) -> usize {
 }
 
 /// One slice block for the sliced-sandwich construction: `s` gates whose
-/// targets are all in the first half (wires 0..n), each reading at least one
-/// second-half wire (n..2n) with positive polarity, so the whole block is
-/// dead when the second half is zero. ~1/3 are CNOTs `x_i ^= a_j` (control
-/// in the second half); the rest are CCNOTs `x_i ^= x_j & a_k` (one control
-/// per half).
-fn sandwich_slice_gates(n: usize, s: usize, rng: &mut impl Rng) -> Vec<XGate> {
+/// targets all lie in ONE half and which each read at least one wire of the
+/// OTHER half with positive polarity, so the whole block is dead when that
+/// other half is zero. ~1/3 are CNOTs `t_i ^= r_j` (control in the read
+/// half); the rest are CCNOTs `t_i ^= t_j & r_k` (one control per half).
+///
+/// `target_second_half` picks the side. `false` is the classic block —
+/// targets on 0..n, reads n..2n, dead when the second half is zero — used for
+/// S1 in both variants and for S2 in the classic one. `true` is its mirror —
+/// targets on n..2n, reads 0..n, dead when the FIRST half is zero — used for
+/// S2 in the balanced variant, where D has moved to the high wires and the
+/// block must guard the mirrored slice `x = 0` instead.
+fn sandwich_slice_gates(
+    n: usize,
+    s: usize,
+    target_second_half: bool,
+    rng: &mut impl Rng,
+) -> Vec<XGate> {
+    let (target_base, read_base) = if target_second_half { (n, 0) } else { (0, n) };
     (0..s)
         .map(|_| {
-            let target = rng.random_range(0..n);
+            let target = target_base + rng.random_range(0..n);
             if rng.random_bool(1.0 / 3.0) {
-                let control = n + rng.random_range(0..n);
+                let control = read_base + rng.random_range(0..n);
                 XGate::cnot(target as u16, control as u16)
             } else {
-                let first_control = random_wire_except(n, &[target], rng);
-                let second_control = n + rng.random_range(0..n);
+                let first_control =
+                    target_base + random_wire_except(n, &[target - target_base], rng);
+                let second_control = read_base + rng.random_range(0..n);
                 XGate::conj(
                     target as u16,
                     [(first_control as u16, true), (second_control as u16, true)],
@@ -14322,6 +14378,18 @@ fn sandwich_slice_gates(n: usize, s: usize, rng: &mut impl Rng) -> Vec<XGate> {
             }
         })
         .collect()
+}
+
+/// `g` with every wire index raised by `offset`, used to place the balanced
+/// variant's D block on the high half. A uniform shift preserves the sorted
+/// control order, so the result is a well-formed [`XGate`].
+fn shift_xgate_wires(g: &XGate, offset: usize) -> XGate {
+    let offset = u16::try_from(offset).expect("wire offset fits a wire index");
+    XGate {
+        target: g.target + offset,
+        comp: g.comp,
+        ctrls: g.ctrls.iter().map(|&(w, p)| (w + offset, p)).collect(),
+    }
 }
 
 /// `m` random g57 gates on wires 0..n, as XGates — the same design as the
@@ -14382,18 +14450,17 @@ fn float_extremal(gates: &mut [XGate], mut pos: usize, dir_left: bool) -> usize 
 }
 
 /// The **sliced sandwich** construction on 2n wires (first half = x, second
-/// half = y):
+/// half = y), in either of its two variants (the `variant` choice bit).
 ///
-///   A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
+/// # Classic ([`SandwichVariant::Classic`])
 ///
-/// where C is the source circuit, D is a fresh random circuit of `m` g57
-/// gates on wires 0..n (same design as the C block), N copies the first
-/// half into the second (`y ^= x`, n CNOTs),
-/// and S1, S2 are independent slice blocks of `s` gates each
-/// (`sandwich_slice_gates`), randomly interleaved with C and D respectively.
-/// A final float stage then slides each N CNOT in a random direction as far
-/// as commutation allows, dissolving the middle column into a band (see the
-/// stage comment in [`sliced_sandwich_with_d`]).
+///   A = [ C interleaved with S1 ] ; N(y ^= x) ; [ D interleaved with S2 ]
+///
+/// C is the source circuit and D a fresh random circuit of `m` g57 gates,
+/// BOTH on wires 0..n; N copies the low half up (`y ^= x`, n CNOTs); S1 and
+/// S2 are independent slice blocks of `s` gates each
+/// ([`sandwich_slice_gates`], both targeting the low half and reading the
+/// high one), randomly interleaved with C and D respectively.
 ///
 /// On the zero slice the second half carries the answer:
 ///   A(x, 0) = (junk, C(x)),
@@ -14402,18 +14469,53 @@ fn float_extremal(gates: &mut [XGate], mut pos: usize, dir_left: bool) -> usize 
 /// half. Symmetrically the inverse gives A^-1(p, 0) = (junk, D^-1(p)): there
 /// S2 is dead and S1 fires, so neither direction hands out its computation
 /// on a wrong slice, and neither reveals the other's function in the clear.
+/// Both directions are sliced at `y = 0` and both read out on the high half;
+/// the low half is a pure workspace and the high half a pure answer register.
+///
+/// # Balanced ([`SandwichVariant::Balanced`])
+///
+///   A = [ C interleaved with S1 ] ; N(x ^= y) ; [ D' interleaved with S2' ]
+///
+/// The N column flips (`x ^= y`: the high half is XORed DOWN into the low
+/// one) and D moves to the high half, so each half hosts one computation
+/// instead of both sharing the low one. S2 mirrors with D — targets on
+/// n..2n, reads 0..n — which is forced: with D on the high wires, a
+/// low-targeting S2 would fire as soon as D makes the high half nonzero and
+/// would overwrite the answer that now stays in the low half. Block 1 (C, S1)
+/// and the interleaving and float stages are untouched.
+///
+/// The slice contract mirrors along with it. Forward, on `y = 0`:
+///   A(x, 0) = (C(x), junk),
+/// because S1 is dead through C (nothing writes the high half before N), N is
+/// then a no-op, and block 2 writes only the high half — so C(x) simply stays
+/// where block 1 left it. Backward, on the MIRRORED slice `x = 0`:
+///   A^-1(0, q) = (junk, D^-1(q)),
+/// because S2 is dead with the low half zero, D^-1 runs cleanly on the high
+/// half, and the reversed block 1 (C^-1 with S1 now firing) junks only the
+/// low half. Each direction has its own slice, its own computation lane, and
+/// its own answer half.
+///
+/// Off-slice the answer half is masked exactly as in the classic variant:
+/// the flipped N step XORs y into x, so the low output is C'(x, y) ^ y for
+/// the S1-disturbed computation C', and no nonzero slice yields clean C(x).
+///
+/// A final float stage then slides each N CNOT in a random direction as far
+/// as commutation allows, dissolving the middle column into a band (see the
+/// stage comment in [`sliced_sandwich_with_d`]).
 pub fn sliced_sandwich_cnot(
     main: &CircuitSeq,
     n: usize,
     m: usize,
     s: usize,
+    variant: SandwichVariant,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
     let d_gates = random_g57_xgates(n, m, rng);
-    sliced_sandwich_with_d(main, &d_gates, n, s, rng)
+    sliced_sandwich_with_d(main, &d_gates, n, s, variant, rng)
 }
 
-/// Sliced sandwich with an explicit D block (given as XGates on wires 0..n).
+/// Sliced sandwich with an explicit D block (given as XGates on wires 0..n,
+/// shifted onto the high half internally when `variant` is balanced).
 /// Used when C and D must be shared with another pipeline (e.g. an A/B against
 /// the legacy `compose_a` sandwich on the same C, D). See
 /// [`sliced_sandwich_cnot`] for the semantics.
@@ -14422,8 +14524,27 @@ pub fn sliced_sandwich_with_d(
     d_gates: &[XGate],
     n: usize,
     s: usize,
+    variant: SandwichVariant,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
+    sliced_sandwich_build(main, d_gates, n, s, variant, rng).0
+}
+
+/// Shared builder behind [`sliced_sandwich_cnot`] and
+/// [`sliced_sandwich_with_d`], additionally returning the FINAL (post-float)
+/// positions of the N column's CNOTs in ascending order. The column is not
+/// recoverable from the finished gate list in the balanced variant — there
+/// the N gates target the low half and read the high one, exactly the shape
+/// of S1's CNOTs — so the band regression tests read the tracked positions
+/// instead of filtering by target half.
+fn sliced_sandwich_build(
+    main: &CircuitSeq,
+    d_gates: &[XGate],
+    n: usize,
+    s: usize,
+    variant: SandwichVariant,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, Vec<usize>) {
     assert!(n >= 3, "sliced_sandwich_with_d requires n >= 3");
     assert!(2 * n <= u16::MAX as usize, "too many wires");
     assert!(
@@ -14437,20 +14558,40 @@ pub fn sliced_sandwich_with_d(
         "D wire outside 0..n"
     );
     let total = 2 * n;
+    let balanced = variant.is_balanced();
 
-    // Block 1: C (the source) interleaved with S1.
+    // Block 1: C (the source) interleaved with S1. Identical in both
+    // variants — C always computes on the low half, and S1 always targets
+    // the low half and reads the high one, so it is dead on the forward
+    // slice and fires under reverse evaluation.
     let c_gates: Vec<XGate> = main.gates.iter().map(|&g| XGate::from_g57(g)).collect();
-    let s1 = sandwich_slice_gates(n, s, rng);
+    let s1 = sandwich_slice_gates(n, s, false, rng);
     let mut out = random_interleave(c_gates, s1, rng);
 
-    // N step: y ^= x.
+    // N step: y ^= x (classic, the answer is copied UP into the register) or
+    // x ^= y (balanced, the register is XORed DOWN onto the answer, which is
+    // already in place). Either way the answer half ends up masked by the
+    // other half off-slice, and untouched on the slice.
+    let n_start = out.len();
     for i in 0..n {
-        out.push(XGate::cnot((n + i) as u16, i as u16));
+        out.push(if balanced {
+            XGate::cnot(i as u16, (n + i) as u16)
+        } else {
+            XGate::cnot((n + i) as u16, i as u16)
+        });
     }
 
-    // Block 2: D interleaved with S2.
-    let s2 = sandwich_slice_gates(n, s, rng);
-    out.extend(random_interleave(d_gates.to_vec(), s2, rng));
+    // Block 2: D interleaved with S2. The balanced variant lifts D onto the
+    // high half and mirrors S2 with it (targets high, reads low), so block 2
+    // writes only the high half and the forward answer in the low half is
+    // frozen from N onwards.
+    let s2 = sandwich_slice_gates(n, s, balanced, rng);
+    let d_placed: Vec<XGate> = if balanced {
+        d_gates.iter().map(|g| shift_xgate_wires(g, n)).collect()
+    } else {
+        d_gates.to_vec()
+    };
+    out.extend(random_interleave(d_placed, s2, rng));
 
     // Final float stage: the N column is the sandwich's most
     // structure-revealing part (the C|N|D seam). Each of its CNOTs is
@@ -14461,12 +14602,16 @@ pub fn sliced_sandwich_with_d(
     // matters: float passes repeat until a fixpoint, and a gate always
     // continues in ITS direction, so gates never oscillate and any gate
     // unblocked by another's departure keeps drifting the same way. The N
-    // gates are exactly the gates targeting the second half (C, D, S1, S2
-    // all target 0..n) and mutually commute (they pass each other freely);
-    // every hop is a commuting swap, so A's function and all slice/inverse
-    // guarantees are unchanged.
-    let mut floaters: Vec<(usize, bool)> = (0..out.len())
-        .filter(|&i| (out[i].target as usize) >= n)
+    // gates mutually commute in both variants (distinct targets, and every
+    // control sits in the opposite half from every target), so they pass
+    // each other freely; every hop is a commuting swap, so A's function and
+    // all slice/inverse guarantees are unchanged.
+    // The column is addressed by its recorded insertion range rather than by
+    // "targets the high half": that filter identifies exactly the N gates in
+    // the classic variant only, and picks out D/S2 instead in the balanced
+    // one. Over the classic layout the two agree gate for gate and draw for
+    // draw, so classic seeds still reproduce their circuits bit for bit.
+    let mut floaters: Vec<(usize, bool)> = (n_start..n_start + n)
         .map(|i| (i, rng.random_bool(0.5)))
         .collect();
     floaters.shuffle(rng);
@@ -14490,10 +14635,16 @@ pub fn sliced_sandwich_with_d(
         }
     }
 
-    CnotCircuit {
-        gates: out,
-        num_wires: total,
-    }
+    let mut positions: Vec<usize> = floaters.iter().map(|&(p, _)| p).collect();
+    positions.sort_unstable();
+
+    (
+        CnotCircuit {
+            gates: out,
+            num_wires: total,
+        },
+        positions,
+    )
 }
 
 fn rand_feistal_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
@@ -19519,7 +19670,7 @@ mod cnot_gadget_tests {
         let mask = (1u64 << n) - 1;
         for seed in 0..8u64 {
             let mut rng = StdRng::seed_from_u64(0x5a2d_0000 + seed);
-            let block = sandwich_slice_gates(n, 5 * n, &mut rng);
+            let block = sandwich_slice_gates(n, 5 * n, false, &mut rng);
             for g in &block {
                 assert!(!g.comp);
                 assert!((g.target as usize) < n, "targets in the first half");
@@ -19537,6 +19688,33 @@ mod cnot_gadget_tests {
     }
 
     #[test]
+    fn mirrored_sandwich_slice_gates_are_dead_on_the_zero_first_half() {
+        // The balanced variant's S2: the same block reflected through the
+        // halves — targets high, reads low, dead when the FIRST half is zero.
+        let n = 4;
+        let mask = (1u64 << n) - 1;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a3d_0000 + seed);
+            let block = sandwich_slice_gates(n, 5 * n, true, &mut rng);
+            for g in &block {
+                assert!(!g.comp);
+                assert!((g.target as usize) >= n, "targets in the second half");
+                assert!((g.target as usize) < 2 * n, "targets stay on 2n wires");
+                assert!(g.ctrls.iter().all(|&(_, p)| p), "positive controls");
+                assert!(
+                    g.ctrls.iter().any(|&(w, _)| (w as usize) < n),
+                    "every gate reads a first-half wire"
+                );
+            }
+            // First half zero => identity on any second-half value.
+            for y in 0..=mask {
+                let state = y << n;
+                assert_eq!(eval_u64(&block, state), state, "dead on the zero slice");
+            }
+        }
+    }
+
+    #[test]
     fn sliced_sandwich_computes_c_on_the_second_half_on_the_zero_slice() {
         let n = 3;
         let mask = (1u64 << n) - 1;
@@ -19546,7 +19724,7 @@ mod cnot_gadget_tests {
         };
         for seed in 0..8u64 {
             let mut rng = StdRng::seed_from_u64(0x5a4d_0000 + seed);
-            let a = sliced_sandwich_cnot(&main, n, 12, 4 * n, &mut rng);
+            let a = sliced_sandwich_cnot(&main, n, 12, 4 * n, SandwichVariant::Classic, &mut rng);
             assert_eq!(a.num_wires, 2 * n);
 
             // Zero slice: the second half carries C(x).
@@ -19574,28 +19752,51 @@ mod cnot_gadget_tests {
 
     #[test]
     fn sliced_sandwich_floats_the_middle_column_into_a_band() {
-        // After the float stage the N CNOTs (the only gates targeting the
-        // second half) must no longer sit as one contiguous column: their
-        // positions should straddle other material on both sides for at
-        // least some gates, under every seed.
+        // After the float stage the N CNOTs must no longer sit as one
+        // contiguous column: their positions should straddle other material
+        // on both sides for at least some gates, under every seed and in
+        // either variant.
         let n = 6;
         let main = CircuitSeq {
             gates: (0..24)
                 .map(|k| [(k % n) as u16, ((k + 1) % n) as u16, ((k + 2) % n) as u16])
                 .collect(),
         };
-        for seed in 0..8u64 {
-            let mut rng = StdRng::seed_from_u64(0x5a6d_0000 + seed);
-            let a = sliced_sandwich_cnot(&main, n, 20, 4 * n, &mut rng);
-            let positions: Vec<usize> = (0..a.gates.len())
-                .filter(|&i| (a.gates[i].target as usize) >= n)
-                .collect();
-            assert_eq!(positions.len(), n, "exactly the n column CNOTs");
-            let span = positions.last().unwrap() - positions.first().unwrap();
-            assert!(
-                span > n,
-                "seed={seed:#x}: column still contiguous (span {span})"
-            );
+        for variant in [SandwichVariant::Classic, SandwichVariant::Balanced] {
+            for seed in 0..8u64 {
+                let mut rng = StdRng::seed_from_u64(0x5a6d_0000 + seed);
+                let d_gates = random_g57_xgates(n, 20, &mut rng);
+                let (a, positions) =
+                    sliced_sandwich_build(&main, &d_gates, n, 4 * n, variant, &mut rng);
+                assert_eq!(positions.len(), n, "exactly the n column CNOTs");
+                if variant == SandwichVariant::Classic {
+                    // In the classic layout the column is exactly the set of
+                    // gates targeting the second half — the identification the
+                    // float stage used before the variants existed.
+                    let by_target: Vec<usize> = (0..a.gates.len())
+                        .filter(|&i| (a.gates[i].target as usize) >= n)
+                        .collect();
+                    assert_eq!(positions, by_target, "tracked column == high-target gates");
+                }
+                for &p in &positions {
+                    let g = &a.gates[p];
+                    assert_eq!(g.ctrls.len(), 1, "the column is CNOTs");
+                    let (control, polarity) = g.ctrls[0];
+                    assert!(polarity);
+                    let (target, control) = (g.target as usize, control as usize);
+                    if variant.is_balanced() {
+                        assert_eq!(control, target + n, "balanced N is x_i ^= y_i");
+                    } else {
+                        assert_eq!(target, control + n, "classic N is y_i ^= x_i");
+                    }
+                }
+                let span = positions.last().unwrap() - positions.first().unwrap();
+                assert!(
+                    span > n,
+                    "variant={:?} seed={seed:#x}: column still contiguous (span {span})",
+                    variant
+                );
+            }
         }
     }
 
@@ -19608,7 +19809,7 @@ mod cnot_gadget_tests {
         };
         for seed in 0..8u64 {
             let mut rng = StdRng::seed_from_u64(0x5a5d_0000 + seed);
-            let a = sliced_sandwich_cnot(&main, n, 10, 4 * n, &mut rng);
+            let a = sliced_sandwich_cnot(&main, n, 10, 4 * n, SandwichVariant::Classic, &mut rng);
             let inverse: Vec<XGate> = a.gates.iter().rev().cloned().collect();
             // The inverse computes some permutation on the second half on the
             // zero slice (D^-1 up to the dead S2); check it is a bijection x
@@ -19622,6 +19823,79 @@ mod cnot_gadget_tests {
                 mask + 1,
                 "inverse second-half map is a bijection on the zero slice"
             );
+        }
+    }
+
+    #[test]
+    fn balanced_sliced_sandwich_computes_c_on_the_first_half_on_the_zero_slice() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let full = (1u64 << (2 * n)) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5b4d_0000 + seed);
+            let a = sliced_sandwich_cnot(&main, n, 12, 4 * n, SandwichVariant::Balanced, &mut rng);
+            assert_eq!(a.num_wires, 2 * n);
+
+            // Zero slice: the FIRST half carries C(x); D and S2 write only
+            // the second half, so nothing after block 1 can touch it.
+            for x in 0..=mask {
+                let expected = main.evaluate(x as usize) as u64 & mask;
+                assert_eq!(eval_u64(&a.gates, x) & mask, expected, "A(x,0)");
+            }
+            // A is a permutation of the whole 2n-bit space.
+            let mut seen = std::collections::HashSet::new();
+            for input in 0..=full {
+                assert!(seen.insert(eval_u64(&a.gates, input)), "A not injective");
+            }
+            // Off-slice, the first-half output is y-masked by the flipped N
+            // column and differs from C(x) on some nonzero slice.
+            let differs = (1..=mask).any(|y| {
+                (0..=mask).any(|x| {
+                    let input = x | (y << n);
+                    let expected = main.evaluate(x as usize) as u64 & mask;
+                    eval_u64(&a.gates, input) & mask != expected
+                })
+            });
+            assert!(differs, "seed={seed:#x}: no off-slice disturbance");
+        }
+    }
+
+    #[test]
+    fn balanced_sliced_sandwich_inverse_reveals_d_inverse_on_the_mirrored_slice() {
+        // The balanced inverse is sliced at x = 0 (not y = 0), and there the
+        // second half carries D^-1 exactly: S2 is dead with the first half
+        // zero, so D^-1 runs clean, and the reversed block 1 junks only the
+        // first half.
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5b5d_0000 + seed);
+            let d_gates = random_g57_xgates(n, 10, &mut rng);
+            let a = sliced_sandwich_with_d(
+                &main,
+                &d_gates,
+                n,
+                4 * n,
+                SandwichVariant::Balanced,
+                &mut rng,
+            );
+            let inverse: Vec<XGate> = a.gates.iter().rev().cloned().collect();
+            for q in 0..=mask {
+                let out = eval_u64(&inverse, q << n);
+                let recovered = (out >> n) & mask;
+                // D(D^-1(q)) == q, with D read on its own low-half copy.
+                assert_eq!(
+                    eval_u64(&d_gates, recovered) & mask,
+                    q,
+                    "seed={seed:#x}: A^-1(0,q) second half is not D^-1(q)"
+                );
+            }
         }
     }
 

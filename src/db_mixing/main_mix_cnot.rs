@@ -21,7 +21,8 @@ use crate::{
     postprocessing::compress::{CompressParams, compress},
     preprocessing::{
         gadgets::{
-            CnotCircuit, MaskConfig, ProdConfig, feistalize_cnot, feistalize_with_slice_zero_cnot,
+            CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, feistalize_cnot,
+            feistalize_with_slice_zero_cnot,
             feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
             gadgetize_cnot, gadgetize_cnot_five_carrier, gadgetize_cnot_seven_carrier,
             gadgetize_cnot_single, gadgetize_cnot_six_carrier, gadgetize_cnot_strong_five_carrier,
@@ -41,9 +42,12 @@ enum FunctionView {
     Whole,
     GadgetLow,
     FeistalMiddle,
-    // Sliced sandwich: on the zero slice (second half = 0) the answer C(x)
-    // exits on the HIGH n wires.
+    // Sliced sandwich (classic): on the zero slice (second half = 0) the
+    // answer C(x) exits on the HIGH n wires.
     SandwichSecond,
+    // Sliced sandwich (balanced): the slice is the same zero second half,
+    // but D has moved there and the answer C(x) stays on the LOW n wires.
+    SandwichFirst,
 }
 
 pub struct CnotSssParams<'a> {
@@ -68,6 +72,9 @@ pub struct CnotSssParams<'a> {
     pub slice_zero_ccnot: bool,
     pub slice_zero_ccnot_gates: usize,
     pub sliced_sandwich: bool,
+    /// Build the balanced sandwich variant (N flipped to `x ^= y`, D and S2
+    /// mirrored onto the high half) instead of the classic one.
+    pub sandwich_balanced: bool,
     pub sandwich_m: usize,
     pub sandwich_s: usize,
     pub gadget_path: Option<&'a str>,
@@ -190,8 +197,10 @@ fn functionality_check(
                     input |= public_y << n;
                 }
                 // The sliced sandwich's slice is the zero second half; pin
-                // it (public_y is 0 here).
-                FunctionView::SandwichSecond => {
+                // it (public_y is 0 here). Both variants slice there in the
+                // forward direction — they differ only in which half the
+                // answer comes out on.
+                FunctionView::SandwichSecond | FunctionView::SandwichFirst => {
                     input &= low_mask;
                     input |= public_y << n;
                 }
@@ -211,6 +220,9 @@ fn functionality_check(
             }
             // On the zero slice the answer C(x) lands on the high n wires.
             FunctionView::SandwichSecond => (actual >> n) & low_mask == original_output,
+            // ... and on the low n wires in the balanced variant, where the
+            // high half hosts D and collects the junk.
+            FunctionView::SandwichFirst => actual & low_mask == original_output,
         };
         if !matches {
             return Err(format!(
@@ -348,6 +360,10 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     assert!(
         (p.do_gadgetize as u8) + (p.do_feistalize as u8) + (p.sliced_sandwich as u8) <= 1,
         "--gadgetize, --feistalize and --sliced-sandwich are mutually exclusive"
+    );
+    assert!(
+        !p.sandwich_balanced || p.sliced_sandwich,
+        "--sandwich-balanced selects a --sliced-sandwich variant and needs it"
     );
     if p.five_carrier || p.strong_five_carrier {
         assert!(
@@ -598,11 +614,34 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         }
     } else if p.sliced_sandwich {
         fixed_slice = Some((U1024::zero(), U1024::zero()));
-        (
-            sliced_sandwich_cnot(original, p.n, p.sandwich_m, p.sandwich_s, &mut rng),
-            FunctionView::SandwichSecond,
-            "sliced sandwich (answer on wires n..2n on the zero slice)",
-        )
+        if p.sandwich_balanced {
+            (
+                sliced_sandwich_cnot(
+                    original,
+                    p.n,
+                    p.sandwich_m,
+                    p.sandwich_s,
+                    SandwichVariant::Balanced,
+                    &mut rng,
+                ),
+                FunctionView::SandwichFirst,
+                "balanced sliced sandwich (answer on wires 0..n on the zero slice; \
+                 the inverse reveals D^-1 on wires n..2n on the mirrored slice x=0)",
+            )
+        } else {
+            (
+                sliced_sandwich_cnot(
+                    original,
+                    p.n,
+                    p.sandwich_m,
+                    p.sandwich_s,
+                    SandwichVariant::Classic,
+                    &mut rng,
+                ),
+                FunctionView::SandwichSecond,
+                "sliced sandwich (answer on wires n..2n on the zero slice)",
+            )
+        }
     } else {
         (
             CnotCircuit {
@@ -902,6 +941,7 @@ mod tests {
                     18
                 },
                 sliced_sandwich: false,
+                sandwich_balanced: false,
                 sandwich_m: 12,
                 sandwich_s: 6,
                 gadget_path: Some(gadget.to_str().unwrap()),

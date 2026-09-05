@@ -208,6 +208,15 @@ fn add_shoot_args(c: Command) -> Command {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("sandwich_balanced")
+                        .long("sandwich-balanced")
+                        .alias("sandwich_balanced")
+                        .required(false)
+                        .requires("sliced_sandwich")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("(--sliced-sandwich) Build the BALANCED variant: the N column flips to x^=y and the D block plus its slice block S2 move to the second half, so each half hosts one computation. On the zero slice A(x,0)=(C(x), junk) with the answer on wires 0..n; the inverse is sliced at x=0 instead and gives A^-1(0,q)=(junk, D^-1(q)) on wires n..2n"),
+                )
+                .arg(
                     Arg::new("sandwich_m")
                         .long("sandwich-m")
                         .alias("sandwich_m")

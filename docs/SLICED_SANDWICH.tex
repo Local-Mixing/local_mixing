@@ -14,7 +14,8 @@
 \title{\textbf{The Sliced Sandwich Construction}\\[2pt]
 \large A two-sided keyed slicing mechanism on $2n$ wires}
 \author{local\_mixing project}
-\date{July 20, 2026 \\ \small branch \code{ssg-gen-mix-clean}}
+\date{July 20, 2026; balanced variant September 4, 2026 \\
+\small branch \code{ssg-gen-mix-clean}}
 
 \begin{document}
 \maketitle
@@ -27,8 +28,12 @@ a slicing mechanism specific to the sandwich structure and is distinct from
 the gadget and feistel paths: it uses no secret sharing, placing $C$ and a
 random padding computation $D$ as plaintext g57 circuits on the low half of
 $2n$ wires, with two slice blocks of \CNOT/\CCNOT{} gates interleaved through
-the two computations. This note gives the construction, its slice semantics
-in both directions, the rationale, and its parameters.
+the two computations. It comes in two variants, selected by a choice bit: the
+original \emph{classic} layout, in which both computations share the low half
+and both directions read out on the high one, and a \emph{balanced} layout, in
+which each half hosts one computation and each direction has its own slice and
+its own answer half. This note gives both constructions, their slice semantics
+in both directions, the rationale, and the parameters.
 \end{abstract}
 
 \section{Wires and structure}
@@ -51,7 +56,8 @@ obfuscation comes from the subsequent mixing.
 $0..n{-}1$, the \emph{same design} as the $C$ block (target and two distinct
 controls per gate). Default $m = n(\log_2 n)^2$.
 \item \textbf{$N$} --- the copy step $y \mathrel{\hat{}}= x$: the $n$ \CNOT{}s
-$\;\text{wire } (n{+}i) \mathrel{\hat{}}= \text{wire } i$.
+$\;\text{wire } (n{+}i) \mathrel{\hat{}}= \text{wire } i$. (This is the
+classic direction; see \S\ref{sec:balanced}.)
 \item \textbf{$S_1, S_2$} --- two independent slice blocks of $s$ gates each
 (default $s = n\log_2 n$). Every gate targets the first half and reads at
 least one second-half wire with positive polarity:
@@ -66,7 +72,7 @@ preserves each computation's internal order (necessary for $C$ and $D$ to
 compute correctly).
 \end{itemize}
 
-\section{Slice semantics}
+\section{Slice semantics (classic)}
 
 \subsection{Forward: the slice reveals $C$}
 
@@ -117,6 +123,91 @@ guarantees the output differs from the clean answer $C(x)$ on every nonzero
 slice, independently of whether the disturbance $C'$ happens to coincide with
 $C$ at a given $x$.
 
+\section{The balanced variant}
+\label{sec:balanced}
+
+The \emph{balanced} variant changes two things and leaves everything else ---
+$C$, $S_1$, the interleaving, the float stage --- untouched:
+
+\begin{itemize}
+\item the copy step flips direction, $N: x \mathrel{\hat{}}= y$
+      (\;$\text{wire } i \mathrel{\hat{}}= \text{wire } (n{+}i)$\;), and
+\item the $D$ block moves to the second half, $D'$ on wires $n..2n{-}1$.
+\end{itemize}
+
+\noindent A third change is forced by those two: $S_2$ must \emph{mirror} with
+$D$, targeting the second half and reading the first,
+\[
+\underbrace{y_i \mathrel{\hat{}}= x_j}_{\text{\CNOT, }\approx 1/3}
+\qquad
+\underbrace{y_i \mathrel{\hat{}}= y_j \wedge x_k}_{\text{\CCNOT, rest}}
+\]
+so that $S_2'$ is dead when the \emph{first} half is zero. Otherwise $S_2$
+would fire as soon as $D'$ makes the second half nonzero, and would overwrite
+the forward answer, which in this layout stays in the first half. So
+\[
+A \;=\; \bigl[\, C \parallel S_1 \,\bigr]\;;\;\; N(x \mathrel{\hat{}}= y) \;;\;\;
+        \bigl[\, D' \parallel S_2' \,\bigr].
+\]
+
+\subsection{Forward: the slice reveals $C$ on the first half}
+
+On the same zero slice $y=0$, from $(x,0)$:
+\[
+(x,0)
+\xrightarrow{\;C \parallel S_1\;} (C(x),\,0)
+\xrightarrow{\;N\;} (C(x),\,0)
+\xrightarrow{\;D' \parallel S_2'\;} (C(x),\,\text{junk}).
+\]
+Block 1 is unchanged, so $S_1$ is dead and $C$ computes correctly; the flipped
+copy step is then a no-op on the slice; and block 2 writes \emph{only} the
+second half, so the answer is frozen where block 1 left it:
+\[
+\boxed{\,A(x,0) = (C(x),\,\text{junk})\,}
+\]
+with the answer on the first half. Where the classic variant protects the
+answer by moving it into a register that the second block never targets, the
+balanced variant protects it by leaving it in a half that the second block
+never targets.
+
+\subsection{Inverse: the mirrored slice reveals $D^{-1}$}
+
+The inverse is sliced at $x=0$, not $y=0$. On input $(0,q)$:
+\[
+(0,q)
+\xrightarrow{\;(D' \parallel S_2')^{-1}\;} (0,\,D^{-1}(q))
+\xrightarrow{\;N\;} (D^{-1}(q),\,D^{-1}(q))
+\xrightarrow{\;(C \parallel S_1)^{-1}\;} (\text{junk},\,D^{-1}(q)).
+\]
+$S_2'$ is dead because the first half is zero, so $D^{-1}$ computes cleanly on
+the second half; $N$ copies it down; and the reversed block 1 --- $C^{-1}$ with
+$S_1$ now firing on a nonzero second half --- junks the first half only. Hence
+\[
+\boxed{\,A^{-1}(0,q) = (\text{junk},\, D^{-1}(q)).\,}
+\]
+
+\subsection{Off-slice}
+
+For $y \neq 0$ the first-half output is $C'(x,y) \oplus y$ with $C'$ the
+$S_1$-disturbed computation: the flipped copy step supplies exactly the same
+$y\oplus$ masking as the classic one, now on the answer half, so no nonzero
+slice yields the clean answer.
+
+\subsection{What is balanced, and what it costs}
+
+Each half now hosts one computation and is one direction's payload: the
+classic layout's low half is a shared workspace and its high half a pure
+answer register, whereas here $C$ owns the first half and $D$ the second.
+The two directions consequently have \emph{different} slices ($y=0$ forward,
+$x=0$ backward), where the classic construction slices both at $y=0$.
+
+Equivalently: the classic layout has a half --- the low one --- that is junk
+in \emph{both} directions, and the balanced layout has none. One asymmetry
+comes with it: on the forward slice the $D'$ lane starts from the constant $0$
+rather than from live data, so its junk output is a function of $x$ only
+through the $S_2'$ injections, whereas the classic layout's junk half starts
+from $C(x)$ and runs $D$ on it.
+
 \section{Rationale}
 
 \textbf{Why interleave rather than prepend.} In the plain gadget path the
@@ -149,14 +240,20 @@ symbol & meaning & default \\
 $n$ & wires of the source function (circuit is $2n$ wires) & --- \\
 $m$ & gates in the random $D$ computation & $n(\log_2 n)^2$ \\
 $s$ & gates in each slice block $S_1, S_2$ & $n\log_2 n$ \\
+variant & \code{classic} or \code{balanced} (\S\ref{sec:balanced}) & \code{classic} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \noindent Requires $n \ge 3$ (g57 gates need three distinct wires). Invocation:
 \begin{quote}
-\code{sss --cnot --sliced-sandwich -n <n> {-}{-}sandwich-m <m> {-}{-}sandwich-s <s> \dots}
+\code{sss --cnot --sliced-sandwich -n <n> {-}{-}sandwich-m <m> {-}{-}sandwich-s <s>
+[{-}{-}sandwich-balanced] \dots}
 \end{quote}
+\noindent The variant is chosen per run, never per build, and defaults to
+\code{classic} everywhere. For \code{gen\_sandwich\_gadget} it is the final
+positional argument or the environment variable \code{SANDWICH\_VARIANT}
+(an explicit positional wins).
 The transformed size before mixing is
 $\lvert C\rvert + m + n + 2s$ gates
 (source, $D$, copy step, two slice blocks); e.g.\ for $n=8$ with a $40$-gate
@@ -165,18 +262,29 @@ $40+72=112$ are g57.
 
 \section{Verification}
 
-The driver checks the pinned contract (the \code{SandwichSecond} view: the
+The driver checks the pinned contract after transformation and after every
+mixing round: the \code{SandwichSecond} view for the classic variant (the
 second half of the input is forced to zero and the second-half output must
-equal $C(x)$) after transformation and after every mixing round. Three unit
-tests cover slice-gate deadness, the forward slice contract with a
-permutation check, and the inverse's second-half bijection on the slice.
+equal $C(x)$) and the \code{SandwichFirst} view for the balanced one (same
+pinned slice, first-half output must equal $C(x)$). Unit tests cover
+slice-gate deadness on both sides, each variant's forward slice contract with
+a permutation check, the classic inverse's second-half bijection on the slice,
+the balanced inverse's exact recovery of $D^{-1}$ on the mirrored slice, and
+the float stage's band for both variants.
 
 \vspace{6pt}
-\noindent\textbf{Provenance.} Code: \code{sliced\_sandwich\_cnot},
-\code{random\_g57\_xgates}, \code{sandwich\_slice\_gates},
+\noindent\textbf{Provenance.} Code: \code{SandwichVariant},
+\code{sliced\_sandwich\_cnot}, \code{sliced\_sandwich\_with\_d},
+\code{sliced\_sandwich\_build}, \code{random\_g57\_xgates},
+\code{sandwich\_slice\_gates}, \code{shift\_xgate\_wires},
 \code{random\_interleave} in \code{src/preprocessing/gadgets.rs}; driver branch and
-\code{FunctionView::SandwichSecond} in \code{src/db\_mixing/main\_mix\_cnot.rs};
-flags in \code{src/main.rs} and \code{src/commands/sss.rs}. Companion
-quick-reference: \code{docs/SLICED\_SANDWICH.md}.
+\code{FunctionView::SandwichSecond} / \code{FunctionView::SandwichFirst} in
+\code{src/db\_mixing/main\_mix\_cnot.rs}; flags in \code{src/main.rs} and
+\code{src/commands/sss.rs}; variant argument in
+\code{src/preprocessing/bin/gen\_sandwich\_gadget.rs}. Classic circuits are
+unchanged: the choice bit defaults to \code{classic} and the builder draws the
+same values in the same order as before, so a classic seed still reproduces
+its circuit bit for bit. Companion quick-reference:
+\code{docs/SLICED\_SANDWICH.md}.
 
 \end{document}

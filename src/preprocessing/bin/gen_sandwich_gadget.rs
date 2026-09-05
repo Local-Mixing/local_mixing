@@ -15,10 +15,20 @@
 //! data wires exactly (verified on wires 0..2n), so its aux layout is n+R+1,
 //! not the doubled 4n of the zero-slice gadgetizers.
 //!
+//! `sandwich_variant=balanced` builds the mirrored sandwich instead: the N
+//! column flips to `x ^= y` and D (with its slice block S2) moves to the high
+//! half, so A(x,0)=(C(x), junk) with the payload on the LOW half and the
+//! inverse sliced at x=0 instead.
+//!
 //! Usage: gen_sandwich_gadget <out> [n=128] [m_C=3000] [m_D=3000]
 //!                            [s=n*log2 n] [rg_freq=1] [slice_gates=10*2n]
 //!                            [seed=1] [gadget_seed=seed] [sandwich_seed=seed]
 //!                            [gadgetization_mode=product-2223]
+//!                            [sandwich_variant=classic]
+//!
+//! The variant is also settable as `SANDWICH_VARIANT=classic|balanced`, so it
+//! can be chosen without spelling out the ten positionals ahead of it; an
+//! explicit positional wins over the environment.
 //!
 //! `seed` fixes C only (fastrand); `sandwich_seed` drives D + slicing +
 //! N-float (default = seed); `gadget_seed` drives the gadgetization only.
@@ -37,7 +47,7 @@ use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shu
 use local_mixing::engine::format::write_mpmct;
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
 use local_mixing::preprocessing::gadgets::{
-    CnotCircuit, MaskConfig, ProdConfig, slice_zero_junk_guard_dims,
+    CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, slice_zero_junk_guard_dims,
     gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier,
@@ -232,9 +242,22 @@ fn main() {
                 "unknown gadgetization mode; expected product-2223, nonlinear193, or nonlinear291"
             )
         });
+    // Chosen per run, never per build: the final positional argument, or
+    // SANDWICH_VARIANT for callers that would otherwise have to spell out all
+    // ten preceding positionals to reach it. Absent both, classic.
+    let variant = a
+        .next()
+        .or_else(|| std::env::var("SANDWICH_VARIANT").ok())
+        .as_deref()
+        .map(|value| {
+            SandwichVariant::parse(value).unwrap_or_else(|| {
+                panic!("unknown sandwich variant {value:?}; expected classic or balanced")
+            })
+        })
+        .unwrap_or(SandwichVariant::Classic);
     assert!(
         a.next().is_none(),
-        "too many arguments; gadgetization mode is the final optional argument"
+        "too many arguments; the sandwich variant is the final optional argument"
     );
     if let Some(mode) = gadgetization_mode.nonlinear() {
         let sandwich_gate_count = m_c
@@ -263,8 +286,9 @@ fn main() {
     }
 
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={seed} gadget_seed={gadget_seed} sandwich_seed={sandwich_seed} gadgetization_mode={}",
-        gadgetization_mode.canonical_name()
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={seed} gadget_seed={gadget_seed} sandwich_seed={sandwich_seed} gadgetization_mode={} sandwich_variant={}",
+        gadgetization_mode.canonical_name(),
+        variant.name()
     );
 
     // Fresh random g57 source C (fastrand-seeded, matching sandwich_compare).
@@ -281,11 +305,17 @@ fn main() {
     );
     let mut rng = StdRng::seed_from_u64(sandwich_seed ^ 0x5150_1CED);
 
-    let sandwich = sliced_sandwich_cnot(&c, n, m_d, s, &mut rng);
+    let sandwich = sliced_sandwich_cnot(&c, n, m_d, s, variant, &mut rng);
     println!(
-        "[gen] sliced sandwich: {} gates, {} wires",
+        "[gen] {} sliced sandwich: {} gates, {} wires (payload on wires {} on the zero slice)",
+        variant.name(),
         sandwich.gates.len(),
-        sandwich.num_wires
+        sandwich.num_wires,
+        if variant.is_balanced() {
+            format!("0..{n}")
+        } else {
+            format!("{n}..{}", 2 * n)
+        }
     );
     let a_path = format!("{out}.sandwich.mpmct1");
     write_mpmct(&a_path, &sandwich.gates, sandwich.num_wires).expect("write sandwich");

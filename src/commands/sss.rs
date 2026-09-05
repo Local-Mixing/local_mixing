@@ -49,6 +49,7 @@ pub fn run(sub: &clap::ArgMatches) {
         .copied()
         .unwrap_or(SLICE_ZERO_CCNOT_GATES_PER_WIRE * n);
     let sliced_sandwich = sub.get_flag("sliced_sandwich");
+    let sandwich_balanced = sub.get_flag("sandwich_balanced");
     let sandwich_m: usize = sub
         .get_one("sandwich_m")
         .copied()
@@ -177,6 +178,7 @@ pub fn run(sub: &clap::ArgMatches) {
             slice_zero_ccnot,
             slice_zero_ccnot_gates,
             sliced_sandwich,
+            sandwich_balanced,
             sandwich_m,
             sandwich_s,
             gadget_path,
