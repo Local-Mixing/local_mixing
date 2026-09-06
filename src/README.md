@@ -9,15 +9,17 @@ n -> sliced sandwich -> gadgetize -> Phase A -> split -> crossing walk -> fcompr
      preprocessing/                 db_mixing/     postprocessing/
 ```
 
-The deliverable is the **packed canonical form** (`final.anf1`,
+The deliverable is the **packed canonical form** (`final.esop1`,
 `engine/format.rs`): one generalized gate per maximal same-target run of the
-compressed circuit, its activation function spelled in algebraic normal form
-(`<target> <n> [<degree> <wires…>]*`, monomials sorted by (degree, wires)) —
-the unique representation of the function, so nothing of the upstream cube
-spelling survives. `format::read_mpmct` loads `anf1` files transparently (as
-the monomial expansion), so every mpmct1 consumer accepts them;
-`fcompress --no-pack` writes the mpmct1 cube circuit instead. Details and
-measurements: `docs/FCOMPRESS_TRANSPORT_AND_PACKING.md`, `docs/POSTMIX_MANUAL.md` §3.
+compressed circuit, its activation function brought to algebraic normal form
+(the unique representation) and compacted into a mixed-polarity ESOP by a
+deterministic procedure that reads the ANF alone — so there is one spelling
+per function and nothing of the upstream cube spelling survives. Format:
+`<target> <n> [<width> <wire> <pol>…]*` per line, terms sorted by (size,
+literals). `format::read_mpmct` loads `esop1` files transparently (as the
+term expansion), so every mpmct1 consumer accepts them; `fcompress --no-pack`
+writes the mpmct1 cube circuit instead. Details and measurements:
+`docs/FCOMPRESS_TRANSPORT_AND_PACKING.md`, `docs/POSTMIX_MANUAL.md` §3.
 
 Only three production executables are used by `scripts/gss_mix.sh`:
 

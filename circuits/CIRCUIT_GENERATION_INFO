@@ -862,33 +862,40 @@ Verification:
   Sanitized on delivery: header + gate lines only (verified 1614661 gate lines, 0 stray
   lines, no non-numeric line besides the header).
 ----------------------------------------------------------------
-2026-09-06 circuits/bv5gss128_k2h30_2eff_final_fc2.anf1
+2026-09-06 circuits/bv5gss128_k2h30_2eff_final_fc2.esop1
   Source: Mac, PACKED canonical form of circuits/bv5gss128_k2h30_2eff_final_fc2.mpmct1
-  (the 2026-09-05 re-compression of the K2 hold-30 2-eff deliverable) produced by
+  (the 2026-09-05 re-compression of the K2 hold-30 2-eff deliverable), produced by
   fcompress --input <that> --max-iters 0 --output <this> (the packer alone; packing is
-  fcompress's default output as of this commit). Format anf1 (src/engine/format.rs,
+  fcompress's default output). Format esop1 (src/engine/format.rs,
   docs/FCOMPRESS_TRANSPORT_AND_PACKING.md §4): one generalized gate per maximal
-  same-target run, activation function in algebraic normal form, monomials sorted by
-  (degree, wires) -- the unique spelling of each function; nothing of the upstream cube
-  representation survives. Same FUNCTION as the source on every wire.
-  Sizes: 1607266 cubes -> 347055 packed gates (21.6%), 3820336 monomials (2.38x cubes),
-  41.2 MB raw (xz -9: 8.58 MB vs 6.51 MB for the cube form).
+  same-target run; its activation function brought to algebraic normal form (the unique
+  representation) and COMPACTED into a mixed-polarity ESOP by the deterministic reducer
+  strategies from the ANF alone, so one spelling per function; terms sorted by (size,
+  literals). Nothing of the upstream cube representation survives. Same FUNCTION as the
+  source on every wire.
+  Sizes: 1607266 cubes -> 347055 packed gates (21.6%); ANF 3820336 monomials ->
+  1744830 compacted terms (1.09x the source cubes), 3996105 literals; 28.8 MB raw
+  (xz -9: 6.18 MB vs 6.51 MB for the cube form). 12 runs with support > 63 wires
+  are kept in ANF (still canonical).
   Gates: 347055 packed, wires: 512. Zero-slice: as the source.
   Verification: fcompress global check of the packed expansion (16 rounds x 64 lanes) +
-  independent pure-python anf1 evaluator (no shared code) on 2048 fully random 512-wire
-  inputs vs the cube-form source: EQUAL on every wire.
+  independent pure-python esop1 evaluator (no shared code) on 2048 fully random
+  512-wire inputs vs the cube-form source: EQUAL on every wire.
   Seed: none (nothing secret was used). Sanitized on delivery: header + gate lines only
-  (verified 347055 gate lines, 0 stray lines; every monomial sorted, distinct, in range).
+  (verified 347055 gate lines, 0 stray lines; every term sorted, distinct wires, in
+  range; terms in canonical order).
 ----------------------------------------------------------------
-2026-09-06 circuits/bv5gss128_bal_k2_2eff_final_fc2.anf1
+2026-09-06 circuits/bv5gss128_bal_k2_2eff_final_fc2.esop1
   Source: Mac, PACKED canonical form of circuits/bv5gss128_bal_k2_2eff_final_fc2.mpmct1
   (the 2026-09-05 re-compression of the BALANCED K2 2-eff deliverable), produced and
   formatted exactly as the entry above.
-  Sizes: 1614661 cubes -> 351546 packed gates (21.8%), 3840880 monomials (2.38x cubes),
-  41.6 MB raw (xz -9: 8.66 MB vs 6.56 MB for the cube form).
+  Sizes: 1614661 cubes -> 351546 packed gates (21.8%); ANF 3840880 monomials ->
+  1755334 compacted terms (1.09x the source cubes), 4008100 literals; 29.2 MB raw
+  (xz -9: 6.24 MB vs 6.56 MB for the cube form). 12 runs with support > 63 wires
+  kept in ANF.
   Gates: 351546 packed, wires: 512. Balanced zero-slice: as the source.
   Verification: fcompress global check of the packed expansion (16 rounds x 64 lanes) +
-  independent anf1 evaluator on 2048 fully random 512-wire inputs vs the cube-form
+  independent esop1 evaluator on 2048 fully random 512-wire inputs vs the cube-form
   source: EQUAL on every wire.
   Seed: none. Sanitized on delivery: header + gate lines only (verified 351546 gate
-  lines, 0 stray lines; every monomial sorted, distinct, in range).
+  lines, 0 stray lines; every term sorted, distinct wires, in range; canonical order).

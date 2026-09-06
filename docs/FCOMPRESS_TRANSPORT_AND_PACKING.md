@@ -23,9 +23,12 @@ inputs over all wires. Consequences: effective sizes and "residual ≳ 90%" figu
 slide back; hiding is unchanged (the pass is attacker-computable), only the honest size shrank.
 
 Packing (default output since this change) turns the 1.6M-cube 2-eff finals into ~350k
-generalized gates in algebraic normal form (ANF), at ~2.4× the term count, ~1.2× the raw bytes
-and ~1.3× the xz-compressed bytes. The gain is not space but the removal of
-representation information: the ANF is the unique spelling of each activation function.
+generalized gates. Each gate's activation function is brought to algebraic normal form (ANF,
+the unique spelling of a Boolean function) and then compacted into a mixed-polarity ESOP by a
+deterministic procedure that reads the ANF alone, so the file still has one spelling per
+function, at 1.09× the original cube count (the raw ANF would be 2.4×) and 0.95× the
+xz-compressed bytes of the cube form. The gain is not space but the removal of
+representation information.
 
 ## 2. Background: what the old pass could not see
 
@@ -138,27 +141,41 @@ wire-equality lead; the refusal policy.
 At a fixed point of the gather, every maximal run of consecutive same-target gates is one
 gathered group: a group floats to one close point and is emitted there, and runs that could
 still float together would have been merged. Packing spells each run as one generalized gate
-`t ^= f(controls)` with `f` in algebraic normal form, the XOR of positive monomials over the
-run's support, obtained by expanding every cube (a negative literal is `1 ⊕ w`, so a cube with
-`k` negative literals expands to `2^k` monomials) and cancelling duplicates; a `comp` bit is
-the constant monomial. Any support size is handled. The count of packed gates equals the run
-count; the packed file is exact (verified as part of fcompress's global check) and, like the
-rest of the pass, attacker-computable.
+`t ^= f(controls)` in two steps.
 
-### 4.2 The anf1 format
+1. **ANF.** `f` is brought to algebraic normal form, the XOR of positive monomials over the
+   run's support, by expanding every cube (a negative literal is `1 ⊕ w`, so a cube with `k`
+   negative literals expands to `2^k` monomials) and cancelling duplicates; a `comp` bit is
+   the constant monomial. Any support size is handled. The ANF is the unique representation
+   of `f`, so at this point nothing of the run's cube spelling survives.
+2. **Compaction.** The ANF is re-expressed as a mixed-polarity ESOP by the reducer's
+   deterministic strategies — the exact minimum tables for supports of at most 4 wires,
+   otherwise the best of greedy subcube cover plus maximum distance-1 matching and matching
+   alone — computed from the sorted monomial set alone, never from the cubes the ANF came
+   from. A deterministic function of the ANF is a function of `f`, so the result is still one
+   spelling per activation function; the ANF is regenerated from it whenever needed. Terms
+   are then sorted canonically. Runs whose support exceeds the 63-wire mask width (12 per
+   2-eff circuit, at most 80 wires) are left in ANF, which is canonical too.
+
+The number of packed gates equals the run count; the packed file is exact (its expansion is
+verified as part of fcompress's global check) and, like the rest of the pass,
+attacker-computable.
+
+### 4.2 The esop1 format
 
 ```
-anf1 <wires> <gates>
-<target> <n_monomials> [<degree> <w_1> ... <w_degree>]*      (one line per packed gate)
+esop1 <wires> <gates>
+<target> <n_terms> [<width> <w_1> <p_1> ... <w_width> <p_width>]*   (one line per gate)
 ```
 
-Wires ascend inside a monomial, monomials are sorted by (degree, wires), degree 0 is the
-constant 1. Example: `168 5 0 2 104 261 3 104 261 262 3 104 261 397 4 104 261 262 397` is
-`w168 ^= 1 ⊕ w104·w261 ⊕ w104·w261·w262 ⊕ w104·w261·w397 ⊕ w104·w261·w262·w397`.
-`format::read_mpmct` recognises the header and loads an anf1 file as its monomial expansion
-(one positive cube per monomial), so every existing consumer accepts packed circuits;
-`format::read_anf1` gives the packed gates themselves. `fcompress` writes anf1 by default,
-`--no-pack` writes the mpmct1 cube circuit, `--pack-census` prints the statistics below.
+Literals are (wire, polarity 0/1) as in mpmct1. Wires ascend inside a term, terms are sorted
+by (size, literals), an empty term is the constant 1. Example:
+`87 3 1 423 0 2 131 1 391 1 2 254 1 302 1` is `w87 ^= ¬w423 ⊕ w131·w391 ⊕ w254·w302`.
+`format::read_mpmct` recognises the header and loads an esop1 file as its term expansion
+(one cube gate per term), so every existing consumer accepts packed circuits;
+`format::read_packed` gives the packed gates themselves. `fcompress` writes esop1 by
+default, `--no-pack` writes the mpmct1 cube circuit, `--pack-census` prints the statistics
+below.
 
 ### 4.3 Rationale
 
@@ -166,9 +183,9 @@ The cube list the reducer emits is the catalogue-reduced descendant of whatever 
 mixer left, so the same activation function comes out as different cube sets depending on the
 path that produced it: the spelling carries history that is not needed for evaluation and
 depends on the original circuit. A function-determined representation removes that channel.
-Among the practical choices, the ANF is the unique one that needs no algorithm to specify; a
-deterministic ESOP derived from it would be equally leak-free and smaller, at the cost of
-committing to a heuristic.
+The ANF is the unique one that needs no algorithm to specify, but it is spelled in positive
+terms and costs 2.4× the cubes; the compacted ESOP keeps the property (it is a fixed function
+of the ANF) at about the cube count, so it is the form that is kept.
 
 What packing does not canonicalize: which gates end up in one group, where a group is
 emitted, the order among commuting groups and the frame a transported group is written in
@@ -182,33 +199,36 @@ randomization is relied on for them, and packing removes the per-gate spelling o
 |---|---|---|
 | cubes (gates before packing) | 1,607,266 | 1,614,661 |
 | packed gates | 347,055 (21.6%) | 351,546 (21.8%) |
-| ANF monomials | 3,820,336 (2.38× cubes) | 3,840,880 (2.38×) |
-| wire occurrences, cubes → ANF | 3.85M → 8.20M (2.13×) | 3.86M → 8.20M (2.12×) |
-| mean cube width / mean monomial degree | 2.40 / 2.15 | 2.39 / 2.14 |
-| monomials per packed gate | median 4, p90 31, p99 71, max 508 | max 350 |
+| ANF monomials (intermediate) | 3,820,336 (2.38× cubes) | 3,840,880 (2.38×) |
+| compacted ESOP terms | 1,744,830 (1.09× cubes, 0.46× ANF) | 1,755,334 (1.09×) |
+| literals, cubes → compacted | 3.86M → 4.00M | 3.86M → 4.01M |
+| terms per packed gate | median 2, p90 13, p99 29, max 168 | median 2, p90 13, p99 28, max 170 |
 | multi-cube runs | 57.6% of runs, 90.8% of the gate mass | 57.1%, 90.7% |
-| file bytes, mpmct1 → anf1 | 34.4 MB → 41.2 MB (1.20×) | 35.1 MB → 41.6 MB (1.19×) |
-| xz -9 | 6.51 MB → 8.58 MB (1.32×) | 6.56 MB → 8.66 MB (1.32×) |
-| gzip -9 / bzip2 -9 | 8.25 → 10.6 MB / 6.80 → 9.16 MB | 8.38 → 10.8 MB / 6.86 → 9.21 MB |
+| file bytes, mpmct1 → esop1 | 34.4 MB → 28.8 MB (0.84×) | 35.1 MB → 29.2 MB (0.83×) |
+| xz -9, mpmct1 → esop1 | 6.51 MB → 6.18 MB (0.95×) | 6.56 MB → 6.24 MB (0.95×) |
+| gzip -9, mpmct1 → esop1 | 8.25 MB → 7.55 MB | 8.38 MB → 7.64 MB |
+| (raw ANF, for reference) | 41.2 MB raw, 8.58 MB xz (1.32×) | 41.6 MB raw, 8.66 MB xz (1.32×) |
 
-Under xz both forms sit close to a naive entropy count (about 32 bits per cube gate, about 18
-bits per monomial), so neither hides much structure from a generic compressor, and the
-canonical form costs about a third more information. On the delivered K2 hold-10 final the
-same packing gives 449,431 packed gates for 2,165,945 cubes (5.20M monomials, 2.40×); a
-deterministic ESOP re-derived from the ANF would be within 5% of the cube count.
+Under xz the cube form sits close to a naive entropy count (about 32 bits per cube gate), and
+the compacted ESOP is slightly below it: the per-gate line overhead of 1.6M separate gates is
+gone and the term content is nearly the same. The compaction is smaller than the original
+cubes on 6.4k runs and larger on 105k runs (+144k terms), i.e. the deterministic procedure
+pays about 9% over the history-dependent spelling for being history-free. On the delivered
+K2 hold-10 final the same packing gives 449,431 packed gates for 2,165,945 cubes.
 
-**Evaluation cost.** Evaluating the ANF literally costs one AND per wire occurrence, one XOR
-per monomial and one per gate: 12.4M word operations against 5.5M for the cube form (2.27×).
-The compiled 64-lane evaluator runs the 1.6M-cube hold-30 circuit in about 9.5 ms per batch of
-64 inputs, so the literal ANF evaluation is about 22 ms. The canonical form fixes the
-description, not the evaluation strategy: an evaluator may re-derive any equivalent form once
-(the deterministic ESOP at ~1.05× the cube cost, or truth tables over small supports).
+**Evaluation cost.** The compacted form costs about what the cube form costs: 1.09× the
+terms and 1.04× the literals, so about 10 ms per batch of 64 inputs on the 1.6M-cube
+hold-30 circuit with the compiled 64-lane evaluator (9.5 ms for the cube form). Evaluating
+the raw ANF instead would cost 2.3× the word operations. The canonical form fixes the
+description, not the evaluation strategy: an evaluator may re-derive any equivalent form
+once.
 
 ### 4.5 Deliverables
 
-`circuits/bv5gss128_k2h30_2eff_final_fc2.anf1` (347,055 packed gates) and
-`circuits/bv5gss128_bal_k2_2eff_final_fc2.anf1` (351,546), the packed forms of the two
-re-compressed 2-eff finals; each was sanitized (header plus gate lines only, monomials
-checked sorted and in range) and verified equal to its cube-form source by the independent
-evaluator on 2,048 random inputs. The pipeline (`scripts/gss_mix.sh`) now writes
-`final.anf1` as the stage-6 deliverable and logs both the cube residual and the packed count.
+`circuits/bv5gss128_k2h30_2eff_final_fc2.esop1` (347,055 packed gates, 1,744,830 terms) and
+`circuits/bv5gss128_bal_k2_2eff_final_fc2.esop1` (351,546 packed gates, 1,755,334 terms),
+the packed forms of the two re-compressed 2-eff finals; each was sanitized (header plus gate
+lines only, every term checked sorted, distinct and in range, terms in canonical order) and
+verified equal to its cube-form source by the independent evaluator on 2,048 random inputs.
+The pipeline (`scripts/gss_mix.sh`) writes `final.esop1` as the stage-6 deliverable and logs
+both the cube residual and the packed count.

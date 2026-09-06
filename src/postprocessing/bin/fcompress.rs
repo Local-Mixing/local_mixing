@@ -10,23 +10,29 @@
 // Deterministic and attacker-computable, so it cannot weaken the hiding; the
 // compressed size is the honest "effective size" of the artifact.
 //
-// --no-pack writes the mpmct1 cube circuit instead. Every mpmct1 reader in
-// the tree loads anf1 files transparently (as the monomial expansion).
+// The ANF is then COMPACTED into a mixed-polarity ESOP by the deterministic
+// reducer strategies, from the ANF alone, so the result is still one
+// spelling per function (the esop1 format, ~2.3x fewer terms than the ANF;
+// the ANF is regenerated from it whenever needed). --no-pack writes the
+// mpmct1 cube circuit instead. Every mpmct1 reader in the tree loads esop1
+// files transparently (as the term expansion).
 //
 // Optional dead-cone pruning for gadgetized circuits, where equality is
 // required only on designated output wires: --live-wires upper-half (or
 // lower-half, or an explicit list "0-255,300"). Default all wires live.
 //
 // Example:
-//   fcompress --input crossB.mpmct1 --output final.anf1
+//   fcompress --input crossB.mpmct1 --output final.esop1
 //   fcompress --input crossB.mpmct1 --output final.mpmct1 --no-pack
-//   fcompress --input gadget.txt --output gadget_fcmp.anf1 --live-wires upper-half
+//   fcompress --input gadget.txt --output gadget_fcmp.esop1 --live-wires upper-half
 use clap::Parser;
 use local_mixing::circuit::xgate::{XGate, eval_lanes, max_wire};
 use local_mixing::engine::format;
 use local_mixing::engine::mix::Mixer;
 use local_mixing::engine::format::expand_packed;
-use local_mixing::postprocessing::compress::{CompressParams, compress_anc, lits_of, pack, pack_census};
+use local_mixing::postprocessing::compress::{
+    CompressParams, compact, compress_anc, lits_of, pack, pack_census,
+};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -77,7 +83,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_reverse: bool,
     /// Write the output as an mpmct1 cube circuit instead of the packed
-    /// canonical anf1 form (one ANF gate per maximal same-target run)
+    /// canonical esop1 form (one generalized gate per maximal same-target
+    /// run, its ANF compacted by the deterministic reducer)
     #[arg(long, default_value_t = false)]
     no_pack: bool,
     /// Report the packing statistics (runs, monomials, support, canonical
@@ -218,18 +225,24 @@ fn main() {
     // Pack (the default): one canonical ANF gate per maximal same-target
     // run. The written artifact is what gets verified below, so the packed
     // circuit is expanded back to cubes and checked alongside.
-    let packed = if args.no_pack { None } else { Some(pack(&out)) };
-    let packed_expanded: Option<Vec<XGate>> = packed.as_ref().map(|p| expand_packed(p));
-    if let Some(p) = &packed {
-        let monos: usize = p.iter().map(|g| g.monomial_count()).sum();
+    let packed = if args.no_pack {
+        None
+    } else {
+        let anf = pack(&out);
+        let monos: usize = anf.iter().map(|g| g.term_count()).sum();
+        let p = compact(&anf);
+        let terms: usize = p.iter().map(|g| g.term_count()).sum();
         println!(
-            "[fcompress] packed: {} cubes -> {} canonical ANF gates ({:.1}%), {} monomials",
+            "[fcompress] packed: {} cubes -> {} canonical gates ({:.1}%); ANF {} monomials -> compacted ESOP {} terms",
             out.len(),
             p.len(),
             100.0 * p.len() as f64 / out.len().max(1) as f64,
-            monos
+            monos,
+            terms
         );
-    }
+        Some(p)
+    };
+    let packed_expanded: Option<Vec<XGate>> = packed.as_ref().map(|p| expand_packed(p));
 
     // Sampled global check against the untouched input, on live wires only,
     // over entry states inside the promised zero slice (when one is given).
@@ -287,8 +300,8 @@ fn main() {
     if let Some(path) = &args.output {
         match &packed {
             Some(p) => {
-                format::write_anf1(path, p, wires).expect("write packed output");
-                println!("[fcompress] wrote {} packed ANF gates to {} (anf1)", p.len(), path);
+                format::write_esop1(path, p, wires).expect("write packed output");
+                println!("[fcompress] wrote {} packed gates to {} (esop1)", p.len(), path);
             }
             None => {
                 format::write_mpmct(path, &out, wires).expect("write output");

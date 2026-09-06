@@ -213,7 +213,7 @@ umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 PHASEA=$RUN/phaseA.mpmct1
 SPLITB=$RUN/splitB.mpmct1
 CROSSB=$RUN/crossB.mpmct1
-FINAL=$RUN/final.anf1
+FINAL=$RUN/final.esop1
 
 # ---- stages 1+2: sandwich + selected gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
@@ -353,16 +353,18 @@ fi
 if [ "$FORCE_FROM" -le 6 ] || [ ! -s "$FINAL" ]; then
   note "stage 6: fcompress"
   # Compress (transport / separated reads / reversed gather, POSTMIX_MANUAL §3)
-  # and PACK: the deliverable is the anf1 file, one canonical ANF gate per
-  # maximal same-target run. The cube count (fcompress's "gates A -> B" line)
-  # is the honest effective size; the packed count is the number of
-  # generalized gates. Every mpmct1 reader loads anf1 transparently.
+  # and PACK: the deliverable is the esop1 file, one generalized gate per
+  # maximal same-target run, its activation function spelled as the ANF
+  # compacted by the deterministic reducer (a function of the ANF alone, so
+  # one spelling per function). The cube count (fcompress's "gates A -> B"
+  # line) is the honest effective size; the packed count is the number of
+  # generalized gates. Every mpmct1 reader loads esop1 transparently.
   "$BIN/fcompress" --input "$CROSSB" --output "$FINAL" --seed "$((SEED + 5))" \
       > "$RUN/stage6.log" 2>&1
   G_X=$(gates_of "$CROSSB"); G_P=$(gates_of "$FINAL")
   G_C=$(sed -n 's/.*done in .*gates [0-9]* -> \([0-9]*\) (.*/\1/p' "$RUN/stage6.log" | tail -1)
   G_C=${G_C:-$G_P}
-  note "stage 6 done: $G_X -> $G_C cubes (residual $(python3 -I -c "print(f'{100*$G_C/$G_X:.1f}%')")) -> $G_P packed ANF gates"
+  note "stage 6 done: $G_X -> $G_C cubes (residual $(python3 -I -c "print(f'{100*$G_C/$G_X:.1f}%')")) -> $G_P packed gates"
 else
   note "stage 6: $FINAL exists, skipping"
 fi

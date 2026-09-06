@@ -8,7 +8,7 @@ and log field, with defaults and practical guidance.
 ```
 fmix      --input A.txt [--input-format g57] --target-size 3000000 \
           --moves 50000000 --output mixed.txt --origins-out mixed.origins.txt
-fcompress --input mixed.txt --output mixed.fc.anf1 [--live-wires upper-half] [--no-pack]
+fcompress --input mixed.txt --output mixed.fc.esop1 [--live-wires upper-half] [--no-pack]
 fmix_stats --input mixed.txt [--origins mixed.origins.txt]
 ```
 
@@ -685,26 +685,31 @@ Algorithm, iterated to a fixed point (≤ `--max-iters`):
    it before compressing.
 5. **Pack** (default; `--no-pack` for the mpmct1 cube circuit) — at the fixed
    point every maximal run of consecutive same-target gates is one gathered
-   group, and packing spells each run as ONE generalized gate `t ^= f(controls)`
-   with `f` in **algebraic normal form**, the XOR of positive monomials — the
-   unique representation of a Boolean function. The written file is the
-   **`anf1`** format: header `anf1 <wires> <gates>`, then one line per packed
-   gate `<target> <n_monomials> [<degree> <w_1> … <w_degree>]*`, wires
-   ascending inside a monomial, monomials sorted by (degree, wires), degree 0
-   = the constant 1 (a `comp` bit). The point is not size but *removing
-   information*: the cube list the reducer emits is the catalogue-reduced
-   descendant of the cubes the mixer left, so it carries history, while the
-   ANF depends on nothing but the function. Measured on the K2 2-eff finals:
-   ~4.6× fewer gates, ~2.4× more terms than cubes, ~1.2× the raw bytes and
-   ~1.3× the xz-compressed bytes; literal evaluation costs ~2.3× the cube
-   form's word operations (about 22 ms vs 9.5 ms per 64-input batch on the
-   1.6M-cube h30 2-eff), and an evaluator may re-derive any equivalent form
-   once. `format::read_mpmct` loads anf1 files transparently as their
-   monomial expansion, so every existing consumer accepts packed circuits;
-   `--pack-census` prints the run/monomial/support statistics. Grouping,
-   emission order and transport frames remain history-dependent (full
-   canonicalization is out of reach); packing removes the per-gate spelling
-   only, and the pipeline's randomization is relied on for the rest.
+   group, and packing spells each run as ONE generalized gate `t ^= f(controls)`.
+   `f` is first brought to **algebraic normal form** (the XOR of positive
+   monomials, the unique representation of a Boolean function) and then
+   **compacted** into a mixed-polarity ESOP by the deterministic reducer
+   strategies (exact minimum tables for supports ≤ 4 wires, else greedy
+   subcube cover + maximum matching, best of), computed from the ANF alone —
+   never from the cubes the ANF came from — so the result is still one
+   spelling per function; the ANF is regenerated from it whenever needed.
+   The written file is the **`esop1`** format: header `esop1 <wires> <gates>`,
+   then one line per packed gate `<target> <n_terms> [<width> <w_1> <p_1> …
+   <w_width> <p_width>]*` (literals as in mpmct1), wires ascending inside a
+   term, terms sorted by (size, literals), an empty term = the constant 1.
+   The point is not size but *removing information*: the cube list the
+   reducer emits is the catalogue-reduced descendant of the cubes the mixer
+   left, so it carries history, while the compacted ESOP depends on nothing
+   but the function. Measured on the K2 2-eff finals: ~4.6× fewer gates;
+   the ANF has ~2.4× the cubes' terms and the compacted ESOP ~1.05×; literal
+   evaluation of the compacted form costs about what the cube form costs
+   (~9.5 ms per 64-input batch on the 1.6M-cube h30 2-eff). `format::read_mpmct`
+   loads esop1 files transparently as their term expansion, so every existing
+   consumer accepts packed circuits; `--pack-census` prints the run / ANF /
+   compacted-term / support statistics. Grouping, emission order and
+   transport frames remain history-dependent (full canonicalization is out of
+   reach); packing removes the per-gate spelling only, and the pipeline's
+   randomization is relied on for the rest.
 
 **Optional dead-cone pruning** (`--live-wires`), for gadgetized circuits where
 equality is only required on designated output wires: one exact backward pass
@@ -745,8 +750,8 @@ run** — verify and report, discard the result (the evaluator mode).
 | `--transport-slack` | 0 | extra cubes a transport may add (0 = neutral-or-better only; growth is speculative, guarded per iteration) |
 | `--no-sep-reads` | off | disable separation-aware reads (a reader separated from every member by an opposite literal no longer floats past the group) |
 | `--no-reverse` | off | disable the reversed-list (leftward) gather each iteration |
-| `--no-pack` | off | write the mpmct1 cube circuit instead of the packed canonical `anf1` form |
-| `--pack-census` | off | print the packing statistics of the compressed circuit: run count, cubes / canonical ANF monomials / deterministic canonical ESOP cubes / support per run |
+| `--no-pack` | off | write the mpmct1 cube circuit instead of the packed canonical `esop1` form |
+| `--pack-census` | off | print the packing statistics of the compressed circuit: run count, cubes / ANF monomials / compacted ESOP terms / support per run |
 | `--verify-rounds` | 64 | rounds of the final 64-lane global check |
 | `--no-local-verify` | off | disable per-group and per-swap verification |
 | `--seed` | 0 | seeds the verification sampling only — the pass itself is deterministic |

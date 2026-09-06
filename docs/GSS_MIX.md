@@ -320,7 +320,7 @@ claim to hide an accumulator observed in the middle of a complete Gray gather.
 
 Artifacts land in the run dir: `gss.mpmct1` (+ `.sandwich.mpmct1`,
 `.source_c.g57`), `phaseA.mpmct1`(+`.state`), `splitB.mpmct1`(+`.state`),
-`crossB.mpmct1`(+`.state`), `final.anf1` (packed; `--no-pack` for a cube `final.mpmct1`), per-stage logs, and
+`crossB.mpmct1`(+`.state`), `final.esop1` (packed; `--no-pack` for a cube `final.mpmct1`), per-stage logs, and
 `gss_mix.log` (the pinned-parameter narrative). The direct driver also writes
 `stage12.recipe`, which binds `gss.mpmct1` to its normalized gadgetization
 mode and dimensions. A stage whose artifact already exists is skipped only
@@ -485,20 +485,20 @@ residuals and "effective size" figures quoted before that date are ~1.7× too
 high, and the ≳ 90% health bar must be recalibrated (2-eff finals land at
 ~52%, full hold-10 at ~58% of the old finals).
 
-**The deliverable is `final.anf1`, the packed canonical form** (see
+**The deliverable is `final.esop1`, the packed canonical form** (see
 `docs/FCOMPRESS_TRANSPORT_AND_PACKING.md`): one generalized gate per maximal
-same-target run of the compressed circuit, its activation function spelled as
-the algebraic normal form — `<target> <n> [<degree> <wires…>]*` per line,
-monomials sorted by (degree, wires), header `anf1 <wires> <gates>`. The ANF
-is the unique representation of a Boolean function, so the artifact carries
-nothing of how the mixer happened to spell each function as cubes; the price
-is ~2.4× more terms than cubes (≈1.3× the xz-compressed bytes) and an
-evaluator that either XORs the monomials directly (~2.3× the cube-form word
-operations, milliseconds per 64-input batch) or re-derives any equivalent
-form once. Every mpmct1 reader in the tree (`format::read_mpmct`) loads an
-anf1 file transparently as its monomial expansion, so hmap_affine, the
-censuses and fcompress itself accept it; `fcompress --no-pack` writes the
-mpmct1 cube circuit instead (an intermediate that stays server-side).
+same-target run of the compressed circuit, its activation function first
+brought to algebraic normal form (the unique representation of a Boolean
+function) and then compacted into a mixed-polarity ESOP by the deterministic
+reducer strategies, from the ANF alone — so the file still has one spelling
+per function and carries nothing of how the mixer happened to spell it as
+cubes, at about the cube count (~+5%) rather than the ANF's ~2.4×. Format:
+header `esop1 <wires> <gates>`, then `<target> <n> [<width> <wire> <pol>…]*`
+per line, terms sorted by (size, literals), an empty term = the constant 1.
+Every mpmct1 reader in the tree (`format::read_mpmct`) loads an esop1 file
+transparently as its term expansion, so hmap_affine, the censuses and
+fcompress itself accept it; `fcompress --no-pack` writes the mpmct1 cube
+circuit instead (an intermediate that stays server-side).
 
 ## Sizing expectations (defaults, n = 128)
 
@@ -510,7 +510,7 @@ mpmct1 cube circuit instead (an intermediate that stays server-side).
 | split out | ≈ 2× phase A ≈ 5.2M (zero comp) |
 | crossing out | `--xr` × split ≈ 10M at the default 2 |
 | final (cubes) | ≳ 90% of crossing out under the 2026-08-22 pass; ~50–60% of that again under the 2026-09-05 pass (recalibrate) |
-| final.anf1 (packed) | ~22% as many gates as the compressed cubes (one per same-target run), ~2.4× as many monomials as cubes |
+| final.esop1 (packed) | ~22% as many gates as the compressed cubes (one per same-target run), ~1.05× as many terms as cubes |
 
 Runtimes are dominated by stages 3 and 5 (tens of millions of moves);
 run production sizes on the server, exporting the store paths in the

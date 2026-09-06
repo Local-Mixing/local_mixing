@@ -642,9 +642,20 @@ fn anf_expand(cubes: &[Lits], support_cap: usize) -> Option<(Vec<u16>, Vec<u64>)
 
 fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bool)> {
     let (support, monos) = anf_expand(cubes, support_cap)?;
+    Some(esop_from_monomials(&support, &monos))
+}
+
+// Deterministic ESOP from a canonical monomial set over a sorted support
+// (bit i of a monomial = support[i], n <= 63): best of the exact minimum
+// table (n <= 4), greedy subcube cover + maximum matching, matching alone.
+// Depends on nothing but (support, monomials), so it is a function of the
+// activation function: applied to a packed ANF gate it yields one
+// compacted spelling per function (postprocessing::compress::compact).
+// Returns (cubes, parity_delta, exact_used).
+fn esop_from_monomials(support: &[u16], monos: &[u64]) -> (Vec<Lits>, bool, bool) {
     let n = support.len();
     if monos.is_empty() {
-        return Some((Vec::new(), false, false));
+        return (Vec::new(), false, false);
     }
     // Candidate strategies, first-listed wins ties on (cubes, lits).
     let mut cands: Vec<(Vec<(u64, u64)>, bool, bool)> = Vec::new();
@@ -692,7 +703,7 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bo
         l
     };
     let out: Vec<Lits> = best.iter().map(|&(p, ng)| to_lits(p, ng)).collect();
-    Some((out, delta, exact))
+    (out, delta, exact)
 }
 
 // Reduce one gathered group to a minimal-found cube list and emit as XGates
@@ -1254,9 +1265,55 @@ fn pack_run(run: &[XGate]) -> PackedGate {
             toggle(m);
         }
     }
-    let mut monomials: Vec<Vec<u16>> = set.into_iter().collect();
-    monomials.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
-    PackedGate { target, monomials }
+    let mut g = PackedGate {
+        target,
+        terms: set
+            .into_iter()
+            .map(|m| m.into_iter().map(|w| (w, true)).collect())
+            .collect(),
+    };
+    g.sort_terms();
+    g
+}
+
+/// Compaction: rewrite a packed ANF gate as a mixed-polarity ESOP by the
+/// deterministic reducer strategies, from the ANF ALONE (never from the
+/// cubes the ANF came from), so the result is still one spelling per
+/// activation function -- at ~2.3x fewer terms than the ANF. Gates whose
+/// support exceeds the 63-wire mask width are left in ANF (still canonical).
+pub fn compact_gate(g: &PackedGate) -> PackedGate {
+    debug_assert!(g.is_anf(), "compaction starts from the ANF");
+    let mut support: Vec<u16> = g.terms.iter().flatten().map(|l| l.0).collect();
+    support.sort_unstable();
+    support.dedup();
+    if support.len() > 63 {
+        return g.clone();
+    }
+    let mut monos: Vec<u64> = g
+        .terms
+        .iter()
+        .map(|t| {
+            t.iter().fold(0u64, |m, &(w, _)| {
+                m | 1u64 << support.binary_search(&w).expect("wire in support")
+            })
+        })
+        .collect();
+    monos.sort_unstable();
+    let (cubes, parity, _) = esop_from_monomials(&support, &monos);
+    let mut out = PackedGate {
+        target: g.target,
+        terms: cubes.into_iter().map(|c| c.into_iter().collect()).collect(),
+    };
+    if parity {
+        out.terms.push(Vec::new());
+    }
+    out.sort_terms();
+    debug_assert!(out.terms.len() <= g.terms.len());
+    out
+}
+
+pub fn compact(packed: &[PackedGate]) -> Vec<PackedGate> {
+    packed.iter().map(compact_gate).collect()
 }
 
 /// Pack every maximal same-target run into one canonical ANF gate. Exact for
@@ -1326,16 +1383,16 @@ pub fn pack_census(gates: &[XGate]) {
         }
         cube_lits += run.iter().map(XGate::width).sum::<usize>();
         let pg = pack_run(run);
-        let m = pg.monomials.len();
+        let m = pg.terms.len();
         anf_h[bin(m)] += 1;
         anf_total += m;
         anf_max = anf_max.max(m);
-        let mut support: Vec<u16> = pg.monomials.iter().flatten().copied().collect();
+        let mut support: Vec<u16> = pg.terms.iter().flatten().map(|l| l.0).collect();
         support.sort_unstable();
         support.dedup();
         sup_h[bin(support.len())] += 1;
         sup_max = sup_max.max(support.len());
-        for mo in &pg.monomials {
+        for mo in &pg.terms {
             mono_degs += mo.len();
             deg_h[bin(mo.len())] += 1;
         }
@@ -1343,24 +1400,20 @@ pub fn pack_census(gates: &[XGate]) {
             blowup_runs += 1;
             blowup_extra += m - k;
         }
-        let cubes: Vec<Lits> = run.iter().map(|g| g.ctrls.clone()).collect();
-        let parity = run.iter().filter(|g| g.comp).count() % 2 == 1;
-        match anf_reduce(&cubes, 63) {
-            Some((alt, delta, _)) => {
-                let par = parity ^ delta;
-                let canon = alt.len() + usize::from(par && alt.is_empty());
-                canon_h[bin(canon)] += 1;
-                canon_total += canon;
-                canon_cubes += k;
-                if canon < k {
-                    canon_smaller += 1;
-                    canon_gain += k - canon;
-                } else if canon > k {
-                    canon_larger += 1;
-                    canon_loss += canon - k;
-                }
+        if support.len() <= 63 {
+            let canon = compact_gate(&pg).terms.len();
+            canon_h[bin(canon)] += 1;
+            canon_total += canon;
+            canon_cubes += k;
+            if canon < k {
+                canon_smaller += 1;
+                canon_gain += k - canon;
+            } else if canon > k {
+                canon_larger += 1;
+                canon_loss += canon - k;
             }
-            None => canon_skipped += 1,
+        } else {
+            canon_skipped += 1;
         }
         i = j;
     }
@@ -1381,7 +1434,7 @@ pub fn pack_census(gates: &[XGate]) {
         cube_lits as f64 / g.max(1) as f64, mono_degs as f64 / anf_total.max(1) as f64
     );
     println!(
-        "[pack] canonical ESOP (deterministic re-expression of the ANF, support<=63; {} runs skipped): {} cubes vs {} now; smaller on {} runs (-{}), larger on {} runs (+{})",
+        "[pack] compacted ESOP (deterministic, from the ANF alone, support<=63; {} runs skipped): {} terms vs {} cubes now; smaller on {} runs (-{}), larger on {} runs (+{})",
         canon_skipped, canon_total, canon_cubes, canon_smaller, canon_gain, canon_larger, canon_loss
     );
     let show = |name: &str, h: &[usize; 10]| {
@@ -1396,7 +1449,7 @@ pub fn pack_census(gates: &[XGate]) {
     show("cubes per run", &cubes_h);
     show("ANF monomials per run", &anf_h);
     show("monomial degree", &deg_h);
-    show("canonical ESOP cubes per run", &canon_h);
+    show("compacted ESOP terms per run", &canon_h);
     show("support wires per run", &sup_h);
 }
 
@@ -2167,12 +2220,81 @@ mod compress_tests {
         let mut c = conj(0, &[(1, false), (2, false)]);
         c.comp = true; // 1 ^ (1^a)(1^b) = a ^ b ^ ab
         let pc = pack(&[c]);
-        assert_eq!(pc[0].monomials, vec![vec![1u16], vec![2u16], vec![1u16, 2u16]]);
+        assert_eq!(
+            pc[0].terms,
+            vec![vec![(1u16, true)], vec![(2u16, true)], vec![(1u16, true), (2u16, true)]]
+        );
         // Unbounded support: a run over 80 wires packs in one gate.
         let wide: Vec<XGate> = (1u16..=80).map(|w| conj(0, &[(w, true), (w + 100, false)])).collect();
         let pw = pack(&wide);
         assert_eq!(pw.len(), 1);
-        assert_eq!(pw[0].monomials.len(), 160);
+        assert_eq!(pw[0].terms.len(), 160);
         assert!(equal_on(&wide, &expand_packed(&pw), 181, None));
+    }
+
+    #[test]
+    fn compaction_is_exact_smaller_and_a_function_of_the_anf() {
+        use crate::engine::format::{expand_packed, read_mpmct, write_esop1};
+        // Two spellings of one function -> one ANF -> one compacted gate.
+        let a = vec![conj(0, &[(1, false), (2, false), (3, true)])];
+        let b: Vec<XGate> = a[0]
+            .ctrls
+            .iter()
+            .map(|_| ())
+            .take(0)
+            .map(|_| a[0].clone())
+            .collect::<Vec<_>>();
+        drop(b);
+        let pa = pack(&a);
+        assert_eq!(pa[0].terms.len(), 4, "!x!y z = z + xz + yz + xyz");
+        let ca = compact(&pa);
+        assert_eq!(ca.len(), 1);
+        assert!(ca[0].terms.len() <= pa[0].terms.len());
+        assert!(equal_on(&a, &expand_packed(&ca), 4, None));
+        // The same function spelled as its four monomials compacts identically.
+        let mono: Vec<XGate> = vec![
+            conj(0, &[(3, true)]),
+            conj(0, &[(1, true), (3, true)]),
+            conj(0, &[(2, true), (3, true)]),
+            conj(0, &[(1, true), (2, true), (3, true)]),
+        ];
+        assert_eq!(compact(&pack(&mono)), ca);
+        // Exactness + non-growth on random compressed circuits, through esop1.
+        let mut rng = StdRng::seed_from_u64(0xE50_9);
+        for case in 0..40usize {
+            let wires: u16 = [5, 8, 12][case % 3];
+            let mut gates: Vec<XGate> = Vec::new();
+            while gates.len() < 150 {
+                let t = rng.random_range(0..wires);
+                let w = rng.random_range(0..=3usize);
+                let mut lits: Vec<(u16, bool)> = Vec::new();
+                while lits.len() < w {
+                    let c = rng.random_range(0..wires);
+                    if c != t && lits.iter().all(|&(seen, _)| seen != c) {
+                        lits.push((c, rng.random_bool(0.5)));
+                    }
+                }
+                let mut g = XGate::conj(t, lits).expect("distinct literals");
+                g.comp = rng.random_bool(0.3);
+                gates.push(g);
+            }
+            let (out, _) = compress(gates.clone(), wires as usize, &CompressParams::default());
+            let anf = pack(&out);
+            let esop = compact(&anf);
+            let (ta, te): (usize, usize) = (
+                anf.iter().map(|g| g.terms.len()).sum(),
+                esop.iter().map(|g| g.terms.len()).sum(),
+            );
+            assert!(te <= ta, "case {case}: compaction grew {ta} -> {te}");
+            assert!(equal_on(&gates, &expand_packed(&esop), wires as usize, None), "case {case}");
+            if case == 1 {
+                let path = std::env::temp_dir().join(format!("fcompress_esop_test_{}.esop1", std::process::id()));
+                let path = path.to_str().unwrap().to_string();
+                write_esop1(&path, &esop, wires as usize).unwrap();
+                let (via_mpmct, _) = read_mpmct(&path).unwrap();
+                assert_eq!(via_mpmct, expand_packed(&esop));
+                std::fs::remove_file(&path).ok();
+            }
+        }
     }
 }
