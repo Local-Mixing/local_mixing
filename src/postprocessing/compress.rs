@@ -18,15 +18,32 @@
 // then relative to that input subspace.
 //
 // Gathering is one forward sweep with an open group per target wire:
-//   - any read of wire t closes t's group (a reader pins the accumulated
-//     value; writes may not cross it),
-//   - any write to a wire in a group's union-of-member-controls closes
-//     that group (members' control values may not change),
-//   - members then float right to the close point, which the two rules
-//     make unconditionally legal, and are emitted there.
-// Closures cascade (an emitted group writes its target, which may poison
-// other groups) and are emitted in ascending last-member order; the two
-// closure rules make that order respect every read/write constraint.
+//   - a read of wire t closes t's group (a reader pins the accumulated
+//     value; writes may not cross it) -- unless the reader is separated from
+//     every member by an opposite-polarity shared literal, in which case it
+//     commutes with the group and the group floats past it,
+//   - a write to a wire in a group's union-of-member-controls either
+//     TRANSPORTS the group across the writer h (the downhill substitution
+//     u <- u XOR fire(h) on h's target, accepted when the catalogue-reduced
+//     ESOP does not grow -- this is Toffoli sliding at any distance, and it
+//     is what lets a conjugated copy g' = g[u -> !u] meet g and cancel) or,
+//     when h reads the target or the substitution would grow the ESOP,
+//     closes the group,
+//   - members then float right to the close point and are emitted there.
+// A transported group's cubes live in the frame AFTER the writer, so the
+// group records a dependency on the writer's group and is emitted after it:
+// closing a group closes its dependencies first, and a close set is emitted
+// in dependency order (ascending last-member order among independent
+// groups). Groups with no dependency path between them commute, so any
+// order among those is legal. The dependency graph is kept acyclic by
+// construction (a transport that would close a cycle closes the group
+// instead).
+//
+// The gather runs forward and then on the reversed gate list (every XGate is
+// an involution, so the reversed list is the inverse function and gathering
+// it is exact): the crossing stage floats gates both ways, and a case-split
+// ladder left behind by a leftward crossing can only be folded back by a
+// leftward float.
 //
 // Optional output-cone pruning for gadgetized circuits (equality required
 // only on designated live wires): one exact backward pass in the
@@ -34,6 +51,7 @@
 // its position; a kept gate makes its controls live, and its target STAYS
 // live (XOR never overwrites).
 use crate::circuit::xgate::{Lits, XGate};
+use crate::engine::format::PackedGate;
 use crate::engine::mix::{Merge, merge_result};
 use rand::Rng;
 use rand::SeedableRng;
@@ -61,6 +79,18 @@ pub struct CompressParams {
     // Interleave one conjugation-descent pass (postprocessing::downhill) after each
     // gather/reduce iteration.
     pub downhill: bool,
+    // Float groups across writers of their control wires by conjugation
+    // (Toffoli sliding) instead of closing them, when the ESOP does not grow.
+    pub transport: bool,
+    // Extra cubes a transport may add (0 = neutral-or-better only). Growth
+    // is speculative: the pass-level guard restores the previous circuit if
+    // an iteration ends larger.
+    pub transport_slack: usize,
+    // A reader of the target separated from every member by an opposite
+    // literal commutes with the group and does not close it.
+    pub sep_reads: bool,
+    // Also gather on the reversed gate list each iteration (leftward float).
+    pub reverse_pass: bool,
     pub local_verify: bool,
     pub seed: u64,
 }
@@ -74,6 +104,10 @@ impl Default for CompressParams {
             group_cap: 64,
             anf_support_cap: 40,
             downhill: true,
+            transport: true,
+            transport_slack: 0,
+            sep_reads: true,
+            reverse_pass: true,
             local_verify: true,
             seed: 0,
         }
@@ -93,6 +127,14 @@ pub struct CompressReport {
     pub anf_wins: u64,
     pub exact_wins: u64,
     pub downhill_swaps: u64,
+    // Groups floated across a writer of one of their control wires (ESOP
+    // changed / unchanged), refused on cost, refused to keep the frame
+    // dependencies acyclic; readers that passed a group by separation.
+    pub transports: u64,
+    pub transport_noops: u64,
+    pub transport_refused: u64,
+    pub transport_cycle_refused: u64,
+    pub sep_passes: u64,
     pub verifies_skipped: u64,
     pub gates_in: usize,
     pub gates_out: usize,
@@ -548,7 +590,10 @@ fn greedy_cover(monos: &[u64], nbits: usize) -> (Vec<(u64, u64)>, Vec<u64>) {
 // cover/pair cube (as a pure-negative cube) or left to the parity delta.
 // Returns (cubes, parity_delta, exact_used) or None when the support or the
 // expansion would be too large.
-fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bool)> {
+// Canonical ANF of a cube set: the sorted support and the sorted positive
+// monomials (bit i = support[i]) that survive cancellation. None when the
+// support exceeds `support_cap` (hard cap 63) or the expansion budget.
+fn anf_expand(cubes: &[Lits], support_cap: usize) -> Option<(Vec<u16>, Vec<u64>)> {
     let mut support: Vec<u16> = cubes
         .iter()
         .flat_map(|c| c.iter().map(|&(w, _)| w))
@@ -592,6 +637,12 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bo
     }
     let mut monos: Vec<u64> = anf.into_iter().collect();
     monos.sort_unstable();
+    Some((support, monos))
+}
+
+fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bool)> {
+    let (support, monos) = anf_expand(cubes, support_cap)?;
+    let n = support.len();
     if monos.is_empty() {
         return Some((Vec::new(), false, false));
     }
@@ -861,6 +912,78 @@ struct Group {
     // Every emitted survivor of the group carries this union: each cube of
     // the reduced ESOP derives from the whole gathered run.
     anc: AncBits,
+    // Groups this one must be emitted AFTER: the group of every writer it
+    // was transported across (its cubes are written in the frame after that
+    // writer). Acyclic by construction; entries may be closed already.
+    deps: SmallVec<[usize; 4]>,
+}
+
+// Does open group `a` transitively depend on `b`? A closed group's
+// dependencies are closed too (closing cascades into them), so only open
+// slots are walked.
+fn depends_on(slots: &[Group], a: usize, b: usize) -> bool {
+    let mut stack: SmallVec<[usize; 16]> = SmallVec::from_slice(&[a]);
+    let mut seen: SmallVec<[usize; 16]> = SmallVec::new();
+    while let Some(x) = stack.pop() {
+        if x == b {
+            return true;
+        }
+        if seen.contains(&x) {
+            continue;
+        }
+        seen.push(x);
+        for &d in &slots[x].deps {
+            if slots[d].open {
+                stack.push(d);
+            }
+        }
+    }
+    false
+}
+
+// Dependencies-first order of a close set (ascending last-member order among
+// independent groups): `set` is already sorted by last member.
+fn topo_visit(s: usize, slots: &[Group], set: &[usize], order: &mut Vec<usize>) {
+    if order.contains(&s) {
+        return;
+    }
+    for &d in slots[s].deps.iter() {
+        if set.contains(&d) {
+            topo_visit(d, slots, set, order);
+        }
+    }
+    order.push(s);
+}
+
+// Float a group's ESOP across `h`, a writer of one of its union wires that
+// does not read its target: the substitution u <- u XOR fire(h) on h's
+// target (downhill's conjugation), accepted when the catalogue-reduced
+// result is no larger than the catalogue-reduced current members in
+// (gates, lits), or grows by at most `slack` gates. Returns the new member
+// list and whether the ESOP changed; an unchanged ESOP means the group
+// commutes with h and needs no frame dependency (the caller then keeps its
+// raw members).
+fn transport_across(
+    members: &[XGate],
+    target: u16,
+    h: &XGate,
+    slack: usize,
+) -> Option<(Vec<XGate>, bool)> {
+    use super::downhill::{conjugate, esop_equal, from_block, gate_cost, gates_of, lit_cost};
+    let before = from_block(members, target);
+    let after = conjugate(&before, h, target);
+    let (bg, bl) = (gate_cost(&before), lit_cost(&before));
+    let (ag, al) = (gate_cost(&after), lit_cost(&after));
+    let ok = if slack == 0 {
+        (ag, al) <= (bg, bl)
+    } else {
+        ag <= bg + slack
+    };
+    if !ok {
+        return None;
+    }
+    let changed = !esop_equal(&before, &after);
+    Some((gates_of(after, target), changed))
 }
 
 // One forward gather-and-reduce sweep. `anc` (when present) is aligned with
@@ -879,41 +1002,36 @@ fn gather_reduce_pass(
     let mut open_at: Vec<Option<usize>> = vec![None; wires]; // target wire -> slot
     let mut union_of: Vec<Vec<usize>> = vec![Vec::new(); wires]; // wire -> slots (stale ok)
 
-    // Close a seed set of groups: cascade poison from emitted writes, order
-    // by last-member index (provably conflict-free), reduce, emit.
+    // Close a seed set of groups: cascade into their frame dependencies (a
+    // transported group is emitted after the groups it crossed, and closing
+    // a group early is always legal), order dependencies-first with ascending
+    // last-member order among independent groups, reduce, emit. Groups with
+    // no dependency path between them commute, so that order is legal.
     let close = |seed: SmallVec<[usize; 16]>,
                  slots: &mut Vec<Group>,
                  open_at: &mut Vec<Option<usize>>,
-                 union_of: &mut Vec<Vec<usize>>,
                  out: &mut Vec<XGate>,
                  out_anc: &mut Option<Vec<AncBits>>,
                  rng: &mut StdRng,
                  rep: &mut CompressReport| {
-        let mut set = SmallVec::<[usize; 16]>::new();
+        let mut set: Vec<usize> = Vec::new();
         let mut queue = seed;
         while let Some(s) = queue.pop() {
-            // The first visit closes the slot before enqueuing its neighbors,
-            // so `open` is also the exact visited bit; a separate linear
-            // `set.contains` made large close cascades quadratic.
+            // The first visit closes the slot before enqueuing its
+            // dependencies, so `open` is also the exact visited bit.
             if !slots[s].open {
                 continue;
             }
             set.push(s);
             slots[s].open = false;
-            // Emitting this group writes its target: poison groups reading it.
-            let t = slots[s].target as usize;
-            queue.extend(union_of[t].iter().copied());
-            // Defensive: its cubes read the union wires; groups TARGETING
-            // those wires cannot be open here (their writes would already
-            // have closed this group), but sweep them anyway.
-            for &w in &slots[s].union {
-                if let Some(s2) = open_at[w as usize] {
-                    queue.push(s2);
-                }
-            }
+            queue.extend(slots[s].deps.iter().copied());
         }
         set.sort_unstable_by_key(|&s| slots[s].last);
-        for s in set {
+        let mut order: Vec<usize> = Vec::with_capacity(set.len());
+        for &s in &set {
+            topo_visit(s, slots, &set, &mut order);
+        }
+        for s in order {
             let g = &slots[s];
             if open_at[g.target as usize] == Some(s) {
                 open_at[g.target as usize] = None;
@@ -929,78 +1047,156 @@ fn gather_reduce_pass(
     };
 
     for (i, g) in gates.iter().enumerate() {
-        // Reads close the groups accumulating on the wires they read.
+        let u = g.target as usize;
+        // Reads close the groups accumulating on the wires they read, unless
+        // the reader is separated from every member (it then commutes with
+        // the group as a whole and the group floats past it).
         let mut seed = SmallVec::<[usize; 16]>::new();
         for &(w, _) in &g.ctrls {
             if let Some(s) = open_at[w as usize] {
+                if p.sep_reads && slots[s].members.iter().all(|m| !XGate::collides(m, g)) {
+                    rep.sep_passes += 1;
+                } else {
+                    seed.push(s);
+                }
+            }
+        }
+        // The write to u: every open group with u in its union either floats
+        // across g by conjugation (candidates below), commutes with g (g reads
+        // its target but is separated from every member -- the read rule
+        // just let it pass), or closes.
+        let mut cand = SmallVec::<[usize; 8]>::new();
+        for &s in &union_of[u] {
+            if !slots[s].open {
+                continue;
+            }
+            if g.reads(slots[s].target) {
+                if !seed.contains(&s) {
+                    // separated pass: the group commutes with g
+                    continue;
+                }
+                seed.push(s);
+            } else if p.transport {
+                cand.push(s);
+            } else {
                 seed.push(s);
             }
         }
-        // The write closes every group whose member controls include target.
-        for &s in &union_of[g.target as usize] {
-            if slots[s].open {
-                seed.push(s);
-            }
-        }
-        union_of[g.target as usize].retain(|&s| slots[s].open);
+        union_of[u].retain(|&s| slots[s].open);
         if !seed.is_empty() {
-            close(
-                seed,
-                &mut slots,
-                &mut open_at,
-                &mut union_of,
-                &mut out,
-                &mut out_anc,
-                rng,
-                rep,
-            );
+            close(seed, &mut slots, &mut open_at, &mut out, &mut out_anc, rng, rep);
         }
-        let g_anc = anc.map(|a| a[i].clone()).unwrap_or_default();
-        // Join or open the group for this target.
-        match open_at[g.target as usize] {
-            Some(s) => {
-                let grp = &mut slots[s];
-                for &(w, _) in &g.ctrls {
+        // Decide every candidate before applying any transport: a refusal
+        // closes the group, and that close cascades into its dependencies --
+        // possibly the open group on u (so the writer would open a fresh
+        // slot) or another candidate. Nothing may be transported into the
+        // post-g frame until every close of this step is done, and the slot
+        // g will join or open is fixed only after those closes.
+        let mut accepted: SmallVec<[(usize, Vec<XGate>, bool); 8]> = SmallVec::new();
+        let mut refused = SmallVec::<[usize; 16]>::new();
+        for s in cand {
+            if !slots[s].open {
+                continue; // closed above as somebody's dependency
+            }
+            match transport_across(&slots[s].members, slots[s].target, g, p.transport_slack) {
+                Some((new_members, changed)) => accepted.push((s, new_members, changed)),
+                None => {
+                    rep.transport_refused += 1;
+                    refused.push(s);
+                }
+            }
+        }
+        if !refused.is_empty() {
+            close(refused, &mut slots, &mut open_at, &mut out, &mut out_anc, rng, rep);
+        }
+        // The slot g joins: opened now (empty) when none is open on u, so a
+        // dependency recorded below always names an existing slot.
+        let h_slot = match open_at[u] {
+            Some(s) => s,
+            None => {
+                let s = slots.len();
+                slots.push(Group {
+                    target: g.target,
+                    members: Vec::new(),
+                    union: Vec::new(),
+                    last: i,
+                    open: true,
+                    anc: AncBits::new(),
+                    deps: SmallVec::new(),
+                });
+                open_at[u] = Some(s);
+                s
+            }
+        };
+        // A transported group depends on g's group; refuse (close) any whose
+        // dependency would close a cycle. Such a close cannot reach g's group
+        // (that group depends on the refused one, so it is not among the
+        // refused one's dependencies) and so h_slot stays valid.
+        let mut cyc = SmallVec::<[usize; 16]>::new();
+        for (s, _, changed) in &accepted {
+            if *changed && slots[*s].open && depends_on(&slots, h_slot, *s) {
+                rep.transport_cycle_refused += 1;
+                cyc.push(*s);
+            }
+        }
+        if !cyc.is_empty() {
+            close(cyc, &mut slots, &mut open_at, &mut out, &mut out_anc, rng, rep);
+        }
+        debug_assert_eq!(open_at[u], Some(h_slot));
+        for (s, new_members, changed) in accepted {
+            if !slots[s].open {
+                continue;
+            }
+            if !changed {
+                rep.transport_noops += 1;
+                continue;
+            }
+            if p.local_verify {
+                let mut before: Vec<XGate> = slots[s].members.clone();
+                before.push(g.clone());
+                let mut after: Vec<XGate> = vec![g.clone()];
+                after.extend(new_members.iter().cloned());
+                super::downhill::verify_span(&before, &after, rng);
+            }
+            rep.transports += 1;
+            let grp = &mut slots[s];
+            grp.members = new_members;
+            for m in &grp.members {
+                for &(w, _) in &m.ctrls {
                     if grp.union.binary_search(&w).is_err() {
                         let pos = grp.union.partition_point(|&x| x < w);
                         grp.union.insert(pos, w);
                         union_of[w as usize].push(s);
                     }
                 }
-                grp.members.push(g.clone());
-                or_anc(&mut grp.anc, &g_anc);
-                grp.last = i;
-                if grp.members.len() >= p.group_cap {
-                    close(
-                        SmallVec::from_slice(&[s]),
-                        &mut slots,
-                        &mut open_at,
-                        &mut union_of,
-                        &mut out,
-                        &mut out_anc,
-                        rng,
-                        rep,
-                    );
-                }
             }
-            None => {
-                let s = slots.len();
-                let mut union: Vec<u16> = g.ctrls.iter().map(|&(w, _)| w).collect();
-                union.sort_unstable();
-                union.dedup();
-                for &w in &union {
-                    union_of[w as usize].push(s);
-                }
-                slots.push(Group {
-                    target: g.target,
-                    members: vec![g.clone()],
-                    union,
-                    last: i,
-                    open: true,
-                    anc: g_anc,
-                });
-                open_at[g.target as usize] = Some(s);
+            if !grp.deps.contains(&h_slot) {
+                grp.deps.push(h_slot);
             }
+        }
+        let g_anc = anc.map(|a| a[i].clone()).unwrap_or_default();
+        // Join the group for this target (opened above when it did not exist).
+        let grp = &mut slots[h_slot];
+        for &(w, _) in &g.ctrls {
+            if grp.union.binary_search(&w).is_err() {
+                let pos = grp.union.partition_point(|&x| x < w);
+                grp.union.insert(pos, w);
+                union_of[w as usize].push(h_slot);
+            }
+        }
+        grp.members.push(g.clone());
+        or_anc(&mut grp.anc, &g_anc);
+        grp.last = i;
+        if grp.members.len() >= p.group_cap {
+            close(
+                SmallVec::from_slice(&[h_slot]),
+                &mut slots,
+                &mut open_at,
+                &mut out,
+                &mut out_anc,
+                rng,
+                rep,
+            );
         }
     }
     let remaining: SmallVec<[usize; 16]> = (0..slots.len()).filter(|&s| slots[s].open).collect();
@@ -1008,13 +1204,200 @@ fn gather_reduce_pass(
         remaining,
         &mut slots,
         &mut open_at,
-        &mut union_of,
         &mut out,
         &mut out_anc,
         rng,
         rep,
     );
     (out, out_anc)
+}
+
+// ---- packing ---------------------------------------------------------------
+//
+// At a fixed point of the gather every maximal run of consecutive same-target
+// gates is one gathered group (a group floats to one close point and is
+// emitted there, and runs that could still float together would have been
+// merged). Packing spells each run as ONE generalized gate t ^= f(controls)
+// with f in algebraic normal form -- the XOR of positive monomials, the
+// unique representation of a Boolean function. The point is not size (the
+// ANF is ~2.4x the cube count on GSS finals) but the removal of information:
+// the cube list fcompress emits is the catalogue-reduced descendant of the
+// cubes the mixer left, so it carries history, while the ANF depends on
+// nothing but the function. Exact and attacker-computable like the rest of
+// the pass. Monomials are ascending wire lists sorted by (degree, wires);
+// the empty monomial is the constant 1 (a comp bit). Any support size.
+fn pack_run(run: &[XGate]) -> PackedGate {
+    let target = run[0].target;
+    let mut set: FxHashSet<Vec<u16>> = FxHashSet::default();
+    let mut toggle = |m: Vec<u16>| {
+        if !set.remove(&m) {
+            set.insert(m);
+        }
+    };
+    for g in run {
+        debug_assert_eq!(g.target, target);
+        if g.comp {
+            toggle(Vec::new());
+        }
+        let pos: Vec<u16> = g.ctrls.iter().filter(|l| l.1).map(|l| l.0).collect();
+        let neg: Vec<u16> = g.ctrls.iter().filter(|l| !l.1).map(|l| l.0).collect();
+        assert!(neg.len() <= 24, "cube with {} negative literals: expansion too large", neg.len());
+        // AND(pos) * PROD(1 XOR w in neg) = XOR over subsets of neg.
+        for sub in 0..(1u64 << neg.len()) {
+            let mut m = pos.clone();
+            for (b, &w) in neg.iter().enumerate() {
+                if sub >> b & 1 == 1 {
+                    m.push(w);
+                }
+            }
+            m.sort_unstable();
+            toggle(m);
+        }
+    }
+    let mut monomials: Vec<Vec<u16>> = set.into_iter().collect();
+    monomials.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    PackedGate { target, monomials }
+}
+
+/// Pack every maximal same-target run into one canonical ANF gate. Exact for
+/// any gate list; canonical (one representation per activation function) and
+/// maximally packed when the list is a gather fixed point, i.e. fcompress
+/// output.
+pub fn pack(gates: &[XGate]) -> Vec<PackedGate> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < gates.len() {
+        let mut j = i + 1;
+        while j < gates.len() && gates[j].target == gates[i].target {
+            j += 1;
+        }
+        out.push(pack_run(&gates[i..j]));
+        i = j;
+    }
+    out
+}
+
+// Packing census: what packing leaves and what the canonical form costs.
+// Per run: current cube count, ANF monomials, support, monomial degrees;
+// plus the size of the deterministic canonical ESOP (anf_reduce applied to
+// the ANF, support <= 63 only). Prints a few lines.
+pub fn pack_census(gates: &[XGate]) {
+    fn bin(x: usize) -> usize {
+        match x {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3..=4 => 3,
+            5..=8 => 4,
+            9..=16 => 5,
+            17..=32 => 6,
+            33..=64 => 7,
+            65..=256 => 8,
+            _ => 9,
+        }
+    }
+    const LABELS: [&str; 10] =
+        ["0", "1", "2", "3-4", "5-8", "9-16", "17-32", "33-64", "65-256", ">256"];
+    let mut cubes_h = [0usize; 10];
+    let mut anf_h = [0usize; 10];
+    let mut sup_h = [0usize; 10];
+    let mut canon_h = [0usize; 10];
+    let mut deg_h = [0usize; 10];
+    let (mut runs, mut multi_runs, mut multi_mass) = (0usize, 0usize, 0usize);
+    let (mut anf_total, mut anf_max, mut sup_max) = (0usize, 0usize, 0usize);
+    let (mut cube_lits, mut mono_degs) = (0usize, 0usize);
+    let (mut blowup_runs, mut blowup_extra) = (0usize, 0usize);
+    let (mut canon_total, mut canon_cubes, mut canon_skipped) = (0usize, 0usize, 0usize);
+    let (mut canon_smaller, mut canon_larger, mut canon_gain, mut canon_loss) =
+        (0usize, 0usize, 0usize, 0usize);
+    let mut i = 0usize;
+    while i < gates.len() {
+        let mut j = i + 1;
+        while j < gates.len() && gates[j].target == gates[i].target {
+            j += 1;
+        }
+        let run = &gates[i..j];
+        let k = run.len();
+        runs += 1;
+        cubes_h[bin(k)] += 1;
+        if k > 1 {
+            multi_runs += 1;
+            multi_mass += k;
+        }
+        cube_lits += run.iter().map(XGate::width).sum::<usize>();
+        let pg = pack_run(run);
+        let m = pg.monomials.len();
+        anf_h[bin(m)] += 1;
+        anf_total += m;
+        anf_max = anf_max.max(m);
+        let mut support: Vec<u16> = pg.monomials.iter().flatten().copied().collect();
+        support.sort_unstable();
+        support.dedup();
+        sup_h[bin(support.len())] += 1;
+        sup_max = sup_max.max(support.len());
+        for mo in &pg.monomials {
+            mono_degs += mo.len();
+            deg_h[bin(mo.len())] += 1;
+        }
+        if m > k {
+            blowup_runs += 1;
+            blowup_extra += m - k;
+        }
+        let cubes: Vec<Lits> = run.iter().map(|g| g.ctrls.clone()).collect();
+        let parity = run.iter().filter(|g| g.comp).count() % 2 == 1;
+        match anf_reduce(&cubes, 63) {
+            Some((alt, delta, _)) => {
+                let par = parity ^ delta;
+                let canon = alt.len() + usize::from(par && alt.is_empty());
+                canon_h[bin(canon)] += 1;
+                canon_total += canon;
+                canon_cubes += k;
+                if canon < k {
+                    canon_smaller += 1;
+                    canon_gain += k - canon;
+                } else if canon > k {
+                    canon_larger += 1;
+                    canon_loss += canon - k;
+                }
+            }
+            None => canon_skipped += 1,
+        }
+        i = j;
+    }
+    let g = gates.len();
+    println!(
+        "[pack] gates={} runs(=packed gates)={} saved={} ({:.1}%) | multi runs={} ({:.1}% of runs) holding {} gates ({:.1}% of mass)",
+        g, runs, g - runs, 100.0 * (g - runs) as f64 / g.max(1) as f64,
+        multi_runs, 100.0 * multi_runs as f64 / runs.max(1) as f64,
+        multi_mass, 100.0 * multi_mass as f64 / g.max(1) as f64
+    );
+    println!(
+        "[pack] canonical ANF: {} monomials for {} cubes (x{:.2}); runs where ANF > cubes: {} (+{} monomials); max monomials in a run: {}; max support: {} wires",
+        anf_total, g, anf_total as f64 / g.max(1) as f64, blowup_runs, blowup_extra, anf_max, sup_max
+    );
+    println!(
+        "[pack] description mass: cubes carry {} literals, ANF carries {} wire occurrences (x{:.2}); mean cube width {:.2}, mean monomial degree {:.2}",
+        cube_lits, mono_degs, mono_degs as f64 / cube_lits.max(1) as f64,
+        cube_lits as f64 / g.max(1) as f64, mono_degs as f64 / anf_total.max(1) as f64
+    );
+    println!(
+        "[pack] canonical ESOP (deterministic re-expression of the ANF, support<=63; {} runs skipped): {} cubes vs {} now; smaller on {} runs (-{}), larger on {} runs (+{})",
+        canon_skipped, canon_total, canon_cubes, canon_smaller, canon_gain, canon_larger, canon_loss
+    );
+    let show = |name: &str, h: &[usize; 10]| {
+        let parts: Vec<String> = LABELS
+            .iter()
+            .zip(h.iter())
+            .filter(|(_, c)| **c > 0)
+            .map(|(l, c)| format!("{l}:{c}"))
+            .collect();
+        println!("[pack] {name}: {}", parts.join(" "));
+    };
+    show("cubes per run", &cubes_h);
+    show("ANF monomials per run", &anf_h);
+    show("monomial degree", &deg_h);
+    show("canonical ESOP cubes per run", &canon_h);
+    show("support wires per run", &sup_h);
 }
 
 // Full pass: [liveness] -> gather+reduce, iterated to a gate-count fixed
@@ -1067,10 +1450,27 @@ pub fn compress_anc(
             cur_anc = kept_anc;
             rep.liveness_dropped += dropped;
         }
+        let snapshot = (cur.clone(), cur_anc.clone());
         let (next, next_anc) =
             gather_reduce_pass(&cur, cur_anc.as_deref(), wires, p, &mut rng, &mut rep);
         cur = next;
         cur_anc = next_anc;
+        if p.reverse_pass {
+            // The reversed list is the inverse function (involutions), so a
+            // forward gather of it is a leftward gather of the circuit.
+            cur.reverse();
+            if let Some(a) = cur_anc.as_mut() {
+                a.reverse();
+            }
+            let (next, next_anc) =
+                gather_reduce_pass(&cur, cur_anc.as_deref(), wires, p, &mut rng, &mut rep);
+            cur = next;
+            cur_anc = next_anc;
+            cur.reverse();
+            if let Some(a) = cur_anc.as_mut() {
+                a.reverse();
+            }
+        }
         let mut dh_swaps = 0usize;
         if p.downhill {
             let (next, next_anc, swaps) =
@@ -1082,7 +1482,7 @@ pub fn compress_anc(
         }
         rep.iters = iter;
         println!(
-            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} exact={} downhill={} live_dropped={} zero_killed={} vskip={}",
+            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} exact={} downhill={} transport={} (noop={} refused={} cyc={}) sep={} live_dropped={} zero_killed={} vskip={}",
             iter,
             before,
             cur.len(),
@@ -1093,17 +1493,32 @@ pub fn compress_anc(
             rep.anf_wins,
             rep.exact_wins,
             dh_swaps,
+            rep.transports,
+            rep.transport_noops,
+            rep.transport_refused,
+            rep.transport_cycle_refused,
+            rep.sep_passes,
             rep.liveness_dropped,
             rep.zero_killed,
             rep.verifies_skipped
         );
         // Progress = strictly smaller (gates, lits): downhill can shrink lits
-        // at equal gate count, and that still enables later gather wins. No
-        // stage may regress the pair (gather/reduce and the pruners only
-        // shrink; downhill accepts only emitted-form strict decreases).
+        // at equal gate count, and that still enables later gather wins. The
+        // pruners and downhill never regress the pair; gathering with
+        // transport can in principle (a transported group may reduce worse
+        // than its parts would have separately), so an iteration that ends
+        // larger is discarded and the previous circuit kept.
         let now = (cur.len(), lits_of(&cur));
-        debug_assert!(now <= prev, "a compression stage regressed (gates, lits)");
-        if now >= prev {
+        if now > prev {
+            println!(
+                "[fcompress] iter={} regressed {:?} -> {:?}; keeping the previous circuit",
+                iter, prev, now
+            );
+            cur = snapshot.0;
+            cur_anc = snapshot.1;
+            break;
+        }
+        if now == prev {
             break;
         }
         prev = now;
@@ -1451,16 +1866,23 @@ mod compress_tests {
         let (out, rep) = compress(gates.clone(), 4, &CompressParams::default());
         assert_eq!(out.len(), 1, "everything but the CNOT must vanish");
         assert_eq!(out[0], conj(1, &[(2, true)]));
-        assert!(rep.downhill_swaps >= 1);
+        // With the defaults the reverse-gather transport folds the ladder
+        // before downhill runs; either conjugation route counts.
+        assert!(rep.downhill_swaps + rep.transports >= 1);
         assert!(equal_on(&gates, &out, 4, None));
-        // With downhill disabled the ladder must survive: this documents that
-        // the win comes from the conjugation pass, not from gathering.
-        let p = CompressParams {
-            downhill: false,
-            ..Default::default()
-        };
-        let (out2, _) = compress(gates.clone(), 4, &p);
+        // With downhill AND in-gather transport disabled the ladder must
+        // survive: the win comes from conjugation (either the adjacent
+        // downhill pass or the reverse-gather transport), not from plain
+        // gathering. Legacy gathering plus downhill alone still wins.
+        let (out2, _) = compress(gates.clone(), 4, &legacy());
         assert_eq!(out2.len(), 4);
+        let p = CompressParams {
+            downhill: true,
+            ..legacy()
+        };
+        let (out3, rep3) = compress(gates.clone(), 4, &p);
+        assert_eq!(out3.len(), 1);
+        assert!(rep3.downhill_swaps >= 1);
     }
 
     #[test]
@@ -1513,5 +1935,244 @@ mod compress_tests {
             out.len() < gates.len(),
             "expected some compression on dense circuit"
         );
+    }
+
+    // Gather-only parameters: the legacy rule set (no transport, no
+    // separation passes, no reverse pass, no downhill).
+    fn legacy() -> CompressParams {
+        CompressParams {
+            downhill: false,
+            transport: false,
+            sep_reads: false,
+            reverse_pass: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn toffoli_sliding_pair_cancels() {
+        // The family-B triple from the K2 final (gates 837-839): a control
+        // flipped under the other controls slides through with a polarity
+        // change, so the two copies are one identity. Legacy gathering
+        // cannot form the group (the flip writes a control); transport
+        // conjugates the first copy across the flip and the pair cancels.
+        let g = conj(3, &[(0, false), (1, true), (2, true)]);
+        let flip = conj(1, &[(0, false), (2, true)]);
+        let g2 = conj(3, &[(0, false), (1, false), (2, true)]);
+        let gates = vec![g, flip.clone(), g2];
+        let (out, rep) = compress(gates.clone(), 4, &CompressParams::default());
+        assert_eq!(out, vec![flip], "only the flip survives");
+        assert!(rep.transports >= 1);
+        assert!(equal_on(&gates, &out, 4, None));
+        let (legacy_out, _) = compress(gates.clone(), 4, &legacy());
+        assert_eq!(legacy_out.len(), 3, "legacy gathering is blocked by the flip");
+    }
+
+    #[test]
+    fn toffoli_sliding_at_distance_and_through_reads() {
+        // Same relation, copies seven gates apart, with the flipped control
+        // READ in between (which closes the flip's own group but must not
+        // close the transported group: it depends on the flip's group, and a
+        // dependency emitted early is fine). Complemented flip too.
+        let g = conj(3, &[(0, false), (1, true), (2, true)]);
+        let mut flip = conj(1, &[(0, false), (2, true)]);
+        flip.comp = true; // u ^= NOT(!w0 & w2): flips u where g's cube holds
+        // g[u] under u <- u ^ 1 ^ (!w0&w2) = g with u kept (comp adds a flip
+        // everywhere, the cube undoes it where g fires): copy reads u
+        // positively... work it out: on g's cube the flip fires 0 -> u
+        // unchanged. So the identical copy is the identity here.
+        let g2 = conj(3, &[(0, false), (1, true), (2, true)]);
+        // Fillers read u and each carries its own private literal, so they
+        // neither merge with each other nor touch g.
+        let filler: Vec<XGate> = (0..6)
+            .map(|k| conj(4 + (k % 3), &[(1, k % 2 == 0), (8 + k as u16, true)]))
+            .collect();
+        let mut gates = vec![g, flip.clone()];
+        gates.extend(filler.iter().cloned());
+        gates.push(g2);
+        let (out, rep) = compress(gates.clone(), 14, &CompressParams::default());
+        assert_eq!(out.len(), 7, "the pair cancels through six fillers: {out:?}");
+        // The complemented flip fires 0 on g's cube, so the conjugated ESOP
+        // is g itself: a no-op transport (no frame dependency needed).
+        assert!(rep.transports + rep.transport_noops >= 1);
+        assert!(equal_on(&gates, &out, 14, None));
+    }
+
+    #[test]
+    fn transport_frame_order_respects_dependencies() {
+        // g floats across the flip (dependency on the flip's group); a read
+        // of t then closes g's group BEFORE the flip's group would close on
+        // its own, and another writer of u arrives afterwards. The flip must
+        // be emitted before the transported cube and the later writer must
+        // not be gathered across it.
+        let g = conj(3, &[(0, false), (1, true), (2, true)]);
+        let flip = conj(1, &[(0, false), (2, true)]);
+        let read_t = conj(5, &[(3, true)]);
+        let later_u = conj(1, &[(6, true)]);
+        let g2 = conj(3, &[(0, false), (1, false), (2, true)]);
+        let gates = vec![g, flip, read_t, later_u, g2];
+        let (out, _) = compress(gates.clone(), 8, &CompressParams::default());
+        assert!(equal_on(&gates, &out, 8, None));
+        // And the same with the flip's group forced closed by a read of u in
+        // between, so the transported group outlives its dependency.
+        let read_u = conj(5, &[(1, true)]);
+        let g = conj(3, &[(0, false), (1, true), (2, true)]);
+        let flip = conj(1, &[(0, false), (2, true)]);
+        let g2 = conj(3, &[(0, false), (1, false), (2, true)]);
+        let gates = vec![g, flip, read_u, g2];
+        let (out, rep) = compress(gates.clone(), 8, &CompressParams::default());
+        assert!(equal_on(&gates, &out, 8, None));
+        assert_eq!(out.len(), 2, "pair cancels across the read of u: {out:?}");
+        assert!(rep.transports >= 1);
+    }
+
+    #[test]
+    fn separated_reader_does_not_close_group() {
+        // r reads t but is separated from both copies on wire 2 (opposite
+        // polarity), so it commutes with them and the copies cancel.
+        let g = conj(0, &[(1, true), (2, true)]);
+        let r = conj(3, &[(0, true), (2, false)]);
+        let gates = vec![g.clone(), r.clone(), g.clone()];
+        let (out, rep) = compress(gates.clone(), 4, &CompressParams::default());
+        assert_eq!(out, vec![r], "separated reader passes, pair cancels");
+        assert!(rep.sep_passes >= 1);
+        assert!(equal_on(&gates, &out, 4, None));
+        let (legacy_out, _) = compress(gates.clone(), 4, &legacy());
+        assert_eq!(legacy_out.len(), 3);
+    }
+
+    #[test]
+    fn reverse_pass_folds_leftward_ladder() {
+        // h, then (three gates later) the case-split ladder {t^=L&u, t^=L&M}
+        // left by crossing t^=L&u leftward over h (u ^= M). Downhill sees
+        // only immediate neighbours and the forward gather floats the ladder
+        // away from h; the reversed gather floats it back onto h and the
+        // transport folds it to one cube.
+        let h = conj(1, &[(4, true)]);
+        let fill: Vec<XGate> = vec![
+            conj(5, &[(6, true)]),
+            conj(6, &[(7, false)]),
+            conj(7, &[(5, true)]),
+        ];
+        let ladder = vec![
+            conj(0, &[(1, true), (2, true)]),
+            conj(0, &[(2, true), (4, true)]),
+        ];
+        let mut gates = vec![h];
+        gates.extend(fill);
+        gates.extend(ladder);
+        let (out, rep) = compress(gates.clone(), 8, &CompressParams::default());
+        assert_eq!(out.len(), 5, "ladder folds to one cube: {out:?}");
+        assert!(rep.transports >= 1);
+        assert!(equal_on(&gates, &out, 8, None));
+        let p = CompressParams {
+            reverse_pass: false,
+            ..Default::default()
+        };
+        let (fwd_only, _) = compress(gates.clone(), 8, &p);
+        assert_eq!(fwd_only.len(), 6, "forward-only gathering cannot reach h");
+    }
+
+    #[test]
+    fn dense_random_soak_all_rules() {
+        // Dense circuits on few wires exercise transports, dependency
+        // cascades, separated passes and the reverse pass together; the
+        // pass must preserve the function and never grow the circuit.
+        let mut rng = StdRng::seed_from_u64(0xD0_5EED);
+        for case in 0..120usize {
+            let wires: u16 = [4, 5, 6, 8][case % 4];
+            let n = 40 + (case * 7) % 260;
+            let mut gates: Vec<XGate> = Vec::new();
+            while gates.len() < n {
+                let t = rng.random_range(0..wires);
+                let w = rng.random_range(0..=3usize);
+                let mut lits: Vec<(u16, bool)> = Vec::new();
+                while lits.len() < w {
+                    let c = rng.random_range(0..wires);
+                    if c != t && lits.iter().all(|&(seen, _)| seen != c) {
+                        lits.push((c, rng.random_bool(0.5)));
+                    }
+                }
+                let mut g = XGate::conj(t, lits).expect("distinct literals");
+                g.comp = rng.random_bool(0.25);
+                gates.push(g);
+            }
+            for (label, p) in [
+                ("all", CompressParams::default()),
+                (
+                    "slack1",
+                    CompressParams {
+                        transport_slack: 1,
+                        ..Default::default()
+                    },
+                ),
+                ("legacy", legacy()),
+            ] {
+                let (out, _) = compress(gates.clone(), wires as usize, &p);
+                assert!(
+                    out.len() <= gates.len(),
+                    "case {case} {label} grew the circuit"
+                );
+                assert!(
+                    equal_on(&gates, &out, wires as usize, None),
+                    "case {case} {label} changed the function"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pack_is_exact_canonical_and_unbounded() {
+        use crate::engine::format::{expand_packed, read_anf1, read_mpmct, write_anf1};
+        // Exactness on random compressed circuits, through the file format.
+        let mut rng = StdRng::seed_from_u64(0x9AC7);
+        for case in 0..40usize {
+            let wires: u16 = [5, 8, 12][case % 3];
+            let mut gates: Vec<XGate> = Vec::new();
+            while gates.len() < 150 {
+                let t = rng.random_range(0..wires);
+                let w = rng.random_range(0..=3usize);
+                let mut lits: Vec<(u16, bool)> = Vec::new();
+                while lits.len() < w {
+                    let c = rng.random_range(0..wires);
+                    if c != t && lits.iter().all(|&(seen, _)| seen != c) {
+                        lits.push((c, rng.random_bool(0.5)));
+                    }
+                }
+                let mut g = XGate::conj(t, lits).expect("distinct literals");
+                g.comp = rng.random_bool(0.3);
+                gates.push(g);
+            }
+            let (out, _) = compress(gates.clone(), wires as usize, &CompressParams::default());
+            let packed = pack(&out);
+            assert!(packed.len() <= out.len());
+            assert!(equal_on(&gates, &expand_packed(&packed), wires as usize, None), "case {case}");
+            if case == 0 {
+                let path = std::env::temp_dir().join(format!("fcompress_pack_test_{}.anf1", std::process::id()));
+                let path = path.to_str().unwrap().to_string();
+                write_anf1(&path, &packed, wires as usize).unwrap();
+                let (back, w) = read_anf1(&path).unwrap();
+                assert_eq!(back, packed, "anf1 round trip");
+                assert_eq!(w, wires as usize);
+                let (via_mpmct, _) = read_mpmct(&path).unwrap();
+                assert_eq!(via_mpmct, expand_packed(&packed), "read_mpmct dispatches on the anf1 header");
+                std::fs::remove_file(&path).ok();
+            }
+        }
+        // Canonical: two spellings of one function pack identically, cubes
+        // with negative literals expand, comp bits become the constant.
+        let a = vec![conj(0, &[(1, true), (2, true)]), conj(0, &[(1, true), (2, false)])];
+        let b = vec![conj(0, &[(1, true)])];
+        assert_eq!(pack(&a), pack(&b));
+        let mut c = conj(0, &[(1, false), (2, false)]);
+        c.comp = true; // 1 ^ (1^a)(1^b) = a ^ b ^ ab
+        let pc = pack(&[c]);
+        assert_eq!(pc[0].monomials, vec![vec![1u16], vec![2u16], vec![1u16, 2u16]]);
+        // Unbounded support: a run over 80 wires packs in one gate.
+        let wide: Vec<XGate> = (1u16..=80).map(|w| conj(0, &[(w, true), (w + 100, false)])).collect();
+        let pw = pack(&wide);
+        assert_eq!(pw.len(), 1);
+        assert_eq!(pw[0].monomials.len(), 160);
+        assert!(equal_on(&wide, &expand_packed(&pw), 181, None));
     }
 }

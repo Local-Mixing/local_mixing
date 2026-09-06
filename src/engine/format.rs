@@ -121,6 +121,129 @@ impl<'a> Fields<'a> {
     }
 }
 
+// ---- anf1: the packed, canonical circuit format -----------------------------
+//
+// One generalized gate per line, its activation function spelled as the
+// algebraic normal form (XOR of positive monomials), which is the unique
+// representation of a Boolean function:
+//
+//   anf1 <wires> <gates>
+//   <target> <n_monomials> [<degree> <w_1> ... <w_degree>]*
+//
+// Wires ascend inside a monomial, monomials are sorted by (degree, wires),
+// and a degree-0 monomial is the constant 1. The file therefore depends only
+// on the sequence of (target, function) pairs -- nothing of how each
+// function was spelled as cubes upstream survives. Produced by
+// postprocessing::compress::pack (fcompress's default output); any reader of
+// mpmct1 loads it transparently as its monomial expansion (`read_mpmct`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackedGate {
+    pub target: u16,
+    // Sorted canonically; each monomial is an ascending wire list, empty =
+    // the constant 1.
+    pub monomials: Vec<Vec<u16>>,
+}
+
+impl PackedGate {
+    pub fn monomial_count(&self) -> usize {
+        self.monomials.len()
+    }
+
+    /// Exact expansion into XGates: one positive-literal conjunction (or a
+    /// bare X for the constant) per monomial, all on the target.
+    pub fn expand(&self) -> Vec<XGate> {
+        self.monomials
+            .iter()
+            .map(|m| {
+                XGate::conj(self.target, m.iter().map(|&w| (w, true)))
+                    .expect("a monomial has distinct wires")
+            })
+            .collect()
+    }
+}
+
+pub fn expand_packed(packed: &[PackedGate]) -> Vec<XGate> {
+    packed.iter().flat_map(PackedGate::expand).collect()
+}
+
+pub fn write_anf1(path: &str, packed: &[PackedGate], num_wires: usize) -> io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    writeln!(out, "anf1 {} {}", num_wires, packed.len())?;
+    let mut line = Vec::with_capacity(256);
+    for g in packed {
+        line.clear();
+        push_dec(&mut line, g.target as u32);
+        line.push(b' ');
+        push_dec(&mut line, g.monomials.len() as u32);
+        for m in &g.monomials {
+            line.push(b' ');
+            push_dec(&mut line, m.len() as u32);
+            for &w in m {
+                line.push(b' ');
+                push_dec(&mut line, w as u32);
+            }
+        }
+        line.push(b'\n');
+        out.write_all(&line)?;
+    }
+    out.flush()
+}
+
+pub fn read_anf1(path: &str) -> io::Result<(Vec<PackedGate>, usize)> {
+    let raw = std::fs::read(path)?;
+    read_anf1_bytes(&raw)
+}
+
+fn read_anf1_bytes(raw: &[u8]) -> io::Result<(Vec<PackedGate>, usize)> {
+    let mut lines = raw.split(|&c| c == b'\n');
+    let header = lines
+        .next()
+        .ok_or_else(|| io::Error::other("empty anf1 file"))?;
+    let mut hp = Fields::new(header);
+    if hp.word() != Some(b"anf1".as_slice()) {
+        return Err(io::Error::other("missing anf1 header"));
+    }
+    let bad_header = || io::Error::other("bad anf1 header");
+    let num_wires = hp.u32().ok_or_else(bad_header)? as usize;
+    let num_gates = hp.u32().ok_or_else(bad_header)? as usize;
+    let mut packed = Vec::with_capacity(num_gates);
+    for line in lines {
+        let mut f = Fields::new(line);
+        f.skip_space();
+        if f.i >= line.len() {
+            continue;
+        }
+        let bad = || io::Error::other(format!("bad anf1 gate line: {}", show(line)));
+        let target = f.u32().ok_or_else(bad)? as u16;
+        let n = f.u32().ok_or_else(bad)? as usize;
+        let mut monomials = Vec::with_capacity(n);
+        for _ in 0..n {
+            let d = f.u32().ok_or_else(bad)? as usize;
+            let mut m = Vec::with_capacity(d);
+            for _ in 0..d {
+                m.push(f.u32().ok_or_else(bad)? as u16);
+            }
+            monomials.push(m);
+        }
+        if f.word().is_some() {
+            return Err(bad());
+        }
+        packed.push(PackedGate { target, monomials });
+    }
+    if packed.len() != num_gates {
+        return Err(io::Error::other(format!(
+            "anf1 gate count mismatch: header {} vs {}",
+            num_gates,
+            packed.len()
+        )));
+    }
+    Ok((packed, num_wires))
+}
+
+/// Read either format as XGates: an mpmct1 file verbatim, an anf1 file as
+/// the monomial expansion of its packed gates (exact, one positive cube per
+/// monomial). Every mpmct1 consumer accepts packed circuits through this.
 pub fn read_mpmct(path: &str) -> io::Result<(Vec<XGate>, usize)> {
     let raw = std::fs::read(path)?;
     // `str::lines` semantics: split on '\n', a trailing '\r' is whitespace and
@@ -130,8 +253,13 @@ pub fn read_mpmct(path: &str) -> io::Result<(Vec<XGate>, usize)> {
         .next()
         .ok_or_else(|| io::Error::other("empty mpmct file"))?;
     let mut hp = Fields::new(header);
-    if hp.word() != Some(b"mpmct1".as_slice()) {
-        return Err(io::Error::other("missing mpmct1 header"));
+    match hp.word() {
+        Some(b"mpmct1") => {}
+        Some(b"anf1") => {
+            let (packed, wires) = read_anf1_bytes(&raw)?;
+            return Ok((expand_packed(&packed), wires));
+        }
+        _ => return Err(io::Error::other("missing mpmct1 header")),
     }
     let bad_header = || io::Error::other("bad mpmct header");
     let num_wires = hp.u32().ok_or_else(bad_header)? as usize;

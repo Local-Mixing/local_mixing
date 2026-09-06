@@ -1,21 +1,32 @@
 // Final compression pass for fmix/fsplit output (see postprocessing/compress.rs):
-// gather same-target gates that can float together, XOR-reduce each group in
+// gather same-target gates that can float together (transporting groups
+// across writers of their controls by conjugation, floating past separated
+// readers, forward and on the reversed list), XOR-reduce each group in
 // ESOP/ANF space, re-emit surviving cubes as consecutive XGates, iterate to a
-// fixed point. Deterministic and attacker-computable, so it cannot weaken the
-// hiding; the compressed size is the honest "effective size" of the artifact.
+// fixed point, then PACK: each maximal same-target run becomes one
+// generalized gate whose activation function is spelled in algebraic normal
+// form (the anf1 format, engine/format.rs) -- the unique representation, so
+// the artifact carries nothing of how its cubes were spelled upstream.
+// Deterministic and attacker-computable, so it cannot weaken the hiding; the
+// compressed size is the honest "effective size" of the artifact.
+//
+// --no-pack writes the mpmct1 cube circuit instead. Every mpmct1 reader in
+// the tree loads anf1 files transparently (as the monomial expansion).
 //
 // Optional dead-cone pruning for gadgetized circuits, where equality is
 // required only on designated output wires: --live-wires upper-half (or
 // lower-half, or an explicit list "0-255,300"). Default all wires live.
 //
 // Example:
-//   fcompress --input mixed_fmix.txt --output mixed_fcmp.txt
-//   fcompress --input gadget.txt --output gadget_fcmp.txt --live-wires upper-half
+//   fcompress --input crossB.mpmct1 --output final.anf1
+//   fcompress --input crossB.mpmct1 --output final.mpmct1 --no-pack
+//   fcompress --input gadget.txt --output gadget_fcmp.anf1 --live-wires upper-half
 use clap::Parser;
 use local_mixing::circuit::xgate::{XGate, eval_lanes, max_wire};
 use local_mixing::engine::format;
 use local_mixing::engine::mix::Mixer;
-use local_mixing::postprocessing::compress::{CompressParams, compress_anc, lits_of};
+use local_mixing::engine::format::expand_packed;
+use local_mixing::postprocessing::compress::{CompressParams, compress_anc, lits_of, pack, pack_census};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -51,6 +62,28 @@ struct Args {
     /// Disable the interleaved conjugation-descent (downhill) pass
     #[arg(long, default_value_t = false)]
     no_downhill: bool,
+    /// Disable in-gather transport (floating a group across a writer of one
+    /// of its control wires by conjugation instead of closing it)
+    #[arg(long, default_value_t = false)]
+    no_transport: bool,
+    /// Extra cubes a transport may add (0 = neutral-or-better only)
+    #[arg(long, default_value_t = 0)]
+    transport_slack: usize,
+    /// Disable separation-aware reads (a reader separated from every member
+    /// of a group by an opposite literal no longer floats past it)
+    #[arg(long, default_value_t = false)]
+    no_sep_reads: bool,
+    /// Disable the reversed-list (leftward) gather each iteration
+    #[arg(long, default_value_t = false)]
+    no_reverse: bool,
+    /// Write the output as an mpmct1 cube circuit instead of the packed
+    /// canonical anf1 form (one ANF gate per maximal same-target run)
+    #[arg(long, default_value_t = false)]
+    no_pack: bool,
+    /// Report the packing statistics (runs, monomials, support, canonical
+    /// ESOP size) of the compressed circuit
+    #[arg(long, default_value_t = false)]
+    pack_census: bool,
     /// Rounds of the 64-lane sampled global check against the input
     #[arg(long, default_value_t = 64)]
     verify_rounds: usize,
@@ -124,7 +157,7 @@ fn main() {
     });
     let n_zero = zero.as_ref().map_or(0, |v| v.iter().filter(|&&b| b).count());
     println!(
-        "[fcompress] input: {} gates ({} lits), {} wires ({} live, {} zero-in); max_iters={} group_cap={} anf_cap={} downhill={} seed={}",
+        "[fcompress] input: {} gates ({} lits), {} wires ({} live, {} zero-in); max_iters={} group_cap={} anf_cap={} downhill={} transport={} slack={} sep_reads={} reverse={} seed={}",
         gates.len(),
         lits_of(&gates),
         wires,
@@ -134,6 +167,10 @@ fn main() {
         args.group_cap,
         args.anf_support_cap,
         !args.no_downhill,
+        !args.no_transport,
+        args.transport_slack,
+        !args.no_sep_reads,
+        !args.no_reverse,
         args.seed
     );
 
@@ -144,6 +181,10 @@ fn main() {
         group_cap: args.group_cap,
         anf_support_cap: args.anf_support_cap,
         downhill: !args.no_downhill,
+        transport: !args.no_transport,
+        transport_slack: args.transport_slack,
+        sep_reads: !args.no_sep_reads,
+        reverse_pass: !args.no_reverse,
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
@@ -174,6 +215,22 @@ fn main() {
     let (out, out_anc, rep) = compress_anc(gates, anc_sets, wires, &params);
     let secs = t0.elapsed().as_secs_f64();
 
+    // Pack (the default): one canonical ANF gate per maximal same-target
+    // run. The written artifact is what gets verified below, so the packed
+    // circuit is expanded back to cubes and checked alongside.
+    let packed = if args.no_pack { None } else { Some(pack(&out)) };
+    let packed_expanded: Option<Vec<XGate>> = packed.as_ref().map(|p| expand_packed(p));
+    if let Some(p) = &packed {
+        let monos: usize = p.iter().map(|g| g.monomial_count()).sum();
+        println!(
+            "[fcompress] packed: {} cubes -> {} canonical ANF gates ({:.1}%), {} monomials",
+            out.len(),
+            p.len(),
+            100.0 * p.len() as f64 / out.len().max(1) as f64,
+            monos
+        );
+    }
+
     // Sampled global check against the untouched input, on live wires only,
     // over entry states inside the promised zero slice (when one is given).
     let mut rng = StdRng::seed_from_u64(args.seed ^ 0xC0FFEE);
@@ -188,15 +245,25 @@ fn main() {
             })
             .collect();
         let mut sb = sa.clone();
+        let mut sp = packed_expanded.as_ref().map(|_| sa.clone());
         let mut sa = sa;
         eval_lanes(original.iter(), &mut sa);
         eval_lanes(out.iter(), &mut sb);
+        if let (Some(px), Some(sp)) = (&packed_expanded, sp.as_mut()) {
+            eval_lanes(px.iter(), sp);
+        }
         for w in 0..wires {
             if live.as_ref().is_none_or(|v| v[w]) {
                 assert_eq!(
                     sa[w], sb[w],
                     "global check failed on wire {w} (round {round})"
                 );
+                if let Some(sp) = &sp {
+                    assert_eq!(
+                        sa[w], sp[w],
+                        "packed circuit check failed on wire {w} (round {round})"
+                    );
+                }
             }
         }
     }
@@ -213,9 +280,21 @@ fn main() {
         rep.liveness_dropped
     );
 
+    if args.pack_census {
+        pack_census(&out);
+    }
+
     if let Some(path) = &args.output {
-        format::write_mpmct(path, &out, wires).expect("write output");
-        println!("[fcompress] wrote {} gates to {}", out.len(), path);
+        match &packed {
+            Some(p) => {
+                format::write_anf1(path, p, wires).expect("write packed output");
+                println!("[fcompress] wrote {} packed ANF gates to {} (anf1)", p.len(), path);
+            }
+            None => {
+                format::write_mpmct(path, &out, wires).expect("write output");
+                println!("[fcompress] wrote {} gates to {} (mpmct1)", out.len(), path);
+            }
+        }
         if zero.is_some() {
             println!(
                 "[fcompress] WARNING: --zero-wires output equals the input ONLY on the \

@@ -23,9 +23,9 @@ use rand::Rng;
 use rand::rngs::StdRng;
 
 #[derive(Clone)]
-struct Esop {
-    parity: bool,
-    cubes: Vec<XGate>,
+pub(crate) struct Esop {
+    pub(crate) parity: bool,
+    pub(crate) cubes: Vec<XGate>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,7 +59,7 @@ fn xor_add(esop: &mut Esop, mut cube: XGate) {
     }
 }
 
-fn from_block(block: &[XGate], target: u16) -> Esop {
+pub(crate) fn from_block(block: &[XGate], target: u16) -> Esop {
     let mut out = Esop {
         parity: false,
         cubes: Vec::new(),
@@ -108,7 +108,7 @@ fn product(target: u16, a: &Lits, b: &Lits) -> Option<XGate> {
 }
 
 /// Conjugate `phi` by h.  This is an involution because h is an involution.
-fn conjugate(phi: &Esop, h: &XGate, target: u16) -> Esop {
+pub(crate) fn conjugate(phi: &Esop, h: &XGate, target: u16) -> Esop {
     debug_assert!(!h.reads(target));
     let b = h.target;
     let mut out = Esop {
@@ -151,15 +151,29 @@ fn conjugate(phi: &Esop, h: &XGate, target: u16) -> Esop {
 // profitable on ESOP arithmetic while being neutral or worse in the circuit:
 // from_block(raw slice) never exceeds the raw slice on (gates, lits), so
 // strict decrease under these costs is a strict circuit-level decrease.
-fn gate_cost(esop: &Esop) -> usize {
+pub(crate) fn gate_cost(esop: &Esop) -> usize {
     esop.cubes.len() + usize::from(esop.parity && esop.cubes.is_empty())
 }
 
-fn lit_cost(esop: &Esop) -> usize {
+pub(crate) fn lit_cost(esop: &Esop) -> usize {
     esop.cubes.iter().map(XGate::width).sum()
 }
 
-fn gates_of(esop: Esop, target: u16) -> Vec<XGate> {
+// Same function as ESOPs: equal parity and equal cube sets (cubes are
+// deduplicated by xor_add, so a sorted comparison is exact).
+pub(crate) fn esop_equal(a: &Esop, b: &Esop) -> bool {
+    if a.parity != b.parity || a.cubes.len() != b.cubes.len() {
+        return false;
+    }
+    let key = |g: &XGate| (g.comp, g.ctrls.iter().copied().collect::<Vec<_>>());
+    let mut ka: Vec<_> = a.cubes.iter().map(key).collect();
+    let mut kb: Vec<_> = b.cubes.iter().map(key).collect();
+    ka.sort_unstable();
+    kb.sort_unstable();
+    ka == kb
+}
+
+pub(crate) fn gates_of(esop: Esop, target: u16) -> Vec<XGate> {
     let mut out = esop.cubes;
     if esop.parity {
         match out.first_mut() {
@@ -254,7 +268,7 @@ pub fn scan(gates: &[XGate]) -> (usize, usize, Vec<Candidate>) {
 
 // The span rewrite is exact algebra, but assert it anyway on 8x64 random
 // lanes over the span's wires.  Feeds nothing but the assertion.
-fn verify_span(before: &[XGate], after: &[XGate], rng: &mut StdRng) {
+pub(crate) fn verify_span(before: &[XGate], after: &[XGate], rng: &mut StdRng) {
     let top = before
         .iter()
         .chain(after)

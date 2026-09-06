@@ -320,7 +320,7 @@ claim to hide an accumulator observed in the middle of a complete Gray gather.
 
 Artifacts land in the run dir: `gss.mpmct1` (+ `.sandwich.mpmct1`,
 `.source_c.g57`), `phaseA.mpmct1`(+`.state`), `splitB.mpmct1`(+`.state`),
-`crossB.mpmct1`(+`.state`), `final.mpmct1`, per-stage logs, and
+`crossB.mpmct1`(+`.state`), `final.anf1` (packed; `--no-pack` for a cube `final.mpmct1`), per-stage logs, and
 `gss_mix.log` (the pinned-parameter narrative). The direct driver also writes
 `stage12.recipe`, which binds `gss.mpmct1` to its normalized gadgetization
 mode and dimensions. A stage whose artifact already exists is skipped only
@@ -473,10 +473,32 @@ biasing cross-shot selection toward never-crossed (min-dgen) gates.
 `--moves` is ABSOLUTE on a resume; the driver reads the state's move
 counter and adds the budget — do not pass raw fmix moves yourself.
 
-**6 — fcompress**, whole-function (`--live-wires all`), the
-attacker-computable greedy compressor as the final pass and honesty check.
-The driver logs the residual (final/pre-compress gates); healthy mixed
-material historically lands ≳ 90%.
+**6 — fcompress + pack**, whole-function (`--live-wires all`), the
+attacker-computable greedy compressor as the final pass and honesty check,
+followed by packing. The driver logs the cube residual (compressed cubes /
+pre-compress gates) and the packed gate count. Healthy mixed material
+historically landed ≳ 90% under the 2026-08-22 pass. ⚠️ The 2026-09-05 pass
+(in-gather transport = Toffoli sliding at any distance, separated reads,
+reversed-list gather; `POSTMIX_MANUAL.md` §3) removes far more: a delivered
+K2 final that was a fixed point of the old pass shrinks to 57.8%, so
+residuals and "effective size" figures quoted before that date are ~1.7× too
+high, and the ≳ 90% health bar must be recalibrated (2-eff finals land at
+~52%, full hold-10 at ~58% of the old finals).
+
+**The deliverable is `final.anf1`, the packed canonical form** (see
+`docs/FCOMPRESS_TRANSPORT_AND_PACKING.md`): one generalized gate per maximal
+same-target run of the compressed circuit, its activation function spelled as
+the algebraic normal form — `<target> <n> [<degree> <wires…>]*` per line,
+monomials sorted by (degree, wires), header `anf1 <wires> <gates>`. The ANF
+is the unique representation of a Boolean function, so the artifact carries
+nothing of how the mixer happened to spell each function as cubes; the price
+is ~2.4× more terms than cubes (≈1.3× the xz-compressed bytes) and an
+evaluator that either XORs the monomials directly (~2.3× the cube-form word
+operations, milliseconds per 64-input batch) or re-derives any equivalent
+form once. Every mpmct1 reader in the tree (`format::read_mpmct`) loads an
+anf1 file transparently as its monomial expansion, so hmap_affine, the
+censuses and fcompress itself accept it; `fcompress --no-pack` writes the
+mpmct1 cube circuit instead (an intermediate that stays server-side).
 
 ## Sizing expectations (defaults, n = 128)
 
@@ -487,7 +509,8 @@ material historically lands ≳ 90%.
 | phase A out | 2× GSS ≈ 2.6M |
 | split out | ≈ 2× phase A ≈ 5.2M (zero comp) |
 | crossing out | `--xr` × split ≈ 10M at the default 2 |
-| final | ≳ 90% of crossing out |
+| final (cubes) | ≳ 90% of crossing out under the 2026-08-22 pass; ~50–60% of that again under the 2026-09-05 pass (recalibrate) |
+| final.anf1 (packed) | ~22% as many gates as the compressed cubes (one per same-target run), ~2.4× as many monomials as cubes |
 
 Runtimes are dominated by stages 3 and 5 (tens of millions of moves);
 run production sizes on the server, exporting the store paths in the

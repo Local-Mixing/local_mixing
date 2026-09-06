@@ -736,3 +736,159 @@ Verification:
   mirrored to work/ on the Mac). Verification: 200-state functional check
   at substitution; gate count matches header and server copy on transfer;
   no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-19 circuits/gssmix128_nocomp_20260817/run_c_m3000_final.mpmct1
+  Source: .242 server, ~/tds/gssmix128_nocomp_20260817/run_c_m3000/ (driver scripts/gss_mix.sh)
+  Chain: GSS-MIX 6-stage, n=128, HALF-SIZE sandwich (--mcd 3000, s=896), single-carrier
+  production preset. FIRST run of the no-compression-leg phase A (profile 3,30,30,2,2 —
+  compression leg removed 2026-08-17). Stores: FROZEN_DB_DIR=frozen_m1_m11 +
+  FROZEN_CURATED_DIR=frozen_curated_m1_m11_native (both NATIVE convention).
+  Sizes: gadget 693377 -> phase A 1410438 -> split 2822498 -> cross 5171980 (xr=2, b=3,
+  c=1, tdiv=25, arrival 1.83x split) -> fcompress 4859911 (residual 94.0%).
+  Gates: 4859911, wires: 512. Zero-slice: gadget-low ≡ S on the second-half=0 slice.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  phaseA.mpmct1 + final.mpmct1, states and logs stay server-side (user request).
+  ADDENDUM 2026-08-25: pre-final pipeline stages of THIS run brought local for the
+  cut-adversary study (docs/GADGET_LEAKAGE_INVESTIGATION), superseding the
+  "stays server-side" note above for these three files (states/logs/SEED still server-only):
+    run_c_m3000_sandwich.mpmct1  — sliced sandwich (pre-gadget), mpmct1 256 wires / 7920 gates
+    run_c_m3000_gadget.mpmct1    — gadgetized circuit (phase-A input),  512 wires / 693377 gates
+    run_c_m3000_phaseA.mpmct1    — phase-A output,                      512 wires / 1410438 gates
+  All copied verbatim from ~/tds/gssmix128_nocomp_20260817/run_c_m3000/ (originals gss.mpmct1
+  .sandwich.mpmct1, gss.mpmct1, phaseA.mpmct1); headers/sizes verified against source.
+----------------------------------------------------------------
+2026-08-19 circuits/gssmix128_nocomp_20260817/run_d_m3000_final.mpmct1
+  Source: .242 server, ~/tds/gssmix128_nocomp_20260817/run_d_m3000/ (driver scripts/gss_mix.sh)
+  Chain: identical recipe to run_c_m3000 (independent fresh seed).
+  Sizes: gadget 689537 -> phase A 1367662 -> split 2736964 -> cross 5012841 ->
+  fcompress 4712035 (residual 94.0%).
+  Gates: 4712035, wires: 512. Zero-slice: gadget-low ≡ S on the second-half=0 slice.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  phaseA.mpmct1 + final.mpmct1, states and logs stay server-side (user request).
+----------------------------------------------------------------
+2026-09-05 circuits/bv5gss128_k2h30_2eff_final.mpmct1
+  Source: .242 server, ~/tds/bv5_k2_h30_2eff_pipeline/ (the K2 hold-30 arm's 2-eff
+  snapshot run through gss_mix stages 4-6 via ~/h30_2eff_pipeline.sh, mirroring the
+  pipeline's split/crossing/fcompress commands exactly).
+  Chain: GSS-MIX, n=128, HALF-SIZE sandwich (--mcd 3000, s=896), CLASSIC variant,
+  blinded-V5 LGI compute K=2 (max_open=3, min_mask=auto, burst rerand F=8K,
+  co-sampled; commits 09ee9825 + b38a438f). NOTE: phase A was stopped at the 2-eff
+  snapshot (an early mixing checkpoint, ~1.7x gadget) instead of the full hold,
+  then finished through split -> crossing (xr=2, temp=tgt/25, b=3, c=1) -> fcompress.
+  Stores: FROZEN_DB_DIR=frozen_m1_m11 + FROZEN_CURATED_DIR=frozen_curated_m1_m11_native.
+  Sizes: 2-eff snapshot 960670 -> split 1835254 -> cross 3337022 -> fcompress
+  3053636 (residual 91.5%).
+  Gates: 3053636, wires: 512. Zero-slice: gadget-low ≡ S on the second-half=0 slice.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Sanitized on delivery: final.mpmct1 only (header + gate lines; verified 0 stray
+  lines, seed-grep clean); no state/.gens/.origins/logs/SEED copied to the Mac.
+----------------------------------------------------------------
+2026-09-05 circuits/bv5gss128_20260904/k2_h10_final.mpmct1
+  Source: .242 server, ~/tds/bv5_k2_burst20260904b/ (driver scripts/gss_mix.sh via
+  ~/bv5_run.sh; the K=2, hold-10 arm of the burst+floor deliverable set).
+  Chain: GSS-MIX 6-stage, n=128, HALF-SIZE sandwich (--mcd 3000, s=896), CLASSIC
+  variant, blinded-V5 LGI compute K=2 (max_open=3, min_mask=auto, burst rerand
+  F=8K, co-sampled; commit 09ee9825). expand 2, hold 10 effs, profile 3,13,13,2,2.
+  Stores: FROZEN_DB_DIR=frozen_m1_m11 + FROZEN_CURATED_DIR=frozen_curated_m1_m11_native.
+  Sizes: gadget 563946 -> phase A 1123818 -> split 2253606 -> cross 4090353 ->
+  fcompress 3748210 (residual 91.6%).
+  Gates: 3748210, wires: 512. Zero-slice: gadget-low ≡ S on the second-half=0 slice.
+  Stats: affine deg-1 meanH 0.4953, exposed-C 6/92 (<0.25) 11/92 (<0.35) [I/O fringe].
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Sanitized on delivery: final.mpmct1 only (header + gate lines; 0 stray lines,
+  seed-grep clean); no state/.gens/.origins/logs/SEED copied to the Mac.
+----------------------------------------------------------------
+2026-09-05 circuits/bv5gss128_bal_k2_2eff_final.mpmct1
+  Source: .242 server, ~/tds/bv5_k2_bal2eff_20260905/ (driver scripts/gss_mix.sh via
+  ~/balanced_2eff_run.sh, SANDWICH_VARIANT=balanced; phase A halted by the 2-eff
+  watcher so stages 4-6 ran on the 2-eff snapshot).
+  Chain: GSS-MIX 6-stage, n=128, HALF-SIZE sandwich (--mcd 3000, s=896), BALANCED
+  variant (forward payload C(x) on the LOW half, D/S2 on the HIGH half; closing
+  junk-guard = slice_zero_junk_guard_dims_high, commit da2f9662), blinded-V5 LGI
+  compute K=2 (max_open=3, min_mask=auto, burst rerand F=8K, co-sampled; commit
+  09ee9825). NOTE: phase A was stopped at the 2-eff snapshot (~1.7x gadget, mv=1.7M)
+  instead of the full hold-10, then finished through split -> crossing (xr=2,
+  temp=tgt/25, b=3, c=1) -> fcompress.
+  Stores: FROZEN_DB_DIR=frozen_m1_m11 + FROZEN_CURATED_DIR=frozen_curated_m1_m11_native.
+  Sizes: gadget 560552 -> 2-eff snapshot 960822 -> split 1836112 -> cross 3342244
+  -> fcompress 3067544 (residual 91.8%).
+  Gates: 3067544, wires: 512. Balanced zero-slice: forward answer on the LOW half at
+  y=0 (reverse-honesty for the balanced variant not verified per port, see memory).
+  Stats of the 2-eff snapshot: reports/segment_stats_bv5_20260905/.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Sanitized on delivery: final.mpmct1 only (header + gate lines; verified 0 stray
+  lines, seed-grep clean at SEED+0/+2/+3/+5); no state/.gens/.origins/logs/SEED
+  copied to the Mac.
+----------------------------------------------------------------
+2026-09-05 circuits/bv5gss128_k2h30_2eff_final_fc2.mpmct1
+  Source: Mac, re-compression of circuits/bv5gss128_k2h30_2eff_final.mpmct1 (the K2
+  hold-30 2-eff pipeline deliverable above) with the 2026-09-05 fcompress
+  (src/postprocessing/compress.rs: in-gather transport = Toffoli sliding at any
+  distance, separation-aware reads, reversed-list gather; docs/POSTMIX_MANUAL.md §3).
+  Command: fcompress --input <above> --seed 1 --output <this> (defaults: max_iters 10,
+  group_cap 64, anf_cap 40, downhill on, transport on, slack 0, sep_reads on, reverse
+  on; --seed feeds only the verification sampler, the output does not depend on it).
+  Chain upstream unchanged: same gadget / 2-eff snapshot / split / crossing as the
+  source file; this file is the same FUNCTION on every wire (whole-function
+  compression, --live-wires all, no zero-slice specialization).
+  Sizes: source 3053636 -> 1607266 gates (52.6%), lits 8912335 -> 3855176 (43.3%).
+  Gates: 1607266, wires: 512. Zero-slice: as the source (gadget-low ≡ S on the
+  second-half=0 slice).
+  Verification: fcompress per-group checks + global 64 rounds x 64 lanes vs the source;
+  plus an independent pure-python evaluator (no shared code) on 2048 fully random
+  512-wire inputs: EQUAL on every wire.
+  Seed: none new (C and the pipeline seed stay server-side; nothing secret was used).
+  Sanitized on delivery: header + gate lines only (verified 1607266 gate lines, 0 stray
+  lines, no non-numeric line besides the header).
+----------------------------------------------------------------
+2026-09-05 circuits/bv5gss128_bal_k2_2eff_final_fc2.mpmct1
+  Source: Mac, re-compression of circuits/bv5gss128_bal_k2_2eff_final.mpmct1 (the
+  BALANCED K2 2-eff pipeline deliverable above) with the 2026-09-05 fcompress
+  (src/postprocessing/compress.rs: in-gather transport = Toffoli sliding at any
+  distance, separation-aware reads, reversed-list gather; docs/POSTMIX_MANUAL.md §3).
+  Command: fcompress --input <above> --seed 1 --output <this> (defaults: max_iters 10,
+  group_cap 64, anf_cap 40, downhill on, transport on, slack 0, sep_reads on, reverse
+  on; --seed feeds only the verification sampler, the output does not depend on it).
+  Chain upstream unchanged: same balanced gadget / 2-eff snapshot / split / crossing
+  as the source file; this file is the same FUNCTION on every wire (whole-function
+  compression, --live-wires all, no zero-slice specialization).
+  Sizes: source 3067544 -> 1614661 gates (52.6%), lits 8935854 -> 3864447 (43.2%).
+  Gates: 1614661, wires: 512. Balanced zero-slice: as the source (forward answer on
+  the LOW half at y=0).
+  Verification: fcompress per-group checks + global 64 rounds x 64 lanes vs the source;
+  plus an independent pure-python evaluator (no shared code) on 2048 fully random
+  512-wire inputs: EQUAL on every wire.
+  Seed: none new (C and the pipeline seed stay server-side; nothing secret was used).
+  Sanitized on delivery: header + gate lines only (verified 1614661 gate lines, 0 stray
+  lines, no non-numeric line besides the header).
+----------------------------------------------------------------
+2026-09-06 circuits/bv5gss128_k2h30_2eff_final_fc2.anf1
+  Source: Mac, PACKED canonical form of circuits/bv5gss128_k2h30_2eff_final_fc2.mpmct1
+  (the 2026-09-05 re-compression of the K2 hold-30 2-eff deliverable) produced by
+  fcompress --input <that> --max-iters 0 --output <this> (the packer alone; packing is
+  fcompress's default output as of this commit). Format anf1 (src/engine/format.rs,
+  docs/FCOMPRESS_TRANSPORT_AND_PACKING.md §4): one generalized gate per maximal
+  same-target run, activation function in algebraic normal form, monomials sorted by
+  (degree, wires) -- the unique spelling of each function; nothing of the upstream cube
+  representation survives. Same FUNCTION as the source on every wire.
+  Sizes: 1607266 cubes -> 347055 packed gates (21.6%), 3820336 monomials (2.38x cubes),
+  41.2 MB raw (xz -9: 8.58 MB vs 6.51 MB for the cube form).
+  Gates: 347055 packed, wires: 512. Zero-slice: as the source.
+  Verification: fcompress global check of the packed expansion (16 rounds x 64 lanes) +
+  independent pure-python anf1 evaluator (no shared code) on 2048 fully random 512-wire
+  inputs vs the cube-form source: EQUAL on every wire.
+  Seed: none (nothing secret was used). Sanitized on delivery: header + gate lines only
+  (verified 347055 gate lines, 0 stray lines; every monomial sorted, distinct, in range).
+----------------------------------------------------------------
+2026-09-06 circuits/bv5gss128_bal_k2_2eff_final_fc2.anf1
+  Source: Mac, PACKED canonical form of circuits/bv5gss128_bal_k2_2eff_final_fc2.mpmct1
+  (the 2026-09-05 re-compression of the BALANCED K2 2-eff deliverable), produced and
+  formatted exactly as the entry above.
+  Sizes: 1614661 cubes -> 351546 packed gates (21.8%), 3840880 monomials (2.38x cubes),
+  41.6 MB raw (xz -9: 8.66 MB vs 6.56 MB for the cube form).
+  Gates: 351546 packed, wires: 512. Balanced zero-slice: as the source.
+  Verification: fcompress global check of the packed expansion (16 rounds x 64 lanes) +
+  independent anf1 evaluator on 2048 fully random 512-wire inputs vs the cube-form
+  source: EQUAL on every wire.
+  Seed: none. Sanitized on delivery: header + gate lines only (verified 351546 gate
+  lines, 0 stray lines; every monomial sorted, distinct, in range).

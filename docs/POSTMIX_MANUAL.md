@@ -8,7 +8,7 @@ and log field, with defaults and practical guidance.
 ```
 fmix      --input A.txt [--input-format g57] --target-size 3000000 \
           --moves 50000000 --output mixed.txt --origins-out mixed.origins.txt
-fcompress --input mixed.txt --output mixed.fc.txt [--live-wires upper-half]
+fcompress --input mixed.txt --output mixed.fc.anf1 [--live-wires upper-half] [--no-pack]
 fmix_stats --input mixed.txt [--origins mixed.origins.txt]
 ```
 
@@ -626,18 +626,40 @@ The deterministic final compression pass, and the honest **effective-size
 evaluator**: it is attacker-computable, so running it never weakens hiding,
 and its output size is the right number to report for any mixed artifact.
 Applied to move-stamped `fmix` snapshots it is also a mixing clock — the
-greedy-recoverable fraction shrinks monotonically with churn (measured: fsplit
-output → 83%, mid-growth fmix → 86%, fmix final → 90%, long-churned → 94%).
+greedy-recoverable fraction shrinks monotonically with churn (measured with
+the 2026-08-22 pass: fsplit output → 83%, mid-growth fmix → 86%, fmix final →
+90%, long-churned → 94%). The 2026-09-05 pass (transport, separated reads,
+reversed gather — step 1 below) recovers much more: the A1 bench goes
+94.7% → 69.2%, and a delivered GSS K2 final that was a fixed point of the old
+pass compresses to 57.8% (independently verified on random inputs), so sizes
+quoted before that date are ~1.7× too high.
 
 Algorithm, iterated to a fixed point (≤ `--max-iters`):
 
-1. **Gather** — one forward sweep keeping an open group per target wire. Two
-   closure rules: any *read* of wire `t` closes `t`'s group (a reader pins the
-   accumulated value), and any *write* to a wire in a group's
-   union-of-member-controls closes that group (member control values may not
-   change). These two rules make it unconditionally legal for members to float
-   right to the close point. Closures cascade; groups emit in ascending
-   last-member order.
+1. **Gather** — one forward sweep keeping an open group per target wire, then
+   the same sweep on the reversed gate list (every XGate is an involution, so
+   the reversed list is the inverse function and gathering it is a leftward
+   float of the circuit — the crossing walk moves gates both ways, and a
+   ladder left by a leftward crossing is only reachable from the left). A
+   *read* of wire `t` closes `t`'s group (a reader pins the accumulated value)
+   unless the reader is **separated** from every member by an opposite-polarity
+   shared literal, in which case it commutes with the group and the group
+   floats past it. A *write* to a wire `u` in a group's union-of-member-controls
+   **transports** the group across the writer `h`: the group's ESOP is
+   conjugated by the substitution `u ← u ⊕ fire(h)` (the downhill algebra),
+   accepted when the catalogue-reduced result does not grow in (gates, lits)
+   — Toffoli sliding at any distance, which is what lets a conjugated copy
+   `g[u → ¬u]` meet `g` and cancel — and closes the group when `h` reads `t` or
+   the substitution would grow it (`--transport-slack N` allows N extra cubes,
+   speculatively; an iteration that ends larger is discarded). A transported
+   group's cubes live in the frame after `h`, so the group records a
+   dependency on `h`'s group and is emitted after it: closing a group closes
+   its dependencies first and a close set is emitted in dependency order
+   (ascending last-member order among independent groups; groups with no
+   dependency path between them commute). The dependency graph is kept
+   acyclic by construction. `--no-transport`, `--no-sep-reads`, `--no-reverse`
+   restore the older rules one at a time (all three off reproduces the
+   2026-08-22 pass byte for byte).
 2. **Reduce** — each gathered group is `t ^= f1 ⊕ … ⊕ fk`, an ESOP. Apply the
    pairwise catalogue (§1) to fixed point; for any group of ≥ 2 members whose
    support fits in `--anf-support-cap` bits (≤ 63), also expand to canonical
@@ -658,10 +680,31 @@ Algorithm, iterated to a fixed point (≤ `--max-iters`):
    inverse of the mixer's R1 crossing and collapses case-split ladders that
    gathering alone can never reach; gathering in turn makes runs contiguous,
    which is what feeds it. Disable with `--no-downhill`.
-4. **Re-emit** the survivors as consecutive XGates — output stays mpmct1, all
-   downstream tooling keeps working. The pass may legitimately create `comp=1`
-   gates; the fossil metric is frozen at fmix-end, so record it before
-   compressing.
+4. **Re-emit** the survivors as consecutive XGates. The pass may legitimately
+   create `comp=1` gates; the fossil metric is frozen at fmix-end, so record
+   it before compressing.
+5. **Pack** (default; `--no-pack` for the mpmct1 cube circuit) — at the fixed
+   point every maximal run of consecutive same-target gates is one gathered
+   group, and packing spells each run as ONE generalized gate `t ^= f(controls)`
+   with `f` in **algebraic normal form**, the XOR of positive monomials — the
+   unique representation of a Boolean function. The written file is the
+   **`anf1`** format: header `anf1 <wires> <gates>`, then one line per packed
+   gate `<target> <n_monomials> [<degree> <w_1> … <w_degree>]*`, wires
+   ascending inside a monomial, monomials sorted by (degree, wires), degree 0
+   = the constant 1 (a `comp` bit). The point is not size but *removing
+   information*: the cube list the reducer emits is the catalogue-reduced
+   descendant of the cubes the mixer left, so it carries history, while the
+   ANF depends on nothing but the function. Measured on the K2 2-eff finals:
+   ~4.6× fewer gates, ~2.4× more terms than cubes, ~1.2× the raw bytes and
+   ~1.3× the xz-compressed bytes; literal evaluation costs ~2.3× the cube
+   form's word operations (about 22 ms vs 9.5 ms per 64-input batch on the
+   1.6M-cube h30 2-eff), and an evaluator may re-derive any equivalent form
+   once. `format::read_mpmct` loads anf1 files transparently as their
+   monomial expansion, so every existing consumer accepts packed circuits;
+   `--pack-census` prints the run/monomial/support statistics. Grouping,
+   emission order and transport frames remain history-dependent (full
+   canonicalization is out of reach); packing removes the per-gate spelling
+   only, and the pipeline's randomization is relied on for the rest.
 
 **Optional dead-cone pruning** (`--live-wires`), for gadgetized circuits where
 equality is only required on designated output wires: one exact backward pass
@@ -698,6 +741,12 @@ run** — verify and report, discard the result (the evaluator mode).
 | `--group-cap` | 64 | close a group proactively at this many members |
 | `--anf-support-cap` | 40 | try the ANF strategies only when the group support fits (hard cap 63) |
 | `--no-downhill` | off | disable the interleaved conjugation-descent pass |
+| `--no-transport` | off | disable in-gather transport (conjugating a group across a writer of one of its control wires instead of closing it) |
+| `--transport-slack` | 0 | extra cubes a transport may add (0 = neutral-or-better only; growth is speculative, guarded per iteration) |
+| `--no-sep-reads` | off | disable separation-aware reads (a reader separated from every member by an opposite literal no longer floats past the group) |
+| `--no-reverse` | off | disable the reversed-list (leftward) gather each iteration |
+| `--no-pack` | off | write the mpmct1 cube circuit instead of the packed canonical `anf1` form |
+| `--pack-census` | off | print the packing statistics of the compressed circuit: run count, cubes / canonical ANF monomials / deterministic canonical ESOP cubes / support per run |
 | `--verify-rounds` | 64 | rounds of the final 64-lane global check |
 | `--no-local-verify` | off | disable per-group and per-swap verification |
 | `--seed` | 0 | seeds the verification sampling only — the pass itself is deterministic |

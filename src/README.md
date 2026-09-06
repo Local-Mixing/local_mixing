@@ -5,9 +5,19 @@ The complete per-file inventory is in [`CODE_LAYOUT.md`](../CODE_LAYOUT.md).
 ## Production GSS_MIX path
 
 ```text
-n -> sliced sandwich -> gadgetize -> Phase A -> split -> crossing walk -> fcompress
+n -> sliced sandwich -> gadgetize -> Phase A -> split -> crossing walk -> fcompress -> pack
      preprocessing/                 db_mixing/     postprocessing/
 ```
+
+The deliverable is the **packed canonical form** (`final.anf1`,
+`engine/format.rs`): one generalized gate per maximal same-target run of the
+compressed circuit, its activation function spelled in algebraic normal form
+(`<target> <n> [<degree> <wires…>]*`, monomials sorted by (degree, wires)) —
+the unique representation of the function, so nothing of the upstream cube
+spelling survives. `format::read_mpmct` loads `anf1` files transparently (as
+the monomial expansion), so every mpmct1 consumer accepts them;
+`fcompress --no-pack` writes the mpmct1 cube circuit instead. Details and
+measurements: `docs/FCOMPRESS_TRANSPORT_AND_PACKING.md`, `docs/POSTMIX_MANUAL.md` §3.
 
 Only three production executables are used by `scripts/gss_mix.sh`:
 
@@ -15,7 +25,7 @@ Only three production executables are used by `scripts/gss_mix.sh`:
 |---|---|---|
 | 1–2 | `gen_sandwich_gadget` | `preprocessing/bin/gen_sandwich_gadget.rs` |
 | 3–5 | `fmix` | `db_mixing/bin/fmix.rs` |
-| 6 | `fcompress` | `postprocessing/bin/fcompress.rs` |
+| 6 | `fcompress` (compress + pack) | `postprocessing/bin/fcompress.rs` |
 
 `fmix` owns three modes: Phase A (`--gss --phase-a`), splitting
 (`--split --split-stop`), and the resumed crossing walk (`--resume`). The
