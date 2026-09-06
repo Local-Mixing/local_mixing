@@ -435,7 +435,8 @@ fn main() {
         // slice (x on the low n wires, zeros on the high n), so seed the band
         // only from the low n or ~half the band collapses to 0 on the usage.
         // Sweep overrides (testing): BV5_K, BV5_RERAND (straddle slots), BV5_REPAIR
-        // (repair slots), BV5_BURST (F gates/slot), BV5_MAX_OPEN.
+        // (repair slots), BV5_BURST (F gates/slot), BV5_MAX_OPEN, BV5_EXTRA_LGIS,
+        // BV5_QUAD_FIRE (=0 for the legacy linearised read; default quad-fire).
         let envu = |k: &str, d: usize| {
             std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
         };
@@ -449,6 +450,7 @@ fn main() {
             max_open: envu("BV5_MAX_OPEN", base.max_open),
             min_mask: envu("BV5_MIN_MASK", base.min_mask),
             extra_lgis: envu("BV5_EXTRA_LGIS", base.extra_lgis),
+            quad_fire: std::env::var("BV5_QUAD_FIRE").map_or(base.quad_fire, |v| v != "0"),
             ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
@@ -477,9 +479,9 @@ fn main() {
         // on the zero band) and the compute (which only reads the band).
         let band_seed = seed_band(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C);
         println!(
-            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} | {} atoms, \
+            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} quad_fire={} | {} atoms, \
              + {} band-seed + {} slice-guard gates each side",
-            params.k, bv5.r_used, params.max_open, params.active_wires, bv5.atoms,
+            params.k, bv5.r_used, params.max_open, params.active_wires, params.quad_fire, bv5.atoms,
             band_seed.len(), open.gates.len()
         );
         let mut gates = open.gates; // module 1: input slice guard

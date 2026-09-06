@@ -48,6 +48,7 @@ fn main() {
         min_mask,
         active_wires,
         extra_lgis,
+        quad_fire: std::env::var("BV5_QUAD_FIRE").map_or(true, |v| v != "0"),
     };
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).

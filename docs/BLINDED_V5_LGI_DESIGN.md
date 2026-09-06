@@ -109,12 +109,14 @@ times wire `w` is used (target or control) in `A`, and `w_w` the number of times
 it is written (a target).
 
 **Masking atom.** `g57(w,x,y) = w ^= 1 ^ (¬x ∧ y)` (comp = 1; data target, band
-controls). A **disjoint-pair LGI** on `w` is `⊕ᵢ g57(w, cy[2i], cy[2i+1])`, a
-deg-2 mask (the optimal sparse shape). A `g57` and its reverse **linearise**:
-`g57(w,r1,r2) ⊕ g57(w,r2,r1) = w ⊕ r1 ⊕ r2` — the read exploits this (AND
-monomials are symmetric and do *not* linearise). A K-*cycle* would telescope to 0
-under the read's pair-completion (a bare operand), so disjoint **pairs** are used;
-`K ≥ 2`.
+controls), i.e. the mask term `1 ⊕ y ⊕ x·y`. A **disjoint-pair LGI** on `w` is
+`⊕ᵢ g57(w, cy[2i], cy[2i+1])`, a deg-2 mask (the optimal sparse shape). A `g57`
+and its reverse **linearise**: `g57(w,r1,r2) ⊕ g57(w,r2,r1) = w ⊕ r1 ⊕ r2` — the
+original read exploited this; the current read (**quad-fire**, §2 step 2, default
+since 2026-09-06) deliberately does *not*, because a linearised operand is exactly
+affine in band wires for a window that the pipeline's reordering stages stretch
+into a leak (§5.0). A K-*cycle* would telescope to 0 under pair-completion (a bare
+operand), so disjoint **pairs** are used; `K ≥ 2`.
 
 **Why one pass — co-sampling.** The masks, the band updates, and `A`'s gates are
 **co-sampled**: produced together in a single forward pass, rather than laying a
@@ -152,21 +154,31 @@ of gates; §3.)
 *Forward pass* — repeat until all `m` gates are placed:
 
 1. **Pop** a ready `A`-gate `g` (target wire `c`).
-2. **Masked read.** For each operand wire, *linearise* its currently-open masks —
-   complete each open `g57` with its reverse so the wire carries `operand ⊕ ρ`,
-   `ρ` a linear XOR of band wires — topping up with fresh disjoint pairs until
-   `|ρ| ≥ min_mask` (a **hard floor**: never bare, and never thinly masked even
-   when the open pairs happen to cancel). Remember the reverse gates as the *undo*.
-3. **Fire from inside the mask.** Expand `c ^= comp ⊕ lit(a)∧lit(b)` as
-   `(a'⊕ρ_a)(b'⊕ρ_b)` into a batch of monomials over ONLY the masked control
-   wires and band wires — never bare `a`, `b`, or `a⊕b` (0/1/2 controls and all
-   polarities; the 0-control fire is `¬comp`).
+2. **Masked read (quad-fire).** For each operand wire, leave its currently-open
+   masks *as they are* and describe the wire as the ANF polynomial
+   `P_w = w' ⊕ Σ_(x,y) (1 ⊕ y ⊕ x·y)` over its net-open pairs (a pair whose
+   reverse is also open contributes the linear `x ⊕ y`); top up with **fresh
+   single `g57`s** (quadratic, not pair-completed) until at least `max_open`
+   quadratic terms mask the operand (the **hard floor**: never bare, never
+   affine). Remember the top-up gates as the *undo*. *(Legacy linear read,
+   `BV5_QUAD_FIRE=0`: complete each open `g57` with its reverse so the wire carries
+   `operand ⊕ ρ`, `ρ` a linear XOR of band wires, top up with pairs until
+   `|ρ| ≥ min_mask`, and undo the reverses after the fire — see §5.0 for why this
+   was replaced.)*
+3. **Fire from inside the mask.** Expand `c ^= comp ⊕ lit(a)∧lit(b)` as the
+   polynomial product `P_a · P_b` (a negative literal complements the constant)
+   into a batch of monomials over ONLY the masked control wires and band wires —
+   never bare `a`, `b`, or `a⊕b` (0/1/2 controls and all polarities; the
+   0-control fire is `¬comp`). At `K = 2`, `max_open = 3` that is up to
+   `8 × 8 = 64` monomials of degree ≤ 4 (versus 49 of degree 2 plus the
+   linearise/undo bracket in the legacy read), so the gadget is ~12% *smaller*.
 4. **Straddle (hidden firing, §3).** Split the monomial batch into two halves,
    shuffle each **independently** (they all target `c` and commute), emit the
    first half, **open a fresh LGI on `c` here** (one of its straddle opens,
    generated on demand), then emit the second half. The mid-fire open makes the
    module's net XOR on `c` equal `Δ ⊕ secret-mask`, not the bare increment `Δ`.
-5. **De-linearise** — emit the undo gates, restoring the operands' masks.
+5. **Undo** — emit the top-up gates again (each is an involution), restoring
+   the operands' original mask set.
 6. **Maybe rerand** — if the calibrated rate says so, emit one band-update slot
    (below).
 7. **Release & fill** — decrement the in-degree of `g`'s dependents, moving any
@@ -186,8 +198,10 @@ the band updates protect the straddle opens automatically.
 **Correctness** is verified exhaustively over all `2^n` inputs × many band
 settings for `n ≤ 6`, `K ∈ 2..=5`, all `max_open` and both rerand kinds
 (`scratchpad/v6`, 891 gadgets, 0 mismatches — plus a 360-case check that the
-gate reordering preserves `A`), and end-to-end in `gen_sandwich_gadget` (forward
-+ reverse-honesty sample-verify PASS).
+gate reordering preserves `A`; the linear read), by the unit test in
+`blinded_v5.rs` (`n = 6`, all `2^n` inputs × 8 band states × 6 seeds, **both read
+modes**), and end-to-end in `gen_sandwich_gadget` (forward + reverse-honesty
+sample-verify PASS in both modes).
 
 ---
 
@@ -224,7 +238,8 @@ co-sampled pass is what makes coverage complete at no cost.
 |---|---|---|---|
 | `K` | **2** | band wires per LGI = per-LGI **mask width** (⌊K/2⌋ disjoint pairs; `\|ρ\| ≈ max_open·K`) — *not* the identity's temporal length | affine- and deg-2-neutral across `K` (§5); smallest is best. Size grows ~linearly in `K`, read cost quadratically in `\|ρ\|`, so large `K` explodes (K16 ≈ 18M). Odd `K` wastes a wire (K3 ≡ K2). |
 | `max_open` | **3** | rolling cap on simultaneously-open LGIs per wire | wider `ρ` = more local hiding, but read cost is quadratic in `\|ρ\|`; 3 is the knee. |
-| `min_mask` | **auto = `max_open` = 3** | **hard floor** on `\|ρ\|` (masking wires) per operand read | guarantees no operand is ever read under fewer than 3 masking wires, even in a rare draw where the open pairs cancel (measured worst read `\|ρ\|` rises 2 → 4; mean `\|ρ\|` ≈ 5.9 unchanged; +0.2% gates). |
+| `quad_fire` | **on** (2026-09-06) | read operands from inside their quadratic masks; never linearise | the linearised read leaves the operand exactly affine in band wires for a window that every reordering stage stretches into the C-vs-G ridge (§5.0); quad-fire has no such window, keeps the ridge at the I/O fringe through the whole pipeline, and is ~12% smaller. `BV5_QUAD_FIRE=0` = legacy. |
+| `min_mask` | **auto = `max_open` = 3** | **hard floor** per operand read: quadratic mask terms (quad-fire) / masking wires `\|ρ\|` (legacy) | guarantees no operand is ever read under fewer than 3 masks, even in a rare draw where the open pairs cancel (legacy: measured worst read `\|ρ\|` rises 2 → 4; mean `\|ρ\|` ≈ 5.9 unchanged; +0.2% gates). |
 | `rerand_level` (straddle slots) | **auto = `m/(4K)`** (≈875) | close-straddling-masks band-update **slots** | at the safe side of the ≈1024 thinning knee; the *slot* count (not the gate count) is what thins. |
 | `rerand_repair` (repair slots) | **0** | re-derive-across-update band-update slots (no thinning) | off by default; add slots for extra band turnover at no masking cost. |
 | `rerand_burst` (`F`) | **auto = `8K`** (=16 at K=2) | band-update gates **per slot** (the burst) | comparable to a data wire's write-burst (tens of gates), so band wires carry a data-wire-like activity signature; `slots × F ≈ 2m`. |
@@ -244,7 +259,55 @@ refinements moved them (the burst change touches only the band wires, so it
 cannot move the data-wire ridge): degree-1 `meanH = 0.4966`, degree-2
 `meanH = 0.4967`, exposed-C `< 0.35` ≈ 5.6–5.7%.
 
-### 5.1 Affine ridge (linear recovery of source-C segments)
+### 5.0 The affine ridge through the pipeline, and why the read mode changed (2026-09-06)
+
+The figures in §5.1–§5.5 below were read by **mean H** and by the count of
+**exposed rows** (segments with a cell below 0.25/0.35). Both are blind to a ridge
+made of *exact* affine relations at a few bits per cell, and the ridge statistic of
+`plot_hmap_ridge.py` (depth, median-row depth, rho) had never been computed for the
+pipeline circuits. Computing it showed a full-strength diagonal in every mixed
+circuit of the linear-read design: the raw gadget has ≈500–800 exact relations
+(median-row depth 0.008, the "depth ≈ 0.05" of §5.1, which is the I/O fringe plus a
+faint trace), the 2-eff snapshot ≈6,000 (median-row depth 0.07, rho 1.00, permutation
+z 9.6), and the compressed, packed final ≈7,000 (depth 0.10). Each relation is one C
+bit equal to the XOR of the data wire and its ~6 linearised band wires: a
+**masked-read window**. The undo of a read is a write to the operand wire, pinned only
+by that wire's next read, so every reordering stage — the DB splice moves of phase A,
+fmix's final uniform float, the crossing walk — stretches the window to the operand's
+idle interval (isolated: reordering-only moves 503 → 601 in snapshots, the final
+float alone → 4,555; DB moves saturate by ≈1 move/gate). No parameter fixes it;
+extra filler LGIs or repair slots dilute it by ≈÷2 at +35–55% gates, mask width is
+irrelevant, and `max_open = 2` is worse (full tables in
+`RIDGE_QUADFIRE_20260906.md`).
+
+![linear read: the ridge in the raw phase-A outputs of all arms](blindedv5_linear_phaseA_ridge.png)
+
+**Quad-fire** (§2 step 2) removes the window instead of diluting it. Same recipe,
+2-eff pipelines, exact relations per stage (depth / median-row depth in parentheses):
+
+| stage | linear read | quad-fire |
+|---|---|---|
+| gadget | 563,356 g, 834 (0.049 / 0.008) | 497,548 g, 500 (0.048 / 0.000) |
+| 2-eff phase A | 962,429 g, 6,032 (0.093 / 0.066) | 898,416 g, 443 (0.050 / 0.004) |
+| split | 1,839,248 g, 5,984 (0.096 / 0.070) | 1,507,931 g, 478 (0.049 / 0.004) |
+| crossing | 3,345,382 g, 4,574 (0.081 / 0.051) | 2,738,434 g, 368 (0.049 / 0.004) |
+| final (fcompress + pack) | 337,194 packed, 7,179 (0.104 / 0.082, rho 1.00) | 311,285 packed, 400 (0.049 / 0.004) |
+
+![quad-fire through the whole pipeline](blindedv5_quad_pipeline.png)
+
+![linear vs quad-fire at the 2-eff and at the packed final](blindedv5_lin_vs_quad.png)
+
+The residual 150–500 relations of quad-fire are single-wire identities in the
+delivered-output rows and at the raw input port — the public I/O fringe of §5.2 —
+and they do not grow with mixing (flat from the gadget to 3 moves/gate in phase A
+and through split, crossing and compression). The degree-2 adversary of §5.3
+(products over a 24-data + 24-band slice) is likewise flat for quad-fire (141 →
+102 after a float) where the linear read goes 481 → 4,978; a full degree-2
+adversary with every band-pair product would cancel three open quadratic masks in
+either design (the existing sample-count-bounded posture), so quad-fire closes the
+affine channel, which was the open one.
+
+### 5.1 Affine ridge (linear recovery of source-C segments) — raw gadget, linear read
 
 Adversary: least-squares recovery of each source-`C` wire-segment from a bounded
 set of gadget wires (`hmap_affine --degree 1`; `meanH`: 0 = recoverable, 0.5 =
@@ -252,7 +315,10 @@ hidden).
 
 ![affine heatmap](blindedv5_affine.png)
 
-- **`meanH ≈ 0.498`; ridge depth ≈ 0.05** — C-segments hidden overall.
+- **`meanH ≈ 0.498`; ridge depth ≈ 0.05** — C-segments hidden overall *in the
+  unmixed gadget*; see §5.0 for what the mixing stages do to the linear read
+  (the faint diagonal visible in this plate is the seed of the pipeline ridge)
+  and for the quad-fire plates.
 - The **interior (~78% of rows) is fully hidden** (`H ≈ 0.49`). The only recovery
   is a thin fringe at the two **endpoints**.
 
@@ -317,8 +383,11 @@ checkpoint; `hmap_affine --degree 1`, 92 C-segments):
 | K = 4, hold 10 | 1,362,010 | 2,300,885 | 0.4965 | 6/92 | 10/92 |
 
 - **meanH ≈ 0.494–0.497 for both K** — affine-neutral across `K` through the
-  pipeline, matching the raw-gadget measurements (§5.1) and the pre-firing-fix
-  baseline. (These are also the corrected build with burst rerand + the masking
+  pipeline by *mean H*, matching the raw-gadget measurements (§5.1) and the
+  pre-firing-fix baseline. ⚠️ Mean H and the exposed-row count do not see the
+  ridge: these same 2-eff snapshots carry ≈6,000 exact relations (depth 0.09–0.10,
+  rho 1.00; §5.0). The arms in this table use the linear read; quad-fire arms are
+  the follow-up. (These are also the corrected build with burst rerand + the masking
   floor + the even-filler / no-drain schedule; the pipeline statistics are
   unchanged from the earlier build, as the band-only refinements predict.)
 - The exposed-C count (6/92 at `<0.25`, ~9–11/92 at `<0.35`) is the same public
@@ -356,6 +425,13 @@ will be completed when they finish.*
   or +43% size for it.
 - **The residual fringe is I/O, not a knob.** The ~6–10% exposed segments are the
   public input/output boundary; no parameter removes them.
+- **Read mode: quad-fire, not linearisation.** Linearising a read is the cheapest
+  way to fire (degree-2 monomials only) but leaves the operand affine in band wires
+  for a window that reordering stretches into the pipeline ridge (§5.0). Firing
+  from inside the quadratic masks costs degree ≤ 4 monomials, needs no
+  linearise/undo bracket, makes the gadget ~12% smaller, and keeps the ridge at
+  the fringe end to end. Repair slots are counter-productive with quad-fire (they
+  close masks around bursts); keep `max_open = 3`.
 
 ---
 
@@ -380,4 +456,5 @@ All rerand knobs default to auto (`straddle_slots = m/4K`, `F = 8K`,
 `repair_slots = 0`, `min_mask = max_open`); pass `0` to keep the auto value.
 The `gen_sandwich_gadget`/pipeline path exposes the same knobs as the env vars
 `BV5_K`, `BV5_RERAND` (straddle slots), `BV5_REPAIR`, `BV5_BURST`, `BV5_MIN_MASK`,
-`BV5_MAX_OPEN`, `BV5_EXTRA_LGIS`.
+`BV5_MAX_OPEN`, `BV5_EXTRA_LGIS`, and `BV5_QUAD_FIRE` (default on; `0` = the
+legacy linearised read, for comparison only).

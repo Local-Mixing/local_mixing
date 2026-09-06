@@ -120,11 +120,14 @@ $A$ has $n$ wires and $m$ gates; $A'$ has $2n$. Let $u_w$ be the uses of wire $w
 in $A$ and $w_w$ its writes.
 
 \paragraph{Masking atom.} $\g(w,x,y) = w \mathrel{\xor}= 1 \xor (\lnot x \land y)$
-(data target, band controls). A disjoint-pair \lgi{} $\bigoplus_i \g(w,
-cy_{2i}, cy_{2i+1})$ is a deg-2 mask; a \g{} and its reverse \textbf{linearise},
-$\g(w,r_1,r_2) \xor \g(w,r_2,r_1) = w \xor r_1 \xor r_2$ (\textsc{and} monomials do
-not). Disjoint pairs, not a $K$-cycle (which would telescope to a bare operand);
-$K \ge 2$.
+(data target, band controls), i.e.\ the mask term $1 \xor y \xor xy$. A
+disjoint-pair \lgi{} $\bigoplus_i \g(w, cy_{2i}, cy_{2i+1})$ is a deg-2 mask; a \g{}
+and its reverse \textbf{linearise}, $\g(w,r_1,r_2) \xor \g(w,r_2,r_1) = w \xor r_1
+\xor r_2$ --- the original read exploited this; the current read
+(\textbf{quad-fire}, step 2 below, default since 2026-09-06) deliberately does
+\emph{not}, because a linearised operand is exactly affine in band wires for a window
+that the pipeline's reordering stages stretch into a leak (\S5.0). Disjoint pairs,
+not a $K$-cycle (which would telescope to a bare operand); $K \ge 2$.
 
 \paragraph{Why one pass --- co-sampling.} The masks, the band updates, and $A$'s
 gates are \textbf{co-sampled}: produced together in a single forward pass, rather
@@ -166,24 +169,33 @@ only 60--70\% of gates; \S3.)
 \emph{Forward pass} --- repeat until all $m$ gates are placed:
 \begin{enumerate}
 \item \textbf{Pop} a ready $A$-gate $g$ (target wire $c$).
-\item \textbf{Masked read.} For each operand wire, \emph{linearise} its
-  currently-open masks --- complete each open \g{} with its reverse so the wire
-  carries $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires
-  --- topping up with fresh disjoint pairs until $|\rho| \ge \doc{min\_mask}$ (a
-  \textbf{hard floor}: never bare, and never thinly masked even when the open pairs
-  happen to cancel). Remember the reverse gates as the \emph{undo}.
+\item \textbf{Masked read (quad-fire).} For each operand wire, leave its
+  currently-open masks \emph{as they are} and describe the wire as the ANF
+  polynomial $P_w = w' \xor \sum_{(x,y)} (1 \xor y \xor xy)$ over its net-open pairs
+  (a pair whose reverse is also open contributes the linear $x \xor y$); top up with
+  \textbf{fresh single \g s} (quadratic, not pair-completed) until at least
+  \doc{max\_open} quadratic terms mask the operand (the \textbf{hard floor}: never
+  bare, never affine). Remember the top-up gates as the \emph{undo}. (Legacy linear
+  read, \doc{BV5\_QUAD\_FIRE=0}: complete each open \g{} with its reverse so the wire
+  carries $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires,
+  top up with pairs until $|\rho| \ge \doc{min\_mask}$, undo the reverses after the
+  fire --- see \S5.0 for why it was replaced.)
 \item \textbf{Fire from inside the mask.} Expand $c \mathrel{\xor}= \mathit{comp}
-  \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as $(a'\xor\rho_a)(b'\xor\rho_b)$ into a
-  batch of monomials over \textsc{only} the masked control wires and band wires ---
-  never bare $a$, $b$, or $a\xor b$ (0/1/2 controls and all polarities; the
-  0-control fire is $\lnot\mathit{comp}$).
+  \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as the polynomial product $P_a \cdot P_b$
+  (a negative literal complements the constant) into a batch of monomials over
+  \textsc{only} the masked control wires and band wires --- never bare $a$, $b$, or
+  $a\xor b$ (0/1/2 controls and all polarities; the 0-control fire is
+  $\lnot\mathit{comp}$). At $K=2$, \doc{max\_open}$=3$ that is up to $8\times8=64$
+  monomials of degree $\le 4$ (versus 49 of degree 2 plus the linearise/undo bracket
+  in the legacy read), so the gadget is ${\sim}12\%$ \emph{smaller}.
 \item \textbf{Straddle (hidden firing, \S3).} Split the monomial batch into two
   halves, shuffle each \textbf{independently} (they all target $c$ and commute),
   emit the first half, \textbf{open a fresh \lgi{} on $c$ here} (one of its straddle
   opens, generated on demand), then emit the second half. The mid-fire open makes
   the module's net XOR on $c$ equal $\Delta \xor \text{secret-mask}$, not the bare
   increment $\Delta$.
-\item \textbf{De-linearise} --- emit the undo gates, restoring the operands' masks.
+\item \textbf{Undo} --- emit the top-up gates again (each is an involution),
+  restoring the operands' original mask set.
 \item \textbf{Maybe rerand} --- if the calibrated rate says so, emit one
   band-update slot (below).
 \item \textbf{Release \& fill} --- decrement the in-degree of $g$'s dependents,
@@ -205,8 +217,10 @@ protect the straddle opens automatically.
 \paragraph{Correctness} is verified exhaustively over all $2^n$ inputs $\times$
 many band settings for $n \le 6$, $K \in 2..5$, all \doc{max\_open} and both
 rerand kinds (\doc{scratchpad/v6}: 891 gadgets, 0 mismatches, plus a 360-case
-reorder-preserves-$A$ check), and end-to-end in \doc{gen\_sandwich\_gadget}
-(forward + reverse-honesty sample-verify PASS).
+reorder-preserves-$A$ check; the linear read), by the unit test in
+\doc{blinded\_v5.rs} ($n=6$, all $2^n$ inputs $\times$ 8 band states $\times$ 6
+seeds, \textbf{both read modes}), and end-to-end in \doc{gen\_sandwich\_gadget}
+(forward + reverse-honesty sample-verify PASS in both modes).
 
 \section{Hidden firing}
 
@@ -244,11 +258,18 @@ $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
   & wider $\rho$ = more local hiding, but read cost is quadratic in $|\rho|$; 3 is
   the knee. \\
 \addlinespace
-\doc{min\_mask} & \textbf{auto\,$=\doc{max\_open}=3$} & \textbf{hard floor} on
-  $|\rho|$ (masking wires) per operand read & guarantees no operand is ever read
-  under fewer than 3 masking wires, even in a rare draw where the open pairs cancel
-  (worst read $|\rho|$ rises $2\to4$; mean $|\rho|\approx5.9$ unchanged; +0.2\%
-  gates). \\
+\doc{quad\_fire} & \textbf{on} (2026-09-06) & read operands from inside their
+  quadratic masks; never linearise & the linearised read leaves the operand exactly
+  affine in band wires for a window that every reordering stage stretches into the
+  $C$-vs-$G$ ridge (\S5.0); quad-fire has no window, keeps the ridge at the I/O
+  fringe through the whole pipeline, and is ${\sim}12\%$ smaller.
+  \doc{BV5\_QUAD\_FIRE=0} $=$ legacy. \\
+\addlinespace
+\doc{min\_mask} & \textbf{auto\,$=\doc{max\_open}=3$} & \textbf{hard floor} per
+  operand read: quadratic mask terms (quad-fire) / masking wires $|\rho|$ (legacy)
+  & guarantees no operand is ever read under fewer than 3 masks, even in a rare draw
+  where the open pairs cancel (legacy: worst read $|\rho|$ rises $2\to4$; mean
+  $|\rho|\approx5.9$ unchanged; +0.2\% gates). \\
 \addlinespace
 \doc{rerand\_level} & \textbf{auto\,$=m/(4K)$} ($\approx$875) &
   close-straddling-masks band-update \textbf{slots} & at the safe side of the
@@ -278,7 +299,61 @@ refinements moved them (the burst change touches only the band wires, so it cann
 move the data-wire ridge): degree-1 $\mathrm{meanH}=0.4966$, degree-2
 $\mathrm{meanH}=0.4967$, exposed-$C<0.35\approx5.6$--$5.7\%$.
 
-\subsection{Affine ridge}
+\subsection*{5.0\quad The affine ridge through the pipeline, and why the read mode changed (2026-09-06)}
+
+The figures in \S5.1--\S5.5 were read by \textbf{mean H} and by the count of
+\textbf{exposed rows} (segments with a cell below 0.25/0.35). Both are blind to a
+ridge made of \emph{exact} affine relations at a few bits per cell, and the ridge
+statistic of \doc{plot\_hmap\_ridge.py} (depth, median-row depth, $\rho$) had never
+been computed for the pipeline circuits. Computing it showed a full-strength diagonal
+in every mixed circuit of the linear-read design: the raw gadget has ${\approx}$500--800
+exact relations (median-row depth 0.008 --- the ``depth $\approx 0.05$'' of \S5.1 is the
+I/O fringe plus a faint trace), the 2-eff snapshot ${\approx}$6{,}000 (median-row depth
+0.07, $\rho=1.00$, permutation $z=9.6$), and the compressed, packed final
+${\approx}$7{,}000 (depth 0.10). Each relation is one $C$ bit equal to the XOR of the
+data wire and its ${\sim}6$ linearised band wires: a \textbf{masked-read window}. The
+undo of a read is a write to the operand wire, pinned only by that wire's next read, so
+every reordering stage --- the DB splice moves of phase A, fmix's final uniform float,
+the crossing walk --- stretches the window to the operand's idle interval (isolated:
+reordering-only moves $503 \to 601$ in snapshots, the final float alone $\to 4{,}555$;
+DB moves saturate by ${\approx}1$ move/gate). No parameter fixes it: extra filler
+\lgi s or repair slots dilute it by ${\approx}\div2$ at $+35$--$55\%$ gates, mask width is
+irrelevant, and \doc{max\_open}$=2$ is worse (full tables in
+\doc{RIDGE\_QUADFIRE\_20260906.md}).
+
+\begin{center}\includegraphics[width=\textwidth]{blindedv5_linear_phaseA_ridge.png}\end{center}
+
+\textbf{Quad-fire} (\S2 step 2) removes the window instead of diluting it. Same recipe,
+2-eff pipelines, exact relations per stage (depth / median-row depth):
+
+\begin{table}[H]\centering\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+stage & linear read & quad-fire \\
+\midrule
+gadget & 563{,}356 g, 834 (0.049 / 0.008) & 497{,}548 g, 500 (0.048 / 0.000) \\
+2-eff phase A & 962{,}429 g, 6{,}032 (0.093 / 0.066) & 898{,}416 g, 443 (0.050 / 0.004) \\
+split & 1{,}839{,}248 g, 5{,}984 (0.096 / 0.070) & 1{,}507{,}931 g, 478 (0.049 / 0.004) \\
+crossing & 3{,}345{,}382 g, 4{,}574 (0.081 / 0.051) & 2{,}738{,}434 g, 368 (0.049 / 0.004) \\
+final (fcompress $+$ pack) & 337{,}194 packed, 7{,}179 (0.104 / 0.082, $\rho$ 1.00) & 311{,}285 packed, 400 (0.049 / 0.004) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{center}\includegraphics[width=\textwidth]{blindedv5_quad_pipeline.png}\end{center}
+\begin{center}\includegraphics[width=\textwidth]{blindedv5_lin_vs_quad.png}\end{center}
+
+The residual 150--500 relations of quad-fire are single-wire identities in the
+delivered-output rows and at the raw input port --- the public I/O fringe of \S5.2 ---
+and they do not grow with mixing (flat from the gadget to 3 moves/gate in phase A and
+through split, crossing and compression). The degree-2 adversary of \S5.3 (products
+over a 24-data $+$ 24-band slice) is likewise flat for quad-fire ($141 \to 102$ after a
+float) where the linear read goes $481 \to 4{,}978$; a full degree-2 adversary with every
+band-pair product would cancel three open quadratic masks in either design (the
+existing sample-count-bounded posture), so quad-fire closes the affine channel, which
+was the open one.
+
+\subsection{Affine ridge --- raw gadget, linear read}
 
 \begin{center}\includegraphics[width=0.82\textwidth]{blindedv5_affine.png}\end{center}
 \noindent $\mathrm{meanH}\approx0.498$, ridge depth $\approx0.05$; the interior
@@ -367,9 +442,11 @@ $K{=}4$, hold 10 & 1{,}362{,}010 & 2{,}300{,}885 & 0.4965 & 6/92 & 10/92 \\
   hold phase}, so it is hold-independent --- a seed-level consistency check.
 \end{itemize}
 
-\noindent\emph{End-of-pipeline numbers (post split / crossing / fcompress, and
-the deeper hold-20 / hold-30 mixing) are pending --- the arms are mid phase-A;
-this section will be completed when they finish.}
+\noindent\emph{Mean H and the exposed-row count do not see the ridge: these same
+2-eff snapshots carry ${\approx}6{,}000$ exact relations (depth 0.09--0.10, $\rho=1.00$;
+\S5.0). The arms in this table use the linear read; quad-fire arms are the follow-up.
+End-of-pipeline numbers for the linear read (post split / crossing / fcompress) are in
+\S5.0's table (2-eff pipelines) and in \doc{RIDGE\_QUADFIRE\_20260906.md}.}
 
 \section{Tradeoffs and the current choices}
 
@@ -393,6 +470,13 @@ this section will be completed when they finish.}
   (23--70\%) or +43\% size.
 \item \textbf{The residual fringe is I/O, not a knob} --- no parameter removes the
   public input/output boundary.
+\item \textbf{Read mode: quad-fire, not linearisation.} Linearising a read is the
+  cheapest way to fire (degree-2 monomials only) but leaves the operand affine in
+  band wires for a window that reordering stretches into the pipeline ridge
+  (\S5.0). Firing from inside the quadratic masks costs degree $\le 4$ monomials,
+  needs no linearise/undo bracket, makes the gadget ${\sim}12\%$ smaller, and keeps
+  the ridge at the fringe end to end. Repair slots are counter-productive with
+  quad-fire (they close masks around bursts); keep \doc{max\_open}$=3$.
 \end{itemize}
 
 \end{document}

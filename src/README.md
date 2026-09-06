@@ -72,7 +72,11 @@ band mixes hard in few slots and carries a data-wire-like activity signature.
 
 Production preset: `K=2` (band wires per LGI; affine/deg-2-neutral across K, so
 smallest wins — read cost is quadratic in `max_open·K`), `max_open=3`, rerand
-auto (`≈ m/4K` straddle slots × `F=8K`, no repair). Drive it through the pipeline with
+auto (`≈ m/4K` straddle slots × `F=8K`, no repair), and the **quad-fire** read
+(default since 2026-09-06: operands are read from inside their quadratic masks and
+never linearised, which is what keeps the C-vs-G affine ridge at the I/O fringe
+through the whole pipeline; `BV5_QUAD_FIRE=0` = legacy linear read, see
+`docs/RIDGE_QUADFIRE_20260906.md`). Drive it through the pipeline with
 `gss_mix.sh --gadgetization-mode blinded-v5 --bv5-k K`, or build the gadget alone
 with `gen_sandwich_gadget … blinded-v5` / the `blinded_v5_gadgetize` bin. Full
 rationale, parameters, and measurements:

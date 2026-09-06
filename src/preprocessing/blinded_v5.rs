@@ -6,11 +6,27 @@
 //! (slice guards, band fill, band rerand, final slice) is unchanged.
 //!
 //! The masking atom is the g57 gate `g57(w,x,y) = w ^= 1 ^ (!x & y)` (data
-//! target, band controls). A DISJOINT-PAIR LGI on `w`, `g57(w,cy[2i],cy[2i+1])`,
-//! is a deg-2 mask; a g57 and its reverse LINEARISE -- `g57(w,r1,r2) ^
-//! g57(w,r2,r1) = w ^ r1 ^ r2` -- which the read exploits (AND monomials are
-//! symmetric and do NOT linearise). K must be >= 2 (a 1-cycle is a degenerate
-//! constant flip).
+//! target, band controls), i.e. the mask term `1 ^ y ^ x&y`. A DISJOINT-PAIR
+//! LGI on `w`, `g57(w,cy[2i],cy[2i+1])`, is a deg-2 mask. K must be >= 2 (a
+//! 1-cycle is a degenerate constant flip).
+//!
+//! READ MODE (RC, 2026-09-06 -- QUAD-FIRE is the default). The original read
+//! LINEARISED the operand: it completed each open g57 with its reverse
+//! (`g57(w,r1,r2) ^ g57(w,r2,r1) = w ^ r1 ^ r2`) so the wire carried
+//! `operand ^ rho`, rho a plain XOR of band wires, fired over that, and undid
+//! the reverses. That leaves the wire EXACTLY affine in band wires for the
+//! window between the reverses and the undo; the undo is a write pinned only by
+//! the wire's next read, so every reordering stage of the pipeline (DB
+//! re-encoding, fmix's final float, the crossing walk) stretches the window to
+//! the operand's idle interval -- measured as the C-vs-G affine ridge (~6k exact
+//! relations, rho 1.00 through the whole pipeline). QUAD-FIRE never linearises:
+//! the operand is the ANF polynomial `w ^ sum_(x,y) (1 ^ y ^ x&y)` over its open
+//! pairs (topped up to `max_open` fresh quadratic pairs, undone after the fire)
+//! and the fire is the polynomial product (degree <= 4 at K=2). No read ever
+//! leaves a wire affine, so there is no window to stretch: relations stay at
+//! the public I/O fringe (~150-500) through phase A, split, crossing and
+//! compression, and the gadget is ~12% smaller (no linearise/undo gates).
+//! `quad_fire = false` (env `BV5_QUAD_FIRE=0`) keeps the legacy linear read.
 //!
 //! CO-SAMPLED build (RC, 2026-09-04): the LGI masks, the rerand gates, and the
 //! A-gate placements are produced TOGETHER in one forward pass, so every A-gate
@@ -19,12 +35,13 @@
 //! as before, so the same statistics, at no cost. Of `w`'s opens, `w_w` are
 //! STRADDLE opens generated ON DEMAND when an A-gate on `w` is placed, and the
 //! rest are FILLER opens (masking during reads):
-//!   * MASKED READ: for each control, LINEARISE the net-open masks (emit each
-//!     reverse g57 so the wire carries `operand ^ rho`, rho a linear XOR of band
-//!     wires; a fresh-pair top-up keeps rho non-empty -> never a bare operand),
-//!     realise `c ^= comp ^ lit(a)&lit(b)` as `(a'^rho_a)(b'^rho_b)` over ONLY
-//!     the masked control wires and band wires (never bare `a`,`b`,`a^b`; 0/1/2
-//!     controls, all polarities), then DE-LINEARISE.
+//!   * MASKED READ (quad-fire): for each control, keep its net-open deg-2 masks
+//!     as they are, top up to `max_open` quadratic terms with fresh single g57s,
+//!     and realise `c ^= comp ^ lit(a)&lit(b)` as the product of the two operand
+//!     polynomials over ONLY the masked control wires and band wires (never
+//!     bare `a`,`b`,`a^b`; 0/1/2 controls, all polarities); then undo the
+//!     temporary top-up pairs. (Legacy linear read: linearise, fire over
+//!     `(a'^rho_a)(b'^rho_b)`, de-linearise -- see the module header.)
 //!   * HIDDEN FIRING: the gate's fire is split and the STRADDLE-OPEN of one of
 //!     `c`'s LGIs is emitted between the halves. That mask toggles `c` mid-fire,
 //!     so the module's net XOR on `c` is `Delta ^ (secret band-mask)`, never the
@@ -85,6 +102,17 @@ pub struct BlindedV5Params {
     /// hidden-firing fix (each A-gate is placed straddling a scaffold LGI on its
     /// active wire); more slots => fewer gates left with their firing exposed.
     pub extra_lgis: usize,
+    /// QUAD-FIRE (default ON since 2026-09-06): fire from INSIDE the quadratic
+    /// masks. Reads do not linearise the operand's open g57 masks (no reverse
+    /// gates, no undo); the operand is the ANF polynomial `w ⊕ Σ_(x,y) (1 ⊕ y ⊕
+    /// xy)` over its net-open pairs (topped up to `max_open` fresh quadratic
+    /// pairs, undone after the fire) and the fire is the polynomial product
+    /// (monomials of degree ≤ 4). A linearised read leaves the wire EXACTLY
+    /// affine in band wires between the reverses and the undo, and every
+    /// reordering stage stretches that window to the operand's idle interval
+    /// -- the C-vs-G affine ridge; with no linearisation there is no window.
+    /// `false` = the legacy linear read (env `BV5_QUAD_FIRE=0`).
+    pub quad_fire: bool,
 }
 
 impl BlindedV5Params {
@@ -106,6 +134,7 @@ impl BlindedV5Params {
             min_mask: 0,
             active_wires: 0,
             extra_lgis: 0,
+            quad_fire: true,
         }
     }
 }
@@ -201,9 +230,10 @@ fn sample_k(pool: &[u16], k: usize, rng: &mut StdRng) -> Vec<u16> {
     v
 }
 
-/// Linearise wire `w` masked by the net-open g57 ordered pairs `netopen`:
-/// complete every net-open g57 into its reverse pair so `w = w_true ^ rho`.
-/// Returns (rho band wires, the reverse gates emitted -- undo after the read).
+/// LEGACY linear read (`quad_fire = false`). Linearise wire `w` masked by the
+/// net-open g57 ordered pairs `netopen`: complete every net-open g57 into its
+/// reverse pair so `w = w_true ^ rho`. Returns (rho band wires, the reverse
+/// gates emitted -- undo after the read).
 fn linearize(w: u16, netopen: &[(u16, u16)], out: &mut Vec<XGate>) -> (Vec<u16>, Vec<XGate>) {
     let netset: HashSet<(u16, u16)> = netopen.iter().copied().collect();
     let mut added = Vec::new();
@@ -232,8 +262,9 @@ fn linearize(w: u16, netopen: &[(u16, u16)], out: &mut Vec<XGate>) -> (Vec<u16>,
     (rho, added)
 }
 
-/// Emit `c ^= comp ^ prod(lit(w_i,p_i))` for <=2 (already linearised) controls
-/// `(wire, pol, rho)`, using only the masked control wires and band wires.
+/// LEGACY linear read: emit `c ^= comp ^ prod(lit(w_i,p_i))` for <=2 (already
+/// linearised) controls `(wire, pol, rho)`, using only the masked control wires
+/// and band wires.
 fn masked_fire(c: u16, ctrls: &[(u16, bool, Vec<u16>)], comp: bool, out: &mut Vec<XGate>) {
     match ctrls.len() {
         0 => {
@@ -289,6 +320,63 @@ fn masked_fire(c: u16, ctrls: &[(u16, bool, Vec<u16>)], comp: bool, out: &mut Ve
             }
         }
         _ => panic!("masked read supports <= 2 controls"),
+    }
+}
+
+/// ANF polynomial over wires: a set of monomials (sorted distinct wire lists;
+/// the empty monomial is the constant 1), XOR-toggled.
+#[derive(Clone, Default)]
+struct Poly(BTreeSet<Vec<u16>>);
+
+impl Poly {
+    fn toggle(&mut self, mut m: Vec<u16>) {
+        m.sort_unstable();
+        m.dedup();
+        if !self.0.remove(&m) {
+            self.0.insert(m);
+        }
+    }
+    /// XOR in the g57(w,x,y) mask term `1 ⊕ y ⊕ x·y` (w ^= 1 ^ (!x & y)).
+    fn add_g57_mask(&mut self, x: u16, y: u16) {
+        self.toggle(Vec::new());
+        self.toggle(vec![y]);
+        self.toggle(vec![x, y]);
+    }
+    fn deg2_terms(&self) -> usize {
+        self.0.iter().filter(|m| m.len() == 2).count()
+    }
+    fn mul(&self, other: &Poly) -> Poly {
+        let mut out = Poly::default();
+        for a in &self.0 {
+            for b in &other.0 {
+                let mut m = a.clone();
+                m.extend_from_slice(b);
+                out.toggle(m);
+            }
+        }
+        out
+    }
+}
+
+/// QUAD-FIRE emission: `c ^= comp ⊕ Π polys` with each control already a
+/// polynomial (polarity applied), as one conjunction gate per monomial of the
+/// product (an empty monomial is an X gate). Degree ≤ 4 at K=2.
+fn quad_fire(c: u16, polys: &[Poly], comp: bool, out: &mut Vec<XGate>) {
+    let mut prod = Poly::default();
+    prod.toggle(Vec::new()); // the constant 1
+    for p in polys {
+        prod = prod.mul(p);
+    }
+    if comp {
+        prod.toggle(Vec::new());
+    }
+    for m in &prod.0 {
+        if m.is_empty() {
+            out.push(XGate::x_gate(c));
+        } else {
+            let lits: Vec<(u16, bool)> = m.iter().map(|&w| (w, true)).collect();
+            out.push(conj(c, &lits));
+        }
     }
 }
 
@@ -574,9 +662,46 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         };
         let c = src[gi].target as usize;
         let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
+        let mut polys: Vec<Poly> = Vec::new();
         let mut undo: Vec<XGate> = Vec::new();
         for &(w, pol) in &src[gi].ctrls {
             let netopen: Vec<(u16, u16)> = open_pairs[w as usize].iter().copied().collect();
+            if p.quad_fire {
+                // No linearisation: the operand stays under its quadratic masks.
+                let mut poly = Poly::default();
+                poly.toggle(vec![w]);
+                for &(x, y) in &netopen {
+                    poly.add_g57_mask(x, y);
+                }
+                // Top up with fresh quadratic pairs (single g57s, undone after the
+                // fire) until at least max_open quadratic terms mask the operand.
+                let mut guard = 0;
+                while poly.deg2_terms() < max_open.max(1) && guard < 64 {
+                    let r1 = band[rng.random_range(0..band.len())];
+                    let mut r2 = band[rng.random_range(0..band.len())];
+                    while r2 == r1 {
+                        r2 = band[rng.random_range(0..band.len())];
+                    }
+                    out.push(g57(w, r1, r2));
+                    undo.push(g57(w, r1, r2));
+                    poly.add_g57_mask(r1, r2);
+                    guard += 1;
+                }
+                if diag {
+                    n_reads += 1;
+                    let q = poly.deg2_terms();
+                    if q == 0 {
+                        n_bare += 1;
+                    }
+                    rho_min = rho_min.min(2 * q);
+                    rho_sum += 2 * q;
+                }
+                if !pol {
+                    poly.toggle(Vec::new());
+                }
+                polys.push(poly);
+                continue;
+            }
             let (mut rho, added) = linearize(w, &netopen, &mut out);
             for gg in added.into_iter().rev() {
                 undo.push(gg);
@@ -652,7 +777,11 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             ctrls.push((w, pol, rho));
         }
         let mut fires = Vec::new();
-        masked_fire(src[gi].target, &ctrls, src[gi].comp, &mut fires);
+        if p.quad_fire {
+            quad_fire(src[gi].target, &polys, src[gi].comp, &mut fires);
+        } else {
+            masked_fire(src[gi].target, &ctrls, src[gi].comp, &mut fires);
+        }
         if open_cy[c].len() >= max_open {
             let cy = open_cy[c].remove(0);
             emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
@@ -750,3 +879,69 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         r_used: r,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::Rng;
+
+    // A random g57 circuit on `n` wires (from_g57 triples with distinct wires).
+    fn random_a(n: u16, m: usize, rng: &mut StdRng) -> Vec<XGate> {
+        let mut out = Vec::with_capacity(m);
+        while out.len() < m {
+            let a = rng.random_range(0..n);
+            let x = rng.random_range(0..n);
+            let y = rng.random_range(0..n);
+            if a != x && a != y && x != y {
+                out.push(XGate::from_g57([a, x, y]));
+            }
+        }
+        out
+    }
+
+    // The gadget must compute A on the data wires for EVERY data input and
+    // EVERY band state (masks open and close symmetrically; band updates never
+    // straddle the masks that read them). Exhaustive over the data, sampled
+    // over the band, both read modes, several seeds.
+    #[test]
+    fn gadget_computes_a_exhaustively_in_both_read_modes() {
+        let n: u16 = 6;
+        let np = n as usize;
+        for seed in 0..6u64 {
+            let mut rng = StdRng::seed_from_u64(0xB5_0000 + seed);
+            let a = random_a(n, 24, &mut rng);
+            for quad_fire in [true, false] {
+                let p = BlindedV5Params {
+                    quad_fire,
+                    ..BlindedV5Params::production(100 + seed)
+                };
+                let out = gadgetize_blinded_v5(&a, np, &p);
+                assert_eq!(out.num_wires, 2 * np);
+                for band in 0..8u64 {
+                    let band_bits = if band == 0 { 0 } else { rng.random::<u64>() >> (64 - np) };
+                    for data in 0..(1u64 << np) {
+                        let mut expect = data;
+                        for g in &a {
+                            expect = g.apply_u64(expect);
+                        }
+                        let mut st = data | (band_bits << np);
+                        for g in &out.gates {
+                            st = g.apply_u64(st);
+                        }
+                        assert_eq!(
+                            st & ((1u64 << np) - 1),
+                            expect,
+                            "seed {seed} quad_fire={quad_fire} band {band:#x} data {data:#x}"
+                        );
+                    }
+                }
+                if quad_fire {
+                    // quad-fire never emits the legacy reverse-pair brackets:
+                    // every fire monomial is a plain conjunction, degree <= 4
+                    assert!(out.gates.iter().all(|g| g.width() <= 4));
+                }
+            }
+        }
+    }
+}
+
