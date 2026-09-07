@@ -33,6 +33,17 @@ python tests/gauntlet/gauntlet.py all \
   --w2-cap 128 --w3-cap 64
 ```
 
+The blinded-V5 compute module runs as the native arms `blindedv5` and
+`blindedv5_balanced` (encoded I/O, random band; see
+[TESTING_PIPELINE.md](TESTING_PIPELINE.md)); `--n-wires 32` widens the source
+chain for the native arms:
+
+```sh
+python tests/gauntlet/gauntlet.py all \
+  --arms none,secretshare14,bandproduct92,blindedv5,blindedv5_balanced \
+  --ks 16,64 --n-wires 32 --jobs 4 --outdir target/gauntlet_n32
+```
+
 The full default matrix uses every arm, chain lengths 1/2/16, and both mixed
 and unmixed modes. It is a long-running empirical campaign; the default
 weight-2/weight-3 subset caps are 64/16 to keep the combinatorial scans

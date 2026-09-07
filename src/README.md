@@ -72,15 +72,30 @@ band mixes hard in few slots and carries a data-wire-like activity signature.
 
 Production preset: `K=2` (band wires per LGI; affine/deg-2-neutral across K, so
 smallest wins — read cost is quadratic in `max_open·K`), `max_open=3`, rerand
-auto (`≈ m/4K` straddle slots × `F=8K`, no repair), and the **quad-fire** read
+auto (`≈ m/4K` straddle slots × `F=8K`, no repair), the **quad-fire** read
 (default since 2026-09-06: operands are read from inside their quadratic masks and
 never linearised, which is what keeps the C-vs-G affine ridge at the I/O fringe
 through the whole pipeline; `BV5_QUAD_FIRE=0` = legacy linear read, see
-`docs/RIDGE_QUADFIRE_20260906.md`). Drive it through the pipeline with
-`gss_mix.sh --gadgetization-mode blinded-v5 --bv5-k K`, or build the gadget alone
+`docs/RIDGE_QUADFIRE_20260906.md`), and **balanced masks** (default since
+2026-09-07: every mask term carries a CNOT from a fresh band wire, `z ⊕ 1 ⊕ ¬x∧y`,
+so no wire is ever linearly correlated with its plaintext; `BV5_BALANCED=0` =
+plain g57 masks, `BV5_MAX_OPEN=2` = the +10% variant that is weaker against
+two-feature scans). Coverage is enforced by construction — no data wire is ever
+bare between its first and last mask (cover-replacement across rerand bursts,
+read-cover, disjoint mask wires, fire-cover bracket, burst-control rule); the
+builds before 2026-09-07 violated this (~450 idle-bare intervals per gadget). Drive
+it through the pipeline with `gss_mix.sh --gadgetization-mode blinded-v5
+[--bv5-k K] [--bv5-max-open N] [--bv5-balanced 0|1]`, or build the gadget alone
 with `gen_sandwich_gadget … blinded-v5` / the `blinded_v5_gadgetize` bin. Full
 rationale, parameters, and measurements:
-[`docs/BLINDED_V5_LGI_DESIGN.md`](../docs/BLINDED_V5_LGI_DESIGN.md).
+[`docs/BLINDED_V5_LGI_DESIGN.md`](../docs/BLINDED_V5_LGI_DESIGN.md); the
+2026-09-07 change set (balanced masks, coverage rules, encoded-I/O gauntlet arm,
+`fire_corr`) is summarised in
+[`docs/BALANCED_MASKS_AND_COVERAGE_20260907.md`](../docs/BALANCED_MASKS_AND_COVERAGE_20260907.md).
+The statistical red-team tool for this module is `red_team_tests/bin/leakage/fire_corr.rs`
+(phi between C's firing predicates / state bits and every G segment; `--probe` prints
+the gauntlet 5-tuple), and the colleague's gauntlet runs it as the arms
+`blindedv5` / `blindedv5_balanced` / `blindedv5_balanced_mo2` (`tests/gauntlet/`).
 
 ## Folder responsibilities
 

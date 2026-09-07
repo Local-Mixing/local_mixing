@@ -39,6 +39,9 @@ repository's local-mixing walk after gadgetization and before tracing.
 | `none` | native Rust, no gadgetization | positive leakage control |
 | `secretshare14` | native Rust paired secret sharing | comparison control |
 | `bandproduct92` | native Rust product-share band | comparison control |
+| `blindedv5` | native Rust blinded-V5 LGI compute (`gadgetize_blinded_v5`: K=2, `max_open` 3, quad-fire, auto burst rerand) with **plain** g57 masks, **encoded I/O** | the module without balanced masks (`BV5_BALANCED=0`); reference |
+| `blindedv5_balanced` | the same with balanced masks (`balanced = true`, the production default: one CNOT from a fresh band wire per LGI) | the production compute module |
+| `blindedv5_balanced_mo2` | balanced masks with the open-mask cap lowered to 2 (`--bv5-max-open 2`) | the size-neutral balanced variant |
 | `nonlinear193` | `gadgetization.nonlinear193` | 193 emitted gates per source gate |
 | `nonlinear291` | `gadgetization.nonlinear291` | fan-in-at-most-two decomposition, 291 emitted gates per source gate |
 | `*_band0` | same Python gadget, production-style band-fed borrows | pool integration check |
@@ -46,6 +49,24 @@ repository's local-mixing walk after gadgetization and before tracing.
 
 The Python builder supports only `nonlinear193` and `nonlinear291`; there are
 no behemoth/939/1415 arms in this port.
+
+The two `blindedv5` arms run with **encoded I/O**: the gadgetizer pre-opens
+`max_open` masks per data wire before the first gate and skips its final drain,
+and the tracer applies those encode/decode LGI gates *out of band* (they are
+never trace features), so no raw input or plain output is ever a wire value of
+the traced circuit — the same convention as the share-encoded file arms. Their
+band wires start **uniformly random** (`aux = random` only; the band is not
+seeded from the inputs, which at eight wires would leave 256 contexts and make
+every seed gate's flip a raw function of the input). Band size is `max(32, n)`
+(`gauntlet_gen --bv5-band`). `xtrace` is an identity for these arms: every mask
+term is the flip of the LGI gate that applied it, so each plaintext value is an
+exact XOR of trace features; only `xrows` (a single prefix state) is informative
+for them, as for the `none` control.
+
+`--n-wires` lifts the source chain from 8 logical wires (native arms only; the
+file arms' builder is fixed at 8). The wire count is recorded in each cell's
+configuration but not in the cell name, so use a separate `--outdir` per
+`--n-wires` value.
 
 The band pool is keyed by the eight visible chain inputs plus 120 neighbor
 input columns by default. Without the extra keys there are only 256 visible

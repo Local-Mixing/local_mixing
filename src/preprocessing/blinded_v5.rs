@@ -113,6 +113,34 @@ pub struct BlindedV5Params {
     /// -- the C-vs-G affine ridge; with no linearisation there is no window.
     /// `false` = the legacy linear read (env `BV5_QUAD_FIRE=0`).
     pub quad_fire: bool,
+    /// BALANCED masks (default ON since 2026-09-07; env `BV5_BALANCED=0` for
+    /// the plain g57 masks): every LGI (and every read-time top-up) carries one
+    /// extra fresh band wire `z` applied as a CNOT `w ^= z`, so each mask term
+    /// is `z ⊕ 1 ⊕ ¬x∧y` -- balanced (zero linear correlation with the
+    /// plaintext when `z` is uniform) while still quadratic (no exact affine
+    /// recovery). Motivation: a bare g57 term is 1 with probability 3/4, so a
+    /// wire under one or two of them keeps a linear correlation of 1/2..1/4
+    /// with its plaintext, which a statistical adversary (fire_corr, the
+    /// gauntlet's w1) reads; the exact-GF(2) adversary never sees it. Cost is
+    /// the read polynomial (11x11 instead of 8x8 monomials per fire at
+    /// max_open 3: +92% gates). The band seed becomes `x_i ⊕ x_j` (balanced)
+    /// instead of `x_i ∧ ¬x_j`.
+    pub balanced: bool,
+    /// Rerand bursts read band wires only (no data-wire controls). With
+    /// balanced masks a burst `b ^= lit(a')∧lit(b')` over masked DATA wires
+    /// puts a product correlated with a C gate's fire (¬a∧b) into the band,
+    /// and the balancing CNOT copies that band wire linearly onto a data wire
+    /// (env `BV5_BURST_BANDONLY=1`).
+    pub burst_band_only: bool,
+    /// ENCODED I/O (test harnesses, e.g. the gadget gauntlet): the data wires
+    /// enter and leave the circuit MASKED. `max_open` LGIs per wire are opened
+    /// before the first gate and the final drain is skipped; the gates that
+    /// would open them are returned as `pre_gates` (apply to the plaintext
+    /// state to encode) and the closing gates as `post_gates` (apply to the
+    /// final state to decode) -- neither is part of `gates`, so an observer of
+    /// the circuit's trace never sees a plain input or output. Production
+    /// leaves this off: the sandwich's I/O is public.
+    pub encoded_io: bool,
 }
 
 impl BlindedV5Params {
@@ -135,6 +163,9 @@ impl BlindedV5Params {
             active_wires: 0,
             extra_lgis: 0,
             quad_fire: true,
+            balanced: true,
+            burst_band_only: false,
+            encoded_io: false,
         }
     }
 }
@@ -149,6 +180,12 @@ pub struct BlindedV5Output {
     pub atoms: usize,
     /// Band-refresh updates inserted (straddle + repair).
     pub rerand_done: usize,
+    /// `encoded_io`: the off-circuit LGI opens that encode the input (empty
+    /// otherwise). Apply to the plaintext state BEFORE `gates`.
+    pub pre_gates: Vec<XGate>,
+    /// `encoded_io`: the off-circuit LGI closes that decode the output (empty
+    /// otherwise). Apply to the final state AFTER `gates`.
+    pub post_gates: Vec<XGate>,
     /// Effective band pool used.
     pub r_used: usize,
 }
@@ -169,15 +206,18 @@ fn cycle_g57(w: u16, cy: &[u16]) -> Vec<XGate> {
     (0..cy.len() / 2).map(|i| g57(w, cy[2 * i], cy[2 * i + 1])).collect()
 }
 
-/// The disjoint-pair g57 of an LGI on wire `w` (cycle `cy`) that READS band `b`,
-/// i.e. the applied gate whose value changes when `b` flips. `None` if `b` is
-/// only the odd-K trailing (unpaired) wire -- then no applied gate reads it, so
-/// a `b`-update needs no repair on this mask.
+/// The applied gate of an LGI on wire `w` (cycle `cy`) that READS band `b`:
+/// the disjoint-pair g57 containing `b`, or the balancing CNOT `w ^= b` when
+/// `b` is the odd trailing (balancing) wire. `None` if the LGI does not read `b`.
 fn b_g57(w: u16, cy: &[u16], b: u16) -> Option<XGate> {
     for i in 0..cy.len() / 2 {
         if cy[2 * i] == b || cy[2 * i + 1] == b {
             return Some(g57(w, cy[2 * i], cy[2 * i + 1]));
         }
+    }
+    // balanced LGI: the odd trailing wire is the CNOT term `w ^= z`
+    if cy.len() % 2 == 1 && cy[cy.len() - 1] == b {
+        return Some(XGate::cnot(w, b));
     }
     None
 }
@@ -385,20 +425,31 @@ fn quad_fire(c: u16, polys: &[Poly], comp: bool, out: &mut Vec<XGate>) {
 /// SEPARATELY and pipelined in front of the compute -- the compute only READS
 /// the band. `active_wires` = 0 means all `np` data wires.
 pub fn seed_band(np: usize, r: usize, active_wires: usize, seed: u64) -> Vec<XGate> {
+    seed_band_mode(np, r, active_wires, seed, false)
+}
+
+/// `balanced`: seed each band wire as `x_i ⊕ x_j` (uniform on a uniform input)
+/// instead of `x_i ∧ ¬x_j` (biased to 0 three times in four).
+pub fn seed_band_mode(np: usize, r: usize, active_wires: usize, seed: u64, balanced: bool) -> Vec<XGate> {
     let active = if active_wires == 0 || active_wires > np {
         np
     } else {
         active_wires
     };
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut out = Vec::with_capacity(r);
+    let mut out = Vec::with_capacity(if balanced { 2 * r } else { r });
     for aw in (np as u16)..((np + r) as u16) {
         let i1 = rng.random_range(0..active) as u16;
         let mut i2 = rng.random_range(0..active) as u16;
         while i2 == i1 {
             i2 = rng.random_range(0..active) as u16;
         }
-        out.push(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap());
+        if balanced {
+            out.push(XGate::cnot(aw, i1));
+            out.push(XGate::cnot(aw, i2));
+        } else {
+            out.push(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap());
+        }
     }
     out
 }
@@ -441,12 +492,27 @@ fn compute_deps(src: &[XGate], np: usize) -> Vec<Vec<usize>> {
 }
 /// Emit an LGI's disjoint-pair g57s on wire `w` and TOGGLE its pairs in `pairs`
 /// (opening if closed, closing if open -- self-inverse either way).
-fn emit_lgi(w: u16, cy: &[u16], out: &mut Vec<XGate>, pairs: &mut BTreeSet<(u16, u16)>) {
+/// A balanced LGI carries an odd trailing wire `z` = the CNOT term `w ^= z`,
+/// toggled in `lin` (the wire's net-open linear band terms).
+fn emit_lgi(
+    w: u16,
+    cy: &[u16],
+    out: &mut Vec<XGate>,
+    pairs: &mut BTreeSet<(u16, u16)>,
+    lin: &mut BTreeSet<u16>,
+) {
     out.extend(cycle_g57(w, cy));
     for i in 0..cy.len() / 2 {
         let pr = (cy[2 * i], cy[2 * i + 1]);
         if !pairs.insert(pr) {
             pairs.remove(&pr);
+        }
+    }
+    if cy.len() % 2 == 1 {
+        let z = cy[cy.len() - 1];
+        out.push(XGate::cnot(w, z));
+        if !lin.insert(z) {
+            lin.remove(&z);
         }
     }
 }
@@ -475,7 +541,17 @@ fn pick_weighted(weights: &[usize], total: usize, rng: &mut StdRng) -> Option<us
 pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> BlindedV5Output {
     let k = p.k.max(2); // g57 1-cycle is a degenerate constant flip
     let r = if p.r == 0 { np } else { p.r };
-    assert!(r >= k, "R must be >= K");
+    // Band wires per LGI cycle: `K` rounded down to disjoint pairs (odd K wastes
+    // a wire: K3 == K2), plus the balancing wire `z` when balanced.
+    let lgi_k = (k - k % 2) + usize::from(p.balanced);
+    // A rerand burst on band wire `b` must leave a full cycle of OTHER band wires
+    // for the cover replacement, and a read top-up needs two (three when
+    // balanced) distinct wires: `r > lgi_k` is the true precondition (with
+    // `r == lgi_k` the replacement draw could never avoid `b`).
+    assert!(
+        r > lgi_k,
+        "R must exceed K (+1 with balanced masks): got R={r}, cycle width {lgi_k}"
+    );
     assert!(np >= 2, "need at least two data wires");
     let total = np + r;
     assert!(total < u16::MAX as usize, "too many wires");
@@ -557,6 +633,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
 
     let mut open_cy: Vec<Vec<Vec<u16>>> = vec![Vec::new(); np];
     let mut open_pairs: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
+    let mut open_lin: Vec<BTreeSet<u16>> = vec![BTreeSet::new(); np]; // balanced CNOT terms
     let mut out: Vec<XGate> = Vec::with_capacity(30 * (3 * m + np));
     let mut rerand_done = 0usize;
     let diag = std::env::var("BV5_DIAG").is_ok();
@@ -584,6 +661,115 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     // cumulative filler target is `placed * total_fillers / m`.
     let mut fillers_done = 0usize;
 
+    // A rerand burst on band wire `b` forces every open LGI that reads `b` shut
+    // (straddle) or stripped of its `b` term (repair). When those were ALL of a
+    // wire's open masks the wire would sit BARE — holding its plaintext value —
+    // until its next filler/straddle open, typically thousands of gates later
+    // (measured: every interior bare interval of the K=2 build came from this,
+    // ~450 per build, median ~10k gates, and every operand read inside one is an
+    // exact copy of a C state bit). So before the close, open a replacement LGI
+    // that avoids `b`: same-target XOR writes commute, so open-then-close never
+    // leaves an instant with no mask on the wire. Extra to the u_w+1 budget
+    // (~3 gates per event, ≈0.4% of the build).
+    let mut replacements = 0usize;
+    let mut read_covers = 0usize; // top-ups kept open on an otherwise uncovered operand
+    let mut fire_covers = 0usize; // extra target masks opened at a fire (fire-cover rule)
+    // Sample an LGI cycle for wire `w` whose band wires are DISJOINT from every
+    // band wire already used by `w`'s open cycles (pairs and balancing wires)
+    // and, when given, from `avoid` (the band wire a burst is about to
+    // refresh). Disjointness is what makes the wire's mask sum uniform under
+    // balanced masks: two identical pairs cancel (`1⊕y⊕xy` twice is 0 — the
+    // wire is functionally bare while the bookkeeping counts two masks), two
+    // identical `z`s cancel (`z⊕z = 0`, no uniform term left), and a `z` equal
+    // to another open pair's wire folds the linear and the quadratic term into
+    // an OR (`x ⊕ ¬x∧y = x∨y`, biased 3:1). Each was measured as a phi ≈ 0.25
+    // segment population in the gauntlet at 32 band wires; at 256 the last
+    // one still occurs on ~10% of opens.
+    // Disjointness is best-effort: a band too small to hold `max_open`
+    // disjoint cycles (e.g. the n=6 exhaustive test, r=6) relaxes after a
+    // bounded number of draws to the weaker "no identical pair, no identical
+    // z" rule, then to any cycle; `avoid` is never relaxed (a replacement that
+    // read the burst wire would be closed again at once). Relaxations are
+    // counted in the diag line; production bands (r = n ≥ 128) never relax.
+    let mut relaxed = 0usize;
+    // `$extra`: further band wires to stay away from (soft, like `used`) — at a
+    // fire, the wires of the operands' polynomials (see the fire-cover rule).
+    macro_rules! sample_fresh {
+        ($w:expr, $avoid:expr, $extra:expr) => {{
+            let w: usize = $w;
+            let avoid: Option<u16> = $avoid;
+            let extra: &BTreeSet<u16> = $extra;
+            let mut used: BTreeSet<u16> = open_cy[w].iter().flatten().copied().collect();
+            used.extend(extra.iter().copied());
+            let mut tries = 0usize;
+            loop {
+                let cy = sample_k(&band, lgi_k, &mut rng);
+                tries += 1;
+                if avoid.is_some_and(|b| cy.iter().any(|&x| x == b)) {
+                    assert!(
+                        tries <= 1 << 16,
+                        "blinded_v5: no LGI cycle on wire {w} avoids band wire {} (R={r}, cycle width {lgi_k})",
+                        avoid.unwrap()
+                    );
+                    continue;
+                }
+                let clash = cy.iter().any(|x| used.contains(x));
+                let weak_clash = (0..cy.len() / 2).any(|i| {
+                    open_pairs[w].contains(&(cy[2 * i], cy[2 * i + 1]))
+                        || open_pairs[w].contains(&(cy[2 * i + 1], cy[2 * i]))
+                }) || (cy.len() % 2 == 1 && open_lin[w].contains(&cy[cy.len() - 1]));
+                if !clash || (tries > 256 && !weak_clash) || tries > 4096 {
+                    if clash {
+                        relaxed += 1;
+                    }
+                    break cy;
+                }
+            }
+        }};
+    }
+    macro_rules! keep_covered {
+        ($w:expr, $b:expr) => {{
+            let w = $w;
+            let b = $b;
+            let hits = open_cy[w].iter().filter(|cy| cy.iter().any(|&x| x == b)).count();
+            if hits > 0 && hits == open_cy[w].len() {
+                let cy = sample_fresh!(w, Some(b), &BTreeSet::new());
+                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
+                open_cy[w].push(cy);
+                replacements += 1;
+            }
+        }};
+    }
+    // A burst gate `b ^= lit(c1) ∧ lit(c2)` with a DATA control `w` reads `w`
+    // under its masks; if the other control is one of `w`'s own mask wires the
+    // product strips that mask's uniform term (`(x ⊕ z ⊕ q) ∧ ¬z`), and two
+    // data controls whose masks share a band wire correlate the same way
+    // (measured: phi 0.14–0.26 on the burst's flip vs the plaintext, gauntlet
+    // n=256, max_open 2). Redraw until no such coincidence (bounded).
+    macro_rules! burst_gate_safe {
+        ($b:expr, $active:expr) => {{
+            let b: u16 = $b;
+            let act: usize = $active;
+            let mut tries = 0usize;
+            loop {
+                let g = burst_gate(b, act, &band, &mut rng);
+                let (c1, c2) = (g.ctrls[0].0, g.ctrls[1].0);
+                let mask_wires = |w: u16| -> BTreeSet<u16> {
+                    if (w as usize) < np {
+                        open_cy[w as usize].iter().flatten().copied().collect()
+                    } else {
+                        BTreeSet::new()
+                    }
+                };
+                let (m1, m2) = (mask_wires(c1), mask_wires(c2));
+                let clash = m1.contains(&c2) || m2.contains(&c1) || m1.iter().any(|x| m2.contains(x));
+                tries += 1;
+                if !clash || tries > 256 {
+                    break g;
+                }
+            }
+        }};
+    }
     macro_rules! emit_slot {
         () => {{
             let is_repair = slot_plan[si];
@@ -595,6 +781,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let b = band[rng.random_range(0..band.len())];
             if is_repair {
                 for w in 0..np {
+                    keep_covered!(w, b);
                     for cy in &open_cy[w] {
                         if let Some(gg) = b_g57(w as u16, cy, b) {
                             out.push(gg);
@@ -602,7 +789,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                     }
                 }
                 for _ in 0..burst {
-                    out.push(burst_gate(b, active, &band, &mut rng));
+                    out.push(burst_gate_safe!(b, if p.burst_band_only { 0 } else { active }));
                     rerand_done += 1;
                 }
                 for w in 0..np {
@@ -614,18 +801,19 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 }
             } else {
                 for w in 0..np {
+                    keep_covered!(w, b);
                     let mut idx = 0;
                     while idx < open_cy[w].len() {
                         if open_cy[w][idx].iter().any(|&x| x == b) {
                             let cy = open_cy[w].remove(idx);
-                            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+                            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
                         } else {
                             idx += 1;
                         }
                     }
                 }
                 for _ in 0..burst {
-                    out.push(burst_gate(b, active, &band, &mut rng));
+                    out.push(burst_gate_safe!(b, if p.burst_band_only { 0 } else { active }));
                     rerand_done += 1;
                 }
             }
@@ -644,16 +832,28 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let w = $w;
             if open_cy[w].len() >= max_open {
                 let cy = open_cy[w].remove(0);
-                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
             }
-            let cy = sample_k(&band, k, &mut rng);
-            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+            let cy = sample_fresh!(w, None, &BTreeSet::new());
+            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
             open_cy[w].push(cy);
             filler_left[w] -= 1;
             maybe_rerand!();
         }};
     }
 
+    // Encoded I/O: open `max_open` LGIs per wire OFF-circuit (into `pre`), so
+    // the trace starts with every data wire already masked.
+    let mut pre: Vec<XGate> = Vec::new();
+    if p.encoded_io {
+        for w in 0..np {
+            for _ in 0..max_open {
+                let cy = sample_fresh!(w, None, &BTreeSet::new());
+                emit_lgi(w as u16, &cy, &mut pre, &mut open_pairs[w], &mut open_lin[w]);
+                open_cy[w].push(cy);
+            }
+        }
+    }
     let mut placed = 0usize;
     while placed < m {
         let gi = match ready.pop_front() {
@@ -673,18 +873,72 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 for &(x, y) in &netopen {
                     poly.add_g57_mask(x, y);
                 }
+                for &z in &open_lin[w as usize] {
+                    poly.toggle(vec![z]);
+                }
                 // Top up with fresh quadratic pairs (single g57s, undone after the
                 // fire) until at least max_open quadratic terms mask the operand.
+                // An operand with NO open LGI at all (a seldom-used wire between
+                // its sparse fillers) keeps its first top-up as a real LGI instead
+                // of undoing it: otherwise the wire returns to holding its plain
+                // value for the whole idle stretch (measured: tens of thousands of
+                // gates on high-half wires). Costs nothing (the undo is dropped).
                 let mut guard = 0;
+                let mut keep_first = open_cy[w as usize].is_empty();
+                // Band wires in use on this operand: its open cycles plus the
+                // top-ups of this read. Every top-up draws OUTSIDE this set (see
+                // `sample_fresh`: any shared wire biases the mask sum).
+                let mut used: BTreeSet<u16> =
+                    open_cy[w as usize].iter().flatten().copied().collect();
+                // best-effort disjointness (bounded), see `sample_fresh`; the
+                // `hard` wires (this top-up's own pair) are never reused
+                let mut draw = |used: &BTreeSet<u16>, hard: &[u16], rng: &mut StdRng| -> u16 {
+                    let mut tries = 0usize;
+                    loop {
+                        let x = band[rng.random_range(0..band.len())];
+                        tries += 1;
+                        if hard.contains(&x) {
+                            assert!(tries <= 1 << 16, "blinded_v5: band too small for a read top-up (R={r})");
+                            continue;
+                        }
+                        if !used.contains(&x) || tries > 256 {
+                            return x;
+                        }
+                    }
+                };
                 while poly.deg2_terms() < max_open.max(1) && guard < 64 {
-                    let r1 = band[rng.random_range(0..band.len())];
-                    let mut r2 = band[rng.random_range(0..band.len())];
-                    while r2 == r1 {
-                        r2 = band[rng.random_range(0..band.len())];
+                    let r1 = draw(&used, &[], &mut rng);
+                    used.insert(r1);
+                    let r2 = draw(&used, &[r1], &mut rng);
+                    used.insert(r2);
+                    if keep_first {
+                        keep_first = false;
+                        let mut cy = vec![r1, r2];
+                        if p.balanced {
+                            let z = draw(&used, &[r1, r2], &mut rng);
+                            used.insert(z);
+                            cy.push(z);
+                        }
+                        emit_lgi(w, &cy, &mut out, &mut open_pairs[w as usize], &mut open_lin[w as usize]);
+                        poly.add_g57_mask(r1, r2);
+                        if let Some(&z) = cy.get(2) {
+                            poly.toggle(vec![z]);
+                        }
+                        open_cy[w as usize].push(cy);
+                        read_covers += 1;
+                        guard += 1;
+                        continue;
                     }
                     out.push(g57(w, r1, r2));
                     undo.push(g57(w, r1, r2));
                     poly.add_g57_mask(r1, r2);
+                    if p.balanced {
+                        let z = draw(&used, &[r1, r2], &mut rng);
+                        used.insert(z);
+                        out.push(XGate::cnot(w, z));
+                        undo.push(XGate::cnot(w, z));
+                        poly.toggle(vec![z]);
+                    }
                     guard += 1;
                 }
                 if diag {
@@ -706,6 +960,14 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             for gg in added.into_iter().rev() {
                 undo.push(gg);
             }
+            for &z in &open_lin[w as usize] {
+                if let Some(pp) = rho.iter().position(|&v| v == z) {
+                    rho.remove(pp);
+                } else {
+                    rho.push(z);
+                }
+            }
+            rho.sort_unstable();
             // Top up fresh disjoint g57 pairs until |rho| >= min_mask (each pair
             // toggles two band wires in rho). First bring the open count up to
             // max_open, then keep adding single pairs until the masking floor is
@@ -750,7 +1012,10 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             // a no-op at production params (the loop already reaches `|ρ| ≥ 4`),
             // so the production circuit is unchanged; it fires only in the
             // degenerate/misconfig regime the clamp on `min_mask` keeps feasible.
-            while rho.len() < min_mask {
+            // (Fresh pairs need two band wires outside `ρ`; with balanced `z`
+            // terms folded into `ρ` that can be impossible on a tiny band, so
+            // stop rather than spin — the floor is then bounded by the band.)
+            while rho.len() < min_mask && rho.len() + 2 <= r {
                 let mut r1 = band[rng.random_range(0..band.len())];
                 while rho.contains(&r1) {
                     r1 = band[rng.random_range(0..band.len())];
@@ -784,18 +1049,40 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         }
         if open_cy[c].len() >= max_open {
             let cy = open_cy[c].remove(0);
-            emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
+            emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         }
+        // Fire-cover bracket. During the fire the target's segments are
+        // `c_old ⊕ M_c ⊕ partial-sum-of-monomials`; whenever a band wire of one
+        // of `c`'s open masks also occurs in the operands' polynomials, the
+        // monomials cancel or fold that mask's uniform term (`z ⊕ z`,
+        // `z ⊕ z∧u`) and the segment turns biased toward `c_new` (measured phi
+        // 0.1–0.25 on 1–2% of targets at 32–64 band wires; at 256 band wires a
+        // collision occurs at ~2/3 of the fires). So every monomial block is
+        // BRACKETED by a temporary mask on `c` drawn away from every band wire
+        // of the fire: opened before the first monomial, closed after the last
+        // (~6 gates per fire, no change to any read polynomial). The mid-fire
+        // straddle open is drawn away from those wires as well.
+        let mut fire_wires: BTreeSet<u16> = polys
+            .iter()
+            .flat_map(|q| q.0.iter().flatten().copied())
+            .filter(|&x| (x as usize) >= np)
+            .collect();
+        let cover = sample_fresh!(c, None, &fire_wires);
+        emit_lgi(c as u16, &cover, &mut out, &mut open_pairs[c], &mut open_lin[c]);
+        fire_wires.extend(cover.iter().copied());
+        fire_covers += 1;
         // straddle: fire-part-1, OPEN a fresh LGI on c (mid-fire), fire-part-2 --
         // each half emitted in an independently random order (monomials commute).
         let cut = ((fires.len() + 1) / 2).min(fires.len());
         shuffle_slice(&mut fires[..cut], &mut rng);
         shuffle_slice(&mut fires[cut..], &mut rng);
         out.extend_from_slice(&fires[..cut]);
-        let cy = sample_k(&band, k, &mut rng);
-        emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c]);
+        let cy = sample_fresh!(c, None, &fire_wires);
+        emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         open_cy[c].push(cy);
         out.extend_from_slice(&fires[cut..]);
+        // close the bracket (toggles its pairs/linear term back off)
+        emit_lgi(c as u16, &cover, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         for gg in undo {
             out.push(gg);
         }
@@ -848,9 +1135,13 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             total_steps
         );
     }
+    // Final drain: close every still-open LGI so the data wires hold A's
+    // output -- ON the circuit normally, OFF-circuit (`post`) for encoded I/O.
+    let mut post: Vec<XGate> = Vec::new();
     for w in 0..np {
         while let Some(cy) = open_cy[w].pop() {
-            emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w]);
+            let sink = if p.encoded_io { &mut post } else { &mut out };
+            emit_lgi(w as u16, &cy, sink, &mut open_pairs[w], &mut open_lin[w]);
         }
     }
     let _ = straddles_left;
@@ -864,7 +1155,9 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         );
         eprintln!(
             "[bv5-diag] rerand slots: emitted={slots_emitted} of plan={}  \
-             DRAIN (after last A-gate)={drain_slots} ({:.1}%)  main-loop={}",
+             DRAIN (after last A-gate)={drain_slots} ({:.1}%)  main-loop={}  \
+             cover-replacement LGIs={replacements}  read-cover LGIs={read_covers}  \
+             fire-cover LGIs={fire_covers}  relaxed (non-disjoint) samples={relaxed}",
             slot_plan.len(),
             100.0 * drain_slots as f64 / slots_emitted.max(1) as f64,
             slots_emitted - drain_slots
@@ -876,6 +1169,8 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         num_wires: total,
         atoms,
         rerand_done,
+        pre_gates: pre,
+        post_gates: post,
         r_used: r,
     }
 }
@@ -910,13 +1205,41 @@ mod tests {
         for seed in 0..6u64 {
             let mut rng = StdRng::seed_from_u64(0xB5_0000 + seed);
             let a = random_a(n, 24, &mut rng);
-            for quad_fire in [true, false] {
+            // (quad_fire, balanced, encoded_io, k, repair slots): both read modes,
+            // both mask kinds, encoded I/O, odd K (K3 == K2 + the balancing wire),
+            // K4 (two pairs per LGI) and REPAIR-kind rerand slots.
+            for (quad_fire, balanced, encoded_io, k, repair) in [
+                (true, false, false, 2, 0),
+                (false, false, false, 2, 0),
+                (true, true, false, 2, 0),
+                (false, true, false, 2, 0),
+                (true, false, true, 2, 0),
+                (true, true, true, 2, 0),
+                (true, true, false, 3, 0),
+                (true, false, false, 3, 0),
+                (true, true, false, 4, 2),
+                (false, true, false, 4, 2),
+                (true, true, true, 2, 2),
+            ] {
                 let p = BlindedV5Params {
                     quad_fire,
+                    balanced,
+                    encoded_io,
+                    k,
+                    rerand_repair: repair,
                     ..BlindedV5Params::production(100 + seed)
                 };
                 let out = gadgetize_blinded_v5(&a, np, &p);
                 assert_eq!(out.num_wires, 2 * np);
+                assert_eq!(out.pre_gates.is_empty(), !encoded_io);
+                assert_eq!(out.post_gates.is_empty(), !encoded_io);
+                if encoded_io {
+                    // every data wire is masked at the start and at the end
+                    for w in 0..np as u16 {
+                        assert!(out.pre_gates.iter().any(|g| g.target == w));
+                        assert!(out.post_gates.iter().any(|g| g.target == w));
+                    }
+                }
                 for band in 0..8u64 {
                     let band_bits = if band == 0 { 0 } else { rng.random::<u64>() >> (64 - np) };
                     for data in 0..(1u64 << np) {
@@ -925,13 +1248,13 @@ mod tests {
                             expect = g.apply_u64(expect);
                         }
                         let mut st = data | (band_bits << np);
-                        for g in &out.gates {
+                        for g in out.pre_gates.iter().chain(&out.gates).chain(&out.post_gates) {
                             st = g.apply_u64(st);
                         }
                         assert_eq!(
                             st & ((1u64 << np) - 1),
                             expect,
-                            "seed {seed} quad_fire={quad_fire} band {band:#x} data {data:#x}"
+                            "seed {seed} quad_fire={quad_fire} balanced={balanced} encoded_io={encoded_io} k={k} repair={repair} band {band:#x} data {data:#x}"
                         );
                     }
                 }

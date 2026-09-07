@@ -45,7 +45,7 @@ use local_mixing::circuit::U1024;
 use local_mixing::circuit::random_circuit;
 use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shuffle};
 use local_mixing::engine::format::write_mpmct;
-use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
+use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band_mode};
 use local_mixing::preprocessing::gadgets::{
     CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, slice_zero_junk_guard_dims,
     slice_zero_junk_guard_dims_high,
@@ -429,14 +429,18 @@ fn main() {
         );
     }
     let mut gadget = if gadgetization_mode == GadgetizationMode::BlindedV5 {
-        // Blinded-V5 computation stage (preset: K=16, R=n, max_open=3, no
-        // rerand). LGI-scaffold masking over the whole sandwich; the gadget_seed
+        // Blinded-V5 computation stage (production preset: K=2, R=n, max_open=3,
+        // quad-fire, balanced masks, auto burst rerand). LGI-scaffold masking over
+        // the whole sandwich; the gadget_seed
         // drives it. active_wires = n: the sandwich's honest input is the zero
         // slice (x on the low n wires, zeros on the high n), so seed the band
         // only from the low n or ~half the band collapses to 0 on the usage.
         // Sweep overrides (testing): BV5_K, BV5_RERAND (straddle slots), BV5_REPAIR
-        // (repair slots), BV5_BURST (F gates/slot), BV5_MAX_OPEN, BV5_EXTRA_LGIS,
-        // BV5_QUAD_FIRE (=0 for the legacy linearised read; default quad-fire).
+        // (repair slots), BV5_BURST (F gates/slot), BV5_MAX_OPEN (3; 2 = the
+        // size-neutral balanced variant, weaker against two-feature scans),
+        // BV5_EXTRA_LGIS, BV5_QUAD_FIRE (=0 for the legacy linearised read;
+        // default quad-fire), BV5_BALANCED (=0 for plain g57 masks; default
+        // balanced), BV5_BAL_SEED (=0 keeps the AND band seed), BV5_BURST_BANDONLY.
         let envu = |k: &str, d: usize| {
             std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
         };
@@ -451,6 +455,9 @@ fn main() {
             min_mask: envu("BV5_MIN_MASK", base.min_mask),
             extra_lgis: envu("BV5_EXTRA_LGIS", base.extra_lgis),
             quad_fire: std::env::var("BV5_QUAD_FIRE").map_or(base.quad_fire, |v| v != "0"),
+            balanced: std::env::var("BV5_BALANCED").map_or(base.balanced, |v| v != "0"),
+            burst_band_only: std::env::var("BV5_BURST_BANDONLY").is_ok_and(|v| v != "0"),
+            encoded_io: false,
             ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
@@ -477,11 +484,13 @@ fn main() {
         };
         // Module 2: band-seeding pipelined between the input slice guard (dead
         // on the zero band) and the compute (which only reads the band).
-        let band_seed = seed_band(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C);
+        // BV5_BAL_SEED=0 keeps the AND-of-literals seed with balanced masks (diagnostic)
+        let bal_seed = std::env::var("BV5_BAL_SEED").map_or(params.balanced, |v| v != "0");
+        let band_seed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C, bal_seed);
         println!(
-            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} quad_fire={} | {} atoms, \
+            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} quad_fire={} balanced={} | {} atoms, \
              + {} band-seed + {} slice-guard gates each side",
-            params.k, bv5.r_used, params.max_open, params.active_wires, params.quad_fire, bv5.atoms,
+            params.k, bv5.r_used, params.max_open, params.active_wires, params.quad_fire, params.balanced, bv5.atoms,
             band_seed.len(), open.gates.len()
         );
         let mut gates = open.gates; // module 1: input slice guard

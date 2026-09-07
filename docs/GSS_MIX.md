@@ -85,7 +85,7 @@ Defaults and accepted values:
 | `curated_value_convention` | `native` | `native`, `legacy-swapped-controls` |
 | `frozen_filter` | `auto` (the driver's RAM gate) | `auto`, `on` (requires `filters.bin` in every selected store), `off` |
 | `allow_empty_store` | `false` | `true` only for a no-re-encoding plumbing test |
-| `gadgetization_mode` | `product-2223` | `product-2223`, `nonlinear193`, `nonlinear291`; `2223` is accepted as a compatibility alias and normalized to `product-2223` |
+| `gadgetization_mode` | `product-2223` | `product-2223`, `nonlinear193`, `nonlinear291`; `2223` is accepted as a compatibility alias and normalized to `product-2223` (the `blinded-v5` LGI compute is a `gss_mix.sh`-only mode, see below) |
 | `production_preset` | `production` | product-2223 only: `production`, `no-gray-phase-a`, `micro-gray`, `sentinel-gray`, `no-gray-post-exact`, `no-gray-post-native`, `five-carrier`, `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, `seven-carrier` |
 | `post_fragment` | preset behavior | product-2223 only: `off`, `exact`, `native-deep` |
 | `mcd` | `round(n(log2 n)^2)` | integer `1..=1000000000` |
@@ -342,7 +342,10 @@ an unclean kill during a file write, inspect the stage log/state and use
 
 **1+2 — generate + gadgetize** (`gen_sandwich_gadget`). The source-size
 parameter is **n**, the wires of the source computation C, and
-`gadgetization_mode` selects the representation family. The remaining size
+`gadgetization_mode` selects the representation family (`gss_mix.sh` additionally
+accepts `blinded-v5`, the LGI compute module of `BLINDED_V5_LGI_DESIGN.md`, with
+the knobs `--bv5-k K` [2], `--bv5-max-open N` [3] and `--bv5-balanced 0|1` [1];
+the `gss` command's config block does not offer it). The remaining size
 conventions are computed and logged by the driver:
 `|C| = |D| = round(n·(log₂n)²)`, slicing budget `s = round(n·log₂n)`,
 `slice_gates = 20n`, `rg_freq = 1`. The default `product-2223` gadgetization

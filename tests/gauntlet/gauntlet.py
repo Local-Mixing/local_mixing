@@ -57,6 +57,27 @@ ARMS: dict[str, dict[str, Any]] = {
         "aux": ("zero", "random"),
         "rust_gadget": "semi",
     },
+    # blinded-V5 LGI compute, encoded I/O (inputs/outputs masked off-trace),
+    # random band: the band is a uniform pool, never input-seeded (see the
+    # gauntlet_gen arm notes). Plain quad-fire masks vs balanced masks.
+    "blindedv5": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "bv5",
+    },
+    "blindedv5_balanced": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "bv5bal",
+    },
+    # balanced masks with the open-mask cap lowered to 2 (read polynomial back
+    # to the plain build's size; every mask term still unbiased)
+    "blindedv5_balanced_mo2": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "bv5bal",
+        "gen_args": ("--bv5-max-open", "2"),
+    },
     "nonlinear193": {
         "kind": "file",
         "aux": ("builder",),
@@ -608,6 +629,7 @@ def generate_cell(
             "--aux",
             aux,
         ]
+        command.extend(policy.get("gen_args", ()))
     if mix_on:
         command.extend(("--mix", str(mix_moves)))
     run(command, cdir / "gen.log", env_extra=env, append=False)
@@ -877,6 +899,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "cmd", choices=("all", "gen", "audit", "maps", "report", "clean")
     )
     parser.add_argument("--ks", default="1,2,16", help="comma-separated chain lengths")
+    parser.add_argument(
+        "--n-wires",
+        type=int,
+        default=N_WIRES,
+        help="logical wires of the source chain (native arms only; file arms need 8)",
+    )
     parser.add_argument("--mix", choices=("both", "on", "off"), default="both")
     parser.add_argument("--arms", default=",".join(ARMS), help="comma-separated arms")
     parser.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
@@ -934,6 +962,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--ks must contain positive integers")
     if not arms:
         parser.error("--arms cannot be empty")
+    if args.n_wires < 6:
+        parser.error("--n-wires must be at least 6 (the chain recipe uses offsets 3 and 5)")
+    if args.n_wires != 8 and any(ARMS[arm]["kind"] == "file" for arm in arms):
+        parser.error("file arms (nonlinear193/291) support only --n-wires 8")
+    globals()["N_WIRES"] = args.n_wires
     if args.jobs <= 0 or args.mix_moves <= 0:
         parser.error("--jobs and --mix-moves must be positive")
     if min(args.pool_keys, args.xtrace_max_features, args.witnesses) <= 0:

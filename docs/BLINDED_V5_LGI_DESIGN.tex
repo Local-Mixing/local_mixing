@@ -175,7 +175,10 @@ only 60--70\% of gates; \S3.)
   (a pair whose reverse is also open contributes the linear $x \xor y$); top up with
   \textbf{fresh single \g s} (quadratic, not pair-completed) until at least
   \doc{max\_open} quadratic terms mask the operand (the \textbf{hard floor}: never
-  bare, never affine). Remember the top-up gates as the \emph{undo}. (Legacy linear
+  bare, never affine). Remember the top-up gates as the \emph{undo} --- except that
+  an operand with \textbf{no open \lgi{} at all} keeps its first top-up as a real
+  \lgi{} (the \emph{read-cover} rule, \S5.6: otherwise a seldom-used wire returns to
+  holding its plain value for the whole idle stretch after the fire). (Legacy linear
   read, \doc{BV5\_QUAD\_FIRE=0}: complete each open \g{} with its reverse so the wire
   carries $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires,
   top up with pairs until $|\rho| \ge \doc{min\_mask}$, undo the reverses after the
@@ -194,6 +197,13 @@ only 60--70\% of gates; \S3.)
   opens, generated on demand), then emit the second half. The mid-fire open makes
   the module's net XOR on $c$ equal $\Delta \xor \text{secret-mask}$, not the bare
   increment $\Delta$.
+  The whole block is \textbf{bracketed by a temporary cover mask on $c$} drawn
+  away from every band wire of the operands' polynomials (opened before the
+  first monomial, closed after the last; the straddle open is drawn away from
+  those wires too): a band wire shared between one of $c$'s masks and a fire
+  monomial would cancel or fold that mask's uniform term and leave the mid-fire
+  segments biased toward $c_{\mathrm{new}}$ (\S5.7; ${\sim}6$ gates per fire,
+  ${\approx}3\%$).
 \item \textbf{Undo} --- emit the top-up gates again (each is an involution),
   restoring the operands' original mask set.
 \item \textbf{Maybe rerand} --- if the calibrated rate says so, emit one
@@ -212,7 +222,29 @@ masks reading $b$ (this is what thins masking past the $\approx1024$ knee --- he
 keeping \doc{straddle\_slots} at that budget); a \textsc{repair} slot brackets the
 burst with each such mask's $b$-reading \g{} (old $b$ cancels, new $b$ re-adds, so
 the mask stays open --- no thinning). Running in the same pass, the band updates
-protect the straddle opens automatically.
+protect the straddle opens automatically. \textbf{Coverage across the burst is a
+rule, not a statistic:} when the masks reading $b$ are \emph{all} of a wire's open
+masks, the slot first opens a \emph{replacement} \lgi{} on that wire (sampled away
+from $b$) and only then closes them --- same-target \textsc{xor} writes commute, so
+open-then-close never leaves an instant with no mask on the wire. Without it the
+wire sat bare, holding its plaintext value, until its next filler (\S5.6: every
+interior bare interval of the earlier builds came from this --- ${\sim}450$ per
+build, median ${\sim}10^4$ gates). Every \lgi{} sample (fillers, straddle opens,
+replacements, read top-ups) also draws its band wires \textbf{disjoint from every
+band wire already used by the wire's open masks}. Any shared wire biases the mask
+sum: two identical pairs cancel ($1\xor y\xor xy$ twice is 0 --- the wire is
+functionally bare while the bookkeeping counts two masks), two identical balancing
+wires cancel ($z\xor z=0$, no uniform term left), and a balancing wire equal to
+another open pair's wire folds the linear and the quadratic term into an
+\textsc{or} ($x \xor \neg x{\wedge}y = x\vee y$, biased 3:1). Each of these showed up
+as a phi ${\approx}0.25$ segment population in the gauntlet at 32 band wires
+(\S5.7); at 256 the last one still hits ${\sim}10\%$ of opens. The same discipline
+applies to the \textbf{burst gates}: a burst $b \mathrel{\hat{}}= \mathit{lit}(c_1)
+\wedge \mathit{lit}(c_2)$ with a data control reads that wire under its masks, so
+its other control is drawn away from that wire's mask wires (and two data
+controls may not share a mask wire) --- otherwise the product strips a mask's
+uniform term and the burst's flip correlates with the plaintext (phi 0.14--0.26,
+seen at \doc{max\_open}~2, \S5.7).
 
 \paragraph{Correctness} is verified exhaustively over all $2^n$ inputs $\times$
 many band settings for $n \le 6$, $K \in 2..5$, all \doc{max\_open} and both
@@ -264,6 +296,17 @@ $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
   $C$-vs-$G$ ridge (\S5.0); quad-fire has no window, keeps the ridge at the I/O
   fringe through the whole pipeline, and is ${\sim}12\%$ smaller.
   \doc{BV5\_QUAD\_FIRE=0} $=$ legacy. \\
+\addlinespace
+\doc{balanced} & \textbf{on} (2026-09-07) & every \lgi{} (and
+  every read top-up) adds one \textsc{cnot} $w \mathrel{\hat{}}= z$ from a fresh band
+  wire, so each mask term is $z \xor 1 \xor \neg x{\wedge}y$ --- unbiased, still
+  quadratic; band seed $x_i \xor x_j$ & a bare \g{} term is 1 three times in four,
+  so a wire under one open mask is \emph{linearly correlated} with its plaintext
+  (phi 0.29 with the $C$ gate's firing predicate; \S5.6). Balanced masks take that
+  channel to the null floor (median phi 0.08) at +92\% gates ($K{=}2$,
+  \doc{max\_open} 3: read polynomial $8{\times}8 \to 11{\times}11$ monomials); it is
+  what passes the gauntlet's w1/w2/w3 (\S5.7). \doc{BV5\_BALANCED=0} $=$ plain masks;
+  \doc{max\_open}~2 balanced is the +10\% variant, weaker against two-feature scans. \\
 \addlinespace
 \doc{min\_mask} & \textbf{auto\,$=\doc{max\_open}=3$} & \textbf{hard floor} per
   operand read: quadratic mask terms (quad-fire) / masking wires $|\rho|$ (legacy)
@@ -448,6 +491,179 @@ $K{=}4$, hold 10 & 1{,}362{,}010 & 2{,}300{,}885 & 0.4965 & 6/92 & 10/92 \\
 End-of-pipeline numbers for the linear read (post split / crossing / fcompress) are in
 \S5.0's table (2-eff pipelines) and in \doc{RIDGE\_QUADFIRE\_20260906.md}.}
 
+\subsection{Linear correlation with $C$'s firing predicates; idle-bare intervals (2026-09-06)}
+
+The affine measures above are \emph{exact} GF(2) tests; they are blind to a wire
+that is merely \emph{statistically} close to a source value. \doc{fire\_corr}
+(\doc{red\_team\_tests/bin/leakage/fire\_corr.rs}) measures the phi (Pearson)
+correlation between each $C$ gate's \textbf{firing predicate} ($\mathit{comp} \xor
+\bigwedge \mathit{lit}$, over 4096 random inputs) --- or, with \doc{--c-segments},
+each $C$ \textbf{state bit} --- and every $G$ segment and every $G$-gate increment,
+against a shuffled null (null max ${\approx}0.10$). Calibration: a fire vs its
+\emph{bare} operand is phi 0.577; vs the operand under one \g{} mask term 0.289
+(the term $1 \xor \neg x{\wedge}y$ is 1 with probability 3/4); two terms 0.144.
+Read on the raw gadget ($n=128$, same $C$ and seeds throughout; ``interior'' $=$
+$C$ gates in the middle 70\% of $C$, which excludes the public I/O fringe; counts
+out of 3000 $C$ gates, 2101 interior):
+
+\begin{center}\footnotesize
+\begin{tabular}{@{}p{3.4cm}rrrrrrr@{}}
+\toprule
+build & gates & \shortstack[r]{interior idle-\\bare intervals} & \shortstack[r]{fires: int.\\median phi} & $\ge0.3$ & $\ge0.5$ & \shortstack[r]{state bits:\\int.\ $\ge0.5$} & \shortstack[r]{exact\\copies} \\
+\midrule
+quad-fire, before the coverage fixes (0fb96997) & 496,386 & 448 (med.\ 11k) & 0.289 & 907 & 19 & 336 & 1 \\
+balanced, before the fixes & 939,214 & 735 (med.\ 19k) & 0.079 & 98 & 67 & 38 & 13 \\
+quad-fire $+$ coverage fixes & 514,502 & \textbf{0} & 0.287 & 907 & 15 & 315 & 0 \\
+balanced $+$ coverage fixes (default) & 984,384 & \textbf{0} & \textbf{0.078} & \textbf{31} & 15 & \textbf{9} & 0 \\
+null (shuffled) & & & 0.077 & 0 & 0 & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three findings.
+\begin{enumerate}
+\item \textbf{The one-mask population.} Half of $C$'s gates have a segment on an
+  operand wire at phi ${\approx}0.29$ $=$ the operand under a \emph{single} biased
+  mask term: masking depth between reads is typically 1--2 terms, and each term is
+  biased. This is the channel \doc{balanced} closes --- the interior median drops
+  from 0.29 to the null floor (0.078) and the state-bit hits from 315 to 9 --- at
+  +92\% gates. It survives the pipeline unchanged (quad-fire 2-eff: 862 interior
+  $\ge0.3$; final 642), because reordering does not change a wire's statistics.
+\item \textbf{Idle-bare intervals (a build defect, fixed).} The strongest interior
+  hits (phi ${\approx}0.58$ $=$ \emph{bare} operand) were exact copies of $C$ state
+  bits sitting on a wire for thousands of gates. A rerand burst on band wire $b$
+  closes every open \lgi{} reading $b$; when that was the wire's \emph{only} open
+  \lgi{} the wire was left bare until its next filler open --- every interior bare
+  interval of the earlier builds (448 / 735, all of them) had this trigger, and
+  balanced \lgi s (three band wires instead of two) were hit 50\% more often. The
+  fix is the \emph{cover-replacement} rule (\S2: open a fresh \lgi{} on the wire
+  before the close; ${\approx}430$ (plain) / ${\approx}780$ (balanced) replacements per build, ${\approx}0.3\%$ gates).
+  A second, smaller population were seldom-used (high-half) wires whose only masks
+  were read-time top-ups, undone after each fire; the \emph{read-cover} rule keeps
+  the first top-up open (${\sim}$115--125 per build, no cost). A third, ${\sim}1$ per
+  build, was two identical open pairs cancelling; \lgi{} sampling now avoids a
+  wire's open pairs. After the three rules the census finds \textbf{no} interior
+  bare interval in either variant, and the remaining $\ge0.5$ hits (15, identical
+  in both variants) sit at the ends of the interior window next to the public I/O
+  fringe. The pre-fix defect is in every earlier blinded-V5 deliverable (incl.\ the
+  $K{=}2$ 2-eff files); reordering stretches those bare windows (interior $\ge0.5$:
+  gadget 19 $\to$ 2-eff 81 $\to$ final 52).
+\item \textbf{What the scans do not see.} The band itself is nearly uniform after
+  the bursts ($|P-\tfrac12| \approx 0.02$), the \textsc{and} seed ($x_i \wedge \neg x_j$,
+  bias $\tfrac14$) versus the balanced \textsc{xor} seed makes no difference to the
+  residual, and restricting bursts to band-only controls
+  (\doc{BV5\_BURST\_BANDONLY=1}) does not help either --- the defect was structural,
+  not statistical.
+\end{enumerate}
+
+Diagnostics: \doc{fire\_corr --probe <C gate list>} prints, for each listed $C$
+gate, its best fire-partner segment's phi against the gate's $(a, b, c_{\mathrm{old}},
+\mathit{fire}, c_{\mathrm{new}})$ (the gauntlet's 5-tuple), which is what identified
+the bare copies ($a{:}\,{+}1.000$); \doc{BV5\_DIAG=1} reports the replacement and
+read-cover counts.
+
+\subsection{The gadget gauntlet (colleague's trace-and-audit battery), $n=32/64$ (2026-09-07)}
+
+\doc{tests/gauntlet} records, for random inputs, every wire's initial value and
+every gate's flip and new target value of a gadgetized r57 chain, and runs six
+attacks against the chain's $(a,b,c_{\mathrm{old}},\mathit{fire},c_{\mathrm{new}})$
+per source gate: \doc{a1} (a feature equals a target), \doc{xrows} (a target is
+affine in one prefix's wire state), \doc{xtrace} (affine in the whole trace), and
+\doc{w1/w2/w3} (correlation with one feature, or an \textsc{xor/and/or/and-not} of
+two or three, capped strided subsets), flagged above the \textsc{null} column's
+maximum and $6\sigma$. Blinded-V5 enters as native arms (\doc{blindedv5} $=$ plain masks,
+\doc{blindedv5\_balanced}): production preset, \textbf{encoded I/O}
+(\doc{encoded\_io}: \doc{max\_open} masks per wire pre-opened and the drain skipped,
+the encode/decode gates applied out of band --- the convention of the colleague's
+share-encoded arms, so no raw input or output is a wire value), band $\max(32,n)$
+wires starting uniformly random. The harness's own controls (\doc{none},
+\doc{secretshare14}, \doc{bandproduct92}) light up every attack. Numbers are
+nontrivial hits / flags out of $5k$ targets ($k$ source gates):
+
+\begin{center}\small
+\begin{tabular}{@{}rrllrrrrrr@{}}
+\toprule
+$n$ & $k$ & arm & mix & a1 & xrows & xtrace & w1 & w2 & w3 \\
+\midrule
+32 & 64 & balanced & off & 0 & 0 & 320 & 0 & 0 & 0 \\
+32 & 256 & balanced & off & 0 & 0 & 1280 & 0 & 0 & 0 \\
+64 & 64 & balanced & off & 0 & 0 & 320 & 0 & 0 & 0 \\
+64 & 256 & balanced & off & 0 & 0 & 1280 & 0 & 0 & 0 \\
+32 & 64 & quad-fire (plain) & off & 0 & 0 & 320 & 320 & 27 & 35 \\
+64 & 256 & quad-fire (plain) & off & 0 & 0 & 1280 & 1280 & 5 & 5 \\
+64 & 256 & \doc{none} control & off & 1096 & 840 & 1096 & 1280 & 1214 & 442 \\
+32 & 64 & balanced & on & 0 & 1 & 320 & 28 & 0 & 0 \\
+32 & 256 & balanced & on & 0 & 0 & skip & 47 & 0 & 0 \\
+64 & 64 & balanced & on & 0 & 0 & 320 & 0 & 0 & 0 \\
+64 & 256 & balanced & on & 0 & 0 & skip & 60 & 0 & 0 \\
+64 & 256 & quad-fire (plain) & on & 7 & 7 & 1280 & 1255 & 23 & 13 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Reading it:
+\begin{itemize}
+\item \textbf{Unmixed, the balanced build passes every discriminating attack} at
+  both sizes and both chain lengths; the plain build fails \doc{w1} on every
+  target (the one-mask bias of \S5.6) and \doc{w2/w3} on a few. \doc{xtrace} is an
+  identity for \textsc{xor} masking --- every mask term is the flip of the gate
+  that applied it, so each plaintext is an exact \textsc{xor} of trace features ---
+  and fires for every \textsc{xor}-based arm including the harness's controls;
+  only the colleague's share-encoded \doc{nonlinear193} passes it (nonlinear
+  decode). It is not a statement about what an adversary without the targets can
+  do.
+\item \textbf{The harness found three more generator gaps}, each a sampling
+  coincidence that made a mask sum biased: two open masks on a wire sharing a
+  pair, a balancing wire, or a balancing wire equal to another mask's pair wire
+  ($x \xor \neg x{\wedge}y = x\vee y$); and, at a fire, a band wire shared between
+  the target's masks and the operands' polynomials (phi 0.1--0.25 segments
+  mid-fire). The disjoint-sampling rule (\S2) and the fire-cover bracket (\S2,
+  step 4) closed them; the bracket costs ${\approx}3\%$ gates.
+\item \textbf{Mixed cells are the harness's own mixer} (store-free crossings, copy
+  splits and conjugation twists at 20k moves), not the pipeline: its splits break
+  the quadratic masks into \textsc{cnot}-sized pieces and reorder them, so
+  intermediate states carry partial masks. That produces sporadic \doc{w1} flags
+  on the balanced arm (max phi 0.4--0.5; none at $n=64$, $k=64$) and, on the plain
+  arm, exact plaintext copies (\doc{a1} 7 at $n=64$, $k=256$). The pipeline's own
+  reorderings are measured end to end with \doc{fire\_corr} instead (\S5.6).
+\item At $n=8$ (the colleague's default) the picture is the same, with the
+  encoded-I/O convention the only way to make the comparison meaningful: with
+  plaintext I/O nearly every target is an input or output at that size.
+\end{itemize}
+
+\noindent\textbf{$n=256$ (V5 input width 256, band 256), balanced, unmixed},
+\doc{max\_open} 3 versus the size-neutral \doc{max\_open} 2
+(\doc{blindedv5\_balanced\_mo2}):
+
+\begin{center}\small
+\begin{tabular}{@{}rrrrrrrl@{}}
+\toprule
+$k$ & \doc{max\_open} & a1 & xrows & w1 & w2 & w3 & note \\
+\midrule
+256 & 3 & 0 & 0 & 0 & 0 & 0 & \\
+512 & 3 & 0 & 0 & 0 & 0 & 0 & \\
+256 & 2 & 0 & 0 & 4 $\to$ 0 & 6 & 0 & w1 before $\to$ after the burst-control rule \\
+512 & 2 & 0 & 0 & 0 & 20 $\to$ 0 & 0 & w2 before $\to$ after the burst-control rule \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two more things came out of it. (i) A \textbf{burst gate} whose controls are a
+masked data wire and that wire's own balancing wire strips the mask's uniform
+term ($(x \xor z \xor q) \wedge \neg z$): the burst's flip correlated with the
+plaintext at phi 0.14--0.26 --- the sixth and last sampling rule (\S2: burst
+controls avoid a data control's mask wires). (ii) \textbf{\doc{max\_open} 2 is not
+equivalent to 3.} With a single open balanced mask $x \xor z \xor q$, the
+\textsc{xor} of the wire's segment with any visible monomial that contains $z$ (a
+fire monomial or a burst reading $z$) cancels the uniform term and leaves the
+biased quadratic part (phi 0.23); the harness's capped two-feature scan finds it
+when its strided subset happens to hold such a pair (w2 6 of 1280 at $k=256$; 0 at
+$k=512$ after the burst rule) and its mixer wrecks it (a1 10, xrows 80, w1 201 at
+$k=256$ mixed, versus w1 6 / w2 1 for \doc{max\_open} 3). Three open masks carry
+more independent uniform terms than a pair of features can cancel. So the +10\%
+variant buys the w1 result but not the multi-feature one; \doc{max\_open} 3 at
++92\% is the clean build.
+
 \section{Tradeoffs and the current choices}
 
 \begin{itemize}
@@ -470,6 +686,26 @@ End-of-pipeline numbers for the linear read (post split / crossing / fcompress) 
   (23--70\%) or +43\% size.
 \item \textbf{The residual fringe is I/O, not a knob} --- no parameter removes the
   public input/output boundary.
+\item \textbf{Coverage is enforced, not budgeted.} The $u_w{+}1$ budget sets the
+  mask \emph{statistics}; the six coverage rules (\S2, \S5.6: cover-replacement
+  across a burst, read-cover on an uncovered operand, disjoint mask wires incl.\
+  duplicate-free pairs, the fire-cover bracket, the burst-control rule) make ``no wire is ever bare between its first and last \lgi'' a property of the
+  build rather than a likely outcome, for ${\approx}3.5\%$ gates (the bracket is
+  ${\approx}3\%$ of it).
+\item \textbf{Balanced masks (default since 2026-09-07).} The biased \g{} term leaves
+  a wire under one mask linearly correlated with its plaintext (phi 0.29);
+  \doc{balanced} removes it (null floor) for +92\% gates at $K{=}2$/\doc{max\_open} 3
+  and is the build that passes the gauntlet's correlation battery (\S5.7). The
+  exact-affine measures are unaffected either way, and the
+  cost is the read polynomial, $(3\,\doc{max\_open}+2)^2 = 121$ monomials per fire
+  instead of $(2\,\doc{max\_open}+2)^2 = 64$. \textbf{\doc{max\_open}$=2$ balanced}
+  brings the polynomial back to $8{\times}8 = 64$: measured 565,374 gates at $n=128$
+  (+10\% over the plain \doc{max\_open}~3 build's 514,502, versus +92\% for balanced
+  \doc{max\_open}~3's 984,384), with the same \doc{fire\_corr} statistics as balanced
+  \doc{max\_open}~3 (interior median 0.076 vs 0.078, p90 0.137 vs 0.133, no bare
+  intervals) --- but the gauntlet's two-feature scan separates them: one open
+  mask is one uniform term, which a single visible monomial cancels (\S5.7).
+  \doc{max\_open} 3 remains the clean build.
 \item \textbf{Read mode: quad-fire, not linearisation.} Linearising a read is the
   cheapest way to fire (degree-2 monomials only) but leaves the operand affine in
   band wires for a window that reordering stretches into the pipeline ridge

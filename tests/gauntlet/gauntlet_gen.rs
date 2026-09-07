@@ -17,6 +17,16 @@
 //!   semi  — single-carrier product-share  V = C ⊕ M(B) ⊕ κ, Gray fold
 //!           (gadgetize_xgates_single, ProdConfig::production_single(); "band"
 //!           accepted as an alias)
+//!   bv5   — blinded-V5 LGI compute (gadgetize_blinded_v5, production preset:
+//!           K=2, max_open=3, quad-fire, auto burst rerand) with ENCODED I/O:
+//!           the data wires enter and leave the trace under pre-opened masks
+//!           (the encode/decode LGI gates are applied out of band, never
+//!           traced) and the band starts RANDOM (`--aux random` required; no
+//!           input-seeded band -- at n=8 that would leave 256 contexts and a
+//!           seed gate's flip is a raw function of the input). `--bv5-band`
+//!           band wires (0 = auto = max(32, n)).
+//!   bv5bal — the same with BALANCED masks (one CNOT from a fresh band wire per
+//!           LGI, so every mask term is unbiased).
 //!   file  — load a pre-gadgetized circuit from --g-in (mpmct1); this is how
 //!           the Python-built nonlinear193/nonlinear291 gadgets enter the SAME
 //!           trace/audit pipeline. The checked builder sidecar is validated
@@ -35,6 +45,7 @@ use clap::Parser;
 use local_mixing::circuit::xgate::{XGate, max_wire};
 use local_mixing::engine::format::{read_mpmct, write_mpmct};
 use local_mixing::engine::mix::{MixParams, MixStop, Mixer};
+use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5};
 use local_mixing::preprocessing::gadgets::{
     CnotCircuit, MaskConfig, ProdConfig, gadgetize_xgates, gadgetize_xgates_single,
 };
@@ -43,9 +54,15 @@ use std::collections::HashMap;
 
 #[derive(Parser)]
 struct Args {
-    /// none | ss | semi | band | file
+    /// none | ss | semi | band | bv5 | bv5bal | file
     #[arg(long)]
     gadget: String,
+    /// band wires for the bv5 arms (0 = auto = max(32, n))
+    #[arg(long, default_value_t = 0)]
+    bv5_band: usize,
+    /// open-mask cap per wire for the bv5 arms (0 = production preset, 3)
+    #[arg(long, default_value_t = 0)]
+    bv5_max_open: usize,
     /// source chain, mpmct1
     #[arg(long)]
     c_in: String,
@@ -208,6 +225,17 @@ fn main() {
     // ---------------- gadgetize ----------------
     let mut grng = StdRng::seed_from_u64(args.gadget_seed);
     let mut file_header: Option<(usize, usize)> = None;
+    // bv5 arms: the off-trace encode (pre) and decode (post) LGI gates
+    let mut bv5_io: Option<(Vec<XGate>, Vec<XGate>)> = None;
+    let mut bv5_max_open = 0usize;
+    if matches!(args.gadget.as_str(), "bv5" | "bv5bal") && args.aux != "random" {
+        eprintln!(
+            "--gadget {} needs --aux random: the band must start uniform (a zero band \
+             makes every pre-opened mask a constant and the encoding trivial)",
+            args.gadget
+        );
+        std::process::exit(2);
+    }
     let gcirc = match args.gadget.as_str() {
         "none" => CnotCircuit {
             gates: source.clone(),
@@ -234,6 +262,40 @@ fn main() {
             },
             &mut grng,
         ),
+        "bv5" | "bv5bal" => {
+            let r = if args.bv5_band == 0 {
+                args.n.max(32)
+            } else {
+                args.bv5_band
+            };
+            let base = BlindedV5Params::production(args.gadget_seed);
+            let p = BlindedV5Params {
+                r,
+                balanced: args.gadget == "bv5bal",
+                encoded_io: true,
+                max_open: if args.bv5_max_open > 0 { args.bv5_max_open } else { base.max_open },
+                ..base
+            };
+            bv5_max_open = p.max_open;
+            let o = gadgetize_blinded_v5(&source, args.n, &p);
+            println!(
+                "[{}] blinded-v5 K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
+                args.gadget,
+                p.k,
+                p.max_open,
+                o.r_used,
+                o.atoms,
+                o.rerand_done,
+                o.pre_gates.len(),
+                o.post_gates.len(),
+                o.gates.len()
+            );
+            bv5_io = Some((o.pre_gates, o.post_gates));
+            CnotCircuit {
+                gates: o.gates,
+                num_wires: o.num_wires,
+            }
+        }
         "file" => {
             let path = args.g_in.as_deref().unwrap_or_else(|| {
                 eprintln!("--gadget file needs --g-in <mpmct1>");
@@ -513,6 +575,11 @@ fn main() {
     } else {
         (0..args.n).map(|w| state[w].clone()).collect()
     };
+    // Encoded I/O (bv5 arms): encode the plaintext input OFF-trace -- the
+    // recorded initial state is the masked one, so no raw input is a feature.
+    if let Some((pre, _)) = &bv5_io {
+        let _ = simulate(pre, &mut state, samples);
+    }
     let init = state.clone();
     let mut cstate: Vec<Col> = xcols.clone();
     let mut targets: Vec<Col> = Vec::with_capacity(5 * k + 1);
@@ -536,10 +603,11 @@ fn main() {
         // A target is TRIVIAL when it equals a raw input wire of C: a, b, cold
         // are the value of some wire at gate i, which is init[wire] iff that
         // wire was never written before gate i.
-        let triv = if args.gadget == "file" {
+        let triv = if args.gadget == "file" || bv5_io.is_some() {
             // File-mode raw x holders were removed from `state` and therefore
             // are not adversarial trace features. A physical share at the same
-            // small numeric index is not a trivial disclosure.
+            // small numeric index is not a trivial disclosure. Likewise the
+            // bv5 arms' encoded inputs: no initial wire equals a raw input.
             [-1; 5]
         } else {
             [
@@ -583,6 +651,16 @@ fn main() {
         for v in 0..args.n {
             let dec = decode_e(&decode[v], &state, samples);
             if dec != cstate[v] {
+                behavioral_ok = false;
+            }
+        }
+    } else if let Some((_, post)) = &bv5_io {
+        // decode OFF-trace: close the still-open masks on a copy of the final
+        // state (the band's final values are part of that state)
+        let mut dec = state.clone();
+        let _ = simulate(post, &mut dec, samples);
+        for v in 0..args.n {
+            if dec[v] != cstate[v] {
                 behavioral_ok = false;
             }
         }
@@ -636,6 +714,13 @@ fn main() {
     );
     if args.gadget == "file" {
         push(&mut meta, "builder_gadget", builder_gadget.clone());
+    }
+    if let Some((pre, post)) = &bv5_io {
+        push(&mut meta, "encoded_io", "true".to_string());
+        push(&mut meta, "bv5_band", (nw - args.n).to_string());
+        push(&mut meta, "bv5_max_open", bv5_max_open.to_string());
+        push(&mut meta, "bv5_pre_gates", pre.len().to_string());
+        push(&mut meta, "bv5_post_gates", post.len().to_string());
     }
     push(&mut meta, "samples", samples.to_string());
     push(&mut meta, "corr_samples", args.corr_samples.to_string());

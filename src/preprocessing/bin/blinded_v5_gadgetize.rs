@@ -9,7 +9,7 @@
 //!            [min_mask=0(auto=max_open)]
 
 use local_mixing::engine::format::{read_mpmct, write_mpmct};
-use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band};
+use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band_mode};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -49,11 +49,14 @@ fn main() {
         active_wires,
         extra_lgis,
         quad_fire: std::env::var("BV5_QUAD_FIRE").map_or(true, |v| v != "0"),
+        balanced: std::env::var("BV5_BALANCED").map_or(true, |v| v != "0"),
+        burst_band_only: std::env::var("BV5_BURST_BANDONLY").is_ok_and(|v| v != "0"),
+        encoded_io: false,
     };
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).
     let r_used = if params.r == 0 { np } else { params.r };
-    let mut gates = seed_band(np, r_used, active_wires, seed ^ 0x5EED_B00C);
+    let mut gates = seed_band_mode(np, r_used, active_wires, seed ^ 0x5EED_B00C, params.balanced);
     gates.extend(g.gates.iter().cloned());
     write_mpmct(out_path, &gates, g.num_wires).expect("write out");
     println!(

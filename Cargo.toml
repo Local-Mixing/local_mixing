@@ -299,6 +299,10 @@ name = "source_stats"
 path = "red_team_tests/bin/leakage/source_stats.rs"
 
 [[bin]]
+name = "fire_corr"
+path = "red_team_tests/bin/leakage/fire_corr.rs"
+
+[[bin]]
 name = "stress_battery"
 path = "red_team_tests/bin/leakage/stress_battery.rs"
 

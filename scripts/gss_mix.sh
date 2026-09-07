@@ -40,6 +40,13 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
                   legacy alias: 2223]
   --bv5-k K      blinded-v5 only: band wires per LGI (LGI length lever).
                  Exported as BV5_K to gen_sandwich_gadget [gen default 2]
+  --bv5-max-open N
+                 blinded-v5 only: open-mask cap per wire, exported as
+                 BV5_MAX_OPEN [3; 2 = size-neutral balanced variant, weaker
+                 against two-feature correlation scans]
+  --bv5-balanced 0|1
+                 blinded-v5 only: balanced masks (CNOT from a fresh band wire
+                 per LGI), exported as BV5_BALANCED [1; 0 = plain g57 masks]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [27 -> profile 3,30,30,2,2]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
@@ -75,7 +82,7 @@ EOF
 
 N=""; RUN=""; SEED=""; EXPAND=2; HOLD=27; MCD=0
 GADGETIZATION_MODE=product-2223
-BV5_K_ARG=""
+BV5_K_ARG=""; BV5_MAX_OPEN_ARG=""; BV5_BALANCED_ARG=""
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -87,6 +94,8 @@ while [ $# -gt 0 ]; do
     --mcd) MCD=$2; shift 2 ;;
     --gadgetization-mode) GADGETIZATION_MODE=$2; shift 2 ;;
     --bv5-k) BV5_K_ARG=$2; shift 2 ;;
+    --bv5-max-open) BV5_MAX_OPEN_ARG=$2; shift 2 ;;
+    --bv5-balanced) BV5_BALANCED_ARG=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -110,8 +119,11 @@ case "$GADGETIZATION_MODE" in
     exit 2
     ;;
 esac
-[ -n "$BV5_K_ARG" ] && [ "$GADGETIZATION_MODE" != blinded-v5 ] && {
-  echo "FATAL: --bv5-k is only valid with --gadgetization-mode blinded-v5" >&2; exit 2; }
+[ -n "$BV5_K_ARG$BV5_MAX_OPEN_ARG$BV5_BALANCED_ARG" ] && [ "$GADGETIZATION_MODE" != blinded-v5 ] && {
+  echo "FATAL: --bv5-* flags are only valid with --gadgetization-mode blinded-v5" >&2; exit 2; }
+case "${BV5_BALANCED_ARG:-1}" in 0|1) ;; *) echo "FATAL: --bv5-balanced must be 0 or 1" >&2; exit 2 ;; esac
+case "${BV5_MAX_OPEN_ARG:-1}" in ''|*[!0-9]*|0) echo "FATAL: --bv5-max-open must be a positive integer" >&2; exit 2 ;; esac
+case "${BV5_K_ARG:-2}" in ''|*[!0-9]*|0|1) echo "FATAL: --bv5-k must be an integer >= 2" >&2; exit 2 ;; esac
 if [ "$GADGETIZATION_MODE" != product-2223 ]; then
   product_override_names=()
   while IFS= read -r _pvar; do
@@ -184,6 +196,11 @@ STAGE12_RECIPE=(
   "slice_gates=$SLICE_G"
   "rg_freq=1"
 )
+# blinded-v5 knobs are part of the stage-2 identity (a different K/max_open/balanced
+# is a different gadget); appended only for that mode so other modes' markers keep their shape
+if [ "$GADGETIZATION_MODE" = blinded-v5 ]; then
+  STAGE12_RECIPE+=("bv5_k=${BV5_K_ARG:-${BV5_K:-2}}" "bv5_max_open=${BV5_MAX_OPEN_ARG:-${BV5_MAX_OPEN:-3}}" "bv5_balanced=${BV5_BALANCED_ARG:-${BV5_BALANCED:-1}}")
+fi
 if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
   [ -s "$STAGE12_RECIPE_FILE" ] || {
     echo "FATAL: existing stage-2 artifact has no recipe marker; rerun with --force-from 2" >&2
@@ -220,10 +237,13 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   if [ "$GADGETIZATION_MODE" = product-2223 ]; then
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
   elif [ "$GADGETIZATION_MODE" = blinded-v5 ]; then
-    # blinded-v5 (LGI compute) reads its knobs from env; K is the LGI-length
-    # lever. Rerand stays at the production preset (1000 straddle + 3000 repair).
+    # blinded-v5 (LGI compute) reads its knobs from env: K (LGI mask width),
+    # max_open (open-mask cap, 3), balanced (1). Rerand stays at the auto preset
+    # (m/4K straddle burst slots x F=8K gates, no repair).
     [ -n "$BV5_K_ARG" ] && export BV5_K="$BV5_K_ARG"
-    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
+    [ -n "$BV5_MAX_OPEN_ARG" ] && export BV5_MAX_OPEN="$BV5_MAX_OPEN_ARG"
+    [ -n "$BV5_BALANCED_ARG" ] && export BV5_BALANCED="$BV5_BALANCED_ARG"
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, max_open=${BV5_MAX_OPEN:-3}, balanced=${BV5_BALANCED:-1}, quad-fire, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
   else
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
   fi

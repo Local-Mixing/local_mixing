@@ -126,7 +126,7 @@ fn load(prefix: &str) -> Bundle {
     let corr_samples: usize = meta["corr_samples"].parse().unwrap();
     let gadget = meta.get("gadget").expect("missing gadget metadata");
     assert!(
-        matches!(gadget.as_str(), "none" | "ss" | "semi" | "band" | "file"),
+        matches!(gadget.as_str(), "none" | "ss" | "semi" | "band" | "file" | "bv5" | "bv5bal"),
         "unsupported gadget metadata {gadget}"
     );
     let expected_features = n_wires
