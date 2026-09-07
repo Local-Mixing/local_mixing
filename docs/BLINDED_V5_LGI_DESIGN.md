@@ -210,7 +210,10 @@ away from `b`) and only then closes them — same-target XOR writes commute, so
 open-then-close never leaves an instant with no mask on the wire. Without it the
 wire sat bare, holding its plaintext value, until its next filler (§5.6: every
 interior bare interval of the earlier builds came from this — ~450 per build,
-median ~10⁴ gates). Every LGI sample (fillers, straddle opens, replacements,
+median ~10⁴ gates). The same guard keeps every wire at **`min_open`** (2) masks,
+not just one: a burst opens as many replacements as needed before its closes, a
+filler or straddle open on a thin wire is followed by further opens, and a read on
+a thin operand keeps that many of its top-ups as real masks (§4). Every LGI sample (fillers, straddle opens, replacements,
 read top-ups) also draws its band wires **disjoint from every band wire already
 used by the wire's open masks**. Any shared wire biases the mask sum: two
 identical pairs cancel (`1⊕y⊕xy` twice is 0 — the wire is functionally bare
@@ -271,6 +274,7 @@ co-sampled pass is what makes coverage complete at no cost.
 | `max_open` | **3** | rolling cap on simultaneously-open LGIs per wire | wider `ρ` = more local hiding, but read cost is quadratic in `\|ρ\|`; 3 is the knee. |
 | `quad_fire` | **on** (2026-09-06) | read operands from inside their quadratic masks; never linearise | the linearised read leaves the operand exactly affine in band wires for a window that every reordering stage stretches into the C-vs-G ridge (§5.0); quad-fire has no such window, keeps the ridge at the I/O fringe through the whole pipeline, and is ~12% smaller. `BV5_QUAD_FIRE=0` = legacy. |
 | `balanced` | **on** (2026-09-07; `BV5_BALANCED=0` = plain masks) | every LGI (and every read top-up) adds one CNOT `w ^= z` from a fresh band wire, so each mask term is `z ⊕ 1 ⊕ ¬x∧y` — unbiased, still quadratic; band seed `x_i ⊕ x_j` | a bare `g57` mask term is 1 three times in four, so a wire under one open mask is *linearly correlated* with its plaintext (phi 0.29 with the C gate's firing predicate; §5.6). Balanced masks take that channel to the null floor (median phi 0.08) at +92% gates (K=2, `max_open` 3: read polynomial 8×8 → 11×11 monomials); it is what passes the gauntlet's w1/w2/w3 (§5.7). `max_open` 2 balanced is the +10% variant, weaker against two-feature scans. |
+| `min_open` | **2** (2026-09-07) | minimum open masks per data wire at *every* instant between its first and last mask; enforced at every place the count can drop or start low (burst replacements, filler/straddle opens, read top-ups kept) | one open mask is one uniform term, which one visible monomial cancels (§5.7); before the rule 26.5% of covered wire-time (3% on the payload half; 2,398 interior one-mask stretches, median 10.8k gates) sat at one mask. At 2: 0.0% and no interior stretch, for +0.03% gates (extra opens are offset by reads that need no top-up). Must be `< max_open`. |
 | `min_mask` | **auto = `max_open` = 3** | **hard floor** per operand read: quadratic mask terms (quad-fire) / masking wires `\|ρ\|` (legacy) | guarantees no operand is ever read under fewer than 3 masks, even in a rare draw where the open pairs cancel (legacy: measured worst read `\|ρ\|` rises 2 → 4; mean `\|ρ\|` ≈ 5.9 unchanged; +0.2% gates). |
 | `rerand_level` (straddle slots) | **auto = `m/(4K)`** (≈875) | close-straddling-masks band-update **slots** | at the safe side of the ≈1024 thinning knee; the *slot* count (not the gate count) is what thins. |
 | `rerand_repair` (repair slots) | **0** | re-derive-across-update band-update slots (no thinning) | off by default; add slots for extra band turnover at no masking cost. |
@@ -612,7 +616,8 @@ none,blindedv5,blindedv5_balanced --ks 64,256 --n-wires 64 --jobs 8`
   burst, read-cover on an uncovered operand, disjoint mask wires incl.
   duplicate-free pairs, the fire-cover bracket, the burst-control rule) make
   "no wire is ever bare between its first and last LGI" a property of the build
-  rather than a likely outcome, for ≈ 3.5% gates (the bracket is ≈ 3% of it).
+  rather than a likely outcome, for ≈ 3.5% gates (the bracket is ≈ 3% of it);
+  `min_open` 2 lifts the floor from one mask to two for +0.03%.
 - **Balanced masks (default since 2026-09-07).** The biased `g57` term leaves a
   wire under one mask linearly correlated with its plaintext (phi 0.29);
   `balanced` removes it (null floor) for +92% gates at K=2/`max_open` 3 and is
@@ -657,7 +662,7 @@ All rerand knobs default to auto (`straddle_slots = m/4K`, `F = 8K`,
 `repair_slots = 0`, `min_mask = max_open`); pass `0` to keep the auto value.
 The `gen_sandwich_gadget`/pipeline path exposes the same knobs as the env vars
 `BV5_K`, `BV5_RERAND` (straddle slots), `BV5_REPAIR`, `BV5_BURST`, `BV5_MIN_MASK`,
-`BV5_MAX_OPEN`, `BV5_EXTRA_LGIS`, `BV5_QUAD_FIRE` (default on; `0` = the
+`BV5_MAX_OPEN`, `BV5_MIN_OPEN` (2), `BV5_EXTRA_LGIS`, `BV5_QUAD_FIRE` (default on; `0` = the
 legacy linearised read, for comparison only), `BV5_BALANCED` (default `1` = balanced
 masks + XOR band seed, §5.6; `0` = plain g57 masks; `BV5_BAL_SEED=0` keeps the AND
 seed with balanced masks), and `BV5_BURST_BANDONLY` (`1` = burst controls from the band only; a

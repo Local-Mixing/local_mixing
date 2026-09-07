@@ -81,11 +81,12 @@ through the whole pipeline; `BV5_QUAD_FIRE=0` = legacy linear read, see
 so no wire is ever linearly correlated with its plaintext; `BV5_BALANCED=0` =
 plain g57 masks, `BV5_MAX_OPEN=2` = the +10% variant that is weaker against
 two-feature scans). Coverage is enforced by construction — no data wire is ever
-bare between its first and last mask (cover-replacement across rerand bursts,
-read-cover, disjoint mask wires, fire-cover bracket, burst-control rule); the
+bare between its first and last mask, and since `min_open` (2) never under fewer
+than two masks (cover-replacement across rerand bursts, read-cover, disjoint mask
+wires, fire-cover bracket, burst-control rule, min-open top-ups); the
 builds before 2026-09-07 violated this (~450 idle-bare intervals per gadget). Drive
 it through the pipeline with `gss_mix.sh --gadgetization-mode blinded-v5
-[--bv5-k K] [--bv5-max-open N] [--bv5-balanced 0|1]`, or build the gadget alone
+[--bv5-k K] [--bv5-max-open N] [--bv5-balanced 0|1] [--bv5-min-open N]`, or build the gadget alone
 with `gen_sandwich_gadget … blinded-v5` / the `blinded_v5_gadgetize` bin. Full
 rationale, parameters, and measurements:
 [`docs/BLINDED_V5_LGI_DESIGN.md`](../docs/BLINDED_V5_LGI_DESIGN.md); the

@@ -229,7 +229,10 @@ from $b$) and only then closes them --- same-target \textsc{xor} writes commute,
 open-then-close never leaves an instant with no mask on the wire. Without it the
 wire sat bare, holding its plaintext value, until its next filler (\S5.6: every
 interior bare interval of the earlier builds came from this --- ${\sim}450$ per
-build, median ${\sim}10^4$ gates). Every \lgi{} sample (fillers, straddle opens,
+build, median ${\sim}10^4$ gates). The same guard keeps every wire at
+\textbf{\doc{min\_open}} (2) masks, not just one: a burst opens as many replacements as
+needed before its closes, a filler or straddle open on a thin wire is followed by further
+opens, and a read on a thin operand keeps that many of its top-ups as real masks (\S4). Every \lgi{} sample (fillers, straddle opens,
 replacements, read top-ups) also draws its band wires \textbf{disjoint from every
 band wire already used by the wire's open masks}. Any shared wire biases the mask
 sum: two identical pairs cancel ($1\xor y\xor xy$ twice is 0 --- the wire is
@@ -307,6 +310,15 @@ $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
   \doc{max\_open} 3: read polynomial $8{\times}8 \to 11{\times}11$ monomials); it is
   what passes the gauntlet's w1/w2/w3 (\S5.7). \doc{BV5\_BALANCED=0} $=$ plain masks;
   \doc{max\_open}~2 balanced is the +10\% variant, weaker against two-feature scans. \\
+\addlinespace
+\doc{min\_open} & \textbf{2} (2026-09-07) & minimum open masks per data wire at
+  \emph{every} instant between its first and last mask; enforced wherever the count can
+  drop or start low (burst replacements, filler/straddle opens, read top-ups kept) & one
+  open mask is one uniform term, which one visible monomial cancels (\S5.7); before the
+  rule 26.5\% of covered wire-time (3\% on the payload half; 2,398 interior one-mask
+  stretches, median 10.8k gates) sat at one mask. At 2: 0.0\% and no interior stretch, for
+  +0.03\% gates (extra opens are offset by reads that need no top-up). Must be
+  $<$ \doc{max\_open}. \\
 \addlinespace
 \doc{min\_mask} & \textbf{auto\,$=\doc{max\_open}=3$} & \textbf{hard floor} per
   operand read: quadratic mask terms (quad-fire) / masking wires $|\rho|$ (legacy)
@@ -691,7 +703,8 @@ variant buys the w1 result but not the multi-feature one; \doc{max\_open} 3 at
   across a burst, read-cover on an uncovered operand, disjoint mask wires incl.\
   duplicate-free pairs, the fire-cover bracket, the burst-control rule) make ``no wire is ever bare between its first and last \lgi'' a property of the
   build rather than a likely outcome, for ${\approx}3.5\%$ gates (the bracket is
-  ${\approx}3\%$ of it).
+  ${\approx}3\%$ of it); \doc{min\_open} 2 lifts the floor from one mask to two for
+  +0.03\%.
 \item \textbf{Balanced masks (default since 2026-09-07).} The biased \g{} term leaves
   a wire under one mask linearly correlated with its plaintext (phi 0.29);
   \doc{balanced} removes it (null floor) for +92\% gates at $K{=}2$/\doc{max\_open} 3

@@ -47,6 +47,9 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
   --bv5-balanced 0|1
                  blinded-v5 only: balanced masks (CNOT from a fresh band wire
                  per LGI), exported as BV5_BALANCED [1; 0 = plain g57 masks]
+  --bv5-min-open N
+                 blinded-v5 only: minimum open masks per data wire at every
+                 instant, exported as BV5_MIN_OPEN [2; must be < max_open]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [27 -> profile 3,30,30,2,2]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
@@ -82,7 +85,7 @@ EOF
 
 N=""; RUN=""; SEED=""; EXPAND=2; HOLD=27; MCD=0
 GADGETIZATION_MODE=product-2223
-BV5_K_ARG=""; BV5_MAX_OPEN_ARG=""; BV5_BALANCED_ARG=""
+BV5_K_ARG=""; BV5_MAX_OPEN_ARG=""; BV5_BALANCED_ARG=""; BV5_MIN_OPEN_ARG=""
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -96,6 +99,7 @@ while [ $# -gt 0 ]; do
     --bv5-k) BV5_K_ARG=$2; shift 2 ;;
     --bv5-max-open) BV5_MAX_OPEN_ARG=$2; shift 2 ;;
     --bv5-balanced) BV5_BALANCED_ARG=$2; shift 2 ;;
+    --bv5-min-open) BV5_MIN_OPEN_ARG=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -119,11 +123,12 @@ case "$GADGETIZATION_MODE" in
     exit 2
     ;;
 esac
-[ -n "$BV5_K_ARG$BV5_MAX_OPEN_ARG$BV5_BALANCED_ARG" ] && [ "$GADGETIZATION_MODE" != blinded-v5 ] && {
+[ -n "$BV5_K_ARG$BV5_MAX_OPEN_ARG$BV5_BALANCED_ARG$BV5_MIN_OPEN_ARG" ] && [ "$GADGETIZATION_MODE" != blinded-v5 ] && {
   echo "FATAL: --bv5-* flags are only valid with --gadgetization-mode blinded-v5" >&2; exit 2; }
 case "${BV5_BALANCED_ARG:-1}" in 0|1) ;; *) echo "FATAL: --bv5-balanced must be 0 or 1" >&2; exit 2 ;; esac
 case "${BV5_MAX_OPEN_ARG:-1}" in ''|*[!0-9]*|0) echo "FATAL: --bv5-max-open must be a positive integer" >&2; exit 2 ;; esac
 case "${BV5_K_ARG:-2}" in ''|*[!0-9]*|0|1) echo "FATAL: --bv5-k must be an integer >= 2" >&2; exit 2 ;; esac
+case "${BV5_MIN_OPEN_ARG:-2}" in ''|*[!0-9]*|0) echo "FATAL: --bv5-min-open must be a positive integer" >&2; exit 2 ;; esac
 if [ "$GADGETIZATION_MODE" != product-2223 ]; then
   product_override_names=()
   while IFS= read -r _pvar; do
@@ -199,7 +204,7 @@ STAGE12_RECIPE=(
 # blinded-v5 knobs are part of the stage-2 identity (a different K/max_open/balanced
 # is a different gadget); appended only for that mode so other modes' markers keep their shape
 if [ "$GADGETIZATION_MODE" = blinded-v5 ]; then
-  STAGE12_RECIPE+=("bv5_k=${BV5_K_ARG:-${BV5_K:-2}}" "bv5_max_open=${BV5_MAX_OPEN_ARG:-${BV5_MAX_OPEN:-3}}" "bv5_balanced=${BV5_BALANCED_ARG:-${BV5_BALANCED:-1}}")
+  STAGE12_RECIPE+=("bv5_k=${BV5_K_ARG:-${BV5_K:-2}}" "bv5_max_open=${BV5_MAX_OPEN_ARG:-${BV5_MAX_OPEN:-3}}" "bv5_balanced=${BV5_BALANCED_ARG:-${BV5_BALANCED:-1}}" "bv5_min_open=${BV5_MIN_OPEN_ARG:-${BV5_MIN_OPEN:-2}}")
 fi
 if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
   [ -s "$STAGE12_RECIPE_FILE" ] || {
@@ -243,7 +248,8 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
     [ -n "$BV5_K_ARG" ] && export BV5_K="$BV5_K_ARG"
     [ -n "$BV5_MAX_OPEN_ARG" ] && export BV5_MAX_OPEN="$BV5_MAX_OPEN_ARG"
     [ -n "$BV5_BALANCED_ARG" ] && export BV5_BALANCED="$BV5_BALANCED_ARG"
-    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, max_open=${BV5_MAX_OPEN:-3}, balanced=${BV5_BALANCED:-1}, quad-fire, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
+    [ -n "$BV5_MIN_OPEN_ARG" ] && export BV5_MIN_OPEN="$BV5_MIN_OPEN_ARG"
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, BV5_K=${BV5_K:-2}, max_open=${BV5_MAX_OPEN:-3}, min_open=${BV5_MIN_OPEN:-2}, balanced=${BV5_BALANCED:-1}, quad-fire, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
   else
     note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
   fi

@@ -344,7 +344,8 @@ an unclean kill during a file write, inspect the stage log/state and use
 parameter is **n**, the wires of the source computation C, and
 `gadgetization_mode` selects the representation family (`gss_mix.sh` additionally
 accepts `blinded-v5`, the LGI compute module of `BLINDED_V5_LGI_DESIGN.md`, with
-the knobs `--bv5-k K` [2], `--bv5-max-open N` [3] and `--bv5-balanced 0|1` [1];
+the knobs `--bv5-k K` [2], `--bv5-max-open N` [3], `--bv5-balanced 0|1` [1] and
+`--bv5-min-open N` [2];
 the `gss` command's config block does not offer it). The remaining size
 conventions are computed and logged by the driver:
 `|C| = |D| = round(n·(log₂n)²)`, slicing budget `s = round(n·log₂n)`,

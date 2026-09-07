@@ -52,6 +52,7 @@ fn main() {
         balanced: std::env::var("BV5_BALANCED").map_or(true, |v| v != "0"),
         burst_band_only: std::env::var("BV5_BURST_BANDONLY").is_ok_and(|v| v != "0"),
         encoded_io: false,
+        min_open: std::env::var("BV5_MIN_OPEN").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
     };
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).

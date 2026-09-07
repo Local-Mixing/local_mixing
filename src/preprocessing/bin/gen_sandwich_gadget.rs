@@ -440,7 +440,8 @@ fn main() {
         // size-neutral balanced variant, weaker against two-feature scans),
         // BV5_EXTRA_LGIS, BV5_QUAD_FIRE (=0 for the legacy linearised read;
         // default quad-fire), BV5_BALANCED (=0 for plain g57 masks; default
-        // balanced), BV5_BAL_SEED (=0 keeps the AND band seed), BV5_BURST_BANDONLY.
+        // balanced), BV5_BAL_SEED (=0 keeps the AND band seed), BV5_BURST_BANDONLY,
+        // BV5_MIN_OPEN (2; minimum open masks per wire at every instant).
         let envu = |k: &str, d: usize| {
             std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
         };
@@ -458,6 +459,7 @@ fn main() {
             balanced: std::env::var("BV5_BALANCED").map_or(base.balanced, |v| v != "0"),
             burst_band_only: std::env::var("BV5_BURST_BANDONLY").is_ok_and(|v| v != "0"),
             encoded_io: false,
+            min_open: std::env::var("BV5_MIN_OPEN").ok().and_then(|v| v.parse().ok()).unwrap_or(2),
             ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);

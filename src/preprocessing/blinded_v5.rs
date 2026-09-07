@@ -141,6 +141,17 @@ pub struct BlindedV5Params {
     /// the circuit's trace never sees a plain input or output. Production
     /// leaves this off: the sandwich's I/O is public.
     pub encoded_io: bool,
+    /// MINIMUM open masks per data wire at every instant between the wire's
+    /// first and last mask (default 2; 1 = the coverage rules alone). Enforced
+    /// at every place a wire's open count can drop or start low: a rerand
+    /// burst opens enough replacements before its closes, a filler or straddle
+    /// open on a thin wire is followed by further opens, and a read on a thin
+    /// operand keeps that many of its top-ups as real masks. Motivation: with
+    /// one open mask a wire is one uniform term away from its plaintext, which a
+    /// single visible monomial can cancel (gauntlet w2); measured 26% of covered
+    /// wire-time at one mask before this rule (3% on the payload half). Must be
+    /// below `max_open` (the rolling cap closes one when the cap is reached).
+    pub min_open: usize,
 }
 
 impl BlindedV5Params {
@@ -166,6 +177,7 @@ impl BlindedV5Params {
             balanced: true,
             burst_band_only: false,
             encoded_io: false,
+            min_open: 2,
         }
     }
 }
@@ -557,6 +569,12 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..total as u16).collect();
     let max_open = p.max_open.max(1);
+    let min_open = p.min_open.clamp(1, max_open.saturating_sub(1).max(1));
+    assert!(
+        max_open == 1 || p.min_open < max_open,
+        "min_open ({}) must be below max_open ({max_open})",
+        p.min_open
+    );
     // Hard floor on masking wires per read (never below 1 = never bare). `|ρ|`
     // toggles in steps of 2 (disjoint pairs) so it is structurally EVEN, and the
     // band supplies at most `r` distinct wires: clamp the floor to the largest
@@ -732,11 +750,16 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let w = $w;
             let b = $b;
             let hits = open_cy[w].iter().filter(|cy| cy.iter().any(|&x| x == b)).count();
-            if hits > 0 && hits == open_cy[w].len() {
-                let cy = sample_fresh!(w, Some(b), &BTreeSet::new());
-                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
-                open_cy[w].push(cy);
-                replacements += 1;
+            let remain = open_cy[w].len() - hits;
+            if hits > 0 && remain < min_open {
+                // open enough replacements (away from `b`) BEFORE the closes so the
+                // wire never drops below `min_open` (never below one at least)
+                for _ in remain..min_open {
+                    let cy = sample_fresh!(w, Some(b), &BTreeSet::new());
+                    emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
+                    open_cy[w].push(cy);
+                    replacements += 1;
+                }
             }
         }};
     }
@@ -827,6 +850,21 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             }
         }};
     }
+    // After an open on wire `w`, bring it up to `min_open` open masks (extra to
+    // the u_w+1 budget, counted in `min_open_opens`); `$extra` = band wires to
+    // stay away from (the fire's wires when called mid-fire).
+    let mut min_open_opens = 0usize;
+    macro_rules! ensure_min_open {
+        ($w:expr, $extra:expr) => {{
+            let w: usize = $w;
+            while open_cy[w].len() < min_open {
+                let cy = sample_fresh!(w, None, $extra);
+                emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
+                open_cy[w].push(cy);
+                min_open_opens += 1;
+            }
+        }};
+    }
     macro_rules! filler_open {
         ($w:expr) => {{
             let w = $w;
@@ -837,6 +875,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             let cy = sample_fresh!(w, None, &BTreeSet::new());
             emit_lgi(w as u16, &cy, &mut out, &mut open_pairs[w], &mut open_lin[w]);
             open_cy[w].push(cy);
+            ensure_min_open!(w, &BTreeSet::new());
             filler_left[w] -= 1;
             maybe_rerand!();
         }};
@@ -884,7 +923,8 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 // value for the whole idle stretch (measured: tens of thousands of
                 // gates on high-half wires). Costs nothing (the undo is dropped).
                 let mut guard = 0;
-                let mut keep_first = open_cy[w as usize].is_empty();
+                // top-ups to KEEP as real masks: enough to reach `min_open`
+                let mut keep = min_open.saturating_sub(open_cy[w as usize].len());
                 // Band wires in use on this operand: its open cycles plus the
                 // top-ups of this read. Every top-up draws OUTSIDE this set (see
                 // `sample_fresh`: any shared wire biases the mask sum).
@@ -911,8 +951,8 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                     used.insert(r1);
                     let r2 = draw(&used, &[r1], &mut rng);
                     used.insert(r2);
-                    if keep_first {
-                        keep_first = false;
+                    if keep > 0 {
+                        keep -= 1;
                         let mut cy = vec![r1, r2];
                         if p.balanced {
                             let z = draw(&used, &[r1, r2], &mut rng);
@@ -1080,6 +1120,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         let cy = sample_fresh!(c, None, &fire_wires);
         emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         open_cy[c].push(cy);
+        ensure_min_open!(c, &fire_wires);
         out.extend_from_slice(&fires[cut..]);
         // close the bracket (toggles its pairs/linear term back off)
         emit_lgi(c as u16, &cover, &mut out, &mut open_pairs[c], &mut open_lin[c]);
@@ -1157,7 +1198,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             "[bv5-diag] rerand slots: emitted={slots_emitted} of plan={}  \
              DRAIN (after last A-gate)={drain_slots} ({:.1}%)  main-loop={}  \
              cover-replacement LGIs={replacements}  read-cover LGIs={read_covers}  \
-             fire-cover LGIs={fire_covers}  relaxed (non-disjoint) samples={relaxed}",
+             fire-cover LGIs={fire_covers}  min-open opens={min_open_opens}  relaxed (non-disjoint) samples={relaxed}",
             slot_plan.len(),
             100.0 * drain_slots as f64 / slots_emitted.max(1) as f64,
             slots_emitted - drain_slots
@@ -1227,6 +1268,8 @@ mod tests {
                     encoded_io,
                     k,
                     rerand_repair: repair,
+                    // exercise both the min-open rule (default 2) and its absence
+                    min_open: if repair > 0 { 1 } else { 2 },
                     ..BlindedV5Params::production(100 + seed)
                 };
                 let out = gadgetize_blinded_v5(&a, np, &p);

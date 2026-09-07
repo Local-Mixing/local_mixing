@@ -159,6 +159,17 @@ The rules (each measured before and after; the census script is
   the plaintext).
 \item \textbf{Duplicate-free pairs} is the pair half of rule 3, listed separately because it
   was the first collision found (${\sim}1$ event per build) and rule 3 generalised it.
+\item \textbf{Minimum of two open masks} (\doc{min\_open}, default 2; added after the commit
+  review). The rules above guarantee one mask; one mask is one uniform term, which a single
+  visible monomial cancels (\S4). Measured before the rule with
+  \doc{red\_team\_tests/open\_mask\_profile.py}: 26.5\% of covered wire-time at one mask
+  (3.0\% on the payload half), 2,398 interior one-mask stretches (median 10.8k gates, 559 on
+  the payload half). The rule enforces the floor wherever a count can drop or start low: a
+  burst opens as many replacements as needed before its closes, a filler or straddle open on
+  a thin wire is followed by further opens, and a read on a thin operand keeps that many
+  top-ups as real masks. Result: 0.0\% wire-time at one mask, no interior stretch, 984,674
+  gates (+0.03\%: the extra opens are offset by reads that no longer need top-ups),
+  \doc{fire\_corr} statistics unchanged.
 \end{enumerate}
 
 All rules are exercised by the exhaustive unit test ($n=6$, all $2^6$ inputs $\times$ 8 band
@@ -290,8 +301,8 @@ outputs rather than inferred from these cells.
 file & change\\\midrule
 \doc{src/preprocessing/blinded\_v5.rs} & \doc{balanced} (default on), \doc{encoded\_io}, \doc{burst\_band\_only}; six coverage rules; \doc{pre\_gates}/\doc{post\_gates}; diag counters; exhaustive test extended\\
 \doc{src/preprocessing/bin/}\newline\doc{gen\_sandwich\_gadget.rs}, \doc{blinded\_v5\_gadgetize.rs} & env knobs \doc{BV5\_BALANCED} (both), \doc{BV5\_BAL\_SEED} and \doc{BV5\_BURST\_BANDONLY} (sandwich driver; \doc{max\_open} was already \doc{BV5\_MAX\_OPEN} / positional); balanced band seed\\
-\doc{scripts/gss\_mix.sh} & \doc{--bv5-max-open N}, \doc{--bv5-balanced 0|1}\\
-\doc{red\_team\_tests/bin/leakage/fire\_corr.rs} ($+$ \doc{Cargo.toml} bin), \doc{red\_team\_tests/bare\_census.py} & new tools\\
+\doc{scripts/gss\_mix.sh} & \doc{--bv5-max-open N}, \doc{--bv5-balanced 0|1}, \doc{--bv5-min-open N}\\
+\doc{red\_team\_tests/bin/leakage/fire\_corr.rs} ($+$ \doc{Cargo.toml} bin), \doc{red\_team\_tests/bare\_census.py}, \doc{red\_team\_tests/open\_mask\_profile.py} & new tools\\
 \doc{tests/gauntlet/}\newline\doc{gauntlet\_gen.rs}, \doc{gauntlet.py}, \doc{gauntlet\_audit.rs}, \doc{README.md}, \doc{TESTING\_PIPELINE.md} & blinded-V5 arms, \doc{--n-wires}, docs\\
 \doc{docs/BLINDED\_V5\_LGI\_DESIGN.*} & \S2 rules, \S4 \doc{balanced} row, \S5.6--5.7 measurements, \S6, \S7\\
 \doc{src/README.md}, \doc{docs/GSS\_MIX.md} & compute-stage description and knobs\\\bottomrule

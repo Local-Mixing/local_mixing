@@ -130,12 +130,28 @@ The rules (each measured before and after; the census script is `red_team_tests/
    plaintext).
 6. **Duplicate-free pairs** is the pair half of rule 3, listed separately because it was
    the first collision found (~1 event per build) and rule 3 generalised it.
+7. **Minimum of two open masks** (`min_open`, default 2; added after the commit review).
+   The rules above guarantee one mask; one mask is one uniform term, which a single
+   visible monomial cancels (§4). Measured before the rule with
+   `red_team_tests/open_mask_profile.py`: 26.5% of covered wire-time at one mask (3.0%
+   on the payload half), 2,398 interior one-mask stretches (median 10.8k gates, 559 on
+   the payload half). The rule enforces the floor wherever a count can drop or start low:
+   a burst opens as many replacements as needed before its closes, a filler or straddle
+   open on a thin wire is followed by further opens, and a read on a thin operand keeps
+   that many top-ups as real masks. Result: 0.0% wire-time at one mask, no interior
+   stretch, 984,674 gates (+0.03%: the extra opens are offset by reads that no longer
+   need top-ups), fire_corr statistics unchanged.
 
 All rules are exercised by the exhaustive unit test (n = 6, all 2⁶ inputs × 8 band settings
 × 6 seeds; both read modes with plain I/O, balanced and plain masks; encoded I/O with
 quad-fire, balanced and plain); `BV5_DIAG=1` prints the counts
 (`cover-replacement LGIs`, `read-cover LGIs`, `fire-cover LGIs`, `relaxed samples`). The
-n = 128 gadget verifies forward and reverse (256 bit-sliced samples) in every variant.
+n = 128 gadget verifies forward and reverse (256 bit-sliced samples) in every variant. Two
+small-regime corrections came out of the pre-commit review: the band must exceed the cycle
+width (`r > K`, plus one when balanced) for a burst's replacement draw to exist, and the
+build now asserts this with a message instead of spinning; and an odd `K` rounds down to
+disjoint pairs (K3 = K2) in both mask kinds, so the balancing CNOT is emitted exactly when
+`balanced` is set. The exhaustive test now also covers K = 3, K = 4 and repair-kind slots.
 
 ## 4. Cost, and the `max_open` 2 variant
 
@@ -244,8 +260,8 @@ inferred from these cells.
 |---|---|
 | `src/preprocessing/blinded_v5.rs` | `balanced` (default on), `encoded_io`, `burst_band_only`; six coverage rules; `pre_gates`/`post_gates`; diag counters; exhaustive test extended |
 | `src/preprocessing/bin/gen_sandwich_gadget.rs`, `blinded_v5_gadgetize.rs` | env knobs `BV5_BALANCED` (both), `BV5_BAL_SEED` and `BV5_BURST_BANDONLY` (sandwich driver; `max_open` was already `BV5_MAX_OPEN` / positional); balanced band seed |
-| `scripts/gss_mix.sh` | `--bv5-max-open N`, `--bv5-balanced 0\|1` |
-| `red_team_tests/bin/leakage/fire_corr.rs` (+ `Cargo.toml` bin), `red_team_tests/bare_census.py` | new tools |
+| `scripts/gss_mix.sh` | `--bv5-max-open N`, `--bv5-balanced 0\|1`, `--bv5-min-open N` |
+| `red_team_tests/bin/leakage/fire_corr.rs` (+ `Cargo.toml` bin), `red_team_tests/bare_census.py`, `red_team_tests/open_mask_profile.py` | new tools |
 | `tests/gauntlet/gauntlet_gen.rs`, `gauntlet.py`, `gauntlet_audit.rs`, `README.md`, `TESTING_PIPELINE.md` | blinded-V5 arms, `--n-wires`, docs |
 | `docs/BLINDED_V5_LGI_DESIGN.{md,tex,pdf}` | §2 rules, §4 `balanced` row, §5.6–5.7 measurements, §6, §7 |
 | `src/README.md`, `docs/GSS_MIX.md` | compute-stage description and knobs |
