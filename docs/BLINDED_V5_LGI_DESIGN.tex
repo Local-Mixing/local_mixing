@@ -40,7 +40,9 @@ wires (data $0..n$, band/junk $n..2n$):
   from the honest inputs;
 \item \textbf{compute} --- realise the input circuit $A$ on the $2n$ wires so the
   data half carries $A$'s output and the band is only read;
-\item \textbf{re-seed / re-randomise the band wires} --- band turnover;
+\item \textbf{re-seed / re-randomise the band wires} --- band turnover; a
+  \emph{separate} module emitted after the compute (the compute's own rerand bursts
+  are masking hygiene and do not discharge it), so the band is junk at both ports;
 \item \textbf{re-slice} --- the closing junk-guard slice (fires at the output
   port).
 \end{enumerate}
@@ -169,28 +171,41 @@ only 60--70\% of gates; \S3.)
 \emph{Forward pass} --- repeat until all $m$ gates are placed:
 \begin{enumerate}
 \item \textbf{Pop} a ready $A$-gate $g$ (target wire $c$).
-\item \textbf{Masked read (quad-fire).} For each operand wire, leave its
-  currently-open masks \emph{as they are} and describe the wire as the ANF
-  polynomial $P_w = w' \xor \sum_{(x,y)} (1 \xor y \xor xy)$ over its net-open pairs
-  (a pair whose reverse is also open contributes the linear $x \xor y$); top up with
-  \textbf{fresh single \g s} (quadratic, not pair-completed) until at least
-  \doc{max\_open} quadratic terms mask the operand (the \textbf{hard floor}: never
-  bare, never affine). Remember the top-up gates as the \emph{undo} --- except that
-  an operand with \textbf{no open \lgi{} at all} keeps its first top-up as a real
-  \lgi{} (the \emph{read-cover} rule, \S5.6: otherwise a seldom-used wire returns to
-  holding its plain value for the whole idle stretch after the fire). (Legacy linear
+\item \textbf{Masked read (quad-fire).} The operand is only \emph{read}, under
+  whatever masks it currently carries: a wire under masks
+  $m_i = 1 \xor y_i \xor x_i y_i \xor z_i$ holds $w' = w \xor \sum m_i$, i.e.
+  $w = w' \xor c_w \xor s_w \xor Q_w$ with the \textbf{constant} $c_w$ (one per open
+  \g{} pair, plus one for a negative literal), the \textbf{linear} band sum
+  $s_w = \sum (y_i \xor z_i)$ and the \textbf{quadratic} part $Q_w = \sum x_i y_i$. A
+  thin operand is first brought up to \doc{min\_open} real masks
+  (\doc{ensure\_min\_open}, \S5.6), so no wire is ever read bare or under a single
+  mask; there are no read-time top-ups to undo any more. (Legacy linear
   read, \doc{BV5\_QUAD\_FIRE=0}: complete each open \g{} with its reverse so the wire
   carries $\mathit{operand} \xor \rho$, $\rho$ a linear \textsc{xor} of band wires,
   top up with pairs until $|\rho| \ge \doc{min\_mask}$, undo the reverses after the
   fire --- see \S5.0 for why it was replaced.)
-\item \textbf{Fire from inside the mask.} Expand $c \mathrel{\xor}= \mathit{comp}
-  \xor \mathrm{lit}(a)\land\mathrm{lit}(b)$ as the polynomial product $P_a \cdot P_b$
-  (a negative literal complements the constant) into a batch of monomials over
-  \textsc{only} the masked control wires and band wires --- never bare $a$, $b$, or
-  $a\xor b$ (0/1/2 controls and all polarities; the 0-control fire is
-  $\lnot\mathit{comp}$). At $K=2$, \doc{max\_open}$=3$ that is up to $8\times8=64$
-  monomials of degree $\le 4$ (versus 49 of degree 2 plus the linearise/undo bracket
-  in the legacy read), so the gadget is ${\sim}12\%$ \emph{smaller}.
+\item \textbf{Fire from inside the mask --- two-control gates only, no clean
+  ancillas (\S5.8).} The fire is the product of the two operand polynomials.
+  Expanding it into monomials would emit gates of degree up to 4, which the
+  \textbf{frozen store cannot digest}: it is a ball of 2-control \g{} identities, so a
+  wider gate is never spliced and would carry $C$'s structure through the whole mixing
+  pipeline verbatim. The product is therefore realised with 2-control gates only, using
+  \textbf{borrowed dirty wires} for the partial products --- never clean ancillas, which
+  would be 0 at every instant outside a fire, a function-level invariant that no
+  rewriting can hide and whose non-zero stretches delimit the fire blocks. The identity is
+  $t \mathrel{\hat{}}= h{\wedge}y$; $h \mathrel{\hat{}}= P{\wedge}x$;
+  $t \mathrel{\hat{}}= h{\wedge}y$; $h \mathrel{\hat{}}= P{\wedge}x$, whose net effect is
+  $t \mathrel{\hat{}}= P{\cdot}x{\cdot}y$ for \emph{any} prior value of $h$
+  ($h_0 y \xor (h_0{\xor}Px)y = Pxy$), leaving $h$ restored; the prior value also blinds
+  the intermediate for free. A degree-4 term uses the same telescoping trick on two
+  borrowed wires in 8 gates, and the $s$ sums are expanded term by term so no mask
+  aggregate is ever materialised. Four rules keep the borrowing safe, each found by
+  measurement: draw the ancilla \textbf{per term}, excluding the target, the operands and
+  the term's own wires; never a wire whose \textbf{own open masks contain the pair being
+  XORed}; \textbf{cross-operand} groupings checked against the pairs open on any data
+  wire, so no ancilla holds a mask's own quadratic term; and draw from the \textbf{band}
+  (\doc{BV5\_ANC\_POOL=all} also lends data wires, but a product XORed onto a masked data
+  wire can partially cancel that wire's mask).
 \item \textbf{Straddle (hidden firing, \S3).} Split the monomial batch into two
   halves, shuffle each \textbf{independently} (they all target $c$ and commute),
   emit the first half, \textbf{open a fresh \lgi{} on $c$ here} (one of its straddle
@@ -293,11 +308,14 @@ $K$ & \textbf{2} & band wires per \lgi{} = per-\lgi{} \textbf{mask width}
   & wider $\rho$ = more local hiding, but read cost is quadratic in $|\rho|$; 3 is
   the knee. \\
 \addlinespace
-\doc{quad\_fire} & \textbf{on} (2026-09-06) & read operands from inside their
-  quadratic masks; never linearise & the linearised read leaves the operand exactly
-  affine in band wires for a window that every reordering stage stretches into the
-  $C$-vs-$G$ ridge (\S5.0); quad-fire has no window, keeps the ridge at the I/O
-  fringe through the whole pipeline, and is ${\sim}12\%$ smaller.
+\doc{quad\_fire} & \textbf{on} (2026-09-06; two-control emission since 2026-09-07) &
+  read operands from inside their quadratic masks, never linearise; emit the product
+  through scratch wires as 2-control gates (\S2 step 3, \S5.8) & the linearised read
+  leaves the operand exactly affine in band wires for a window that every reordering
+  stage stretches into the $C$-vs-$G$ ridge (\S5.0); quad-fire has no window and keeps
+  the ridge at the I/O fringe through the whole pipeline. The wide-monomial emission it
+  first used was undigestible by the store (37\% of gates at 3--4 controls); the
+  scratch-wire product is 2-control throughout.
   \doc{BV5\_QUAD\_FIRE=0} $=$ legacy. \\
 \addlinespace
 \doc{balanced} & \textbf{on} (2026-09-07) & every \lgi{} (and
@@ -676,6 +694,73 @@ more independent uniform terms than a pair of features can cancel. So the +10\%
 variant buys the w1 result but not the multi-feature one; \doc{max\_open} 3 at
 +92\% is the clean build.
 
+\subsection{Two-control emission of the fire, and the cost of it (2026-09-08)}
+
+The store the mixing stages splice from is a complete ball of \g{} gates: one target,
+\textbf{two} controls. A gate with three or more controls matches nothing in it, so no splice
+ever touches it --- it passes through phase A, the split and the crossing walk as a fixed
+object, carrying the monomial structure of $C$'s gate verbatim. The first quad-fire emission
+expanded each fire into monomials of degree up to 4 and so violated this badly:
+
+\begin{center}\small
+\begin{tabular}{@{}lrrrrr@{}}\toprule
+build ($n=128$, same $C$) & 0 ctrl & 1 ctrl & 2 ctrl & 3 ctrl & 4 ctrl\\\midrule
+wide monomials (0d81a9f3) & 0.8\% & 14.3\% & 47.8\% & \textbf{30.6\%} & \textbf{6.5\%}\\
+scratch-wire product (interim, rejected) & 0.5\% & 26.1\% & 73.2\% & 0.2\% & 0\\
+\textbf{borrowed dirty wires (current)} & 0.28\% & 6.25\% & \textbf{93.39\%} & \textbf{0.08\%} & \textbf{0}\\
+\bottomrule\end{tabular}
+\end{center}
+
+\paragraph{Clean ancillas were the wrong way to do it.} The interim version appended four clean
+scratch wires. Measured: some non-data wire was identically 0 at \textbf{89.5\%} of gate
+positions, a \emph{function-level} invariant that survives any equivalent rewriting and whose
+non-zero stretches delimit exactly the fire blocks --- the segmentation that hidden firing
+(\S3) exists to prevent. It also silently required the evaluator to zero them: starting them at
+1 changed the payload output in 4,062 of 8,192 bit positions, so the circuit computed garbage
+without failing. With borrowed dirty wires the same statistic is 0.2\%, and that residue is only
+the band before module 2 has seeded it.
+
+\paragraph{Where the gates go.} Per fire, over 7,920 fires at $n=128$ (235 gates each, of which
+137 write the target and 93 are ancilla borrows):
+
+\begin{center}\small
+\begin{tabular}{@{}lrr@{}}\toprule
+term class & gates per fire & share\\\midrule
+linear $\times$ quadratic (4-gate bracket) & 111.2 & 47\%\\
+quadratic $\times$ quadratic (8-gate bracket) & 55.6 & 24\%\\
+linear $\times$ linear (1 gate) & 27.8 & 12\%\\
+wire $\times$ quadratic (4-gate bracket) & 20.1 & 9\%\\
+wire $\times$ linear (1 gate) & 10.1 & 4\%\\
+constant $\times$ everything & 8.5 & 4\%\\
+$a'b'$, constant flip & 1.6 & 1\%\\
+\bottomrule\end{tabular}
+\end{center}
+
+Each operand carries ${\approx}2.6$ open masks; each mask $1 \xor y \xor x{\cdot}y \xor z$
+contributes \textbf{two} linear terms ($y$ from the \g{} form, $z$ from the balancing
+\textsc{cnot}) and \textbf{one} quadratic term. An operand is therefore ${\approx}10$ atoms and
+the product ${\approx}100$ terms; terms with one quadratic factor cost 4 gates and with two cost
+8, which is why the two quadratic classes are 71\% of the fire. Levers, should size matter:
+\doc{max\_open}~2 (${\approx}130$ gates per fire, but weaker against the two-feature scan,
+\S5.7), or a mask with no linear $y$ term (${\approx}146$, at the cost of \g{}-digestibility).
+\doc{BV5\_DIAG=1} prints this census.
+
+\paragraph{Measurements at $n=128$} (2,024,834 gates, 512 wires): forward and reverse verify
+pass, the exhaustive test passes in every configuration, \doc{fire\_corr} interior median 0.080
+with 31 gates $\ge0.3$ and 23 state bits $\ge0.3$ / 9 $\ge0.5$ --- unchanged from the
+wide-monomial build --- 0 affine relations, 0 bare intervals, 0.0\% of covered wire-time at a
+single open mask, and the hot manifest lists exactly the 512 I/O fringe segments.
+
+\paragraph{What the requirement costs.} Over five gauntlet instances ($n=64$, $k=64\ldots68$,
+16,384 correlation samples) the current build shows w3 flags on 3 and 1 targets in two of the
+five, everything else zero; the wide-monomial control is clean on all five. The residual is weak
+(phi ${\approx}0.065$ against a 0.047 threshold) and is plausibly inherent rather than a bug:
+building a degree-4 monomial from 2-control gates must materialise the degree-2 partial products
+as gate \textbf{flips}, and a flip \emph{is} the product, so unlike a wire value it cannot be
+blinded. The trade is deliberate --- wide monomials pass this scan but leave 37\% of the gadget
+unspliceable, which is the larger exposure.
+
+
 \section{Tradeoffs and the current choices}
 
 \begin{itemize}
@@ -719,6 +804,12 @@ variant buys the w1 result but not the multi-feature one; \doc{max\_open} 3 at
   intervals) --- but the gauntlet's two-feature scan separates them: one open
   mask is one uniform term, which a single visible monomial cancels (\S5.7).
   \doc{max\_open} 3 remains the clean build.
+\item \textbf{Gate width is a hard constraint, not a cost knob (\S5.8).} The mixing store is
+  a \g{} 2-control identity ball, so any gate with 3+ controls is never spliced and survives
+  the pipeline carrying $C$'s structure. The fire is emitted through scratch wires as
+  2-control gates rather than as wide monomials, for +12\% gates and no change to any leakage
+  measure. The only 3-control gates left in a full gadget are ${\approx}0.2\%$, from the
+  sandwich's balanced junk-guard.
 \item \textbf{Read mode: quad-fire, not linearisation.} Linearising a read is the
   cheapest way to fire (degree-2 monomials only) but leaves the operand affine in
   band wires for a window that reordering stretches into the pipeline ridge

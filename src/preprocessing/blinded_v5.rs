@@ -198,6 +198,9 @@ pub struct BlindedV5Output {
     /// `encoded_io`: the off-circuit LGI closes that decode the output (empty
     /// otherwise). Apply to the final state AFTER `gates`.
     pub post_gates: Vec<XGate>,
+    /// Always 0: the fire uses dirty band wires, never clean ancillas. Kept so
+    /// callers that zeroed a scratch range keep compiling (nothing to zero).
+    pub scratch_wires: usize,
     /// Effective band pool used.
     pub r_used: usize,
 }
@@ -258,8 +261,17 @@ fn burst_gate(b: u16, active: usize, band: &[u16], rng: &mut StdRng) -> XGate {
     conj(b, &[(c1, rng.random_bool(0.5)), (c2, rng.random_bool(0.5))])
 }
 
+/// In-place Fisher-Yates shuffle of fire UNITS (they commute).
+fn shuffle_units(s: &mut [Vec<XGate>], rng: &mut StdRng) {
+    for i in (1..s.len()).rev() {
+        let j = rng.random_range(0..=i);
+        s.swap(i, j);
+    }
+}
+
 /// In-place Fisher-Yates shuffle (the masked-fire monomials commute, so each
 /// half of a fire batch can be emitted in an independently random order).
+#[allow(dead_code)]
 fn shuffle_slice(s: &mut [XGate], rng: &mut StdRng) {
     for i in (1..s.len()).rev() {
         let j = rng.random_range(0..=i);
@@ -375,61 +387,340 @@ fn masked_fire(c: u16, ctrls: &[(u16, bool, Vec<u16>)], comp: bool, out: &mut Ve
     }
 }
 
-/// ANF polynomial over wires: a set of monomials (sorted distinct wire lists;
-/// the empty monomial is the constant 1), XOR-toggled.
-#[derive(Clone, Default)]
-struct Poly(BTreeSet<Vec<u16>>);
+/// One operand of a masked fire: the data wire, its literal polarity and the
+/// LGI cycles currently open on it (`[x, y]` or `[x, y, z]`: the mask term is
+/// `1 ⊕ ¬x∧y ⊕ z = 1 ⊕ y ⊕ x·y ⊕ z`).
+struct Operand {
+    w: u16,
+    pol: bool,
+    cycles: Vec<Vec<u16>>,
+}
 
-impl Poly {
-    fn toggle(&mut self, mut m: Vec<u16>) {
-        m.sort_unstable();
-        m.dedup();
-        if !self.0.remove(&m) {
-            self.0.insert(m);
-        }
+impl Operand {
+    /// Constant of the operand's plaintext polynomial: one per g57 PAIR (a K=4
+    /// cycle carries two pairs), plus one for a negative literal.
+    fn constant(&self) -> bool {
+        let pairs: usize = self.cycles.iter().map(|cy| cy.len() / 2).sum();
+        (pairs % 2 == 1) ^ !self.pol
     }
-    /// XOR in the g57(w,x,y) mask term `1 ⊕ y ⊕ x·y` (w ^= 1 ^ (!x & y)).
-    fn add_g57_mask(&mut self, x: u16, y: u16) {
-        self.toggle(Vec::new());
-        self.toggle(vec![y]);
-        self.toggle(vec![x, y]);
+    /// Linear band terms: the `y` of every pair and the balancing `z` (odd
+    /// trailing wire) of every open mask.
+    fn lin(&self) -> Vec<u16> {
+        self.cycles
+            .iter()
+            .flat_map(|cy| {
+                let ys = (0..cy.len() / 2).map(move |i| cy[2 * i + 1]);
+                let z = if cy.len() % 2 == 1 { Some(cy[cy.len() - 1]) } else { None };
+                ys.chain(z)
+            })
+            .collect()
     }
-    fn deg2_terms(&self) -> usize {
-        self.0.iter().filter(|m| m.len() == 2).count()
-    }
-    fn mul(&self, other: &Poly) -> Poly {
-        let mut out = Poly::default();
-        for a in &self.0 {
-            for b in &other.0 {
-                let mut m = a.clone();
-                m.extend_from_slice(b);
-                out.toggle(m);
-            }
-        }
-        out
+    /// Quadratic band terms `x·y` of every pair of every open mask.
+    fn quad(&self) -> Vec<(u16, u16)> {
+        self.cycles
+            .iter()
+            .flat_map(|cy| (0..cy.len() / 2).map(move |i| (cy[2 * i], cy[2 * i + 1])))
+            .collect()
     }
 }
 
-/// QUAD-FIRE emission: `c ^= comp ⊕ Π polys` with each control already a
-/// polynomial (polarity applied), as one conjunction gate per monomial of the
-/// product (an empty monomial is an X gate). Degree ≤ 4 at K=2.
-fn quad_fire(c: u16, polys: &[Poly], comp: bool, out: &mut Vec<XGate>) {
-    let mut prod = Poly::default();
-    prod.toggle(Vec::new()); // the constant 1
-    for p in polys {
-        prod = prod.mul(p);
-    }
-    if comp {
-        prod.toggle(Vec::new());
-    }
-    for m in &prod.0 {
-        if m.is_empty() {
-            out.push(XGate::x_gate(c));
-        } else {
-            let lits: Vec<(u16, bool)> = m.iter().map(|&w| (w, true)).collect();
-            out.push(conj(c, &lits));
+/// HOT-VALUE MANIFEST: the gate intervals during which a data wire's value is an
+/// AFFINE function of the plaintext and the (visible) band wires — i.e. the wire
+/// carries a sustained linear relation with a wire segment of the input circuit.
+///
+/// A wire under masks `1 ⊕ y_i ⊕ x_i·y_i ⊕ z_i` is affine in the wire state
+/// exactly when its net set of open `g57` PAIRS is empty: the `y` and `z` terms
+/// are single band wires (visible, hence affine), so only the quadratic `x_i·y_i`
+/// terms hide the value. The coverage rules keep `min_open` pairs open between a
+/// wire's first open and its last close, so with a correct build these intervals
+/// are exactly the public I/O fringe: `[0, first open)` and `[last close, end)`.
+/// Anything else in the list is a defect.
+///
+/// This is the list to hand to the DB-mixing stage as splice seeds. It is also a
+/// map of the module's weak points, so it must never ship with a deliverable.
+pub fn hot_intervals(gates: &[XGate], np: usize, r: usize) -> Vec<(u16, usize, usize)> {
+    let (lo, hi) = (np as u16, (np + r) as u16);
+    let is_pair = |g: &XGate| -> Option<(u16, u16)> {
+        if !g.comp || g.ctrls.len() != 2 {
+            return None;
+        }
+        let ((w0, p0), (w1, p1)) = (g.ctrls[0], g.ctrls[1]);
+        if p0 == p1 || w0 < lo || w0 >= hi || w1 < lo || w1 >= hi {
+            return None;
+        }
+        Some(norm_pair(w0, w1))
+    };
+    let mut open: Vec<BTreeSet<(u16, u16)>> = vec![BTreeSet::new(); np];
+    let mut since: Vec<usize> = vec![0; np]; // start of the current uncovered run
+    let mut out: Vec<(u16, usize, usize)> = Vec::new();
+    for (i, g) in gates.iter().enumerate() {
+        let t = g.target as usize;
+        if t >= np {
+            continue;
+        }
+        if let Some(pr) = is_pair(g) {
+            let was = open[t].is_empty();
+            if !open[t].insert(pr) {
+                open[t].remove(&pr);
+            }
+            let now = open[t].is_empty();
+            if was && !now {
+                out.push((t as u16, since[t], i)); // covered from here on
+            } else if !was && now {
+                since[t] = i + 1;
+            }
         }
     }
+    for w in 0..np {
+        if open[w].is_empty() {
+            out.push((w as u16, since[w], gates.len()));
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Unordered band pair, normalised.
+fn norm_pair(a: u16, b: u16) -> (u16, u16) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// `t ^= u ∧ v` as a 2-control gate, collapsing `u == v` to a CNOT.
+fn and2(t: u16, u: u16, v: u16) -> XGate {
+    if u == v {
+        XGate::cnot(t, u)
+    } else {
+        conj(t, &[(u, true), (v, true)])
+    }
+}
+
+/// MASKED FIRE with two-control gates only, and NO clean ancillas (RC
+/// 2026-09-08: "we cannot have any clean ancillas here").
+///
+/// The store is a `g57` 2-control identity ball, so a gate with three or more
+/// controls is never spliced and would carry `C`'s structure through mixing
+/// verbatim. The product of the two operand polynomials therefore has to be
+/// realised with 2-control gates. An earlier version borrowed four CLEAN
+/// scratch wires for the partial products; that was wrong twice over: a wire
+/// that is 0 at every instant outside a fire is a FUNCTION-level invariant (it
+/// survives any equivalent rewriting, so mixing cannot hide it) and its
+/// non-zero stretches delimit exactly the fire blocks — the segmentation the
+/// hidden-firing design exists to prevent — and it silently required the
+/// evaluator to zero them.
+///
+/// Instead the partial products go on DIRTY band wires, via the identity
+/// `t ^= h∧y; h ^= P∧x; t ^= h∧y; h ^= P∧x`, whose net effect is
+/// `t ^= P·x·y` for ANY prior value of `h` (`h_0·y ⊕ (h_0⊕Px)·y = Pxy`) and
+/// which leaves `h` restored. The prior value also blinds the intermediate for
+/// free, so the explicit blinders the clean version needed are gone.
+///
+/// Writing `a = a' ⊕ c_a ⊕ s_a ⊕ Q_a` (constant, linear band sum `Σ(y_i⊕z_i)`,
+/// quadratic part `Σ x_i y_i`), the 16 cross terms of the product are emitted
+/// as: single 2-control gates wherever both factors are wires or single band
+/// literals (the `s` sums are expanded term by term, so no aggregate is ever
+/// materialised on a wire); the 4-gate bracket above for the 3-literal terms;
+/// and an 8-gate two-ancilla bracket for `x_iy_i · x'_jy'_j`. Groupings there
+/// are CROSS-operand and checked against the pairs open on any data wire, so no
+/// ancilla ever holds a mask's own quadratic term.
+#[allow(clippy::too_many_arguments)]
+fn product_fire(
+    t: u16,
+    ops: &[Operand],
+    comp: bool,
+    open_pair_set: &BTreeSet<(u16, u16)>,
+    open_pairs: &[BTreeSet<(u16, u16)>],
+    band: &[u16],
+    np: usize,
+    r: usize,
+    rng: &mut StdRng,
+    blinded: &mut usize,
+    census: &mut [usize; 8],
+) -> Vec<Vec<XGate>> {
+    let mut units: Vec<Vec<XGate>> = Vec::new();
+    match ops.len() {
+        0 => {
+            if comp {
+                units.push(vec![XGate::x_gate(t)]);
+            }
+        }
+        1 => {
+            let a = &ops[0];
+            units.push(vec![XGate::cnot(t, a.w)]);
+            for l in a.lin() {
+                units.push(vec![XGate::cnot(t, l)]);
+            }
+            for (x, y) in a.quad() {
+                units.push(vec![and2(t, x, y)]);
+            }
+            if comp ^ a.constant() {
+                units.push(vec![XGate::x_gate(t)]);
+            }
+        }
+        _ => {
+            let (a, b) = (&ops[0], &ops[1]);
+            let (ca, cb) = (a.constant(), b.constant());
+            let (la, lb) = (a.lin(), b.lin());
+            let (qa, qb) = (a.quad(), b.quad());
+            // dirty ancillas: band wires OUTSIDE the fire's own wires, so that
+            // restoring them before the block ends cannot disturb any mask
+            let used: BTreeSet<u16> = ops
+                .iter()
+                .flat_map(|o| o.cycles.iter().flatten().copied())
+                .collect();
+            // A dirty ancilla is picked PER TERM: it must differ from every wire
+            // that term touches (otherwise a gate would control on its own
+            // target, and the bracket algebra would not hold), preferring one
+            // outside the operands' masks so the choice carries no structure.
+            // Any wire may serve, DATA wires included (RC 2026-09-08): the
+            // bracket restores whatever was there, so while it is borrowed the
+            // wire carries its own masked value XOR the partial product — more
+            // masking, not less — and drawing from all 2n wires keeps the fire's
+            // ancilla traffic from concentrating on the band. Excluded: the
+            // target, this gate's operands, and the term's own wires.
+            // Ancilla pool: BAND wires by default; `BV5_ANC_POOL=all` also allows
+            // data wires. Data wires work functionally (the bracket restores any
+            // prior value) and enlarge the pool, but a product XORed onto a
+            // MASKED data wire can partially cancel that wire's own mask —
+            // band wires are not mutually independent, so the borrowed product
+            // need not be independent of the wire's mask sum — which leaves the
+            // wire correlated with its plaintext. Measured over three gauntlet
+            // instances at 16,384 samples: pool=all flags w1 on 6 targets in one
+            // instance (phi 0.134), pool=band flags no w1 in any; the
+            // wide-monomial control is clean in all three.
+            let band_only = std::env::var("BV5_ANC_POOL").map_or(true, |v| v != "all");
+            let all: Vec<u16> = if band_only {
+                band.to_vec()
+            } else {
+                (0..(np + r) as u16).collect()
+            };
+            // `xored` is the band pair this term will XOR onto the ancilla. A
+            // data wire whose OWN open masks contain that pair must be excluded:
+            // XORing `x_i∧y_i` onto it would cancel that mask's quadratic part
+            // and leave the wire correlated with its own plaintext (measured:
+            // phi 0.134, gauntlet w1, n=64 k=66).
+            let mut pick = |rng: &mut StdRng, must_avoid: &[u16], xored: (u16, u16)| -> u16 {
+                let pr = norm_pair(xored.0, xored.1);
+                let free: Vec<u16> = all
+                    .iter()
+                    .copied()
+                    .filter(|w| {
+                        *w != t
+                            && *w != a.w
+                            && *w != b.w
+                            && !must_avoid.contains(w)
+                            && ((*w as usize) >= np || !open_pairs[*w as usize].contains(&pr))
+                    })
+                    .collect();
+                assert!(
+                    !free.is_empty(),
+                    "no wire free for a dirty fire ancilla (R={}, term needs {} wires)",
+                    band.len(),
+                    must_avoid.len()
+                );
+                let pref: Vec<u16> = free.iter().copied().filter(|w| !used.contains(w)).collect();
+                let pool = if pref.is_empty() { &free } else { &pref };
+                pool[rng.random_range(0..pool.len())]
+            };
+            // `t ^= P · x · y` on a dirty `h` (4 gates, h restored)
+            let and3 = |p: u16, x: u16, y: u16, h: u16| -> Vec<XGate> {
+                vec![and2(t, h, y), and2(h, p, x), and2(t, h, y), and2(h, p, x)]
+            };
+            // wires × wires / wires × band literals: plain 2-control gates
+            units.push(vec![and2(t, a.w, b.w)]);
+            census[0] += 1; // a'b'
+            for &l in &lb {
+                units.push(vec![and2(t, a.w, l)]);
+                census[1] += 1; // wire x linear
+            }
+            for &l in &la {
+                units.push(vec![and2(t, l, b.w)]);
+                census[1] += 1;
+            }
+            for &li in &la {
+                for &lj in &lb {
+                    units.push(vec![and2(t, li, lj)]);
+                    census[2] += 1; // linear x linear
+                }
+            }
+            if ca {
+                units.push(vec![XGate::cnot(t, b.w)]);
+                for &l in &lb {
+                    units.push(vec![XGate::cnot(t, l)]);
+                }
+                for &(x, y) in &qb {
+                    units.push(vec![and2(t, x, y)]);
+                }
+                census[3] += 1 + lb.len() + qb.len(); // constant x everything
+            }
+            if cb {
+                units.push(vec![XGate::cnot(t, a.w)]);
+                for &l in &la {
+                    units.push(vec![XGate::cnot(t, l)]);
+                }
+                for &(x, y) in &qa {
+                    units.push(vec![and2(t, x, y)]);
+                }
+                census[3] += 1 + la.len() + qa.len();
+            }
+            // 3-literal terms: (a' or one l_i) × x'y', and the mirror
+            for &(x, y) in &qb {
+                let h = pick(rng, &[x, y, a.w], (a.w, x));
+                units.push(and3(a.w, x, y, h));
+                census[4] += 4; // wire x quadratic (4-gate bracket)
+                for &l in &la {
+                    let h = pick(rng, &[x, y, l], (l, x));
+                    units.push(and3(l, x, y, h));
+                    census[5] += 4; // linear x quadratic
+                }
+            }
+            for &(x, y) in &qa {
+                let h = pick(rng, &[x, y, b.w], (b.w, x));
+                units.push(and3(b.w, x, y, h));
+                census[4] += 4;
+                for &l in &lb {
+                    let h = pick(rng, &[x, y, l], (l, x));
+                    units.push(and3(l, x, y, h));
+                    census[5] += 4;
+                }
+            }
+            // Q_a·Q_b on two dirty ancillas: 8 gates, cross-operand grouping,
+            // checked against the pairs open anywhere
+            let ok = |p: (u16, u16)| -> bool {
+                p.0 == p.1 || !open_pair_set.contains(&norm_pair(p.0, p.1))
+            };
+            for &(x, y) in &qa {
+                for &(x2, y2) in &qb {
+                    let cands = [((x, x2), (y, y2)), ((x, y2), (y, x2))];
+                    let pick2 = cands
+                        .iter()
+                        .find(|(p1, p2)| ok(*p1) && ok(*p2))
+                        .unwrap_or_else(|| {
+                            *blinded += 1;
+                            &cands[0]
+                        });
+                    let (p1, p2) = *pick2;
+                    let h1 = pick(rng, &[p1.0, p1.1, p2.0, p2.1], p1);
+                    let h2 = pick(rng, &[p1.0, p1.1, p2.0, p2.1, h1], p2);
+                    units.push(vec![
+                        and2(t, h1, h2),
+                        and2(h1, p1.0, p1.1),
+                        and2(t, h1, h2),
+                        and2(h2, p2.0, p2.1),
+                        and2(t, h1, h2),
+                        and2(h1, p1.0, p1.1),
+                        and2(t, h1, h2),
+                        and2(h2, p2.0, p2.1),
+                    ]);
+                    census[6] += 8; // quadratic x quadratic (8-gate bracket)
+                }
+            }
+            if comp ^ (ca && cb) {
+                units.push(vec![XGate::x_gate(t)]);
+                census[7] += 1;
+            }
+        }
+    }
+    units
 }
 
 /// The band-seeding module (module 2 of the 5-step pipeline): each band wire
@@ -564,10 +855,23 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         r > lgi_k,
         "R must exceed K (+1 with balanced masks): got R={r}, cycle width {lgi_k}"
     );
+    // the quadratic fire term touches up to 4 band wires and needs two further
+    // DIRTY wires as ancillas; they may be data wires too, so `np + r` must
+    // exceed the widest term (`product_fire`)
+    assert!(
+        !p.quad_fire || np + r >= 8,
+        "quad-fire needs at least 8 wires for its dirty ancillas; got {}",
+        np + r
+    );
     assert!(np >= 2, "need at least two data wires");
+    // No scratch wires: the masked fire borrows DIRTY band wires for its partial
+    // products and restores them (see `product_fire`). A clean ancilla would be
+    // 0 at every instant outside a fire — a function-level invariant that no
+    // amount of mixing can hide, and whose non-zero stretches delimit the fire
+    // blocks (RC 2026-09-08).
     let total = np + r;
     assert!(total < u16::MAX as usize, "too many wires");
-    let band: Vec<u16> = (np as u16..total as u16).collect();
+    let band: Vec<u16> = (np as u16..(np + r) as u16).collect(); // scratch wires are NOT band
     let max_open = p.max_open.max(1);
     let min_open = p.min_open.clamp(1, max_open.saturating_sub(1).max(1));
     assert!(
@@ -690,7 +994,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     // leaves an instant with no mask on the wire. Extra to the u_w+1 budget
     // (~3 gates per event, ≈0.4% of the build).
     let mut replacements = 0usize;
-    let mut read_covers = 0usize; // top-ups kept open on an otherwise uncovered operand
+    let read_covers = 0usize; // reads now cover thin operands via ensure_min_open (counted there)
     let mut fire_covers = 0usize; // extra target masks opened at a fire (fire-cover rule)
     // Sample an LGI cycle for wire `w` whose band wires are DISJOINT from every
     // band wire already used by `w`'s open cycles (pairs and balancing wires)
@@ -854,6 +1158,8 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     // the u_w+1 budget, counted in `min_open_opens`); `$extra` = band wires to
     // stay away from (the fire's wires when called mid-fire).
     let mut min_open_opens = 0usize;
+    let mut qq_blinded = 0usize; // fire ancillas blinded away from an open pair
+    let mut fire_census = [0usize; 8]; // per-term-class gate counts (BV5_DIAG)
     macro_rules! ensure_min_open {
         ($w:expr, $extra:expr) => {{
             let w: usize = $w;
@@ -901,101 +1207,32 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         };
         let c = src[gi].target as usize;
         let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
-        let mut polys: Vec<Poly> = Vec::new();
+        let mut operands: Vec<Operand> = Vec::new();
         let mut undo: Vec<XGate> = Vec::new();
         for &(w, pol) in &src[gi].ctrls {
-            let netopen: Vec<(u16, u16)> = open_pairs[w as usize].iter().copied().collect();
             if p.quad_fire {
-                // No linearisation: the operand stays under its quadratic masks.
-                let mut poly = Poly::default();
-                poly.toggle(vec![w]);
-                for &(x, y) in &netopen {
-                    poly.add_g57_mask(x, y);
-                }
-                for &z in &open_lin[w as usize] {
-                    poly.toggle(vec![z]);
-                }
-                // Top up with fresh quadratic pairs (single g57s, undone after the
-                // fire) until at least max_open quadratic terms mask the operand.
-                // An operand with NO open LGI at all (a seldom-used wire between
-                // its sparse fillers) keeps its first top-up as a real LGI instead
-                // of undoing it: otherwise the wire returns to holding its plain
-                // value for the whole idle stretch (measured: tens of thousands of
-                // gates on high-half wires). Costs nothing (the undo is dropped).
-                let mut guard = 0;
-                // top-ups to KEEP as real masks: enough to reach `min_open`
-                let mut keep = min_open.saturating_sub(open_cy[w as usize].len());
-                // Band wires in use on this operand: its open cycles plus the
-                // top-ups of this read. Every top-up draws OUTSIDE this set (see
-                // `sample_fresh`: any shared wire biases the mask sum).
-                let mut used: BTreeSet<u16> =
-                    open_cy[w as usize].iter().flatten().copied().collect();
-                // best-effort disjointness (bounded), see `sample_fresh`; the
-                // `hard` wires (this top-up's own pair) are never reused
-                let mut draw = |used: &BTreeSet<u16>, hard: &[u16], rng: &mut StdRng| -> u16 {
-                    let mut tries = 0usize;
-                    loop {
-                        let x = band[rng.random_range(0..band.len())];
-                        tries += 1;
-                        if hard.contains(&x) {
-                            assert!(tries <= 1 << 16, "blinded_v5: band too small for a read top-up (R={r})");
-                            continue;
-                        }
-                        if !used.contains(&x) || tries > 256 {
-                            return x;
-                        }
-                    }
-                };
-                while poly.deg2_terms() < max_open.max(1) && guard < 64 {
-                    let r1 = draw(&used, &[], &mut rng);
-                    used.insert(r1);
-                    let r2 = draw(&used, &[r1], &mut rng);
-                    used.insert(r2);
-                    if keep > 0 {
-                        keep -= 1;
-                        let mut cy = vec![r1, r2];
-                        if p.balanced {
-                            let z = draw(&used, &[r1, r2], &mut rng);
-                            used.insert(z);
-                            cy.push(z);
-                        }
-                        emit_lgi(w, &cy, &mut out, &mut open_pairs[w as usize], &mut open_lin[w as usize]);
-                        poly.add_g57_mask(r1, r2);
-                        if let Some(&z) = cy.get(2) {
-                            poly.toggle(vec![z]);
-                        }
-                        open_cy[w as usize].push(cy);
-                        read_covers += 1;
-                        guard += 1;
-                        continue;
-                    }
-                    out.push(g57(w, r1, r2));
-                    undo.push(g57(w, r1, r2));
-                    poly.add_g57_mask(r1, r2);
-                    if p.balanced {
-                        let z = draw(&used, &[r1, r2], &mut rng);
-                        used.insert(z);
-                        out.push(XGate::cnot(w, z));
-                        undo.push(XGate::cnot(w, z));
-                        poly.toggle(vec![z]);
-                    }
-                    guard += 1;
-                }
+                // Masked fire: the operand is only READ, under whatever masks it
+                // carries. A thin operand (its first read, or a seldom-used wire)
+                // is first brought up to `min_open` real masks — the read-cover
+                // rule — so no wire is ever read bare.
+                ensure_min_open!(w as usize, &BTreeSet::new());
                 if diag {
                     n_reads += 1;
-                    let q = poly.deg2_terms();
+                    let q = open_cy[w as usize].len();
                     if q == 0 {
                         n_bare += 1;
                     }
                     rho_min = rho_min.min(2 * q);
                     rho_sum += 2 * q;
                 }
-                if !pol {
-                    poly.toggle(Vec::new());
-                }
-                polys.push(poly);
+                operands.push(Operand {
+                    w,
+                    pol,
+                    cycles: open_cy[w as usize].clone(),
+                });
                 continue;
             }
+            let netopen: Vec<(u16, u16)> = open_pairs[w as usize].iter().copied().collect();
             let (mut rho, added) = linearize(w, &netopen, &mut out);
             for gg in added.into_iter().rev() {
                 undo.push(gg);
@@ -1070,6 +1307,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 undo.push(g57(w, r1, r2));
                 rho.push(r1);
                 rho.push(r2);
+                rho.sort_unstable();
             }
             if diag {
                 n_reads += 1;
@@ -1081,12 +1319,33 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             }
             ctrls.push((w, pol, rho));
         }
-        let mut fires = Vec::new();
-        if p.quad_fire {
-            quad_fire(src[gi].target, &polys, src[gi].comp, &mut fires);
+        // The fire as commuting UNITS (masked fire) or single monomials (legacy).
+        let mut units: Vec<Vec<XGate>> = if p.quad_fire {
+            // pairs open on ANY data wire right now: an ancilla must never hold
+            // one of them (see `product_fire`)
+            let open_pair_set: BTreeSet<(u16, u16)> = open_cy
+                .iter()
+                .flatten()
+                .flat_map(|cy| (0..cy.len() / 2).map(move |i| norm_pair(cy[2 * i], cy[2 * i + 1])))
+                .collect();
+            product_fire(
+                src[gi].target,
+                &operands,
+                src[gi].comp,
+                &open_pair_set,
+                &open_pairs,
+                &band,
+                np,
+                r,
+                &mut rng,
+                &mut qq_blinded,
+                &mut fire_census,
+            )
         } else {
+            let mut fires = Vec::new();
             masked_fire(src[gi].target, &ctrls, src[gi].comp, &mut fires);
-        }
+            fires.into_iter().map(|g| vec![g]).collect()
+        };
         if open_cy[c].len() >= max_open {
             let cy = open_cy[c].remove(0);
             emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c], &mut open_lin[c]);
@@ -1100,28 +1359,35 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         // collision occurs at ~2/3 of the fires). So every monomial block is
         // BRACKETED by a temporary mask on `c` drawn away from every band wire
         // of the fire: opened before the first monomial, closed after the last
-        // (~6 gates per fire, no change to any read polynomial). The mid-fire
+        // (~4 gates per fire, no change to any read polynomial). The mid-fire
         // straddle open is drawn away from those wires as well.
-        let mut fire_wires: BTreeSet<u16> = polys
-            .iter()
-            .flat_map(|q| q.0.iter().flatten().copied())
-            .filter(|&x| (x as usize) >= np)
-            .collect();
+        let mut fire_wires: BTreeSet<u16> = if p.quad_fire {
+            operands
+                .iter()
+                .flat_map(|o| o.cycles.iter().flatten().copied())
+                .collect()
+        } else {
+            ctrls.iter().flat_map(|(_, _, rho)| rho.iter().copied()).collect()
+        };
         let cover = sample_fresh!(c, None, &fire_wires);
         emit_lgi(c as u16, &cover, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         fire_wires.extend(cover.iter().copied());
         fire_covers += 1;
         // straddle: fire-part-1, OPEN a fresh LGI on c (mid-fire), fire-part-2 --
-        // each half emitted in an independently random order (monomials commute).
-        let cut = ((fires.len() + 1) / 2).min(fires.len());
-        shuffle_slice(&mut fires[..cut], &mut rng);
-        shuffle_slice(&mut fires[cut..], &mut rng);
-        out.extend_from_slice(&fires[..cut]);
+        // each half emitted in an independently random order (units commute).
+        let cut = ((units.len() + 1) / 2).min(units.len());
+        shuffle_units(&mut units[..cut], &mut rng);
+        shuffle_units(&mut units[cut..], &mut rng);
+        for u in &units[..cut] {
+            out.extend_from_slice(u);
+        }
         let cy = sample_fresh!(c, None, &fire_wires);
         emit_lgi(c as u16, &cy, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         open_cy[c].push(cy);
         ensure_min_open!(c, &fire_wires);
-        out.extend_from_slice(&fires[cut..]);
+        for u in &units[cut..] {
+            out.extend_from_slice(u);
+        }
         // close the bracket (toggles its pairs/linear term back off)
         emit_lgi(c as u16, &cover, &mut out, &mut open_pairs[c], &mut open_lin[c]);
         for gg in undo {
@@ -1198,13 +1464,59 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             "[bv5-diag] rerand slots: emitted={slots_emitted} of plan={}  \
              DRAIN (after last A-gate)={drain_slots} ({:.1}%)  main-loop={}  \
              cover-replacement LGIs={replacements}  read-cover LGIs={read_covers}  \
-             fire-cover LGIs={fire_covers}  min-open opens={min_open_opens}  relaxed (non-disjoint) samples={relaxed}",
+             fire-cover LGIs={fire_covers}  min-open opens={min_open_opens}  \
+             blinded fire ancillas={qq_blinded}  relaxed (non-disjoint) samples={relaxed}",
             slot_plan.len(),
             100.0 * drain_slots as f64 / slots_emitted.max(1) as f64,
             slots_emitted - drain_slots
         );
     }
 
+    if diag {
+        let names = [
+            "a'b'                       ",
+            "wire x linear              ",
+            "linear x linear            ",
+            "constant x everything      ",
+            "wire x quadratic  (4-gate) ",
+            "linear x quadratic(4-gate) ",
+            "quadratic^2       (8-gate) ",
+            "constant flip              ",
+        ];
+        let tot: usize = fire_census.iter().sum();
+        eprintln!("[bv5-fire] per-fire gate census over {m} fires (total {tot}):");
+        for (n, c) in names.iter().zip(fire_census.iter()) {
+            eprintln!(
+                "[bv5-fire]   {n} {c:>10}  {:>6.1} per fire  {:>5.1}%",
+                *c as f64 / m as f64,
+                100.0 * *c as f64 / tot as f64
+            );
+        }
+    }
+    if let Ok(path) = std::env::var("BV5_HOT_MANIFEST") {
+        let hot = hot_intervals(&out, np, r);
+        let mut body = String::from("# wire\tstart_gate\tend_gate\tkind\n");
+        let (mut fringe, mut interior) = (0usize, 0usize);
+        for &(w, a, b) in &hot {
+            let kind = if a == 0 {
+                fringe += 1;
+                "input-fringe"
+            } else if b == out.len() {
+                fringe += 1;
+                "output-fringe"
+            } else {
+                interior += 1;
+                "INTERIOR (defect)"
+            };
+            body.push_str(&format!("{w}\t{a}\t{b}\t{kind}\n"));
+        }
+        if std::fs::write(&path, body).is_ok() {
+            eprintln!(
+                "[bv5-hot] {} affine intervals ({fringe} I/O fringe, {interior} interior) -> {path}",
+                hot.len()
+            );
+        }
+    }
     BlindedV5Output {
         gates: out,
         num_wires: total,
@@ -1212,6 +1524,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         rerand_done,
         pre_gates: pre,
         post_gates: post,
+        scratch_wires: 0,
         r_used: r,
     }
 }
@@ -1274,6 +1587,8 @@ mod tests {
                 };
                 let out = gadgetize_blinded_v5(&a, np, &p);
                 assert_eq!(out.num_wires, 2 * np);
+                // no clean ancillas: the fire borrows dirty band wires
+                assert_eq!(out.scratch_wires, 0);
                 assert_eq!(out.pre_gates.is_empty(), !encoded_io);
                 assert_eq!(out.post_gates.is_empty(), !encoded_io);
                 if encoded_io {
@@ -1302,9 +1617,10 @@ mod tests {
                     }
                 }
                 if quad_fire {
-                    // quad-fire never emits the legacy reverse-pair brackets:
-                    // every fire monomial is a plain conjunction, degree <= 4
-                    assert!(out.gates.iter().all(|g| g.width() <= 4));
+                    // the masked fire is two-control only (the DB is a g57 ball)
+                    assert!(out.gates.iter().all(|g| g.ctrls.len() <= 2));
+                    // and the scratch wires are clean again after every fire:
+                    // checked implicitly by the exhaustive equivalence above
                 }
             }
         }

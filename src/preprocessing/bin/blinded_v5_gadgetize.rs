@@ -57,8 +57,12 @@ fn main() {
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).
     let r_used = if params.r == 0 { np } else { params.r };
+    // Modules 2 and 4: band seed BEFORE the compute and re-seed AFTER it. The
+    // five parts are always five separate modules; the compute's internal rerand
+    // bursts do not discharge stage 4.
     let mut gates = seed_band_mode(np, r_used, active_wires, seed ^ 0x5EED_B00C, params.balanced);
     gates.extend(g.gates.iter().cloned());
+    gates.extend(seed_band_mode(np, r_used, active_wires, seed ^ 0xB00C_5EED, params.balanced));
     write_mpmct(out_path, &gates, g.num_wires).expect("write out");
     println!(
         "{out_path}: K={k} R={} rerand={} gates \

@@ -21,7 +21,9 @@ The **gadgetize module** is a **5-stage** pipeline, each stage on `2n` wires
    inputs;
 3. **compute** — realise the input circuit `A` on the `2n` wires so the data
    half carries `A`'s output and the band is only read;
-4. **re-seed / re-randomise the band wires** — band turnover;
+4. **re-seed / re-randomise the band wires** — band turnover; a *separate*
+   module, emitted after the compute (the compute's own rerand bursts are
+   masking hygiene and do not discharge it), so the band is junk at both ports;
 5. **re-slice** — the closing junk-guard slice (fires at the output port).
 
 One term to keep straight: the circuit `A` that the gadgetizer computes is **not
@@ -155,27 +157,49 @@ of gates; §3.)
 *Forward pass* — repeat until all `m` gates are placed:
 
 1. **Pop** a ready `A`-gate `g` (target wire `c`).
-2. **Masked read (quad-fire).** For each operand wire, leave its currently-open
-   masks *as they are* and describe the wire as the ANF polynomial
-   `P_w = w' ⊕ Σ_(x,y) (1 ⊕ y ⊕ x·y)` over its net-open pairs (a pair whose
-   reverse is also open contributes the linear `x ⊕ y`); top up with **fresh
-   single `g57`s** (quadratic, not pair-completed) until at least `max_open`
-   quadratic terms mask the operand (the **hard floor**: never bare, never
-   affine). Remember the top-up gates as the *undo* — except that an operand
-   with **no open LGI at all** keeps its first top-up as a real LGI (the
-   *read-cover* rule, §5.6: otherwise a seldom-used wire returns to holding its
-   plain value for the whole idle stretch after the fire). *(Legacy linear read,
+2. **Masked read (quad-fire).** The operand is only *read*, under whatever masks
+   it currently carries: a wire under masks `m_i = 1 ⊕ y_i ⊕ x_i·y_i ⊕ z_i` holds
+   `w' = w ⊕ Σ m_i`, i.e.
+   `w = w' ⊕ c_w ⊕ s_w ⊕ Q_w` with the **constant** `c_w` (one per open `g57`
+   pair, plus one for a negative literal), the **linear** band sum
+   `s_w = Σ (y_i ⊕ z_i)` and the **quadratic** part `Q_w = Σ x_i·y_i`. A thin
+   operand is first brought up to `min_open` real masks (`ensure_min_open`, §5.6),
+   so no wire is ever read bare or under a single mask; there are no read-time
+   top-ups to undo any more. *(Legacy linear read,
    `BV5_QUAD_FIRE=0`: complete each open `g57` with its reverse so the wire carries
    `operand ⊕ ρ`, `ρ` a linear XOR of band wires, top up with pairs until
    `|ρ| ≥ min_mask`, and undo the reverses after the fire — see §5.0 for why this
    was replaced.)*
-3. **Fire from inside the mask.** Expand `c ^= comp ⊕ lit(a)∧lit(b)` as the
-   polynomial product `P_a · P_b` (a negative literal complements the constant)
-   into a batch of monomials over ONLY the masked control wires and band wires —
-   never bare `a`, `b`, or `a⊕b` (0/1/2 controls and all polarities; the
-   0-control fire is `¬comp`). At `K = 2`, `max_open = 3` that is up to
-   `8 × 8 = 64` monomials of degree ≤ 4 (versus 49 of degree 2 plus the
-   linearise/undo bracket in the legacy read), so the gadget is ~12% *smaller*.
+3. **Fire from inside the mask — two-control gates only, no clean ancillas
+   (§5.8).** The fire `c ^= comp ⊕ lit(a)∧lit(b)` is the product of the two
+   operand polynomials. Expanding it into monomials would emit gates of degree
+   up to 4, which the **frozen store cannot digest**: it is a ball of `g57`
+   2-control identities, so a wider gate is never spliced and would carry `C`'s
+   structure through the whole mixing pipeline verbatim. The product is
+   therefore realised with 2-control gates only, using **borrowed dirty wires**
+   for the partial products — never clean ancillas, which would be 0 at every
+   instant outside a fire, a function-level invariant that no rewriting can hide
+   and whose non-zero stretches delimit the fire blocks. The identity used is
+
+   `t ^= h∧y ; h ^= P∧x ; t ^= h∧y ; h ^= P∧x`
+
+   whose net effect is `t ^= P·x·y` for **any** prior value of `h`
+   (`h₀·y ⊕ (h₀⊕Px)·y = Pxy`) and which leaves `h` restored; the prior value
+   also blinds the intermediate for free. A degree-4 term `x_iy_i · x'_jy'_j`
+   uses the same telescoping trick on two borrowed wires in 8 gates. Every term
+   whose factors are wires or single band literals is one gate; the `s` sums are
+   expanded term by term, so no mask aggregate is ever materialised.
+
+   Four rules keep the borrowing safe, each of them found by measurement: the
+   ancilla is drawn **per term**, excluding the target, the gate's operands and
+   the term's own wires; it is never a wire whose **own open masks contain the
+   pair being XORed** (that cancels the mask outright — phi 0.134 when it
+   happened); the degree-4 groupings are **cross-operand** and are checked
+   against the pairs open on any data wire, so no ancilla ever holds a mask's own
+   quadratic term; and the pool is the **band** (`BV5_ANC_POOL=all` also allows
+   data wires, but a product XORed onto a masked data wire can partially cancel
+   that wire's mask, since band wires are not mutually independent).
+
 4. **Straddle (hidden firing, §3).** Split the monomial batch into two halves,
    shuffle each **independently** (they all target `c` and commute), emit the
    first half, **open a fresh LGI on `c` here** (one of its straddle opens,
@@ -272,7 +296,7 @@ co-sampled pass is what makes coverage complete at no cost.
 |---|---|---|---|
 | `K` | **2** | band wires per LGI = per-LGI **mask width** (⌊K/2⌋ disjoint pairs; `\|ρ\| ≈ max_open·K`) — *not* the identity's temporal length | affine- and deg-2-neutral across `K` (§5); smallest is best. Size grows ~linearly in `K`, read cost quadratically in `\|ρ\|`, so large `K` explodes (K16 ≈ 18M). Odd `K` wastes a wire (K3 ≡ K2). |
 | `max_open` | **3** | rolling cap on simultaneously-open LGIs per wire | wider `ρ` = more local hiding, but read cost is quadratic in `\|ρ\|`; 3 is the knee. |
-| `quad_fire` | **on** (2026-09-06) | read operands from inside their quadratic masks; never linearise | the linearised read leaves the operand exactly affine in band wires for a window that every reordering stage stretches into the C-vs-G ridge (§5.0); quad-fire has no such window, keeps the ridge at the I/O fringe through the whole pipeline, and is ~12% smaller. `BV5_QUAD_FIRE=0` = legacy. |
+| `quad_fire` | **on** (2026-09-06; two-control emission since 2026-09-07) | read operands from inside their quadratic masks, never linearise; emit the product through scratch wires as 2-control gates (§2 step 3, §5.8) | the linearised read leaves the operand exactly affine in band wires for a window that every reordering stage stretches into the C-vs-G ridge (§5.0); quad-fire has no such window and keeps the ridge at the I/O fringe through the whole pipeline. The wide-monomial emission it first used was undigestible by the store (37% of gates at 3–4 controls); the scratch-wire product is 2-control throughout, and smaller. `BV5_QUAD_FIRE=0` = legacy. |
 | `balanced` | **on** (2026-09-07; `BV5_BALANCED=0` = plain masks) | every LGI (and every read top-up) adds one CNOT `w ^= z` from a fresh band wire, so each mask term is `z ⊕ 1 ⊕ ¬x∧y` — unbiased, still quadratic; band seed `x_i ⊕ x_j` | a bare `g57` mask term is 1 three times in four, so a wire under one open mask is *linearly correlated* with its plaintext (phi 0.29 with the C gate's firing predicate; §5.6). Balanced masks take that channel to the null floor (median phi 0.08) at +92% gates (K=2, `max_open` 3: read polynomial 8×8 → 11×11 monomials); it is what passes the gauntlet's w1/w2/w3 (§5.7). `max_open` 2 balanced is the +10% variant, weaker against two-feature scans. |
 | `min_open` | **2** (2026-09-07) | minimum open masks per data wire at *every* instant between its first and last mask; enforced at every place the count can drop or start low (burst replacements, filler/straddle opens, read top-ups kept) | one open mask is one uniform term, which one visible monomial cancels (§5.7); before the rule 26.5% of covered wire-time (3% on the payload half; 2,398 interior one-mask stretches, median 10.8k gates) sat at one mask. At 2: 0.0% and no interior stretch, for +0.03% gates (extra opens are offset by reads that need no top-up). Must be `< max_open`. |
 | `min_mask` | **auto = `max_open` = 3** | **hard floor** per operand read: quadratic mask terms (quad-fire) / masking wires `\|ρ\|` (legacy) | guarantees no operand is ever read under fewer than 3 masks, even in a rare draw where the open pairs cancel (legacy: measured worst read `\|ρ\|` rises 2 → 4; mean `\|ρ\|` ≈ 5.9 unchanged; +0.2% gates). |
@@ -587,6 +611,73 @@ Running it: `python tests/gauntlet/gauntlet.py all --arms
 none,blindedv5,blindedv5_balanced --ks 64,256 --n-wires 64 --jobs 8`
 (gen + audit stages need only the two Rust binaries; `maps` needs NumPy).
 
+### 5.8 Two-control emission of the fire, and the cost of it (2026-09-08)
+
+The store the mixing stages splice from is a complete ball of `g57` gates: one
+target, **two** controls. A gate with three or more controls matches nothing in
+it, so no splice ever touches it — it passes through phase A, the split and the
+crossing walk as a fixed object, carrying the monomial structure of `C`'s gate
+verbatim. The first quad-fire emission expanded each fire into monomials of
+degree up to 4 and so violated this badly:
+
+| build (n = 128, same C) | 0 ctrl | 1 ctrl | 2 ctrl | 3 ctrl | 4 ctrl |
+|---|---|---|---|---|---|
+| wide monomials (0d81a9f3) | 0.8% | 14.3% | 47.8% | **30.6%** | **6.5%** |
+| scratch-wire product (interim, rejected) | 0.5% | 26.1% | 73.2% | 0.2% | 0 |
+| **borrowed dirty wires (current)** | 0.28% | 6.25% | **93.39%** | **0.08%** | **0** |
+
+The 0.08% left are the sandwich's balanced junk-guard gates (modules 1 and 5),
+not the compute; the compute itself emits nothing above two controls.
+
+**Clean ancillas were the wrong way to do it.** The interim version appended
+four clean scratch wires. Measured: some non-data wire was identically 0 at
+**89.5%** of gate positions, a *function-level* invariant that survives any
+equivalent rewriting, whose non-zero stretches delimit exactly the fire blocks —
+the segmentation that hidden firing (§3) exists to prevent. It also silently
+required the evaluator to zero them: starting them at 1 changed the payload
+output in 4,062 of 8,192 bit positions, i.e. the circuit computed garbage
+without failing. With borrowed dirty wires the same statistic is 0.2%, and that
+residue is only the band before module 2 has seeded it.
+
+**Where the gates go.** Per fire, over 7,920 fires at n = 128 (235 gates each,
+of which 137 write the target and 93 are ancilla borrows):
+
+| term class | gates per fire | share |
+|---|---|---|
+| linear × quadratic (4-gate bracket) | 111.2 | 47% |
+| quadratic × quadratic (8-gate bracket) | 55.6 | 24% |
+| linear × linear (1 gate) | 27.8 | 12% |
+| wire × quadratic (4-gate bracket) | 20.1 | 9% |
+| wire × linear (1 gate) | 10.1 | 4% |
+| constant × everything | 8.5 | 4% |
+| `a'b'`, constant flip | 1.6 | 1% |
+
+Each operand carries ≈ 2.6 open masks; each mask is `1 ⊕ y ⊕ x·y ⊕ z`, so it
+contributes **two** linear terms (`y` from the g57 form, `z` from the balancing
+CNOT) and **one** quadratic term. An operand is therefore ≈ 10 atoms and the
+product ≈ 100 terms; terms with one quadratic factor cost 4 gates and with two
+cost 8, which is why the two quadratic classes are 71% of the fire. The levers,
+should the size matter: `max_open` 2 (≈ 130 gates per fire, but weaker against
+the two-feature scan, §5.7), or a mask with no linear `y` term (≈ 146, at the
+cost of g57-digestibility). `BV5_DIAG=1` prints this census.
+
+**Measurements at n = 128** (2,024,834 gates, 512 wires): forward and reverse
+verify pass, the exhaustive test passes in every configuration, `fire_corr`
+interior median 0.080 with 31 gates ≥ 0.3 and 23 state bits ≥ 0.3 / 9 ≥ 0.5 —
+unchanged from the wide-monomial build — 0 affine relations, 0 bare intervals,
+0.0% of covered wire-time at a single open mask, and the hot manifest lists
+exactly the 512 I/O fringe segments and nothing interior.
+
+**What the two-control requirement costs.** Over five gauntlet instances
+(n = 64, k = 64…68, 16,384 correlation samples) the current build shows w3 flags
+on 3 and 1 targets in two of the five, everything else zero; the wide-monomial
+control is clean on all five. The residual is weak (phi ≈ 0.065 against a 0.047
+threshold) and is plausibly inherent rather than a bug: building a degree-4
+monomial from 2-control gates must materialise the degree-2 partial products as
+gate **flips**, and a flip *is* the product, so unlike a wire value it cannot be
+blinded. The trade is deliberate — wide monomials pass this scan but leave 37%
+of the gadget unspliceable, which is the larger exposure.
+
 ---
 
 ## 6. Tradeoffs and the current choices
@@ -632,12 +723,23 @@ none,blindedv5,blindedv5_balanced --ks 64,256 --n-wires 64 --jobs 8`
   mask is one uniform term, which a single visible monomial cancels (§5.7).
   `max_open` 3 remains the clean build.
 - **Read mode: quad-fire, not linearisation.** Linearising a read is the cheapest
-  way to fire (degree-2 monomials only) but leaves the operand affine in band wires
-  for a window that reordering stretches into the pipeline ridge (§5.0). Firing
-  from inside the quadratic masks costs degree ≤ 4 monomials, needs no
-  linearise/undo bracket, makes the gadget ~12% smaller, and keeps the ridge at
-  the fringe end to end. Repair slots are counter-productive with quad-fire (they
-  close masks around bursts); keep `max_open = 3`.
+  way to fire but leaves the operand affine in band wires for a window that
+  reordering stretches into the pipeline ridge (§5.0). Firing from inside the
+  quadratic masks has no such window, needs no linearise/undo bracket, and keeps
+  the ridge at the fringe end to end. Repair slots are counter-productive with
+  quad-fire (they close masks around bursts); keep `max_open = 3`.
+- **Gate width is a hard constraint, not a cost knob (§5.8).** The mixing store is
+  a `g57` 2-control identity ball, so any gate with 3+ controls is never spliced
+  and survives the pipeline carrying `C`'s structure. The fire is therefore
+  emitted with 2-control gates only, through *borrowed dirty wires* rather than
+  clean ancillas. It costs ~2× the gadget size and a weak residual in the capped
+  three-feature scan; both are the price of being spliceable at all, and the
+  alternative leaves 37% of the gadget untouchable by the mixer. The only
+  3-control gates left in a full gadget are ~0.08%, from the sandwich's balanced
+  junk-guard, not from the compute.
+- **Never a clean ancilla (§5.8).** A wire that is 0 outside the fires is a
+  function-level invariant: mixing cannot hide it, it delimits the fire blocks,
+  and it silently makes the deliverable wrong unless the evaluator zeroes it.
 
 ---
 
@@ -662,7 +764,8 @@ All rerand knobs default to auto (`straddle_slots = m/4K`, `F = 8K`,
 `repair_slots = 0`, `min_mask = max_open`); pass `0` to keep the auto value.
 The `gen_sandwich_gadget`/pipeline path exposes the same knobs as the env vars
 `BV5_K`, `BV5_RERAND` (straddle slots), `BV5_REPAIR`, `BV5_BURST`, `BV5_MIN_MASK`,
-`BV5_MAX_OPEN`, `BV5_MIN_OPEN` (2), `BV5_EXTRA_LGIS`, `BV5_QUAD_FIRE` (default on; `0` = the
+`BV5_MAX_OPEN`, `BV5_MIN_OPEN` (2), `BV5_ANC_POOL` (`band`; `all` also lends data
+wires to the fire), `BV5_EXTRA_LGIS`, `BV5_QUAD_FIRE` (default on; `0` = the
 legacy linearised read, for comparison only), `BV5_BALANCED` (default `1` = balanced
 masks + XOR band seed, §5.6; `0` = plain g57 masks; `BV5_BAL_SEED=0` keeps the AND
 seed with balanced masks), and `BV5_BURST_BANDONLY` (`1` = burst controls from the band only; a

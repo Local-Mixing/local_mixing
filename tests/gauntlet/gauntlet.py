@@ -70,6 +70,15 @@ ARMS: dict[str, dict[str, Any]] = {
         "aux": ("random",),
         "rust_gadget": "bv5bal",
     },
+    # a wider band: the residual three-feature correlation needs the borrowed
+    # partial products to line up with a mask sum, which is only possible because
+    # band wires are mutually correlated; more of them should dilute it
+    "blindedv5_balanced_wideband": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "bv5bal",
+        "gen_args": ("--bv5-band", "256"),
+    },
     # balanced masks with the open-mask cap lowered to 2 (read polynomial back
     # to the plain build's size; every mask term still unbiased)
     "blindedv5_balanced_mo2": {

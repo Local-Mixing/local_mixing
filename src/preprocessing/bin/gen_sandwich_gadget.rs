@@ -489,15 +489,22 @@ fn main() {
         // BV5_BAL_SEED=0 keeps the AND-of-literals seed with balanced masks (diagnostic)
         let bal_seed = std::env::var("BV5_BAL_SEED").map_or(params.balanced, |v| v != "0");
         let band_seed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C, bal_seed);
+        // Module 4: the band RE-SEED after the compute. The five parts are always
+        // five separate modules: the compute's own rerand bursts are masking
+        // hygiene and do NOT discharge stage 4 (see the design doc's "Where it
+        // fits in the pipeline"). Not an inverse of module 2 — the band is junk
+        // at BOTH ports — so it draws a different seed.
+        let band_reseed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0xB00C_5EED, bal_seed);
         println!(
             "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} quad_fire={} balanced={} | {} atoms, \
-             + {} band-seed + {} slice-guard gates each side",
+             + {} band-seed + {} band-reseed + {} slice-guard gates each side",
             params.k, bv5.r_used, params.max_open, params.active_wires, params.quad_fire, params.balanced, bv5.atoms,
-            band_seed.len(), open.gates.len()
+            band_seed.len(), band_reseed.len(), open.gates.len()
         );
         let mut gates = open.gates; // module 1: input slice guard
         gates.extend(band_seed); // module 2: band seed
-        gates.extend(bv5.gates); // modules 3-4: compute + rerand
+        gates.extend(bv5.gates); // module 3: compute
+        gates.extend(band_reseed); // module 4: band re-seed
         gates.extend(close.gates); // module 5: final slice guard
         CnotCircuit {
             gates,

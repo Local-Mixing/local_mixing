@@ -228,6 +228,7 @@ fn main() {
     // bv5 arms: the off-trace encode (pre) and decode (post) LGI gates
     let mut bv5_io: Option<(Vec<XGate>, Vec<XGate>)> = None;
     let mut bv5_max_open = 0usize;
+    let mut bv5_scratch = 0usize; // clean scratch wires at the end of the range
     if matches!(args.gadget.as_str(), "bv5" | "bv5bal") && args.aux != "random" {
         eprintln!(
             "--gadget {} needs --aux random: the band must start uniform (a zero band \
@@ -290,6 +291,7 @@ fn main() {
                 o.post_gates.len(),
                 o.gates.len()
             );
+            bv5_scratch = o.scratch_wires;
             bv5_io = Some((o.pre_gates, o.post_gates));
             CnotCircuit {
                 gates: o.gates,
@@ -557,6 +559,9 @@ fn main() {
                 }
             })
             .collect();
+        // bv5 arms need no clean wires: the fire borrows dirty band wires and
+        // restores them, so nothing here has to start at a known value.
+        debug_assert_eq!(bv5_scratch, 0);
     }
     // x columns: for file mode the holders were split off `state` above;
     // re-derive from x_holders against the PRE-split init copy.
@@ -719,6 +724,7 @@ fn main() {
         push(&mut meta, "encoded_io", "true".to_string());
         push(&mut meta, "bv5_band", (nw - args.n).to_string());
         push(&mut meta, "bv5_max_open", bv5_max_open.to_string());
+        push(&mut meta, "bv5_scratch", bv5_scratch.to_string());
         push(&mut meta, "bv5_pre_gates", pre.len().to_string());
         push(&mut meta, "bv5_post_gates", post.len().to_string());
     }

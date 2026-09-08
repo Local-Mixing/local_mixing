@@ -6,6 +6,8 @@ which the wire has NO open pair (= holds its plaintext), with the trigger
 Usage: bare_census.py <gadget.mpmct1>   (NP=256, BAND=256 for the n=128 sandwich)
 Note: with encoded I/O the pre-opened masks are closed on-trace, which this
 parity census reads as opens; use it on production (plain-I/O) gadgets."""
+import sys, collections
+
 path=sys.argv[1]; NP=256; BAND=256
 L=open(path).read().split("\n"); h=L[0].split(); nw=int(h[1]); L=L[1:]
 G=[]

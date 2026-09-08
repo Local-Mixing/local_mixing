@@ -258,10 +258,48 @@ inferred from these cells.
 
 | file | change |
 |---|---|
-| `src/preprocessing/blinded_v5.rs` | `balanced` (default on), `encoded_io`, `burst_band_only`; six coverage rules; `pre_gates`/`post_gates`; diag counters; exhaustive test extended |
+| `src/preprocessing/blinded_v5.rs` | `balanced` (default on), `encoded_io`, `burst_band_only`, `min_open`; coverage rules; `pre_gates`/`post_gates`; the two-control product fire (§9); diag counters; exhaustive test extended |
 | `src/preprocessing/bin/gen_sandwich_gadget.rs`, `blinded_v5_gadgetize.rs` | env knobs `BV5_BALANCED` (both), `BV5_BAL_SEED` and `BV5_BURST_BANDONLY` (sandwich driver; `max_open` was already `BV5_MAX_OPEN` / positional); balanced band seed |
 | `scripts/gss_mix.sh` | `--bv5-max-open N`, `--bv5-balanced 0\|1`, `--bv5-min-open N` |
 | `red_team_tests/bin/leakage/fire_corr.rs` (+ `Cargo.toml` bin), `red_team_tests/bare_census.py`, `red_team_tests/open_mask_profile.py` | new tools |
 | `tests/gauntlet/gauntlet_gen.rs`, `gauntlet.py`, `gauntlet_audit.rs`, `README.md`, `TESTING_PIPELINE.md` | blinded-V5 arms, `--n-wires`, docs |
 | `docs/BLINDED_V5_LGI_DESIGN.{md,tex,pdf}` | §2 rules, §4 `balanced` row, §5.6–5.7 measurements, §6, §7 |
 | `src/README.md`, `docs/GSS_MIX.md` | compute-stage description and knobs |
+
+## 9. Follow-up: two-control emission of the fire (2026-09-08)
+
+The store the mixing stages splice from is a ball of `g57` gates: one target, **two** controls.
+A gate with three or more controls matches nothing in it, so it is never spliced and passes
+through phase A, the split and the crossing walk carrying `C`'s monomial structure verbatim.
+The quad-fire emission above violated this: expanding each fire into the monomials of the
+operand-polynomial product put **30.6% of the gadget's gates at 3 controls and 6.5% at 4**.
+
+The fire is now emitted with 2-control gates only, using **borrowed dirty wires** for the
+partial products. The identity is `t ^= h∧y; h ^= P∧x; t ^= h∧y; h ^= P∧x`, whose net effect is
+`t ^= P·x·y` for any prior value of `h`, leaving `h` restored; the prior value blinds the
+intermediate for free. Degree-4 terms use the same telescoping trick on two borrowed wires in
+8 gates. Clean ancillas were tried first and rejected: a wire that is 0 outside the fires was
+identically 0 at 89.5% of gate positions, a function-level invariant that survives any
+rewriting and whose non-zero stretches delimit the fire blocks, and it silently required the
+evaluator to zero it (starting it at 1 corrupted 4,062 of 8,192 output bits).
+
+Four rules keep the borrowing safe, each found by measurement: draw the ancilla per term,
+excluding the target, the operands and the term's own wires; never use a wire whose own open
+masks contain the pair being XORed (phi 0.134 when that happened); use cross-operand groupings
+checked against the pairs open anywhere, so no ancilla holds a mask's own quadratic term; and
+draw from the band, since a product XORed onto a masked *data* wire can partially cancel that
+wire's mask (w1 flags in one of three instances).
+
+Result at n = 128: **2,024,834 gates** (2× the wide-monomial build), 512 wires, control
+histogram 0.28 / 6.25 / 93.39 / 0.08 / 0% for 0/1/2/3/4 controls, the 0.08% being the
+sandwich's junk-guard rather than the compute. Forward and reverse verify pass, as does the
+exhaustive test. Leakage is unchanged: `fire_corr` interior median 0.080 with 31 gates ≥ 0.3
+and 23 state bits, 0 affine relations, 0 bare intervals, 0% one-mask wire-time, and the hot
+manifest lists exactly the 512 I/O fringe segments. Over five gauntlet instances the build
+shows weak w3 flags in two (phi ≈ 0.065 against a 0.047 threshold) where the wide-monomial
+control is clean; that residual is plausibly inherent, since any 2-control decomposition must
+materialise the degree-2 partial products as gate flips, and a flip cannot be blinded.
+
+Stage 4 of the five-stage pipeline — the band re-seed after the compute — was specified in the
+design document but never emitted for this compute; it is now a separate module, so the band is
+junk at both ports.

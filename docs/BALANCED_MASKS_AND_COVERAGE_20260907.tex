@@ -299,7 +299,7 @@ outputs rather than inferred from these cells.
 \begin{center}\footnotesize
 \begin{tabular}{@{}p{5.6cm}p{10.2cm}@{}}\toprule
 file & change\\\midrule
-\doc{src/preprocessing/blinded\_v5.rs} & \doc{balanced} (default on), \doc{encoded\_io}, \doc{burst\_band\_only}; six coverage rules; \doc{pre\_gates}/\doc{post\_gates}; diag counters; exhaustive test extended\\
+\doc{src/preprocessing/blinded\_v5.rs} & \doc{balanced} (default on), \doc{encoded\_io}, \doc{burst\_band\_only}, \doc{min\_open}; coverage rules; the two-control product fire (\S9); \doc{pre\_gates}/\doc{post\_gates}; diag counters; exhaustive test extended\\
 \doc{src/preprocessing/bin/}\newline\doc{gen\_sandwich\_gadget.rs}, \doc{blinded\_v5\_gadgetize.rs} & env knobs \doc{BV5\_BALANCED} (both), \doc{BV5\_BAL\_SEED} and \doc{BV5\_BURST\_BANDONLY} (sandwich driver; \doc{max\_open} was already \doc{BV5\_MAX\_OPEN} / positional); balanced band seed\\
 \doc{scripts/gss\_mix.sh} & \doc{--bv5-max-open N}, \doc{--bv5-balanced 0|1}, \doc{--bv5-min-open N}\\
 \doc{red\_team\_tests/bin/leakage/fire\_corr.rs} ($+$ \doc{Cargo.toml} bin), \doc{red\_team\_tests/bare\_census.py}, \doc{red\_team\_tests/open\_mask\_profile.py} & new tools\\
@@ -308,5 +308,46 @@ file & change\\\midrule
 \doc{src/README.md}, \doc{docs/GSS\_MIX.md} & compute-stage description and knobs\\\bottomrule
 \end{tabular}
 \end{center}
+
+\section{Follow-up: two-control emission of the fire (2026-09-08)}
+
+The store the mixing stages splice from is a ball of \g{} gates: one target, \textbf{two}
+controls. A gate with three or more controls matches nothing in it, so it is never spliced and
+passes through phase A, the split and the crossing walk carrying $C$'s monomial structure
+verbatim. The quad-fire emission above violated this: expanding each fire into the monomials of
+the operand-polynomial product put \textbf{30.6\% of the gadget's gates at 3 controls and 6.5\%
+at 4}.
+
+The fire is now emitted with 2-control gates only, using \textbf{borrowed dirty wires} for the
+partial products. The identity is $t \mathrel{\hat{}}= h{\wedge}y$;
+$h \mathrel{\hat{}}= P{\wedge}x$; $t \mathrel{\hat{}}= h{\wedge}y$;
+$h \mathrel{\hat{}}= P{\wedge}x$, whose net effect is $t \mathrel{\hat{}}= P{\cdot}x{\cdot}y$ for
+any prior value of $h$, leaving $h$ restored; the prior value blinds the intermediate for free.
+Degree-4 terms use the same telescoping trick on two borrowed wires in 8 gates. Clean ancillas
+were tried first and rejected: a wire that is 0 outside the fires was identically 0 at 89.5\% of
+gate positions, a function-level invariant that survives any rewriting and whose non-zero
+stretches delimit the fire blocks, and it silently required the evaluator to zero it (starting it
+at 1 corrupted 4,062 of 8,192 output bits).
+
+Four rules keep the borrowing safe, each found by measurement: draw the ancilla per term,
+excluding the target, the operands and the term's own wires; never a wire whose own open masks
+contain the pair being XORed (phi 0.134 when that happened); cross-operand groupings checked
+against the pairs open anywhere, so no ancilla holds a mask's own quadratic term; and draw from
+the band, since a product XORed onto a masked \emph{data} wire can partially cancel that wire's
+mask (w1 flags in one of three instances).
+
+Result at $n=128$: \textbf{2,024,834 gates}, 512 wires, control histogram 0.28 / 6.25 / 93.39 /
+0.08 / 0\% for 0/1/2/3/4 controls, the 0.08\% being the sandwich's junk-guard rather than the
+compute. Forward and reverse verify pass, as does the exhaustive test. Leakage is unchanged:
+\doc{fire\_corr} interior median 0.080 with 31 gates $\ge0.3$ and 23 state bits, 0 affine
+relations, 0 bare intervals, 0\% one-mask wire-time, and the hot manifest lists exactly the 512
+I/O fringe segments. Over five gauntlet instances the build shows weak w3 flags in two (phi
+${\approx}0.065$ against a 0.047 threshold) where the wide-monomial control is clean; that
+residual is plausibly inherent, since any 2-control decomposition must materialise the degree-2
+partial products as gate flips, and a flip cannot be blinded.
+
+Stage 4 of the five-stage pipeline --- the band re-seed after the compute --- was specified in
+the design document but never emitted for this compute; it is now a separate module, so the band
+is junk at both ports.
 
 \end{document}
