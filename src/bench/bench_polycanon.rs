@@ -3,10 +3,10 @@ use local_mixing::circuit::circuit::{
     Monomial, Permutation, Polynomial, polynomial_from_terms, trim_canonicalized,
 };
 use local_mixing::random::random_data::random_circuit;
-use xxhash_rust::xxh3::Xxh3Default;
 use std::collections::{HashMap, HashSet};
 use std::hint::black_box;
 use std::time::Instant;
+use xxhash_rust::xxh3::Xxh3Default;
 
 const K: usize = 5;
 const VARIANT: &str = "wl";

@@ -1,7 +1,7 @@
 use std::{cmp::min, collections::HashSet};
 
-use primitive_types::U256;
 use clap::Parser;
+use primitive_types::U256;
 
 #[derive(Debug)]
 struct Wire {
@@ -28,7 +28,10 @@ impl Wire {
 
         let max_mono = U256::one() << self.influence_wires.len();
 
-        self.monos = min(max_mono, U256::one() + self.monos + c1.monos + c1.monos * c2.monos);
+        self.monos = min(
+            max_mono,
+            U256::one() + self.monos + c1.monos + c1.monos * c2.monos,
+        );
     }
 }
 

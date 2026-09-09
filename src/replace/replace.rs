@@ -355,7 +355,7 @@ pub fn compress_loop(
         }
 
         if SHOULD_DUMP.load(Relaxed) {
-            break
+            break;
         }
     }
     acc

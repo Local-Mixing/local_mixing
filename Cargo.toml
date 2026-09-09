@@ -20,6 +20,58 @@ path = "src/bench/bench_canon4.rs"
 name = "bench_polycanon"
 path = "src/bench/bench_polycanon.rs"
 
+[[bin]]
+name = "sandwich_obf"
+path = "src/bin/sandwich_obf.rs"
+
+[[bin]]
+name = "gen_lowweight_challenge"
+path = "src/bin/gen_lowweight_challenge.rs"
+
+[[bin]]
+name = "attack_lowweight"
+path = "src/bin/attack_lowweight.rs"
+
+[[bin]]
+name = "attack_lowweight_plain"
+path = "src/bin/attack_lowweight_plain.rs"
+
+[[bin]]
+name = "attack_lowweight_struct"
+path = "src/bin/attack_lowweight_struct.rs"
+
+[[bin]]
+name = "attack_lowweight_gray"
+path = "src/bin/attack_lowweight_gray.rs"
+
+[[bin]]
+name = "attack_lowweight128"
+path = "src/bin/attack_lowweight128.rs"
+
+[[bin]]
+name = "attack_lowweight_cnf"
+path = "src/bin/attack_lowweight_cnf.rs"
+
+[[bin]]
+name = "attack_lowweight_kill"
+path = "src/bin/attack_lowweight_kill.rs"
+
+[[bin]]
+name = "attack_lowweight_enum"
+path = "src/bin/attack_lowweight_enum.rs"
+
+[[bin]]
+name = "attack_lowweight_support"
+path = "src/bin/attack_lowweight_support.rs"
+
+[[bin]]
+name = "attack_lowweight_plain_cnf"
+path = "src/bin/attack_lowweight_plain_cnf.rs"
+
+[[bin]]
+name = "eval_lowweight"
+path = "src/bin/eval_lowweight.rs"
+
 [profile.release]
 overflow-checks = true
 
@@ -50,3 +102,23 @@ rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }
 rustc-hash = "2"
 indicatif = "0.17"
+
+[[bin]]
+name = "dump_ones"
+path = "src/bin/dump_ones.rs"
+
+[[bin]]
+name = "dump_s8_exact11"
+path = "src/bin/dump_s8_exact11.rs"
+
+[[bin]]
+name = "check_plain_obf"
+path = "src/bin/check_plain_obf.rs"
+
+[[bin]]
+name = "sandwich_viz_export"
+path = "src/bin/sandwich_viz_export.rs"
+
+[[bin]]
+name = "attack_partial_zero"
+path = "src/bin/attack_partial_zero.rs"
