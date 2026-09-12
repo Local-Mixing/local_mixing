@@ -1,6 +1,6 @@
 import unittest
 
-from gadgetization import export_templates
+from security_tests.gadgetization import export_templates
 
 
 class TopologyTemplateTests(unittest.TestCase):
@@ -8,7 +8,8 @@ class TopologyTemplateTests(unittest.TestCase):
         expected = export_templates.render_all_templates()
         actual = {
             path.name: path.read_text(encoding="ascii")
-            for path in export_templates.TEMPLATE_DIR.glob("*.mpmct1")
+            for directory in export_templates.TEMPLATE_DIRECTORIES
+            for path in directory.glob("*.mpmct1")
         }
         self.assertEqual(actual, expected)
 

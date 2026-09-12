@@ -106,7 +106,6 @@ pub struct Arena {
 impl Arena {
     pub fn from_gates(gs: Vec<XGate>) -> Arena {
         let n = gs.len();
-        assert!(n > 0, "empty circuit");
         let mut masks: Vec<GateMask> = Vec::with_capacity(n);
         let mut masks_ok = true;
         for g in &gs {
@@ -128,8 +127,8 @@ impl Arena {
                 .collect(),
             stamp: vec![0; n],
             linked: vec![true; n],
-            head: 0,
-            tail: (n - 1) as u32,
+            head: if n == 0 { NIL } else { 0 },
+            tail: n.checked_sub(1).map_or(NIL, |i| i as u32),
             len: n,
             free: Vec::new(),
             masks,

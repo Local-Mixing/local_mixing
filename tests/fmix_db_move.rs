@@ -6,33 +6,25 @@
 //! enabled. Asserts the move fires and never breaks equivalence.
 
 use lmdb::Transaction;
+
+// Compile the dependency-light fixture builder only into this integration test.
+#[path = "../db_gen/frozen_build.rs"]
+#[allow(dead_code)] // This fixture uses the writer/validator subset of the offline builder.
+mod frozen_build;
+use frozen_build::{LmdbShards, stage_tables, stage_validate, stage_write};
 use local_mixing::circuit::polys_repr_blob;
 use local_mixing::circuit::xgate::{XGate, eval_lanes};
-use local_mixing::db_generation::frozen_build::{
-    LmdbShards, stage_tables, stage_validate, stage_write,
-};
+#[cfg(feature = "legacy-db-tools")]
+use local_mixing::db_generation;
 use local_mixing::db_mixing::db_replace::DbMode;
 use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::mix::{MixParams, Mixer};
+use local_mixing::engine::mix::{MixParams, MixStop, Mixer, PieceCfg, run_piecewise};
 use local_mixing::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
 use xxhash_rust::xxh3::xxh3_128;
 
 fn key_of(window: &[XGate], reversed: bool) -> [u8; 16] {
     let c = canonicalize_xgates_single(window, reversed, XPolyBudget::default()).unwrap();
     xxh3_128(&polys_repr_blob(&c.polys)).to_le_bytes()
-}
-
-// A circuit computes identity iff every input maps to itself.
-fn is_identity(gates: &[XGate], n: usize) -> bool {
-    for input in 0..(1u64 << n) {
-        let mut lanes: Vec<u64> = (0..n).map(|w| (input >> w) & 1).collect();
-        eval_lanes(gates.iter(), &mut lanes);
-        let out = (0..n).fold(0u64, |a, w| a | ((lanes[w] & 1) << w));
-        if out != input {
-            return false;
-        }
-    }
-    true
 }
 
 #[test]
@@ -207,6 +199,67 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
         "size-agnostic DB move never fired"
     );
     check_equiv(&mixer.arena.to_vec(), "size-agnostic");
+
+    // --- (3) PIECEWISE rounds: three pieces on a 4-thread pool share ONE
+    // open store handle, the compressing move fires inside the pieces, and
+    // the concatenation stays equivalent to the input through every round
+    // (the whole-circuit mixer verifies it after each one). ---
+    let params = MixParams {
+        p_comp: 1.0,
+        db_verify: true,
+        moves: 4_000,
+        ..base_params()
+    };
+    let block_size = input.len() / 3;
+    for (label, cfg) in [
+        (
+            "fixed pieces",
+            PieceCfg {
+                pieces: 3,
+                round_eff: 2.0,
+                threads: 4,
+                ..PieceCfg::default()
+            },
+        ),
+        (
+            "automatic pieces",
+            PieceCfg {
+                min_block_size: Some(block_size),
+                round_eff: 2.0,
+                threads: 4,
+                ..PieceCfg::default()
+            },
+        ),
+    ] {
+        let mut w = Mixer::new_with_db(
+            input.clone(),
+            n_wires,
+            params.clone(),
+            FrozenDb::open(fd, None),
+        );
+        let stop = run_piecewise(&mut w, &cfg);
+        assert!(
+            matches!(stop, MixStop::MovesBudget),
+            "{label} must spend the moves budget"
+        );
+        assert!(
+            w.counters.db_comp_hits > 0,
+            "{label}: compressing DB move never fired"
+        );
+        assert!(
+            w.moves_done >= 4_000,
+            "{label}: merged clock missed the budget"
+        );
+        let out = w.arena.to_vec();
+        assert!(out.len() < input.len(), "{label}: circuit did not contract");
+        if cfg.min_block_size.is_some() {
+            assert!(
+                out.len() / block_size < input.len() / block_size,
+                "automatic fixture must shrink far enough to change the nominal count"
+            );
+        }
+        check_equiv(&out, label);
+    }
 
     let _ = std::fs::remove_dir_all(&base);
 }

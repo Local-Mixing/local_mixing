@@ -7,9 +7,14 @@
 //! for random absent keys.
 
 use lmdb::Transaction;
-use local_mixing::db_generation::frozen_build::{
-    LmdbShards, stage_tables, stage_validate, stage_write,
-};
+
+// Compile the dependency-light fixture builder only into this integration test.
+#[path = "../db_gen/frozen_build.rs"]
+#[allow(dead_code)] // This fixture uses the writer/validator subset of the offline builder.
+mod frozen_build;
+use frozen_build::{LmdbShards, stage_tables, stage_validate, stage_write};
+#[cfg(feature = "legacy-db-tools")]
+use local_mixing::db_generation;
 use local_mixing::db_mixing::frozen::FrozenDb;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};

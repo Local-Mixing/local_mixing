@@ -13,10 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pyo3 needs a Python interpreter at build time to compile the cdylib.
+      # Test against the minimum supported Python version in pyproject.toml.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.10"
 
       # Installs the toolchain pinned in rust-toolchain.toml (rustc + rustfmt + clippy).
       # `rustup toolchain install` with no args reads rust-toolchain.toml; the old
@@ -33,14 +33,63 @@ jobs:
       # Fails on clippy *errors* (e.g. correctness lints). Pre-existing style
       # warnings are allowed for now (no `-D warnings`); tighten later if desired.
       - name: Clippy
-        run: cargo clippy
+        run: cargo clippy --locked
 
       - name: Build
-        run: cargo build
+        run: cargo build --locked
+
+      - name: Check ordinary runtime dependencies
+        run: |
+          cargo tree --locked --no-default-features --edges normal --prefix none > /tmp/runtime-dependencies.txt
+          python - <<'PY'
+          from pathlib import Path
+          names = {line.split()[0] for line in Path('/tmp/runtime-dependencies.txt').read_text().splitlines() if line.strip()}
+          assert not names.intersection({'rocksdb', 'librocksdb-sys', 'rhai', 'pyo3', 'numpy', 'lmdb', 'lmdb-sys'}), names
+          PY
+
+      - name: Runtime and command correctness
+        run: cargo test --locked --lib --test circuit_cli
+
+      - name: GSS script flags and block sizing
+        run: |
+          bash tests/gss_flags.bash
+          bash tests/gss_block_size.bash
+
+      - name: Nonlinear comparison correctness
+        run: |
+          python -m security_tests.gadgetization.export_templates --check
+          python -m unittest discover -s tests/gadgetization -v
+
+      - name: Frozen database correctness tests
+        run: cargo test --locked --test frozen_roundtrip --test fmix_db_move
 
       # The RocksDB-backed db_generation builders (build_curated_full,
       # merge_rocks_parallel, the regular generator, and curated censuses) only
-      # compile with this feature; check-only to keep the librocksdb compile cost
-      # down (rust-cache keeps it warm after the first run).
-      - name: Check legacy-db-tools feature
-        run: cargo check --features legacy-db-tools
+      # compile with this feature. Check the retained tools without running
+      # database generation or historical experiments.
+      - name: Check database tools
+        run: cargo check --locked --features db-tools
+
+      - name: Check retained security, challenge and benchmark tools
+        run: cargo check --locked --all-targets --features "db-tools security-tools challenge-tools benchmark-tools"
+
+      - name: Legacy configuration and command compatibility
+        run: |
+          cargo test --locked --lib --features legacy-tools gss::tests
+          cargo test --locked --bin legacy_mixing --features legacy-tools
+
+      - name: Build and install Python extension
+        run: python -m pip install .
+
+      - name: Check Python heatmap API
+        run: |
+          python - <<'PY'
+          import local_mixing
+
+          for name in (
+              "heatmap", "heatmap_subsampled", "heatmap_incremental",
+              "heatmap_small", "heatmap_slice", "heatmap_mini_slice",
+              "heatmap_corner", "heatmap_corner_at",
+          ):
+              assert callable(getattr(local_mixing, name)), name
+          PY

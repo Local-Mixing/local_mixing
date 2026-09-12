@@ -11,10 +11,10 @@
 //   fmix_stats --input cdcnot_m3000_sm50_fmix_s1.txt \
 //     --origins cdcnot_m3000_sm50_fmix_s1.origins.txt
 use clap::Parser;
+use local_mixing::circuit::xgate::{XGate, max_wire};
 use local_mixing::engine::format;
 use local_mixing::engine::mix::ORIGIN_SYNTH;
 use local_mixing::engine::stats;
-use local_mixing::circuit::xgate::{XGate, max_wire};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -51,16 +51,29 @@ struct Args {
 }
 
 fn hist_line(counts: &[u64]) -> String {
-    counts.iter().enumerate().map(|(i, c)| format!("{i}:{c}")).collect::<Vec<_>>().join(" ")
+    counts
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{i}:{c}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // Bucket a value into 0..=8 exact, then doubling ranges.
 fn bucket_of(v: usize) -> usize {
-    if v <= 8 { v } else { 9 + (usize::BITS - (v - 1).leading_zeros()) as usize - 4 }
+    if v <= 8 {
+        v
+    } else {
+        9 + (usize::BITS - (v - 1).leading_zeros()) as usize - 4
+    }
 }
 
 fn bucket_label(b: usize) -> String {
-    if b <= 8 { format!("{b}") } else { format!("{}-{}", (1usize << (b - 6)) + 1, 1usize << (b - 5)) }
+    if b <= 8 {
+        format!("{b}")
+    } else {
+        format!("{}-{}", (1usize << (b - 6)) + 1, 1usize << (b - 5))
+    }
 }
 
 fn bucket_hist(values: impl Iterator<Item = usize>) -> Vec<u64> {
@@ -76,7 +89,11 @@ fn bucket_hist(values: impl Iterator<Item = usize>) -> Vec<u64> {
 }
 
 fn bucket_hist_line(h: &[u64]) -> String {
-    h.iter().enumerate().map(|(b, c)| format!("{}:{c}", bucket_label(b))).collect::<Vec<_>>().join(" ")
+    h.iter()
+        .enumerate()
+        .map(|(b, c)| format!("{}:{c}", bucket_label(b)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn main() {
@@ -93,7 +110,10 @@ fn main() {
     let wires = file_wires.max(max_wire(&gates) as usize + 1);
     let n = gates.len();
     let comp = gates.iter().filter(|g| g.comp).count();
-    println!("[fstats] file={} gates={} wires={} comp={}", args.input, n, wires, comp);
+    println!(
+        "[fstats] file={} gates={} wires={} comp={}",
+        args.input, n, wires, comp
+    );
 
     // Width / polarity.
     let max_w = gates.iter().map(|g| g.width()).max().unwrap_or(0);
@@ -107,7 +127,11 @@ fn main() {
     println!(
         "[fstats] width mean={:.3} neg_frac={:.4} hist[{}]",
         lits as f64 / n as f64,
-        if lits == 0 { 0.0 } else { neg as f64 / lits as f64 },
+        if lits == 0 {
+            0.0
+        } else {
+            neg as f64 / lits as f64
+        },
         hist_line(&width_hist)
     );
 
@@ -151,8 +175,11 @@ fn main() {
     // Origin metrics.
     if let Some(path) = &args.origins {
         let s = std::fs::read_to_string(path).expect("read origins sidecar");
-        let origins: Vec<u32> =
-            s.lines().filter(|l| !l.is_empty()).map(|l| l.parse().expect("origin line")).collect();
+        let origins: Vec<u32> = s
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.parse().expect("origin line"))
+            .collect();
         assert_eq!(origins.len(), n, "origins sidecar length != gate count");
         let real = origins.iter().filter(|&&o| o != ORIGIN_SYNTH).count();
         println!(
@@ -164,7 +191,9 @@ fn main() {
             stats::adjacent_origin_autocorr(&origins),
             stats::window_origin_diversity(&origins, args.span_samples, &mut rng),
         );
-        let sref = args.spread_ref.unwrap_or(4.0 * wires as f64 * (wires as f64).log2());
+        let sref = args
+            .spread_ref
+            .unwrap_or(4.0 * wires as f64 * (wires as f64).log2());
         let qs = [0.05, 0.25, 0.50, 0.75, 0.95];
         let (single_frac, quants, below) = stats::origin_spread_quantiles(&origins, &qs, sref);
         println!(
@@ -197,7 +226,11 @@ fn main() {
 
     // Window wire-span, with the same-slot-count random baseline.
     let mean_support = (lits as f64 + n as f64) / n as f64;
-    for w in args.span_windows.split(',').filter_map(|t| t.trim().parse::<usize>().ok()) {
+    for w in args
+        .span_windows
+        .split(',')
+        .filter_map(|t| t.trim().parse::<usize>().ok())
+    {
         let (mean, mn, mx) = stats::window_wire_span(&gates, wires, w, args.span_samples, &mut rng);
         let slots = w as f64 * mean_support;
         let rand_baseline = wires as f64 * (1.0 - (1.0 - 1.0 / wires as f64).powf(slots));

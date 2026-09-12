@@ -713,6 +713,7 @@ dependencies = [
  "serde",
  "signal-hook",
  "smallvec",
+ "toml_edit",
  "uint",
  "xorf",
  "xxhash-rust",

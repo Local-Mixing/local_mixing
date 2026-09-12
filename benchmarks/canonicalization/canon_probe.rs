@@ -9,10 +9,16 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: canon_probe <circuit.txt>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: canon_probe <circuit.txt>");
     let s = std::fs::read_to_string(&path).expect("read circuit");
     let c = CircuitSeq::from_string(&s);
-    eprintln!("loaded {} gates, {} used wires", c.gates.len(), c.used_wires().len());
+    eprintln!(
+        "loaded {} gates, {} used wires",
+        c.gates.len(),
+        c.used_wires().len()
+    );
 
     let c0 = CANON4_RULE_L_CALLS.load(Relaxed);
     let b0 = CANON4_RULE_L_BRANCHES.load(Relaxed);
@@ -39,7 +45,20 @@ fn main() {
     let rl_time_ns = CANON4_RULE_L_TIME.load(Relaxed) - t0;
 
     println!("total_elapsed_ms={}", elapsed.as_millis());
-    println!("rule_l_calls={} rule_l_branches={} rule_l_time_ms={}", calls, branches, rl_time_ns / 1_000_000);
-    println!("rule_l_fraction_of_total={:.3}", rl_time_ns as f64 / elapsed.as_nanos().max(1) as f64);
-    println!("result_polys={} (empty={}) used_wires={}", polys.len(), polys.is_empty(), used.len());
+    println!(
+        "rule_l_calls={} rule_l_branches={} rule_l_time_ms={}",
+        calls,
+        branches,
+        rl_time_ns / 1_000_000
+    );
+    println!(
+        "rule_l_fraction_of_total={:.3}",
+        rl_time_ns as f64 / elapsed.as_nanos().max(1) as f64
+    );
+    println!(
+        "result_polys={} (empty={}) used_wires={}",
+        polys.len(),
+        polys.is_empty(),
+        used.len()
+    );
 }

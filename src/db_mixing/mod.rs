@@ -1,27 +1,41 @@
-// Pipeline stage 3 — DB mixing (phase A) and the frozen replacement store's
-// runtime read path.
-//
-// frozen.rs is the immutable frozen-store reader (FROZEN_DB_DIR /
-// FROZEN_CURATED_DIR); db_replace.rs is the fmix DB splice channel that keys
-// heterogeneous windows against it. The remaining modules are the sss/ssg
-// shuffle-shoot-shuffle replacement game (the older DB-mixing driver, still
-// maintained): main_mix / main_mix_cnot are the round-loop drivers invoked by
-// the sss subcommand, replace.rs the expand/compress engine, pairs.rs the
-// window replacement primitives, transpositions.rs the SAMF + shooting game,
-// ranking.rs / sat_score.rs candidate selection, segcircuit.rs chunked
-// storage, util.rs shared odds and ends.
-//
-// Entry binary: bin/fmix.rs (phase A via --gss --phase-a; its --split /
-// --resume modes belong to postprocessing but share this engine).
+//! GSS db_mixing and the immutable replacement-store runtime.
+
+// Compatibility names; algorithms and storage each have a single owner.
+pub use crate::database::{frozen, lookup_cache};
+pub use crate::stages::db_mixing::{leakage_repair as quality, replacement as db_replace};
+
+// Historical mixing drivers remain available to explicit comparison builds.
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/convex.rs"]
 pub mod convex;
-pub mod db_replace;
-pub mod frozen;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/main_mix.rs"]
 pub mod main_mix;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/main_mix_cnot.rs"]
 pub mod main_mix_cnot;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/pairs.rs"]
 pub mod pairs;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/ranking.rs"]
 pub mod ranking;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/replace.rs"]
 pub mod replace;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/sat_score.rs"]
 pub mod sat_score;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/segcircuit.rs"]
 pub mod segcircuit;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/transpositions.rs"]
 pub mod transpositions;
+#[cfg(feature = "legacy-tools")]
+#[path = "../../security_tests/support/db_mixing/util.rs"]
 pub mod util;
+
+#[cfg(feature = "legacy-db-tools")]
+#[path = "../../db_gen/support/wide_db.rs"]
+pub mod wide_db;

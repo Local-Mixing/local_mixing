@@ -1,11 +1,5 @@
-// Postprocessing stages 4-6 — structure breaking and the final pass: the
-// production split stage (fmix --split), the crossing walk (fmix --resume),
-// and fcompress.
-//
-// `splitting` owns production GSS Stage 4, `cross_walk` owns the production
-// Stage-5 crossing/undo/merge walk, and `compress` owns the attacker-computable
-// greedy Stage-6 compressor. Alternative walks live under `experimental`.
-pub mod compress;
-pub mod cross_walk;
-pub mod downhill;
-pub mod splitting;
+//! Compatibility exports for callers predating the stage ownership layout.
+//! New code uses `stages::post_processing`.
+pub use crate::stages::post_processing::compression as compress;
+pub use crate::stages::post_processing::compression::downhill;
+pub use crate::stages::post_processing::{crossing as cross_walk, splitting};

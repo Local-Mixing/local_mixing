@@ -1,0 +1,4 @@
+# tag	rounds	m	x	collision_rounds	precompression_timeout_seconds	total_timeout_seconds
+c02_r1_m1_x10000_cr1	1	1	10000	1	900	5400
+c07_r1_m1_x5000_cr4	1	1	5000	4	1800	7200
+c12_r1_m2_x10000_cr1	1	2	10000	1	900	5400

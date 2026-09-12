@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from gadgetization import nonlinear193, nonlinear291
+from security_tests.gadgetization import nonlinear193, nonlinear291
 
 
 def run_direct_dirty_gadget(module, scratch2):

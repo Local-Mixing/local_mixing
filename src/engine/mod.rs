@@ -1,16 +1,20 @@
-// Shared state and equivalence-walk machinery behind fmix. One Mixer drives
-// every mode, while stage-specific algorithms live with their pipeline stage:
-// Phase A's splice channel is in db_mixing::db_replace, production Stage-4
-// splitting is in postprocessing::splitting, the Stage-5 crossing walk is in
-// postprocessing::cross_walk, and final compression is in
-// postprocessing::compress.
+//! Shared mutable circuit state, scheduling, checkpoints and primitive moves.
+//! Stage algorithms live under crate::stages; old module names forward below.
 pub mod arena;
-pub mod format;
-pub mod mix;
-pub mod rules;
+#[doc(hidden)]
+pub use crate::circuit::formats as format;
+pub mod mixer;
+#[doc(hidden)]
+pub use mixer as mix;
+pub mod moves;
+#[cfg(feature = "legacy-db-tools")]
+#[path = "../../db_gen/support/mpx1.rs"]
+pub mod mpx1;
+#[doc(hidden)]
+pub use moves::{rules, swap_words};
 pub mod stats;
-pub mod swap_words;
-pub mod xpoly;
+#[doc(hidden)]
+pub use crate::canonicalization::xgate as xpoly;
 
 // Compatibility path for callers that predate XGate's move into the shared
 // circuit layer. New code should import `crate::circuit::xgate`.
@@ -18,4 +22,5 @@ pub mod xpoly;
 pub use crate::circuit::xgate;
 
 #[cfg(test)]
+#[path = "../../tests/unit/engine.rs"]
 mod tests;

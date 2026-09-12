@@ -1,0 +1,56 @@
+# GSS operator recipe. Paths are relative to the repository root.
+# Copy to configs/local.toml for local paths/settings; local*.toml is ignored.
+config_version = 1
+
+[run]
+# directory = "runs/my-run"  # omit for a fresh timestamped run
+build_binaries = true
+# build_directory = "target"  # defaults to CARGO_TARGET_DIR or target
+stop_after_stage = 6
+# rerun_from_stage = 4  # deliberately redo this and later stages
+
+[source]
+wires = 128
+# gates = 6272  # default: round(n * log2(n)^2)
+# path = "circuits/source.g57"  # load C and infer its gate count; omit for random C
+
+[database]
+# regular_dir = "/path/to/frozen"  # alternatively set FROZEN_DB_DIR
+# curated_dir = "/path/to/curated"  # alternatively set FROZEN_CURATED_DIR
+# curated_control_order = "native"  # decoded control order; legacy-swapped-controls is for old stores
+lookup_miss_filter = "auto"  # in-memory lookup miss filter; auto enables at >=60 GiB available RAM
+allow_no_database_for_tests = false  # true allows no-DB tests and disables DB replacements
+
+[preprocessing]
+mode = "quadratic-masking"  # ran-balanced, blinded-v5 and blinded_v5 remain aliases
+mask_pair_wires = 2
+max_open_masks = 3
+min_open_masks = 2
+balanced_masks = true
+# Classic sandwich, balanced masks, quadratic fire, band helper ancillas, no encoded I/O.
+
+[db_mixing]
+target_size_factor = 2.0
+hold_work_units = 27.0  # profile 3,30,30,2,2
+
+[parallel]
+# pieces = 4  # omit for serial execution
+# target_piece_gates = 100000  # automatic sizing; mutually exclusive with pieces
+# threads = 5  # only with pieces > 1 or automatic sizing
+
+[leakage_repair]
+# Optional sampled leakage audit and equivalent circuit repair after db_mixing.
+enabled = false
+# seed = 20803
+# reference = "circuits/reference.mpmct1"  # defaults to db_mixing input; requires matching coordinates
+
+[crossing]
+target_size_factor = 2.0
+width_penalty_base = 3.0
+width_penalty_threshold = 1
+size_tolerance_divisor = 25
+# move_attempts = 1000000  # default: 6 * target size
+
+[calibration]
+enabled = false
+# seed_file = "/private/path/seed"  # requires enabled = true; never put a seed here
