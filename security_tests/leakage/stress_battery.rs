@@ -46,8 +46,8 @@
 //!       [--out report_prefix]
 
 use clap::Parser;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};

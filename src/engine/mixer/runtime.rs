@@ -1,34 +1,34 @@
-//! Optional resolved runtime controls, with an explicit lazy legacy adapter.
+//! Mixer runtime controls from the process environment or explicit options.
 use super::*;
 
 #[derive(Clone)]
 pub(super) enum RuntimeControls {
-    LegacyEnvironment,
+    Environment,
     Resolved(Arc<MixRuntimeOptions>),
 }
 
 impl RuntimeControls {
     pub(super) fn twist_slide(&self) -> bool {
         match self {
-            Self::LegacyEnvironment => legacy_environment::tg_slide_on(),
+            Self::Environment => environment::tg_slide_on(),
             Self::Resolved(options) => options.twist_g57_slide,
         }
     }
     pub(super) fn twist_retry(&self) -> bool {
         match self {
-            Self::LegacyEnvironment => legacy_environment::tg_retry_on(),
+            Self::Environment => environment::tg_retry_on(),
             Self::Resolved(options) => options.twist_g57_retry,
         }
     }
     pub(super) fn stop_at_phase(&self) -> Option<u32> {
         match self {
-            Self::LegacyEnvironment => legacy_environment::stop_at_phase(),
+            Self::Environment => environment::stop_at_phase(),
             Self::Resolved(options) => options.stop_at_phase,
         }
     }
     pub(super) fn reference_db(&self) -> Option<&FrozenDb> {
         match self {
-            Self::LegacyEnvironment => legacy_environment::reference_db(),
+            Self::Environment => environment::reference_db(),
             Self::Resolved(options) => options.reference_db.as_deref(),
         }
     }
@@ -36,7 +36,7 @@ impl RuntimeControls {
 
 impl Mixer {
     /// Construct with an explicit store and resolved twist, phase-stop and
-    /// reference-store controls. Database-backed walks retain the historical
+    /// reference-store controls. Database-backed walks retain the default
     /// replacement/cache policy; use the explicit replacement APIs when that
     /// policy must also be supplied without environment configuration.
     pub fn new_with_runtime_options(

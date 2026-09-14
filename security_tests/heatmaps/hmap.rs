@@ -16,8 +16,8 @@
 //   hmap --c A.txt --d final.txt --c-step 10 --d-start 0   --d-end 50000 --d-step 25 --out first50k
 //   hmap --c A.txt --d final.txt --c-step 10 --d-from-end 50000 --d-step 25 --out last50k
 use clap::Parser;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

@@ -256,7 +256,7 @@ impl MixCounters {
     }
 }
 // v2 (2026-08-05): the split-stage scalar line and the staps (canary) section
-// (docs/FMIX_SPLIT_TWIST.md §7). The reader still accepts v1, defaulting both.
+// The reader still accepts v1, defaulting both.
 pub const STATE_VERSION: u32 = 2;
 
 impl Mixer {

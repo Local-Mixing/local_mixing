@@ -23,8 +23,8 @@
 //! not a per-gadget relation.
 //!
 //!   flip_match --source <s.mpmct1> --pred <p.mpmct1> [--samples N] [--kwin K]
+use local_mixing::circuit::formats::read_mpmct;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::read_mpmct;
 use std::collections::HashMap;
 
 fn seed(nw: usize, xs: &[u128], blk: usize) -> Vec<u64> {

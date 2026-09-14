@@ -18,8 +18,8 @@
 // Writes C and C' as mpmct1 and verifies functional equality on sampled
 // inputs before exiting.
 use clap::Parser;
+use local_mixing::circuit::formats::write_mpmct;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::write_mpmct;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

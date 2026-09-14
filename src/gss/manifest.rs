@@ -2,6 +2,7 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 7;
 
 pub(crate) fn prepare_recipe_manifest(
     config: &ResolvedConfig,
@@ -15,7 +16,7 @@ pub(crate) fn prepare_recipe_manifest(
             script.display()
         ))
     })?;
-    let mut desired = recipe_manifest(config, &fingerprints, script_hash);
+    let desired = recipe_manifest(config, &fingerprints, script_hash);
     fs::create_dir_all(&config.run_dir).map_err(|error| {
         GssError::io(format!(
             "cannot create run_dir {}: {error}",
@@ -27,14 +28,6 @@ pub(crate) fn prepare_recipe_manifest(
         return compare_recipe_manifest(&path, &desired);
     }
 
-    if fs::metadata(config.run_dir.join("SEED"))
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-    {
-        eprintln!(
-            "[gss] WARNING: adopting an existing pre-wrapper run; its earlier recipe and binary identities cannot be independently verified"
-        );
-        desired.push_str("adopted_unverified=true\n");
-    }
     match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(mut file) => {
             file.write_all(desired.as_bytes()).map_err(|error| {
@@ -178,7 +171,7 @@ pub(crate) fn recipe_manifest(
             "frozen_db_dir={}\n",
             "frozen_curated_dir={}\n",
             "curated_value_convention={}\n",
-            "{}={}\n",
+            "preprocessing_mode={}\n",
             "production_preset={}\n",
             "post_fragment={}\n",
             "mcd={}\n",
@@ -199,22 +192,10 @@ pub(crate) fn recipe_manifest(
         path_or_unset(&config.frozen_db.path),
         path_or_unset(&config.frozen_curated.path),
         config.curated_value_convention,
-        if config.recipe_version >= 7 {
-            "preprocessing_mode"
-        } else {
-            "gadgetization_mode"
-        },
-        config.preprocessing_mode.for_recipe(config.recipe_version),
-        if config.preprocessing_mode == RecipePreprocessingMode::Product2223 {
-            config.production_preset.as_str()
-        } else {
-            "not-applicable"
-        },
-        if config.preprocessing_mode == RecipePreprocessingMode::Product2223 {
-            config.post_fragment.as_deref().unwrap_or("preset-default")
-        } else {
-            "not-applicable"
-        },
+        config.preprocessing_mode.canonical_name(),
+        // These fixed fields preserve the v7 manifest layout for saved runs.
+        "not-applicable",
+        "not-applicable",
         config.mcd.as_deref().unwrap_or("derived"),
         config.expand.as_deref().unwrap_or("2"),
         config.hold.as_deref().unwrap_or("30"),
@@ -231,16 +212,10 @@ pub(crate) fn recipe_manifest(
         config.allow_empty_store,
         config.calibration_only,
     );
-    if config.recipe_version >= 4 {
+    {
         use std::fmt::Write as _;
         let _ = writeln!(manifest, "sandwich_variant=classic");
-        if config.recipe_version <= 6 {
-            let _ = writeln!(
-                manifest,
-                "bv5_k={}\nbv5_max_open={}\nbv5_min_open={}\nbv5_balanced=1\nbv5_quad_fire=1\nbv5_extra_lgis=0\nbv5_encoded_io=false",
-                config.bv5_k, config.bv5_max_open, config.bv5_min_open
-            );
-        } else if config.preprocessing_mode == RecipePreprocessingMode::QuadraticMasking {
+        if config.preprocessing_mode == PreprocessingMode::QuadraticMasking {
             let _ = writeln!(
                 manifest,
                 "preprocessing_mask_pair_wires={}\npreprocessing_max_open_masks={}\npreprocessing_min_open_masks={}\npreprocessing_balanced_masks={}\npreprocessing_quadratic_fire=1\npreprocessing_extra_lgis=0\npreprocessing_encoded_io=false",
@@ -294,24 +269,17 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, GssError> {
     let text = fs::read_to_string(path)
         .map_err(|e| GssError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("gss_command_recipe=3") => Ok(3),
-        Some("gss_command_recipe=4") => Ok(4),
-        Some("gss_command_recipe=5") => Ok(5),
-        Some("gss_command_recipe=6") => Ok(6),
-        Some("gss_command_recipe=7") => Ok(7),
+        Some(
+            "gss_command_recipe=3"
+            | "gss_command_recipe=4"
+            | "gss_command_recipe=5"
+            | "gss_command_recipe=6",
+        ) => Err(GssError::config(
+            "GSS recipe versions 3–6 have been retired; use a fresh run.directory or the checkout that created this run; the original run is unchanged",
+        )),
+        Some("gss_command_recipe=7") => Ok(CURRENT_RECIPE_VERSION),
         _ => Err(GssError::config(
             "unsupported recipe version; the original run is unchanged",
         )),
     }
-}
-
-pub(crate) fn script_for_recipe(repo: &Path, version: u8) -> PathBuf {
-    repo.join(match version {
-        3 => "scripts/compat/gss_mix_v3.sh",
-        4 => "scripts/compat/gss_mix_v4.sh",
-        5 => "scripts/compat/gss_mix_v5.sh",
-        6 => "scripts/compat/gss_mix_v6.sh",
-        7 => "scripts/gss_mix.sh",
-        _ => unreachable!("validated recipe version"),
-    })
 }

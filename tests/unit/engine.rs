@@ -1,9 +1,7 @@
 use super::arena::Arena;
-use super::rules::{self, Outcome, Role};
+use super::moves::rules::{self, Outcome, Role};
 use crate::circuit::Gate;
 use crate::circuit::xgate::{XGate, eval_lanes};
-#[cfg(feature = "legacy-tools")]
-use crate::experimental::split_engine::{Engine, Params};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -76,7 +74,7 @@ fn random_conj(target: u16, w: usize, n: u16, rng: &mut impl Rng) -> XGate {
     .unwrap()
 }
 
-// The g57 firing convention must match the legacy evaluator bit for bit.
+// The g57 firing convention must match the G57 evaluator bit for bit.
 #[test]
 fn xgate_eval_matches_g57() {
     let mut r = rng();
@@ -267,129 +265,16 @@ fn arena_basics() {
     assert_eq!(ar.len(), 21);
 }
 
-#[cfg(feature = "legacy-tools")]
-#[test]
-fn engine_small_circuit_exhaustive() {
-    let n: u16 = 12;
-    let mut r = rng();
-    let gates = random_circuit(n, 80, &mut r);
-    let mut e = Engine::new(
-        gates.clone(),
-        Params {
-            k_max: 4,
-            size_bound: 240,
-            verify_every: 8,
-            report_every: 1 << 30,
-            seed: 42,
-            ..Params::default()
-        },
-    );
-    e.run();
-    let out = e.arena.to_vec();
-    assert!(out.len() >= 240, "size bound not reached: {}", out.len());
-    assert!(
-        eq_exhaustive(&gates, &out, n as usize),
-        "engine broke the function"
-    );
-    // Some splitting actually happened.
-    assert!(e.counters.splits_r1 + e.counters.splits_r2 + e.counters.splits_r3 > 0);
-    // Cap respected.
-    assert!(out.iter().all(|g| g.width() <= 4));
-
-    // Final float preserves the function too.
-    let (moved, _) = e.final_float();
-    assert!(moved > 0);
-    let floated = e.arena.to_vec();
-    assert!(
-        eq_exhaustive(&gates, &floated, n as usize),
-        "final float broke the function"
-    );
-}
-
-#[cfg(feature = "legacy-tools")]
-#[test]
-fn engine_saturates_gracefully() {
-    // Tiny wire count + tiny K: should stop by saturation, still correct.
-    let n: u16 = 5;
-    let mut r = rng();
-    let gates = random_circuit(n, 30, &mut r);
-    let mut e = Engine::new(
-        gates.clone(),
-        Params {
-            k_max: 2,
-            size_bound: 10_000,
-            saturation_patience: 30,
-            verify_every: 16,
-            report_every: 1 << 30,
-            seed: 7,
-            ..Params::default()
-        },
-    );
-    e.run();
-    assert!(eq_exhaustive(&gates, &e.arena.to_vec(), n as usize));
-}
-
-// g57 x g57 targeting: with the window on, some episodes set up g57-g57
-// collisions and the function is preserved; with the window at 0 it never does.
-#[cfg(feature = "legacy-tools")]
-#[test]
-fn engine_g57_g57_targeting() {
-    let n: u16 = 12;
-    let mut r = rng();
-    let gates = random_circuit(n, 80, &mut r);
-
-    let mut on = Engine::new(
-        gates.clone(),
-        Params {
-            k_max: 4,
-            g57_target_window: 64,
-            size_bound: 220,
-            verify_every: 8,
-            report_every: 1 << 30,
-            seed: 5,
-            ..Params::default()
-        },
-    );
-    on.run();
-    assert!(
-        eq_exhaustive(&gates, &on.arena.to_vec(), n as usize),
-        "targeting broke the function"
-    );
-    assert!(
-        on.counters.g57_g57_setups > 0,
-        "no g57xg57 collisions were set up"
-    );
-
-    let mut off = Engine::new(
-        gates.clone(),
-        Params {
-            k_max: 4,
-            g57_target_window: 0,
-            size_bound: 220,
-            verify_every: 8,
-            report_every: 1 << 30,
-            seed: 5,
-            ..Params::default()
-        },
-    );
-    off.run();
-    assert_eq!(
-        off.counters.g57_g57_setups, 0,
-        "window 0 must disable targeting"
-    );
-    assert!(eq_exhaustive(&gates, &off.arena.to_vec(), n as usize));
-}
-
 #[test]
 fn mpmct_roundtrip() {
     let mut r = rng();
     let mut gates = random_circuit(10, 15, &mut r);
     gates.push(XGate::conj(0, [(3, false), (7, true), (9, false)]).unwrap());
     gates.push(XGate::x_gate(4));
-    let dir = std::env::temp_dir().join("fsplit_roundtrip_test.txt");
+    let dir = std::env::temp_dir().join("mpmct_roundtrip_test.txt");
     let path = dir.to_str().unwrap();
-    super::format::write_mpmct(path, &gates, 10).unwrap();
-    let (back, n) = super::format::read_mpmct(path).unwrap();
+    crate::circuit::formats::write_mpmct(path, &gates, 10).unwrap();
+    let (back, n) = crate::circuit::formats::read_mpmct(path).unwrap();
     assert_eq!(n, 10);
     assert_eq!(back, gates);
     std::fs::remove_file(path).ok();

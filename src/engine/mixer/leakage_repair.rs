@@ -1,6 +1,6 @@
 //! Applying a separately selected quality-control repair to a live mixer.
 //!
-//! Selection and leakage testing belong to `db_mixing::quality`. This adapter
+//! Selection and leakage testing belong to `stages::db_mixing::leakage_repair`. This adapter
 //! only validates and commits one plan while retaining the mixer's identity,
 //! provenance, random stream, and ordinary sampling statistics.
 

@@ -55,10 +55,10 @@ jobs:
           bash tests/gss_flags.bash
           bash tests/gss_block_size.bash
 
-      - name: Nonlinear comparison correctness
+      - name: Nonlinear291 gadget correctness
         run: |
-          python -m security_tests.gadgetization.export_templates --check
-          python -m unittest discover -s tests/gadgetization -v
+          python -m pip install numpy
+          python -B -m unittest discover -s tests/gadgetization -v
 
       - name: Frozen database correctness tests
         run: cargo test --locked --test frozen_roundtrip --test fmix_db_move
@@ -70,13 +70,11 @@ jobs:
       - name: Check database tools
         run: cargo check --locked --features db-tools
 
+      - name: Regular band merge correctness
+        run: cargo test --locked --features db-tools --test frozen_roundtrip rocksdb_bands_merge_keys_and_deduplicate_candidates_within_the_shard -- --exact
+
       - name: Check retained security, challenge and benchmark tools
         run: cargo check --locked --all-targets --features "db-tools security-tools challenge-tools benchmark-tools"
-
-      - name: Legacy configuration and command compatibility
-        run: |
-          cargo test --locked --lib --features legacy-tools gss::tests
-          cargo test --locked --bin legacy_mixing --features legacy-tools
 
       - name: Build and install Python extension
         run: python -m pip install .

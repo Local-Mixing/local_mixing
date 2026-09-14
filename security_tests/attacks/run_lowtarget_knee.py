@@ -149,7 +149,7 @@ def main():
     parser.add_argument("--target", default="0x91c16f14e5c78e00")
     parser.add_argument("--out-dir", default="work/sss_challenge/random64_gate_search")
     parser.add_argument("--source", default="")
-    parser.add_argument("--genran", default="target/release/legacy_mixing")
+    parser.add_argument("--generator", default="target/release/local_mixing_bin")
     parser.add_argument("--converter", default="work/sss_challenge/circuit_to_cnf_lowtarget_leading0_generic")
     parser.add_argument("--kissat", default="work/sss_challenge/kissat_src_verbose/build/kissat")
     parser.add_argument("--reuse-source", action="store_true")
@@ -164,8 +164,8 @@ def main():
     if not source.exists() or not args.reuse_source:
         subprocess.run(
             [
-                args.genran,
-                "genran",
+                args.generator,
+                "circuit", "generate",
                 "-n",
                 str(args.n),
                 "-m",

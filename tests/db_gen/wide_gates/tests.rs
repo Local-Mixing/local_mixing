@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+use crate::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
 
 #[test]
 fn accounting_sums_to_the_concrete_universe() {

@@ -11,8 +11,8 @@
 //! evaluation for timing.
 
 use local_mixing::circuit::U1024;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{eval_u1024, max_wire};
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use std::time::Instant;
 
 fn main() {

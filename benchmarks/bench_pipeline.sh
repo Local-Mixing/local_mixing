@@ -10,8 +10,8 @@ CANON_N="${BENCH_CANON_N:-8}"
 WORK="$ROOT/reports/bench_work"
 RAW="$WORK/raw.tsv"
 
-if [[ ! -x "$BIN" || ! -x "$ROOT/target/release/bench_canon4" || ! -x "$ROOT/target/release/bench_polycanon" ]]; then
-  cargo build --manifest-path "$ROOT/Cargo.toml" --locked --release --bin local_mixing_bin --features benchmark-tools --bin bench_canon4 --bin bench_polycanon
+if [[ ! -x "$BIN" || ! -x "$ROOT/target/release/bench_canon4" ]]; then
+  cargo build --manifest-path "$ROOT/Cargo.toml" --locked --release --bin local_mixing_bin --features benchmark-tools --bin bench_canon4
 fi
 
 mkdir -p "$WORK" "$(dirname "$REPORT")"
@@ -20,7 +20,7 @@ MEDIUM="$WORK/medium_n12.txt"
 printf '012;345;024;135;250;431;\n' > "$SMALL"
 printf '012;345;678;9ab;036;147;258;39a;4ab;50a;61b;72a;84b;\n' > "$MEDIUM"
 
-CASES=(evaluate_small evaluate_medium canon4 polycanon)
+CASES=(evaluate_small evaluate_medium canon4)
 if [[ -f "$ROOT/rantestn128m800/n128m800_source.txt" ]]; then
   CASES+=(evaluate_headline_n128m800)
 fi
@@ -43,9 +43,6 @@ run_case() {
       ;;
     canon4)
       env BENCH_N="$CANON_N" "$ROOT/target/release/bench_canon4"
-      ;;
-    polycanon)
-      env BENCH_N="$CANON_N" "$ROOT/target/release/bench_polycanon"
       ;;
     *)
       echo "unknown benchmark case: $1" >&2

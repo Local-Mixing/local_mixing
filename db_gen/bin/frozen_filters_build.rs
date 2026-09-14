@@ -10,7 +10,7 @@
 //! frozen_filters_build FROZEN_DIR
 //! ```
 
-use local_mixing::db_mixing::frozen::{mix76, scan_shard_entries};
+use local_mixing::database::frozen::{mix76, scan_shard_entries};
 use std::error::Error;
 use std::io::Write;
 use std::path::Path;

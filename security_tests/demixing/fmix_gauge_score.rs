@@ -8,8 +8,8 @@
 //! scores deterministic random gauges without invoking a SAT solver.
 
 use clap::Parser;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

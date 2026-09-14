@@ -26,9 +26,9 @@
 //!                        [--verify K=200] [--no-shuffle] [--no-balance]
 
 use local_mixing::circuit::U1024;
+use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
+use local_mixing::circuit::randomize::commuting_shuffle_order;
 use local_mixing::circuit::xgate::{XGate, eval_u1024};
-use local_mixing::engine::format::{read_mpmct, write_mpmct};
-use local_mixing::preprocessing::gadgets::commuting_shuffle_order;
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 

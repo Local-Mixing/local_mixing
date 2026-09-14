@@ -1267,7 +1267,7 @@ impl Mixer {
         self.counters.tg_emitted += inserted.len() as u64;
     }
 
-    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md) ----
+    // ---- bridge fusion ----
     //
     // Jointly re-encode two gates that commutation CANNOT bring together.
     // Any correct two-site rewrite is X = g1·P at the left site and

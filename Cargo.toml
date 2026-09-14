@@ -17,17 +17,13 @@ default = []
 # Enable extension-module linking only when packaging the Python extension.
 # Rust binaries and tests retain normal libpython linkage.
 python-extension = ["dep:pyo3", "dep:numpy", "pyo3/extension-module"]
-# Historical workflows and comparison algorithms are excluded from normal GSS.
-legacy-tools = ["dep:rhai"]
-security-tools = ["legacy-tools"]
-challenge-tools = ["legacy-tools", "dep:rng-entropy", "dep:cryptography"]
-benchmark-tools = ["legacy-tools", "dep:cryptography"]
-# Preferred name for database builders. The existing cfg gates and scripts
-# still use legacy-db-tools, so keep both names working during reorganization.
-db-tools = ["legacy-db-tools"]
-# Offline import/regeneration tools for the historical replacement databases.
-# Runtime lookup does not pull in RocksDB.
-legacy-db-tools = [
+# Optional tools use the same current circuit and stage implementations.
+security-tools = []
+challenge-tools = ["dep:rng-entropy", "dep:cryptography"]
+benchmark-tools = []
+# Offline database builders and frozen-store conversion. Runtime lookup does
+# not pull in LMDB or RocksDB.
+db-tools = [
     "dep:lmdb",
     "dep:crossbeam-channel",
     "dep:lru",
@@ -78,10 +74,7 @@ lru = { version = "0.12", optional = true }
 # in-RAM BinaryFuse8 miss filter, bincode2 decodes the persisted filters.bin.
 xorf = { version = "0.12", features = ["serde", "bincode"] }
 bincode2 = { package = "bincode", version = "2" }
-# Embedded scripting for swappable ranking functions (outgoing/incoming subcircuit selection).
-# `sync` makes Engine/AST Send+Sync so a script ranker can be shared across rayon threads.
-rhai = { version = "1.21", features = ["sync"], optional = true }
-# Needed by the challenge binaries (block_cipher, poly_canon).
+# Optional dependencies for challenge tools.
 rng-entropy = { version = "0.5.0", optional = true }
 cryptography = { package = "cryptography-rs", version = "0.5.0", optional = true }
 
@@ -112,122 +105,122 @@ path = "src/main.rs"
 [[bin]]
 name = "cross_gluing_probe"
 path = "db_gen/analysis/cross_gluing_probe.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_coverage_census"
 path = "db_gen/analysis/curated_coverage_census.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_key_filter"
 path = "db_gen/analysis/curated_key_filter.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_key_histogram"
 path = "db_gen/analysis/curated_key_histogram.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_key_structure"
 path = "db_gen/analysis/curated_key_structure.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_recanon_probe"
 path = "db_gen/analysis/curated_recanon_probe.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "curated_size_census"
 path = "db_gen/analysis/curated_size_census.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_census"
 path = "db_gen/analysis/frozen_census.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_class_census"
 path = "db_gen/analysis/frozen_class_census.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_find_small"
 path = "db_gen/analysis/frozen_find_small.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_pool_swap"
 path = "db_gen/analysis/frozen_pool_swap.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "identity_length_census"
 path = "db_gen/analysis/identity_length_census.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "identity_shingle_sieve"
 path = "db_gen/analysis/identity_shingle_sieve.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "mgdb_build"
 path = "db_gen/analysis/mgdb_build.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "minimal_halves_probe"
 path = "db_gen/analysis/minimal_halves_probe.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "minimal_identity_filter"
 path = "db_gen/analysis/minimal_identity_filter.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "sgdb_build"
 path = "db_gen/analysis/sgdb_build.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "sgdb_substitute"
 path = "db_gen/analysis/sgdb_substitute.rs"
-required-features = ["legacy-db-tools", "legacy-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "build_curated_full"
 path = "db_gen/bin/build_curated_full.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "corpus_stats"
 path = "db_gen/bin/corpus_stats.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_filters_build"
 path = "db_gen/bin/frozen_filters_build.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "frozen_from_lmdb"
 path = "db_gen/bin/frozen_from_lmdb.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "merge_rocks_parallel"
 path = "db_gen/bin/merge_rocks_parallel.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 [[bin]]
 name = "wide_verify"
 path = "db_gen/bin/wide_verify.rs"
-required-features = ["legacy-db-tools"]
+required-features = ["db-tools"]
 
 # Correctness validators
 
@@ -235,10 +228,10 @@ required-features = ["legacy-db-tools"]
 name = "verify_zero_slice"
 path = "tests/manual/gss/verify_zero_slice.rs"
 
-# Security testing and historical comparisons
+# Security testing and analysis
 
 [[bin]]
-name = "blinded_v5_gadgetize"
+name = "quadratic_masking_gadgetize"
 path = "security_tests/preprocessing/quadratic_masking.rs"
 required-features = ["security-tools"]
 
@@ -275,21 +268,6 @@ required-features = ["security-tools"]
 [[bin]]
 name = "id_rewrite"
 path = "security_tests/fixtures/id_rewrite.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "prod_grid"
-path = "security_tests/fixtures/prod_grid.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "regen_sandwich_c"
-path = "security_tests/fixtures/regen_sandwich_c.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "sandwich_compare"
-path = "security_tests/fixtures/sandwich_compare.rs"
 required-features = ["security-tools"]
 
 [[bin]]
@@ -363,21 +341,6 @@ path = "security_tests/oracle/oracle_preimage_game.rs"
 required-features = ["security-tools"]
 
 [[bin]]
-name = "fragment_wide"
-path = "security_tests/experiments/circuit/fragment_wide.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "fsplit"
-path = "security_tests/experiments/postprocessing/fsplit.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "fsplit_trace"
-path = "security_tests/experiments/postprocessing/fsplit_trace.rs"
-required-features = ["security-tools"]
-
-[[bin]]
 name = "gauntlet_audit"
 path = "security_tests/gauntlet/gauntlet_audit.rs"
 required-features = ["security-tools"]
@@ -386,11 +349,6 @@ required-features = ["security-tools"]
 name = "gauntlet_gen"
 path = "security_tests/gauntlet/gauntlet_gen.rs"
 required-features = ["security-tools"]
-
-[[bin]]
-name = "legacy_mixing"
-path = "security_tests/legacy/main.rs"
-required-features = ["legacy-tools"]
 
 # Standalone challenges
 
@@ -409,21 +367,11 @@ name = "point_function"
 path = "challenges/point_function.rs"
 required-features = ["challenge-tools"]
 
-[[bin]]
-name = "poly_canon"
-path = "challenges/poly_canon.rs"
-required-features = ["challenge-tools"]
-
 # Benchmarks
 
 [[bin]]
 name = "bench_canon4"
 path = "benchmarks/canonicalization/bench_canon4.rs"
-required-features = ["benchmark-tools"]
-
-[[bin]]
-name = "bench_polycanon"
-path = "benchmarks/canonicalization/bench_polycanon.rs"
 required-features = ["benchmark-tools"]
 
 [[bin]]
@@ -467,18 +415,8 @@ path = "benchmarks/db_mixing/wide_yield_probe.rs"
 required-features = ["benchmark-tools"]
 
 [[bin]]
-name = "window_span_stats"
-path = "benchmarks/db_mixing/window_span_stats.rs"
-required-features = ["benchmark-tools"]
-
-[[bin]]
 name = "commute_shuffle_exp"
 path = "benchmarks/mixing/commute_shuffle_exp.rs"
-required-features = ["benchmark-tools"]
-
-[[bin]]
-name = "float_histogram"
-path = "benchmarks/mixing/float_histogram.rs"
 required-features = ["benchmark-tools"]
 
 [[bin]]
@@ -500,20 +438,3 @@ required-features = ["benchmark-tools"]
 name = "pairfloat_exp"
 path = "benchmarks/mixing/pairfloat_exp.rs"
 required-features = ["benchmark-tools"]
-
-# Historical canonicalizer comparison tests
-
-[[test]]
-name = "poly_canon_graph"
-path = "tests/poly_canon_graph.rs"
-required-features = ["legacy-tools"]
-
-[[test]]
-name = "poly_canon_stress"
-path = "tests/poly_canon_stress.rs"
-required-features = ["legacy-tools"]
-
-[[test]]
-name = "poly_canon_failure_case"
-path = "tests/poly_canon_failure_case.rs"
-required-features = ["legacy-tools"]

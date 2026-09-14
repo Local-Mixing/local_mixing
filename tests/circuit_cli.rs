@@ -154,7 +154,7 @@ fn generated_g57_evaluates_and_compares_with_general_format_through_cli() {
         .iter()
         .map(|&gate| XGate::from_g57(gate))
         .collect();
-    local_mixing::engine::format::write_mpmct(general.to_str().unwrap(), &gates, 3).unwrap();
+    local_mixing::circuit::formats::write_mpmct(general.to_str().unwrap(), &gates, 3).unwrap();
     let result = cli(&[
         "circuit",
         "compare",

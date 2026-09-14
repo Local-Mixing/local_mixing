@@ -184,7 +184,7 @@ pub struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     pub(super) p_twist: f64,
-    /// Arm the SPLIT STAGE (docs/FMIX_SPLIT_TWIST.md): split twists — a g57
+    /// Arm the SPLIT STAGE: split twists — a g57
     /// split plus an absorbed long-range pure-NOT twist plus one cross — are
     /// the ONLY move until the stage exits (g57 exhaustion, or
     /// --split-fail-limit consecutive bracket failures), then the round runs
@@ -359,7 +359,7 @@ pub struct Args {
     /// kills DB matching. Off by default (it changes trajectories).
     #[arg(long, default_value_t = false)]
     pub(super) db_advance: bool,
-    /// Pair-geometry rate (docs/NONLOCAL_PHASE_A.md): probability a non-COMP
+    /// Pair-geometry rate: probability a non-COMP
     /// DB round samples its window as the seed plus one FAR COMMUTING partner,
     /// floated adjacent and fused into a 2-gate window — the db_mixing transport
     /// experiment. The fused splice unions litters across the seed's whole
@@ -374,7 +374,7 @@ pub struct Args {
     /// of the farthest gate.
     #[arg(long, default_value_t = false)]
     pub(super) pair_pick_uniform: bool,
-    /// Bridge-fusion rate (docs/NONLOCAL_PHASE_A.md): per-round probability of
+    /// Bridge-fusion rate: per-round probability of
     /// jointly re-encoding two gates that commutation CANNOT bring together —
     /// a carrier conjugates the interior (wake corrections on interior
     /// colliders, non-g57: trades polf for reach like legacy twist packets)
@@ -638,7 +638,7 @@ pub struct Args {
     /// VERSION must match, since field meanings would otherwise drift silently.
     #[arg(long)]
     pub(super) resume: Option<String>,
-    /// Piecewise-parallel rounds (docs/FMIX_PIECEWISE.md): cut the circuit
+    /// Piecewise-parallel rounds: cut the circuit
     /// into this many contiguous pieces, mix them in parallel on one shared
     /// store, concatenate, shift the cuts by half a slice, repeat. 1 = the
     /// serial run unless --parallel-target-piece-gates is selected. Stages 3 and

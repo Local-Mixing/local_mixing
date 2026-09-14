@@ -31,7 +31,6 @@ pub(crate) const SCRUBBED_ENV: &[&str] = &[
     "PROD_BARE_CENSUS",
     "PROD_DUMP_PAIRS",
     "ABSORB_NOTS",
-    "BENCH_CANON",
     "CENTRALIZE",
     "COMPRESSION_TRACE",
     "COMPRESSION_TRACE_MS",
@@ -107,77 +106,32 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), GssError> {
     let run_tag = default_run_tag();
     let mut config = resolve_config(&raw, &repo_root, |key| std::env::var_os(key), &run_tag)
         .map_err(GssError::config)?;
-    let host_target = rustc_host_triple()?;
-    let binary_dir = config.build_target_dir.join(&host_target).join("release");
-
     let manifest_path = config.run_dir.join("gss_command.conf");
     let managed_resume = manifest_path.is_file();
     let legacy_resume = fs::metadata(config.run_dir.join("SEED"))
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
         && !managed_resume;
-    if legacy_resume && !config.adopt_existing_run {
+    if legacy_resume || config.adopt_existing_run {
         return Err(GssError::config(format!(
-            "{} is a pre-wrapper run with no gss_command.conf; set `run.adopt_unverified_run = true` once to acknowledge that its earlier recipe cannot be verified, or use the direct Bash driver",
+            "pre-wrapper run adoption has been retired; use a fresh run.directory or the checkout that created {}; the original run is unchanged",
             config.run_dir.display()
         )));
     }
-    if legacy_resume && !config.calibration_only {
-        return Err(GssError::config(format!(
-            "{} has unverifiable pre-wrapper seed provenance; adopting it requires both `run.adopt_unverified_run = true` and `calibration.enabled = true`",
-            config.run_dir.display()
-        )));
-    }
-    let legacy_gadget = config.run_dir.join("gss.mpmct1");
-    let legacy_has_gadget =
-        fs::metadata(&legacy_gadget).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
-    if legacy_resume && legacy_has_gadget && config.force_from.as_deref() != Some("2") {
-        let recipe_path = config.run_dir.join("stage12.recipe");
-        let stored_recipe = fs::read_to_string(&recipe_path).map_err(|error| {
-            GssError::config(format!(
-                "cannot adopt existing stage-2 artifact without a readable {} marker: {error}; set `run.rerun_from_stage = 2` to rebuild it",
-                recipe_path.display()
-            ))
-        })?;
-        let stored_mode = stored_recipe
-            .lines()
-            .find_map(|line| line.strip_prefix("gadgetization_mode="))
-            .ok_or_else(|| {
-                GssError::config(format!(
-                    "existing stage-2 recipe {} has no gadgetization_mode; set `run.rerun_from_stage = 2` to rebuild it",
-                    recipe_path.display()
-                ))
-            })?;
-        if stored_mode != config.preprocessing_mode.for_recipe(4) {
-            return Err(GssError::config(format!(
-                "existing stage-2 artifact is marked {}, but the requested gadgetization_mode is {}; use a fresh run directory or set `run.rerun_from_stage = 2`",
-                stored_mode,
-                config.preprocessing_mode.as_str()
-            )));
-        }
-    }
-    // Saved runs keep their original driver bytes and manifest spelling.
-    // Pre-wrapper runs use the previous driver when explicitly adopted.
+    // Reject retired recipes before building or inspecting stage executables.
     config.recipe_version = if managed_resume {
         read_recipe_version(&manifest_path)?
-    } else if legacy_resume {
-        4
     } else {
-        7
+        CURRENT_RECIPE_VERSION
     };
-    if config.recipe_version >= 5 || !config.bv5_balanced {
-        validate_current_recipe(&config)?;
-    }
-    if config.recipe_version >= 4 && config.hold.is_none() {
+    validate_current_recipe(&config)?;
+    if config.hold.is_none() {
         config.hold = Some("27".into());
     }
-    if config.recipe_version == 3 && (config.source_path.is_some() || config.qc_enabled) {
-        return Err(GssError::config(
-            "v3 manifests cannot verify new source/leakage-repair settings; resume with the original recipe",
-        ));
-    }
+    let host_target = rustc_host_triple()?;
+    let binary_dir = config.build_target_dir.join(&host_target).join("release");
     print_resolved(&config_path, &config, &binary_dir);
     validate_external_paths(&config).map_err(GssError::config)?;
-    let script = script_for_recipe(&repo_root, config.recipe_version);
+    let script = repo_root.join("scripts/gss_mix.sh");
     if managed_resume {
         let fingerprints = production_binary_fingerprints(&binary_dir)?;
         let script_hash = hash_file(&script).map_err(|error| {
@@ -228,9 +182,6 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), GssError> {
             .arg("--bin")
             .arg("fcompress")
             .env_remove("CARGO_BUILD_TARGET");
-        if config.preprocessing_mode.supported().is_none() {
-            build.arg("--features").arg("legacy-tools");
-        }
         let status = build
             .status()
             .map_err(|error| GssError::io(format!("cannot start cargo build: {error}")))?;
@@ -260,32 +211,14 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), GssError> {
 }
 
 pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), GssError> {
-    if config.recipe_version >= 7 {
-        if config.preprocessing_mode.supported().is_none() {
-            return Err(GssError::config(format!(
-                "{} is supported only for existing runs; fresh preprocessing.mode must be quadratic-masking or nonlinear291",
-                config.preprocessing_mode.as_str()
-            )));
-        }
-        if config.preprocessing_mode == RecipePreprocessingMode::Nonlinear291
-            && config.explicit_mask_controls
-        {
-            return Err(GssError::config(
-                "preprocessing mask controls apply only to quadratic-masking; omit them for nonlinear291",
-            ));
-        }
-    } else if !config.bv5_balanced {
+    if config.preprocessing_mode == PreprocessingMode::Nonlinear291 && config.explicit_mask_controls
+    {
         return Err(GssError::config(
-            "saved v3-v6 recipes pin balanced masks; resume with preprocessing.balanced_masks = true",
+            "preprocessing mask controls apply only to quadratic-masking; omit them for nonlinear291",
         ));
     }
     match config.preprocessing_mode {
-        RecipePreprocessingMode::Product2223 => {
-            return Err(GssError::config(
-                "product-2223 (including alias 2223) is supported only for existing runs; use preprocessing.mode = \"quadratic-masking\" for a new GSS run",
-            ));
-        }
-        RecipePreprocessingMode::QuadraticMasking => {
+        PreprocessingMode::QuadraticMasking => {
             if config.bv5_k < 2 {
                 return Err(GssError::config(
                     "preprocessing.mask_pair_wires must be in 2..64 for new runs",
@@ -298,7 +231,7 @@ pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), Gss
                 ));
             }
         }
-        RecipePreprocessingMode::Nonlinear193 | RecipePreprocessingMode::Nonlinear291 => {}
+        PreprocessingMode::Nonlinear291 => {}
     }
     Ok(())
 }
@@ -330,7 +263,7 @@ pub(crate) fn canonical_script_flag(flag: &str) -> &str {
     }
 }
 
-/// Public v7 spellings are isolated from the immutable v3-v6 driver adapters.
+/// Translate retained configuration aliases to the current driver flags.
 pub(crate) fn preprocessing_script_flag(flag: &str) -> &str {
     match flag {
         "--gadget-mode" => "--preprocessing-mode",
@@ -349,7 +282,7 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         OsString::from("-o"),
         config.run_dir.as_os_str().to_owned(),
         OsString::from("--gadgetization-mode"),
-        OsString::from(config.preprocessing_mode.for_recipe(config.recipe_version)),
+        OsString::from(config.preprocessing_mode.canonical_name()),
     ];
     push_optional_arg(&mut args, "--mcd", config.mcd.as_deref());
     push_optional_arg(&mut args, "--expand", config.expand.as_deref());
@@ -376,17 +309,10 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         args.push(OsString::from("-s"));
         args.push(OsString::from(seed));
     }
-    if config.recipe_version >= 6 {
-        // Only option positions are translated; path/value strings may equal an alias.
-        for option in args.iter_mut().step_by(2) {
-            if let Some(name) = option.to_str() {
-                let canonical = canonical_script_flag(name);
-                *option = OsString::from(if config.recipe_version >= 7 {
-                    preprocessing_script_flag(canonical)
-                } else {
-                    canonical
-                });
-            }
+    // Only option positions are translated; path/value strings may equal an alias.
+    for option in args.iter_mut().step_by(2) {
+        if let Some(name) = option.to_str() {
+            *option = OsString::from(preprocessing_script_flag(canonical_script_flag(name)));
         }
     }
     args
@@ -404,15 +330,14 @@ pub(crate) fn configure_environment(
     config: &ResolvedConfig,
     binary_dir: &Path,
 ) {
-    // Future generator experiments should not silently become supported merely
-    // by adding another PROD_* read. Clear the whole namespace first, then set
-    // the product-family controls only when that family was selected.
+    // Clear inherited stage controls before applying the resolved recipe.
+    // Retired namespaces are scrubbed too so stale shells cannot affect a run.
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy();
         if key_text.starts_with("PROD_")
             || key_text.starts_with("SAT_")
-            || (config.recipe_version >= 4
-                && (key_text.starts_with("BV5_") || key_text.starts_with("DB_QC")))
+            || key_text.starts_with("BV5_")
+            || key_text.starts_with("DB_QC")
         {
             command.env_remove(key);
         }
@@ -421,20 +346,17 @@ pub(crate) fn configure_environment(
         command.env_remove(key);
     }
     command.env("GSS_BIN_DIR", binary_dir);
-    // Preserve the original environment contract when continuing a v3 run.
-    if config.recipe_version >= 4 {
-        command.env("SANDWICH_VARIANT", "classic");
-        set_or_remove_env(command, "GSS_SOURCE_C", config.source_path.as_deref());
-        command.env("DB_QC", if config.qc_enabled { "1" } else { "0" });
-        command.env("DB_QC_SEED", config.qc_seed.to_string());
-        set_or_remove_env(command, "DB_QC_REFERENCE", config.qc_reference.as_deref());
-        if config.preprocessing_mode == RecipePreprocessingMode::QuadraticMasking {
-            command.env("BV5_K", config.bv5_k.to_string());
-            command.env("BV5_MAX_OPEN", config.bv5_max_open.to_string());
-            command.env("BV5_MIN_OPEN", config.bv5_min_open.to_string());
-            command.env("BV5_BALANCED", if config.bv5_balanced { "1" } else { "0" });
-            command.env("BV5_QUAD_FIRE", "1");
-        }
+    command.env("SANDWICH_VARIANT", "classic");
+    set_or_remove_env(command, "GSS_SOURCE_C", config.source_path.as_deref());
+    command.env("DB_QC", if config.qc_enabled { "1" } else { "0" });
+    command.env("DB_QC_SEED", config.qc_seed.to_string());
+    set_or_remove_env(command, "DB_QC_REFERENCE", config.qc_reference.as_deref());
+    if config.preprocessing_mode == PreprocessingMode::QuadraticMasking {
+        command.env("BV5_K", config.bv5_k.to_string());
+        command.env("BV5_MAX_OPEN", config.bv5_max_open.to_string());
+        command.env("BV5_MIN_OPEN", config.bv5_min_open.to_string());
+        command.env("BV5_BALANCED", if config.bv5_balanced { "1" } else { "0" });
+        command.env("BV5_QUAD_FIRE", "1");
     }
     set_or_remove_env(command, "FROZEN_DB_DIR", config.frozen_db.path.as_deref());
     set_or_remove_env(
@@ -452,20 +374,8 @@ pub(crate) fn configure_environment(
     command.env("CANON_CACHE_MB", "256");
     command.env("XPOLY_CANON_CACHE_MB", "1024");
     command.env("LOOKUP_CACHE_MB", "2048");
-    if config.preprocessing_mode == RecipePreprocessingMode::Product2223 {
-        command.env("PROD_PRESET", &config.production_preset);
-        match &config.post_fragment {
-            Some(value) => {
-                command.env("PROD_POST_FRAGMENT", value);
-            }
-            None => {
-                command.env_remove("PROD_POST_FRAGMENT");
-            }
-        }
-    } else {
-        command.env_remove("PROD_PRESET");
-        command.env_remove("PROD_POST_FRAGMENT");
-    }
+    command.env_remove("PROD_PRESET");
+    command.env_remove("PROD_POST_FRAGMENT");
     if config.allow_empty_store {
         command.env("GSS_MIX_ALLOW_EMPTY_STORE", "1");
     } else {
@@ -520,15 +430,8 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     );
     println!(
         "[gss] preprocessing mode: {}",
-        config.preprocessing_mode.as_str()
+        config.preprocessing_mode.canonical_name()
     );
-    if config.preprocessing_mode == RecipePreprocessingMode::Product2223 {
-        println!("[gss] production preset: {}", config.production_preset);
-        println!(
-            "[gss] post fragmentation: {}",
-            config.post_fragment.as_deref().unwrap_or("preset default")
-        );
-    }
     println!(
         "[gss] seed: {}",
         if config.calibration_seed.is_some() {

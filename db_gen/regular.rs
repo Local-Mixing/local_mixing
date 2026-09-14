@@ -23,7 +23,8 @@
 #[path = "../tests/db_gen/regular_validation_tests.rs"]
 mod validation_tests;
 
-use crate::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4, polys_repr_blob};
+use crate::canonicalization::{Polynomial, canonicalize_polys_4, polys_repr_blob};
+use crate::circuit::{CircuitSeq, Permutation};
 use crossbeam_channel::bounded;
 use itertools::Itertools;
 #[cfg(test)]
@@ -339,11 +340,11 @@ pub fn build_wide_from_rocks(
     min_n: usize,
     max_n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::circuit::xcanon::xgate_adjacent_id;
+    use crate::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
     use crate::circuit::xgate::XGate;
+    use crate::db_generation::mpx1;
     use crate::db_generation::wide_gates::wide_gates_for_circuit_filtered;
-    use crate::engine::mpx1;
-    use crate::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+    use crate::db_generation::xcanon::xgate_adjacent_id;
 
     require_uncapped_canonicalization()?;
     let total_rows = old_db
@@ -454,7 +455,7 @@ pub fn build_wide_from_rocks(
                                 .collect();
                             // Gate-order canonical form for the representative
                             // (legacy re-canonicalizes after its rewire too).
-                            crate::circuit::xcanon::xgate_canonicalize(&mut mapped);
+                            crate::db_generation::xcanon::xgate_canonicalize(&mut mapped);
                             let chunk_bytes = mpx1::encode_circuit(&mapped)
                                 .map_err(std::io::Error::other)?;
                             batch.merge(db_key, chunk_bytes);
@@ -517,11 +518,11 @@ pub fn build_wide2_from_wide(
     min_n: usize,
     max_n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::circuit::xcanon::xgate_adjacent_id;
+    use crate::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
     use crate::circuit::xgate::XGate;
+    use crate::db_generation::mpx1;
     use crate::db_generation::wide_gates::wide_gates_for_circuit_filtered;
-    use crate::engine::mpx1;
-    use crate::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+    use crate::db_generation::xcanon::xgate_adjacent_id;
 
     require_uncapped_canonicalization()?;
     let total_rows = old_db
@@ -626,7 +627,7 @@ pub fn build_wide2_from_wide(
                                     }
                                 })
                                 .collect();
-                            crate::circuit::xcanon::xgate_canonicalize(&mut mapped);
+                            crate::db_generation::xcanon::xgate_canonicalize(&mut mapped);
                             let chunk_bytes = mpx1::encode_circuit(&mapped)
                                 .map_err(std::io::Error::other)?;
                             batch.merge(db_key, chunk_bytes);

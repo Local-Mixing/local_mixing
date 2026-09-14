@@ -9,7 +9,7 @@
 //!
 //! Usage: frozen_find_small <store_dir> [max_gates=2]
 
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 use std::collections::BTreeMap;
 
 fn main() {

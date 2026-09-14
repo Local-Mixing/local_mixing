@@ -1,4 +1,47 @@
 use super::*;
+use crate::circuit::eval_lanes;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+
+#[test]
+fn commuting_shuffle_preserves_truth_table_and_sidecar_order() {
+    let mixed = vec![
+        XGate::from_g57([0, 1, 2]),
+        XGate::conj(3, [(4, false), (5, true)]).unwrap(),
+        XGate::conj(1, [(0, true)]).unwrap(),
+        XGate::from_g57([5, 3, 4]),
+        XGate::conj(2, []).unwrap(),
+        XGate::from_g57([4, 0, 1]),
+        XGate::conj(3, [(2, true), (5, false)]).unwrap(),
+        XGate::from_g57([0, 1, 2]),
+    ];
+    let inputs: Vec<u64> = (0..6)
+        .map(|wire| (0..64).fold(0, |column, lane| column | (((lane >> wire) & 1) << lane)))
+        .collect();
+    for source in [Vec::new(), vec![mixed[0].clone()], mixed] {
+        let mut expected = inputs.clone();
+        eval_lanes(&source, &mut expected);
+        for seed in [0, 1, 42, 0x5eed, u64::MAX] {
+            let mut shuffled = source.clone();
+            let order = commuting_shuffle_order(&mut shuffled, &mut StdRng::seed_from_u64(seed));
+            let mut sorted_order = order.clone();
+            sorted_order.sort_unstable();
+            assert_eq!(sorted_order, (0..source.len() as u32).collect::<Vec<_>>());
+            for (gate, &old_index) in shuffled.iter().zip(&order) {
+                assert_eq!(
+                    gate, &source[old_index as usize],
+                    "sidecar must follow its gate"
+                );
+            }
+            let mut actual = inputs.clone();
+            eval_lanes(&shuffled, &mut actual);
+            assert_eq!(
+                actual, expected,
+                "shuffle changed a truth table at seed {seed}"
+            );
+        }
+    }
+}
 
 fn bitmap_reference(n: usize, m: usize, rng: &mut fastrand::Rng) -> CircuitSeq {
     let mut circuit = Vec::with_capacity(m);

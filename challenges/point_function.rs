@@ -4,9 +4,7 @@ use std::ops::Range;
 
 use clap::Parser;
 use itertools::chain;
-use local_mixing::{
-    circuit::CircuitSeq, db_mixing::frozen::FrozenDb, db_mixing::replace::compress_loop,
-};
+use local_mixing::circuit::CircuitSeq;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -152,9 +150,6 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
-    // Regular frozen store from FROZEN_DB_DIR.
-    let db = FrozenDb::from_env();
-
     let n = args.wires;
 
     println!("{:?}", args);
@@ -176,22 +171,6 @@ fn main() {
     println!("{}", pf.repr());
 
     println!("len = {}", pf.gates.len());
-
-    let comp = compress_loop(
-        &pf,
-        pf.max_wire() + 1,
-        &db,
-        6,
-        0,
-        0,
-        ".",
-        false,
-        None,
-        true,
-        &mut Vec::new(),
-    );
-
-    println!("{}", comp.repr());
 
     println!("0 => {}", pf.evaluate_256(0.into()));
     println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));

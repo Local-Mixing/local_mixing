@@ -1,6 +1,6 @@
 //! Polynomial and canonical-key support for heterogeneous [`XGate`] circuits.
 //!
-//! `CircuitSeq::to_polynomial` is intentionally specialized to legacy g57
+//! `CircuitSeq::to_polynomial` is intentionally specialized to G57
 //! triples.  Post-mix tapes contain arbitrary-width conjunction gates and
 //! complemented conjunction gates, so their firing polynomial is instead
 //!
@@ -12,17 +12,17 @@
 //!
 //! The canonicalization entry point below first remaps the wires touched by a
 //! window to a dense space.  Consequently its output is byte-compatible with
-//! the canonical polynomial keys produced by the legacy g57 path.
+//! the canonical polynomial keys produced by the G57 path.
 
 use super::canonicalize::canonicalize_polys_4_using;
-use super::legacy_environment::xpoly_canon_cache_cap_bytes;
+use super::environment::xpoly_canon_cache_cap_bytes;
 use super::{CanonicalizationOptions, Monomial, Polynomial, polynomial_from_terms};
 use crate::circuit::Permutation;
 use crate::circuit::xgate::XGate;
 
 /// Work limits for polynomial composition.
 ///
-/// Wide mixed-polarity cubes can expand much faster than legacy two-control
+/// Wide mixed-polarity cubes can expand much faster than two-control
 /// g57 gates.  Hitting a limit returns [`XPolyError::BudgetExceeded`], allowing
 /// a database-compression caller to skip that window without changing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,7 +323,7 @@ fn dense_remap(gates: &[XGate], used: &[u16]) -> Vec<XGate> {
 ///
 /// With `reversed=true`, gate order is reversed before composition.  XGates
 /// satisfying their invariant (the target is absent from the controls) are
-/// involutions, so this is the inverse-circuit direction used by the legacy
+/// involutions, so this is the inverse-circuit direction used by the
 /// compressor.
 pub fn canonicalize_xgates_single(
     gates: &[XGate],
@@ -342,7 +342,7 @@ pub struct XGateCanonicalizationOptions {
     pub canonicalization: CanonicalizationOptions,
 }
 
-/// Compute with explicit limits and no environment reads or legacy shared cache.
+/// Compute with explicit limits and no environment reads or shared cache.
 /// Independent option sets cannot share cached success/failure outcomes.
 pub fn canonicalize_xgates_single_with_options(
     gates: &[XGate],
@@ -423,7 +423,7 @@ pub fn canonicalize_xgates_single_capped(
     // Everything below is a pure function of (dense, wire count, caps) — the
     // dense window is independent of the original wire ids — so windows repeat
     // heavily across the circuit and an exact process-wide cache applies
-    // (mirrors the legacy g57 canon cache in circuit.rs). Both Ok results and
+    // (mirrors the G57 cache in canonicalization/cache.rs). Both Ok results and
     // cap/error outcomes are cached; the caps are part of the key so differing
     // budgets never alias.
     let num_wires = used_wires.len();
@@ -537,7 +537,7 @@ static XPOLY_CANON_CACHE_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic
 
 /// XPOLY_CANON_CACHE_MB caps the approximate cache footprint (default 1024;
 /// 0 disables). Cap overflow clears the whole map (epoch reset), like the
-/// legacy canon and lookup caches. The default was raised from 256 after a
+/// canonicalization and lookup caches. The default was raised from 256 after a
 /// profiled 200k-move DB run measured 3 epoch resets and a 35% hit rate at
 /// 256MB — the working set of a production db_mixing does not fit.
 fn xpoly_canon_cache() -> Option<&'static XPolyCanonMap> {

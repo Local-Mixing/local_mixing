@@ -20,12 +20,7 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
         .unwrap_or("99")
         .parse::<u64>()
         .expect("validated force_from");
-    let db_mixing_artifact = if config.recipe_version >= 6 {
-        "db_mixing.mpmct1"
-    } else {
-        "phaseA.mpmct1"
-    };
-    let existing_db_mixing = fs::metadata(config.run_dir.join(db_mixing_artifact))
+    let existing_db_mixing = fs::metadata(config.run_dir.join("db_mixing.mpmct1"))
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
     let existing_gadget = fs::metadata(config.run_dir.join("gss.mpmct1"))
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
@@ -359,7 +354,7 @@ pub(crate) fn find_repo_root() -> Result<PathBuf, GssError> {
         }
     }
     Err(GssError::io(
-        "cannot locate the repository (need Cargo.toml, docs/GSS_MIX.md, and scripts/gss_mix.sh)",
+        "cannot locate the repository (need Cargo.toml, configs/gss.toml, and scripts/gss_mix.sh)",
     ))
 }
 

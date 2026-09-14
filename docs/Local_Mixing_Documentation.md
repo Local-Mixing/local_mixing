@@ -1,35 +1,43 @@
----
-papersize: letter
-geometry:
-  - margin=1in
-  - includefoot
-toc: true
-toc-depth: 3
-toc-title: Contents
----
+<a id="local-mixing"></a>
 
-\addtocontents{toc}{\protect\setcounter{tocdepth}{-1}}
+# Local Mixing of Reversible Circuits
 
-# Local Mixing of Reversible Circuits {#local-mixing}
+The following document details the ideas and experiments of Ran Canetti, Nicholas Ho, and other collaborators. The document is written by Nicholas Ho.
 
-\addtocontents{toc}{\protect\setcounter{tocdepth}{3}}
+We begin with small local replacements and work through the attacks which
+motivate each construction. This leads us from linear gadgetization to
+product-share gadgetization, then to whole-circuit linear correlators and
+quadratic masking. The experiments belong to the constructions and parameters
+described alongside them. Together, they explain what each method hides and
+what an attacker can still recover.
 
-The following document serves as a draft detailing the ideas and experiments of Ran Canetti, Nicholas Ho, and other collaborators. The document is written by Nicholas Ho. local mixing of reversible circuits is still evolving and the results as claimed here can and will be changed/modified and updated.  
+**Contents**
 
-This revision follows the code as of September 11, 2026. We keep the earlier
-constructions and experiments because they explain how we arrived here.
-Our current GSS method uses the sliced sandwich, quadratic masking, database
-mixing, splitting, crossing, and final compression. The product-share and
-Gray-fold construction below is an earlier gadgetizer; its measurements do not
-automatically describe the current quadratic-masking recipe. The
-[current gadgetization](#quadratic-masking) and
-[six-step method](#current-mixing-method) describe what we now run.
+- [Introduction and strategies](#introduction)
+- [Circuit notation](#random-circuits)
+- [Sampling replacements, canonicalization, and rainbow tables](#sampling-circuit-replacements)
+- [How we measure success](#how-we-measure-success)
+- [The two phase strategy](#two-phase-strategy), [butterfly methods](#butterfly-methods), and [blurring](#blurring)
+- [Pair replacements and generation mixing](#pair-replacement-methods)
+- [Wire shuffles and bit flips](#samfs)
+- [Differential attacks and algebraic degree](#differential-attacks)
+- [Linear gadgetization](#linear-gadgetizing)
+- [Nonlinear product-share gadgetization](#nonlinear-gadgetization)
+- [Whole-circuit linear correlators and the gadget gauntlet](#linear-correlators)
+- [Quadratic masking](#quadratic-masking) and [what the gauntlet still finds](#quadratic-gauntlet-results)
+- [The trapdoor permutation challenge](#trapdoor-permutation-challenge) and [SAT solvers](#sat-solvers)
+- [Slicing and fragmentation](#making-the-solver-struggle)
+- [The complete mixing method](#current-mixing-method)
+- [Conclusion](#conclusion) and [references](#references)
 
-Introduction {#introduction}
-============
+<a id="introduction"></a>
 
-Indistinguishability Obfuscation (iO) is immensely powerful. For
-instance, it can be used to achieve almost every other cryptographic
+## Introduction
+
+Indistinguishability Obfuscation (iO) asks us to transform a circuit while
+preserving what it computes, so that an efficient attacker cannot distinguish
+the obfuscations of two equal-size circuits computing the same function. It is
+immensely powerful. For instance, it can be used to achieve almost every other cryptographic
 task, such as trapdoor permutations or non-interactive zero-knowledge.
 If combined with lossy encryption, even a beast like fully homomorphic
 encryption can be achieved.
@@ -37,40 +45,57 @@ encryption can be achieved.
 The history of achieving iO is quite intriguing. In fact, there have
 already been results that prove iO can in fact exist. However, there are
 numerous problems with these existing tools. Some of these tools include
-evasive LWE, multi-linear maps, learning parity with noise, etc. These
+evasive learning with errors (LWE), multi-linear maps, learning parity with noise, etc. These
 tools can be highly structured resulting in constructions that are both
 complex and impractical. As a result, local mixing of reversible circuits serves to answer the
-following question: Can we achieve iO with \"first principles\"? The
-\[CCMR'24\] paper proposes a solution to such a question: local mixing of reversible circuits.
+following question: Can we achieve iO with "first principles"? The
+paper by Canetti, Chamon, Mucciolo, and Ruckenstein proposes a solution
+to such a question: local mixing of reversible circuits.
 
 This paper serves as a documentation for our experiments, results, as
 well as questions that remain for local mixing of reversible circuits. We note that we solely
 rely on the structure of reversible circuits, but this of course is not
 a problem as we can reduce any arbitrary circuit to a reversible
-circuit.
+circuit. A reversible circuit maps each input state to a unique output state,
+so every operation can be undone. We will write circuits as lists of gates,
+with the state of a wire being one bit. Extra wires used to carry temporary
+values are called auxiliary or ancilla wires. When they start with specified
+values, those values are part of the function we are asking the circuit to
+compute.
 
-Strategies {#strategies}
-==========
+<a id="strategies"></a>
+
+## Strategies
 
 The below strategies will all follow the same ideas. Namely, we want to
 make simple actions and use minimal structure in order to obfuscate our
-circuits. In the pursuit of simplicity, our circuits will thus only
-contain gate r57, a Toffoli gate whose control function is the complement of
-NIMPLY. Standard gates like NOT, AND, OR, NOR, NAND, etc, can
+circuits. In the pursuit of simplicity, our first circuits will thus only
+contain gate r57, a reversible gate which flips one target wire according
+to the values of two control wires. Standard gates like NOT, AND, OR, NOR, NAND, etc, can
 all be represented by gate r57. Thus, this simplification does not
 impede us from our goal of general-purpose obfuscation.
 
 **Definition:** Let $g$ be gate r57 on inputs $A$, $B$, and $C$, with
 $A$ being the active wire, $B$ being the positive control pin, and $C$
-being the negative control pin. Then 
+being the negative control pin. Then
 
 $$
 A = A + (B \vee \neg C)
 $$
 
-In words, $A$ is flipped unless $C = 1$ and $B = 0$. In the code and in the
-rest of our tooling this gate is written `g57` rather than `r57`; the two names
-refer to the same gate and we use them interchangeably.
+In words, $A$ is flipped unless $C = 1$ and $B = 0$. We also write this gate as
+g57; the two names refer to the same gate. Throughout, $+$ and $\oplus$ mean
+XOR when applied to Boolean values, while multiplication means AND.
+The notation $GF(2)$ refers to arithmetic on the two values 0 and 1 with these
+operations.
+
+We will use the following notation for the circuit diagrams. Gates run
+from left to right. An $\oplus$ marks the target of an ordinary controlled
+XOR; filled and empty control circles read a one and a zero respectively.
+For r57, the numbered controls specify the order of its two inputs,
+since its control function is different from an ordinary conjunction.
+
+![The r57, CNOT, and AND2 circuit notation](images/circuit-gate-notation.svg)
 
 For Boolean values $a$ and $b$, we can use
 
@@ -89,15 +114,15 @@ and then unflips it on one of the four control states, so a $+1$ appears in
 every gate's polynomial. This will matter a great deal later, when we start
 caring about the algebraic degree of our circuits.
 
-We note that the restriction to r57 alone no longer holds all
-the way through our pipeline. The source circuit is still built from r57,
-but the sandwich and gadgetization already use a wider gate vocabulary.
+We note that the restriction to r57 alone does not hold all
+the way through the complete construction. The source circuit is built from
+r57, but the later sandwich and gadgetization use a wider gate vocabulary.
 Later splitting deliberately fragments the remaining complemented gates into
 plain conjunctions. We describe that vocabulary when we introduce the circuit
 representation below. The early strategies use pure r57 unless stated otherwise.
 
 A good question to answer is what type of actions we are allowed to do
-to follow the rule of \"first principles\". The basic local mixing of reversible circuits
+to follow the rule of "first principles". The basic local mixing of reversible circuits
 strategy is thus to only allow small local and equivalent perturbations
 of a circuit in the hopes that with enough of them, we can get a global
 effect. In other words, given a circuit, we sample and replace many
@@ -114,7 +139,10 @@ can we mix gates in a way that we can not identify points of
 replacement?
 
 With these questions in mind, let us introduce the obfuscation
-strategies that we have tried.
+strategies that we have tried. We write $R^*$ or $R^{-1}$ for the inverse of
+a circuit $R$. Each gate in our vocabulary is its own inverse, so reversing
+the order of the gates gives the inverse circuit. Thus, $RR^*$ is an
+identity: it leaves every input state unchanged.
 
 1.  **[The Two Phase Strategy](#two-phase-strategy)**: This strategy splits up the obfuscation
     process into two phases. The first phase is the *inflationary
@@ -131,14 +159,14 @@ strategies that we have tried.
     stage method, the butterfly method has many stages of (inflationary
     $\to$ compression). Suppose we have a circuit $C$. We then wrap each
     gate with an identity of the form $R_i R_i^{-1}$, a simple identity.
-    We can sample $R_i$ completely randomly and so we have a \"stupid\"
+    We can sample $R_i$ completely randomly and so we have a "stupid"
     identity. Afterwards, we group up each $R_i^* g_i R_{i+1}$ and
     randomize it to get $B_i$. This can be done by attempting to
     compress it, expand it, or make equal length replacements of
     equivalent functionality. All that remains is to then merge the
     $B_i$ together, compressing as we do so. The diagram below shows one
     round of this in more detail. Ideally, we would use enough rounds
-    for this to effectively \"mix\" our gates.
+    for this to effectively "mix" our gates.
 
     $$
     \begin{array}{c}
@@ -195,8 +223,9 @@ strategies that we have tried.
     varied polynomial forms. The [later fragmentation section](#fragmentation) explains the two
     mixing methods which build on this identity.
 
-Sampling Subcircuits {#sampling-subcircuits}
---------------------
+<a id="sampling-subcircuits"></a>
+
+### Sampling Subcircuits
 
 In the above strategies, it is important for us to sample random
 subcircuits and then replace them. We will discuss how to make these
@@ -221,7 +250,7 @@ contiguous subcircuit within our circuit. If we view our circuit as an
 array of gates, then this is merely taking a window of some size. This
 is, of course, very easy to do.
 
-The other method is to take \"convex subcircuits\". The meaning of
+The other method is to take "convex subcircuits". The meaning of
 convex here directly lies in finding convex subgraphs of a directed
 graph. In order to turn a circuit into its graph representation, let
 each gate be a node $i$ and for every other gate $j$ that collides with
@@ -233,17 +262,20 @@ of it in order to get what we call a **convex subcircuit**. As we have
 convexity, we can then rearrange gates in the original circuit to make
 this convex subcircuit a contiguous subcircuit. As a reminder, we note
 that gates can be swapped without changing the functionality of the
-original circuit if they do not collide. Unfortunately, the algorithm
-for finding convex subcircuits is slow when used hundreds of millions of
-times, taking up about 40% of total computation time. This is our largest bottleneck when it comes to speed.
+original circuit if they do not collide. Unfortunately, finding convex subcircuits is expensive when repeated hundreds
+of millions of times. In our measurements, it took about 40% of the total
+computation time.
 
-Random Circuits {#random-circuits}
-===============
+<a id="random-circuits"></a>
+
+## Random Circuits
 
 Before anything, it is important to establish a shared language to discuss our circuits. Below is a
 table for any circuit-wiring language that we use for circuits with only r57.
 
-**Table: Wire Index Encoding Used by Circuits of r57** {#tab:wire-encoding}
+<a id="tab:wire-encoding"></a>
+
+**Table: Wire Index Encoding Used by Circuits of r57**
 
 | Wire range | Encoded as | Notes |
 |------------|------------|-------|
@@ -260,10 +292,11 @@ A gate consists of three pins, each on a distinct wire. We represent a gate by l
 A gate $g = [a,b,c]$, where $a$ is the active pin and $b,c$ are the control pins, is written as `abc`.  
 A circuit is written as a list of such gates separated by `;`.
 
-While this is not the notation we will be using to represent our mixed circuits, this is the notation that is used when storing circuits as we will strictly be using r57 gates in our rainbow tables. 
+While this is not the notation we will be using to represent our mixed circuits, this is the notation that is used when storing circuits as we will strictly be using r57 gates in our rainbow tables.
 
-Beyond r57 {#beyond-r57}
-----------
+<a id="beyond-r57"></a>
+
+### Beyond r57
 
 The encoding above can only ever describe r57 circuits. A gate is three wire
 tokens and nothing else, so there is nowhere in it to say *which* control
@@ -271,7 +304,7 @@ function the gate uses: the control function is fixed by the format, and any
 circuit written this way is r57 by construction. For most of this document that
 is exactly what we want, and we will lean on it heavily.
 
-As we said at the outset, it does not hold all the way through our pipeline.
+As we said at the outset, it does not hold all the way through the complete construction.
 Later stages deliberately emit gates that are *not* r57, and once they have run
 the circuit is not expressible in the three-token format at all. Why we are
 willing to give up r57, and what it costs us, is an argument that belongs with
@@ -319,7 +352,7 @@ gets its density from knowing the gate type in advance, which is precisely what
 `mpmct1` cannot assume, so it spells everything out instead: a header line
 naming the wire and gate counts, then one gate per line, all in decimal.
 
-```
+```text
 mpmct1 <num_wires> <num_gates>
 <target> <comp> <k> <wire> <pol> ... (k wire/polarity pairs)
 ```
@@ -353,9 +386,9 @@ above. We use wire 1 as the target throughout.
   $x_1 \mathrel{{\oplus}{=}} 1 \oplus
   (x_2 \wedge \neg x_3 \wedge x_4)$.
 
-Below is an example of a 3-gate circuit written in this format. 
+Below is an example of a 3-gate circuit written in this format.
 
-```
+```text
 mpmct1 32 3
 15 0 2 7 1 20 1
 4 0 2 2 1 31 1
@@ -370,69 +403,77 @@ gate refers to wire 31. Reading the instructions from top to bottom, they give
 2.  $x_4 \mathrel{{\oplus}{=}} x_2 \wedge x_{31}$,
 3.  $x_4 \mathrel{{\oplus}{=}} x_{20}$.
 
-We will use the simple language for writing circuits when it only consists of r57 gates. 
+We will use the simpler three-pin notation when a circuit only consists of r57 gates.
 
-## Sampling Circuit Replacements {#sampling-circuit-replacements}
+<a id="sampling-circuit-replacements"></a>
+
+## Sampling Circuit Replacements
+
 The simplest way to sample a random circuit with a particular functionality, would be to search it up in a precomputed table of circuits. If we do this carelessly, then our table will not take into
 account circuits that are essentially the exact same circuit, but differ
 in trivial ways. For instance, the below circuits are all equivalent
-circuits $$123;456;789$$ $$123;789;456$$ $$789;123;456$$
+circuits `123;456;789` `123;789;456` `789;123;456`
 
 Recalling that our definition of collisions require two gates to share a wire between an active pin and any other pin, we notice that all of the 3 above circuits depict 3 gates that share no wires, which means there can exist no collision. This shows that we can
-actually order the gates in any way that we want. This means that many
-of our replacements in the kneading stage, were just trivial
-replacements as seen here.This gives us a new problem of defining
+actually order the gates in any way that we want. Many
+of our replacements in the kneading stage were therefore just trivial
+replacements as seen here. This gives us a new problem of defining
 circuit equivalences beyond trivial gate swaps.
 
-Canonicalization {#canonicalization}
-----------------
+<a id="canonicalization"></a>
+
+### Canonicalization
 
 There are two types of trivialities we can identify. First, it is the
 one described in the last section where we can swap commuting gates.
 For the second, let us first consider the following two circuits.
-```123;345``` and ```145;523;```. 
+`123;345` and `145;523;`.
 
-Before we discuss the second type of canonicalization, we first establish the idea of circuit permutation. Besides the gates of a circuit, a circuit can be identified by its functionality. Using this form of identification can be useful for us as circuits can share the same functionality while sharing a different sequence of gates. For instance, ```140;214;250;014;250;205;014;205;140;``` and ```136;063;031;013;136;016;061;``` both compute identities. A circuit representation is thus a bijective mapping of all input states to all output states. For instance, a circuit on 3 wires can have the following input states: $0, 1, 2, 3, 4, 5, 6, 7$. We call these states because each of these can be thought of as the states of each wire on the 3 wire circuit, with ```0 = 000``` and ```7 = 111``` when thought of as bit strings. 
+Before we discuss the second type of canonicalization, we first establish the idea of circuit permutation. Besides the gates of a circuit, a circuit can be identified by its functionality. Using this form of identification can be useful for us as circuits can share the same functionality while sharing a different sequence of gates. For instance, `140;214;250;014;250;205;014;205;140;` and `136;063;031;013;136;016;061;` both compute identities. A circuit representation is thus a bijective mapping of all input states to all output states. For instance, a circuit on 3 wires can have the following input states: $0, 1, 2, 3, 4, 5, 6, 7$. We call these states because each of these can be thought of as the states of each wire on the 3 wire circuit, with `0 = 000` and `7 = 111` when thought of as bit strings.
 
 Going back to our two circuits, we can see that the gates now collide and so we can not just swap things around to make them equivalent. In fact, they aren't even equivalent at
 all. However, the structure that they have is identical. Namely, there
 is one collision between the second control pin of the first gate and
 the active pin of the second gate. We can see that mapping the wires
-$$\begin{aligned}
+
+$$
+\begin{aligned}
     1 &\to 1\\
     2 &\to 4\\
     3 &\to 5\\
     4 &\to 2\\
-    5 &\to 3\end{aligned}$$
+    5 &\to 3\end{aligned}
+$$
 
-allows us to map the first circuit to the second one. Let us see what is actually happening when we consider the states as bits. 
+allows us to map the first circuit to the second one. Let us see what is actually happening when we consider the states as bits.
 
-$$\begin{aligned}
+$$
+\begin{aligned}
     001 &\to 001\\
     010 &\to 100\\
     011 &\to 101\\
     100 &\to 010\\
-    101 &\to 011\end{aligned}$$
+    101 &\to 011\end{aligned}
+$$
 
-The two circuits are equal up to a shuffle of the right two bits. Thus, while the circuits are effectively different circuits, we can see that they are extremely similar. By considering only one of these circuits in our rainbow table of possible circuits, our random sampling is only amongst truly different and random looking circuits. So while the first type of circuit canonicalization is based on gate ordering and collisions, the second type of canonicalization is based on the bit shuffles of the circuit's permutation. 
+The two circuits are equal up to a shuffle of the right two bits. Thus, while the circuits are effectively different circuits, we can see that they are extremely similar. By considering only one of these circuits in our rainbow table of possible circuits, our random sampling is only amongst truly different and random looking circuits. So while the first type of circuit canonicalization is based on gate ordering and collisions, the second type of canonicalization is based on the bit shuffles of the circuit's permutation.
 
 It is important for our canonicalization algorithms to be efficient as
 we will be constantly computing them. One extremely simple algorithm for
 circuit canonicalization is by just taking the lexicographic ordering,
 with respect to colliding gates. This is very efficient already as it is
 essentially just a sorting algorithm. On the other hand, computing
-permutations is much harder. While we know that there exists a poly-time
-algorithm, we have not yet found this. Thus, the best we can usually do
-is brute forcing every possible bit shuffle in order to find the lowest
-lexicographical ordering. It remains an open problem to find a better
-algorithm for this and this is one of our main bottlenecks. Once the bit shuffle that corresponds to the smallest permutation lexicographically,
+permutations is much harder. A direct method is to try every possible bit shuffle in order to find the
+lowest lexicographical ordering. This becomes expensive very quickly, and
+motivates the polynomial method below. Once the bit shuffle that corresponds to the smallest permutation lexicographically,
 we can just apply the bit shuffle to the circuit and of course undo the
 shuffle whenever we want so that we don't lose any circuits in this
 canonicalization, just like how we can merely shuffle gates around again
-to \"undo\" circuit canonicalization.
+to "undo" circuit canonicalization.
 
-Canonicalizing via Polynomials {#polynomial-canonicalization}
-------------------------------
+<a id="polynomial-canonicalization"></a>
+
+### Canonicalizing via Polynomials
 
 The two canonicalizations above got us a long way, but relying solely on permutations can get quite expensive if we wish to canonicalize circuits on 7+ wires. To identify a circuit's functionality by its
 permutation, we must save an entry for every possible input. It is rare for a random circuit to only span 7 wires, and when we make
@@ -471,9 +512,17 @@ number of monomials with some highest degree. Any tied polynomials, we then
 look at the number of monomials with the next highest degree, etc. For
 instance, consider the polynomials:
 
-$$P_1 = x_0 + x_1 + x_2 + x_0x_1 + x_2x_3 + x_0x_2x_3$$
-$$P_2 = x_2 + x_3  + x_2x_3x_4x_5$$
-$$P_3 = x_3 + x_5 + x_0x_1x_3x_5$$
+$$
+P_1 = x_0 + x_1 + x_2 + x_0x_1 + x_2x_3 + x_0x_2x_3
+$$
+
+$$
+P_2 = x_2 + x_3  + x_2x_3x_4x_5
+$$
+
+$$
+P_3 = x_3 + x_5 + x_0x_1x_3x_5
+$$
 
 Their degree profiles are:
 
@@ -501,9 +550,10 @@ Before we go through how to use these $P_{C_i}$ to rank our wires, we first
 must know how to rank two monomials.
 
 Given **$M$** and **$M'$** and some partial ranking $\sigma$ of the variables, we have $M > M'$
-a. If the degree of $M$ is greater than the degree of $M'$
-b. If the degrees are equal, then if the highest ranked variable, based on $\sigma$, of $M$ is ranked higher than the highest ranked variable of $M'$.
-c. If the degrees are equal and the variables are equally ranked, then if the coefficient of $M$ is greater than the coefficient of $M'$.
+
+- **(a)** If the degree of $M$ is greater than the degree of $M'$
+- **(b)** If the degrees are equal, then if the highest ranked variable, based on $\sigma$, of $M$ is ranked higher than the highest ranked variable of $M'$.
+- **(c)** If the degrees are equal and the variables are equally ranked, then if the coefficient of $M$ is greater than the coefficient of $M'$.
 
 Let us take an example. Suppose we have $x_0x_1x_3$ vs $x_2x_4$ with current
 partial ranking $0,1 < 4 < 3,5,6$. Then from rule $(a)$, we have $x_0x_1x_3 >
@@ -576,8 +626,7 @@ tiebreaks, Rule L is global: it considers the full resulting representation
 rather than any local polynomial property. When two branches give the same
 form, their wire labelings reveal a symmetry. We remember this symmetry and
 skip later equivalent branches when the symmetry preserves the current tied
-groups. Thus, the current implementation need not visit every symmetric
-branch separately.
+groups. Thus, we need not visit every symmetric branch separately.
 
 **Highest monomials depending on $\sigma$** — Suppose we have polynomial $P =
 x_0x_1 + x_1x_3$ with partial ranking $1 < 2 < 0,3$. Here the monomials would be
@@ -591,22 +640,21 @@ run if all above methods have failed and ties remain between wires. This means
 we may only need to consider a couple branches, as opposed to a full $n!$
 different wire relabelings. Thus, in practice, this is still efficient. There is
 an optional cap on the total number of Rule L candidates across the entire
-recursive call. Exceeding it makes the canonicalization fail rather than
-return a partial answer. The general library options leave this cap unset;
-the current GSS driver sets it to 512. Candidates are charged before symmetry
-pruning at each search node. A failure here skips the database lookup rather
-than producing a wrong key; it does not establish that the function has no
-friends.
+recursive call. For instance, a budget of 512 candidates limits how much work
+we spend on a difficult window. Exceeding the budget makes the
+canonicalization fail rather than return a partial answer. A failure skips
+the database lookup; it does not establish that the function has no friends.
 
-We also restrict the number of distinct wires a lookup window may touch to
-64, since a monomial is a 64-bit mask. This is the number of local variables
-in the window, not the total width of the surrounding circuit. GSS sets the
-legacy g57 composition cap to 200,000 reduced monomials per wire. The XGate
-composition used for mixed gate windows has separate limits on multiplication
-work, reduced terms per wire, and reduced terms across all wires. Hitting
-one of these limits likewise skips the lookup. The offline regular and full
-curated builders require the environment caps to be unset so that generation
-does not silently inherit the mixing-time limits.
+Polynomial expansion needs a budget for the same reason. A monomial can be
+represented by a bit mask, with one bit for each variable it contains. A
+64-bit representation therefore supports at most 64 distinct wires in the
+sampled window, even when the surrounding circuit is much wider. We can also
+bound the number of reduced monomials per wire and the work spent multiplying
+polynomials. For example, a limit of 200,000 reduced monomials per wire keeps
+one difficult r57 window from taking over the entire mixing process. If a
+window exceeds a limit, we leave it unchanged. These limits control the cost
+of searching for a replacement; they do not change what it means for two
+circuits to be equivalent.
 
 Step 5 is what buys us the most. It allows us to relate the functionalities of
 circuits on a different number of wires together, which is something that we
@@ -627,23 +675,23 @@ reversal separately. Any canonical circuit can be mapped to its inverse, which
 makes storing both redundant. Rather than probing for the reversal, we get this
 for free from the key itself: we canonicalize the circuit in both directions and
 key it by whichever of the two comes out smaller. A circuit and its reversal
-therefore collapse onto a single entry automatically. The current regular
-lookup computes both canonical forms but normally probes only the smaller
-one. Historical and diagnostic modes can also probe both keys. A hit in the
-reverse direction is flagged so that the replacement gets re-reversed before
-it is spliced in. The curated lookup, described below, uses its forward form.
+therefore collapse onto a single entry automatically. We look up the smaller
+canonical form. If it came from the reverse direction, we reverse the
+replacement again before inserting it. The curated lookup, described below,
+uses its forward form.
 
-The trimming at the end means that circuits that are equivalent in functionality, but differ in the total number of wires, will still be met with the same wire canonicalizations. This means that we can actually store our rainbow solely by their functionality and generate them based on the number of gates we have already generated. We no longer need to separate our tables by wires. 
+The trimming at the end means that circuits that are equivalent in functionality, but differ in the total number of wires, will still be met with the same wire canonicalizations. This means that we can actually store our rainbow solely by their functionality and generate them based on the number of gates we have already generated. We no longer need to separate our tables by wires.
 
-Rainbow Tables {#rainbow-tables}
---------------
+<a id="rainbow-tables"></a>
+
+### Rainbow Tables
 
 With our new notions of canonicalizations (we will be using both gate-level and polynomial-level canonicalizations), we can greatly
 decrease the number of possibilities stored in our rainbow tables, as we
 saw that many circuits are already equivalent. It turns out that this
 means that many permutations only have a single circuit that corresponds
 to it. It is actually hard to find many circuits that have many
-\"friends\", where two circuits are friends if they differ in both
+"friends", where two circuits are friends if they differ in both
 canonicalizations above and still have the same permutation (which
 corresponds to the same functionality).
 
@@ -654,40 +702,30 @@ $n = 5$ and $m = 5$. This has $(n * (n-1) * (n-2))^m = 777,600,000$ total
 circuits before canonicalizations. After permutation canonicalization, we can bring
 thus number down to about 2.5 million circuits.
 
-Historically, we stored circuits in a mix of SQL databases and B-tree databases
-(LMDB), indexed by permutation and separated by $(n, m)$. SQL was nicer than
-pure binaries because we could search for particular permutations or circuits,
-or select randomly, without converting the data ourselves. However, as the
-number of circuits grows exponentially in both $n$ and $m$, SQL queries became
-extremely slow for large $n, m$ even with indexing, and LMDB's slow writes meant
-tables like $n6m5$ and $n7m4$ could not be built with that workflow. Once we
-moved to polynomial canonicalization there was no longer any reason to
-separate tables by wire count, and once the tables grew past a terabyte there
-was no longer any reason to keep a general-purpose database engine underneath
-our runtime lookups. Both of these changes are worth describing.
+A general-purpose database can store these circuits by their functionality and
+let us retrieve or randomly select equivalent circuits. However, the number of
+circuits grows exponentially in both $n$ and $m$, and the tables can grow past a
+terabyte. Polynomial canonicalization removes the need to separate them by
+wire count. We also have a second simplification: the tables are constructed
+ahead of time, so mixing only needs to read them. This lets us use the simpler
+storage described below.
 
-We still use RocksDB and LMDB when constructing the tables. Regular generation
-and merging use RocksDB, followed by an export to sharded LMDB and then to
-frozen files. The current full curated construction uses a composite RocksDB
-and freezes it directly. Mixing itself only reads the frozen files; it does
-not open either mutable database engine.
+<a id="frozen-table"></a>
 
-The Frozen Table {#frozen-table}
-----------------
+### The Frozen Table
 
 We first note what the table is meant to store. We take the canonical
-polynomial representation of a circuit and hash it with XXH3-128 to obtain a
-128-bit key. The value associated with that key is the list of canonical
+polynomial representation of a circuit and hash it to obtain a
+128-bit key, a compact identifier used to find the entry. The value associated with that key is the list of canonical
 circuits we have found with the same polynomial representation. Thus, a lookup
 begins with the functionality of a sampled subcircuit and returns other
 circuits that may be used in its place.
 
 The table is constructed ahead of time and is only read during mixing. We never
 need to insert, update, or delete an entry at mixing time. A general-purpose
-database still maintains machinery for writes and concurrency. In our earlier
-B-tree storage, this included page slack, free lists, transactions, and locks.
-Since we do not use that machinery, we can store the same mapping in a simpler
-form.
+database maintains machinery for changing entries while other operations
+are in progress. Since mixing does not need that machinery, we can store the
+same mapping in a simpler form.
 
 The distinction in names is important here. The *rainbow table* is the logical
 mapping from a canonical functionality to the circuits that compute it. The
@@ -699,7 +737,8 @@ format.
 
 We do not retain all 128 bits of each hash. The hash is first serialized as
 16 little-endian bytes, and we divide the bits of that byte sequence as
-follows:
+follows. A shard is one of several files which divide up the table; a bucket is
+a smaller group of entries within a shard.
 
 | Part of the hash | Number of bits | Purpose |
 |---|---:|---|
@@ -712,8 +751,9 @@ In other words, the first 28 bits tell us where to look, and the next 48 bits
 tell us which entry we want once we get there. The remaining 52 bits are
 discarded. Here, "first" refers to the serialized bytes, not the most
 significant bits of the numeric 128-bit hash. Within each bucket, the 48-bit tails are sorted and compressed using
-Elias--Fano coding. Each tail then has one value, stored as a length-prefixed
-chain of circuit representations in a compressed bit stream.
+Elias--Fano coding, which compresses a sorted list of integers while still
+allowing us to search it. Each tail then has one value: a compressed list of
+circuits, with each circuit preceded by its length so that we can locate it.
 
 A lookup then proceeds as follows:
 
@@ -731,38 +771,33 @@ read only the bucket selected by the key, and an empty bucket requires no disk
 read.
 
 Keeping only 76 bits means that two different 128-bit hashes can produce the
-same stored key. For the historical corpus of approximately 22.6 billion
-entries recorded below, in a $2^{76}$-element
+same stored key. For the table of approximately 22.6 billion
+entries described below, in a $2^{76}$-element
 key space, the probability that a random absent key agrees with a stored key on
 all 76 retained bits is approximately $3 \times 10^{-13}$. A campaign making
 approximately $10^{10}$ absent lookups would therefore expect only a few
 thousandths of a false hit. A collision may return a circuit from the wrong
-entry or hide the entry we wanted to find. With fmix's default database
-verification enabled, however, every proposed replacement is checked before it
-is inserted. We compare every input when the combined support has at most
-24 wires, and compare the exact output polynomials above that width. An
-undecided polynomial check, due to its budget or the 64-variable limit,
-declines the replacement. Thus, a truncated-key collision cannot silently
-change the functionality of an accepted replacement. This safety statement no longer
-applies if database verification is explicitly disabled.
+entry or hide the entry we wanted to find. We therefore verify every
+proposed replacement before inserting it. We compare every input when the
+combined set of wires has at most 24 wires, and compare the exact output
+polynomials above that width. If we cannot complete the exact check within
+its budget, we decline the replacement. Thus, the lookup can suggest a wrong
+candidate, but that candidate cannot change the circuit's functionality
+because it must pass the independent equivalence check first.
 
-The circuit lists themselves are compressed using a canonical Huffman code. The
-value header is coded separately, and each symbol after it is one complete
-3-byte gate triple rather than one wire index. The coding context uses the
-circuit width, capped at 32, and the gate's position, capped at 11. We use whole
-gates because recurring gate patterns are more useful for compression than
-their wire indices considered separately. Escape codes allow all of our source
-values to be represented, including raw values that the current circuit parser
-does not recognize. On the historical dataset measured here, the encoding used approximately 9 bits per
-gate. 
+The circuit lists themselves are compressed using Huffman coding, which gives
+shorter bit strings to frequently occurring symbols. We treat one complete
+three-pin gate as a symbol because recurring gate patterns are more useful for
+compression than their wire indices considered separately. The symbol
+frequencies depend on the circuit width and the gate's position in the circuit.
+On the table measured here, the encoding used approximately 9 bits per gate.
 
 The resulting frozen table occupied 320.3 GB, or approximately 14.15 bytes per
-entry. The same content occupied 1.1 TB in LMDB and approximately 700 GB in a
-compressed RocksDB store. This reduction comes from three changes: removing the
-unused write machinery, compressing the circuit values, and truncating the
-stored hashes. We have not measured the contribution of each change
-independently. These are measurements of that corpus, rather than an inventory
-of every store currently deployed.
+entry. The same content occupied 1.1 TB in a general-purpose B-tree database
+and approximately 700 GB in a compressed general-purpose database. This
+reduction comes from three changes: removing the unused write machinery,
+compressing the circuit values, and truncating the stored hashes. We have not
+measured the contribution of each change independently.
 
 Finally, we note that the two bucket offsets immediately tell us when a bucket
 is empty, so that case requires no disk read. If the selected bucket is not
@@ -772,17 +807,18 @@ keeping an optional approximate membership filter over the retained 76-bit keys
 in memory. If the filter says that a key is absent, we skip the disk lookup. If
 it reports that the key may be present, we still perform the exact bucket
 lookup. For a filter built from the same store, a false positive only causes an
-unnecessary exact lookup and cannot select an incorrect value. We now build
-the filter from the frozen files themselves and verify every retained key
-before publishing it. In the original measurement, the filter reduced the average miss time from
+unnecessary exact lookup and cannot select an incorrect value. We build
+the filter from the frozen table and check that it recognizes every retained
+key. In our measurement, the filter reduced the average miss time from
 approximately 120 microseconds to approximately half a microsecond. An exact
 hit in the frozen table took approximately 33 microseconds. These timings
 depend on the store, hardware, and cache state.
 
-What the Database Covers {#database-coverage}
-------------------------
+<a id="database-coverage"></a>
 
-We now generate the source tables by gate count rather than by wire count, and
+### What the Database Covers
+
+We generate the source tables by gate count rather than by wire count, and
 then merge them into the frozen store. A circuit with $m$ gates can use at most
 $3m$ distinct wires because each r57 gate touches three distinct wires.
 Polynomial canonicalization relabels only the wires that the circuit actually
@@ -790,10 +826,9 @@ uses, so additional unused wires in the surrounding circuit do not affect the
 key. Thus, a source table for $m$ gates can include circuits taken from any
 total circuit width.
 
-The following coverage figures describe the historical m1 through m11
-construction recorded in these experiments. They do not establish the
-contents of a current directory from its name alone; generation bounds and
-the source tables used for a particular build determine its coverage.
+The following coverage figures describe a table built from circuits of 1
+through 11 gates. Its generation bounds matter: a table containing some
+11 gate circuits need not contain every shorter circuit.
 
 For gate counts 1 through 6 in this construction, generation was run without a minimum used-wire
 cutoff. These tables were intended to cover every canonical functionality
@@ -859,9 +894,8 @@ few wires between gates.
 This missing region directly affects the lookup rate for longer, narrow
 windows. A window outside the generated used-wire range can only match the
 regular table if its functionality also has a circuit in one of the ranges that
-we did generate, including a shorter circuit. The degree and span checks used
-during production mixing can also cause a lookup to be skipped. In our measured
-pure-r57 configuration, windows matched 100% of the time through 5 gates and
+we did generate, including a shorter circuit. The polynomial-work and used-wire limits described above can also cause a
+lookup to be skipped. When sampling pure-r57 circuits, windows matched 100% of the time through 5 gates and
 94% of the time at 6 gates. The measured rates for 7 through 12 gates were then
 56%, 31%, 20%, 8%, 3%, and 0%. These rates are specific to that sampling and
 lookup configuration. Thus, we normally use short windows when we need a
@@ -870,15 +904,16 @@ consistently high lookup rate.
 This does not mean that every longer window will miss. The lookup key represents
 the functionality of the window rather than its number of gates. For example, a
 20 gate window can still match if the same functionality has an equivalent
-circuit of 11 gates or fewer in the table. In a later MIX campaign using convex
-windows and the [curated-first lookup described below](#curated-table), the match rate decreased
+circuit of 11 gates or fewer in the table. In an experiment making replacements in convex
+windows with the [curated-first lookup described below](#curated-table), the match rate decreased
 by roughly a factor of $0.75$ per additional gate after length 7, but remained
 at 1.72% at length 20. This later result uses a different sampling and lookup
 configuration from the pure-r57 measurements above. Thus, longer windows still
-have a use, even though their matches are much less common. Finally, these longer gates can be useful in generating *minimal* identities and supply the *curated* table. 
+have a use, even though their matches are much less common. Finally, these longer gates can be useful in generating *minimal* identities and supply the *curated* table.
 
-The Curated Table {#curated-table}
------------------
+<a id="curated-table"></a>
+
+### The Curated Table
 
 Alongside the general table we keep a second, much smaller one, which we call
 the *curated* table. The motivation is that the general table answers "what else
@@ -910,47 +945,35 @@ alternative spelling for it. This is a table-relative test of selected windows
 rather than the full definition, and identities that pass it can still contain a compressible
 subcircuit of some other length.
 
-The historical bounded curated table held 11,858,820 keys in about 1.72 GB, which was roughly one
-key per 1,900 general keys and about half a percent of the general table's
-bytes. It was bounded: at most 20 candidates and at most 512 bytes of value per
-key. That bound is not cosmetic. The earlier unbounded build was 6.49 GB with a
-single pathological 1.19 GB shard, and a single lookup into it could take over
-half a second because it reconstructed the entire candidate list. Since every
-candidate under a key computes the same function, capping the list bounds only
-redundant choice and never correctness, and it took the curated table from
-unusable to sub-millisecond in that experiment. In those measurements, curated lookups were about an order of
-magnitude cheaper than general ones, around 3.8 microseconds against 33.
+One curated table held approximately 11.9 million keys in about 1.72 GB, which
+was roughly one key per 1,900 general keys and about half a percent of the
+general table's bytes. Each key retained at most 20 candidates and at most
+512 bytes of circuit representations. The bound limits how much time and
+memory one lookup can take, since a single functionality can have an enormous
+number of friends. In these measurements, curated lookups were about an order
+of magnitude cheaper than general ones, around 3.8 microseconds against 33.
 
-The current full curated builder does not impose those per-key candidate or
-byte limits. It deduplicates complete function/circuit pairs in a composite
-RocksDB, verifies the generated candidates against their keys, and records a
-completion audit. It then writes the frozen files directly. Some of the full
-friend lists exceed LMDB's ordinary single-value limit of $4\text{ GiB}-1$,
-so exporting this construction through LMDB would not preserve every friend.
-The older bounded import route remains available for stores that fit it.
-
-The current runtime also reads the full stored candidate list. It scans the
-record lengths to choose a friend and only then constructs that circuit and
-maps its wires, rather than constructing every friend before choosing.
-Repeated large lists can be retained in a decoded-value cache. This lets us
-use larger pools, although a very large list can still cost substantial time
-and memory. Capping a list changes the available diversity and mixing choices
-even when every retained candidate remains correct.
+We can instead retain every distinct function/circuit pair that we generate.
+This gives us more choice, but we must avoid constructing every friend before
+choosing one. We first scan the stored circuit lengths, select a friend, and
+only then construct that circuit and map its wires. A very large list can
+still cost substantial time and memory. Limiting the list changes the
+available diversity and mixing choices, even though every retained candidate
+remains correct.
 
 Curated lookup uses the window's forward canonical form. When no curated
 candidates are found, the regular fallback follows the minimum-direction
 rule described above; some mixing policies try several curated window sizes
-before falling back. Current stores use the native g57 control order.
-The `legacy-swapped-controls` option is only for historical values whose two
-control bytes need to be exchanged during decoding.
+before falling back.
 
-Using the Rainbow Tables {#using-rainbow-tables}
------------
+<a id="using-rainbow-tables"></a>
+
+### Using the Rainbow Tables
 
 The main use we have for our tables is to make replacements, and in particular
 to shorten or lengthen subcircuits.
 
-This allows us to both compress and expand circuits and gives us additional randomness. This randomness comes from the fact that a single circuit functionality can be shared amongst $x$ different circuits up to canonicalization, and an obfuscator can easily select any one of these to make a replacement. For instance, a circuit with 100 gates and 64 wires could have a subcircuit with 10 gates and only 6 wires. We could then compress this down to 5 gates, to which the original 10 gates have all been changed. This allows us to fundamentally change a circuit, as the states between the 10 original gates has been lost and instead put into only 5 gates. Of course, the state before and after our new 5 gates will remain equal to the state before and after the old 10 gates that we compressed. The same can be said about expansion. 
+This allows us to both compress and expand circuits and gives us additional randomness. This randomness comes from the fact that a single circuit functionality can be shared amongst $x$ different circuits up to canonicalization, and an obfuscator can easily select any one of these to make a replacement. For instance, a circuit with 100 gates and 64 wires could have a subcircuit with 10 gates and only 6 wires. We could then compress this down to 5 gates, to which the original 10 gates have all been changed. This allows us to fundamentally change a circuit, as the states between the 10 original gates has been lost and instead put into only 5 gates. Of course, the state before and after our new 5 gates will remain equal to the state before and after the old 10 gates that we compressed. The same can be said about expansion.
 
 We now state some things about compressibility. Stupid identities such
 as $214;251;123;123;251;214$, created by just reversing an identity and
@@ -960,10 +983,11 @@ rainbow table. However, it is extremely hard to compress completely
 random circuits. These facts are important to consider when looking at a
 new strategy for local mixing of reversible circuits.
 
-In these earlier mixing experiments, accepting both compressions and expansions, the best gate-length to start with appeared to be 9 gates. Making cascading replacements, i.e. making replacements that include gates of the previous replacement, rather than random replacements, led to better mixing, but were slower. Contiguous circuits with few collisions very rarely had shorter replacements, which motivated our use of convex subcircuits. The current GSS size schedule and sampling policy are described in the pipeline section below.
+In these earlier mixing experiments, accepting both compressions and expansions, the best gate-length to start with appeared to be 9 gates. Making cascading replacements, i.e. making replacements that include gates of the previous replacement, rather than random replacements, led to better mixing, but were slower. Contiguous circuits with few collisions very rarely had shorter replacements, which motivated our use of convex subcircuits. The [generation-mixing section](#generation-mixing) describes how we combine this overlap with a schedule for circuit size.
 
-How We Measure Success {#how-we-measure-success}
-----------------------
+<a id="how-we-measure-success"></a>
+
+## How We Measure Success
 
 As we discuss our strategies, it will of course be important for us to measure
 how well we are doing. At first, we mainly used heatmaps and incompressibility.
@@ -972,7 +996,10 @@ showed that passing them is not enough. We now use several different
 measurements, each of which asks a different question about the circuit.
 
 Before applying any attack, we first check that the transformed circuit still
-computes the required function or fixed-slice contract. Full-state and endpoint
+computes the required function. Some constructions use a *fixed slice*: we
+fix specified auxiliary inputs and require the chosen output wires to compute
+the original function on that restricted set of inputs. We describe this
+explicitly when we reach [slicing](#making-the-solver-struggle). Full-state and endpoint
 comparisons give sampled evidence at large sizes, while exhaustive comparison is
 only practical at small sizes. Correctness is separate from hiding: an incorrect
 circuit can look excellent under every attack below.
@@ -987,8 +1014,11 @@ The main measurements introduced here are:
     intermediate states remain low-degree functions of the original input;
 4.  affine and bounded-degree reconstruction heatmaps, which ask whether an
     original intermediate state can be recovered as a low-degree function of
-    the transformed circuit's current wires; and
-5.  SAT tests, which turn the published circuit into a Boolean formula and ask
+    the transformed circuit's current wires;
+5.  whole-circuit linear correlators, which combine observations from
+    different times to recover or predict source values. We collect these
+    and the local tests in the [gadget gauntlet](#gadget-gauntlet); and
+6.  Boolean satisfiability (SAT) tests, which turn the published circuit into a Boolean formula and ask
     for an input which produces a chosen output. We use this later to search for
     preimages in the [trapdoor permutation challenge](#trapdoor-permutation-challenge).
 
@@ -1015,28 +1045,36 @@ normalize by $n$ for display. This ordinary heatmap assumes that the physical
 wire positions of the two circuits are comparable. A wire relabeling can
 therefore change the map even when it has only moved the bits around.
 
-We use *green* to denote \"random\" and *red* to denote \"equal\", although
+We use *green* to denote "random" and *red* to denote "equal", although
 some of our older heatmaps use *purple* and *green* instead. Two identical
 circuits should have a red diagonal along $y=x$. Two completely random circuits
 should give a green heatmap. If two circuits look random internally but compute
 the same function, then their input and output corners should agree while the
 interior is green. Figure 1 below is a sketch of this.
 
-<!-- Figure 1 -->
-![Sketch of an ideal heatmap](images/exampleheatmap.png){width=55%}
+![Sketch of an ideal heatmap](images/exampleheatmap.png)
+
+*Figure 1: Sketch of an ideal heatmap.*
 
 We can calibrate this measure by comparing actual random circuits. This allows
 us to see how many gates are needed before random circuits look random in the
 heatmap. Below, we vary both the number of gates and the number of wires.
 
-<!-- Figure 2-5 -->
-![Heatmap two completely random 100 gate circuits on 32 wires](images/n32m100BC.png){width=55%}
+![Heatmap two completely random 100 gate circuits on 32 wires](images/n32m100BC.png)
 
-![Heatmap two completely random 500 gate circuits on 32 wires](images/n32m500.png){width=55%}
+*Figure 2: Heatmap two completely random 100 gate circuits on 32 wires.*
 
-![Heatmap two completely random 100 gate circuits on 64 wires](images/n64m100.png){width=55%}
+![Heatmap two completely random 500 gate circuits on 32 wires](images/n32m500.png)
 
-![Heatmap two completely random 500 gate circuits on 64 wires](images/n64m500.png){width=55%}
+*Figure 3: Heatmap two completely random 500 gate circuits on 32 wires.*
+
+![Heatmap two completely random 100 gate circuits on 64 wires](images/n64m100.png)
+
+*Figure 4: Heatmap two completely random 100 gate circuits on 64 wires.*
+
+![Heatmap two completely random 500 gate circuits on 64 wires](images/n64m500.png)
+
+*Figure 5: Heatmap two completely random 500 gate circuits on 64 wires.*
 
 From Figures 2 and 3, we can see that on 32 wires, two completely random
 circuits already look uncorrelated at 100 gates. On the other hand, Figures 4
@@ -1048,8 +1086,9 @@ to r57 gates, this number is $O(n\log n)$.
 Figure 6 shows a circuit compared with itself. This is the diagonal that we are
 attempting to escape from.
 
-<!-- Figure 6 -->
-![Heatmap showing a 100 gate circuit with itself](images/100100.png){width=55%}
+![Heatmap showing a 100 gate circuit with itself](images/100100.png)
+
+*Figure 6: Heatmap showing a 100 gate circuit with itself.*
 
 The ordinary heatmap is not the only state heatmap that we use. A pure wire
 permutation can make the ordinary map look random without actually hiding the
@@ -1072,9 +1111,8 @@ subcircuits and replace them with fewer gates. If we expand a 100 gate circuit
 on 64 wires to 1000 gates, then a compressor which brings it back to 100 gates
 or fewer has undone the expansion for this purpose. This is an empirical attack,
 not a proof of incompressibility: a stronger compressor may find replacements
-that ours misses. We use `fcompress` as the current attacker-computable cleanup
-test because it also tells us whether our additional structure survives an
-ordinary deterministic compression pass. Showing that no practical compressor
+that ours misses. Our [deterministic compressor](#fcompress) tests whether
+the additional structure survives repeated equivalent simplifications. Showing that no practical compressor
 can undo the construction remains an open problem.
 
 **Differential attacks and algebraic degree.** Heatmaps compare sampled states,
@@ -1127,7 +1165,12 @@ C_i(x)_t
 =a_0\oplus a_1G_j(x)_1\oplus\cdots\oplus a_NG_j(x)_N
 $$
 
-for every sampled input $x$. The coefficients do not change with the input.
+for every sampled input $x$. Here all the features come from the single state $G_j$. The heatmap
+compares many states, but each cell fits its own equation. The
+[whole-circuit attack](#linear-correlators) later removes this restriction
+and combines observations from different times.
+
+The coefficients do not change with the input.
 Each coefficient is either 0 or 1: choosing 1 includes that wire in the XOR,
 while choosing 0 leaves it out. For example, if
 
@@ -1222,7 +1265,7 @@ variable for each input wire and keep a table recording the variable which
 currently represents each physical wire. For every gate, we allocate a fresh
 variable for the gate's updated target wire and add CNF clauses which force that
 variable to equal the result of applying the gate to the current target and
-control variables. A CNF formula is an AND of clauses, where each clause is an
+control variables. A conjunctive normal form (CNF) formula is an AND of clauses, where each clause is an
 OR of literals. For a gate, we choose clauses which rule out exactly the
 assignments where the fresh variable disagrees with the gate's truth table. We
 then update the target's entry in the table. The other wire entries do not
@@ -1239,18 +1282,22 @@ unambiguous break of that instance, while a timeout is only evidence about the
 particular solver, encoding, and resource limit that we used. We use this test
 for the [trapdoor permutation challenge](#trapdoor-permutation-challenge), which we discuss later.
 
-The Two Phase Strategy {#two-phase-strategy}
-======================
+<a id="two-phase-strategy"></a>
+
+## The Two Phase Strategy
 
 The two phase strategy was the initial method that we used in order to
-try and achieve local mixing of reversible circuits. For more details on it, see the
-\[CCMR'24\] paper. However, here, we will provide some results.
+try and achieve local mixing of reversible circuits. We first inflate the
+circuit by replacing short subcircuits with longer equivalent ones, then
+knead it with equal-length replacements. The hope is that kneading spreads
+the added randomness until the original replacement boundaries disappear.
+This is the method proposed in the paper by Canetti, Chamon, Mucciolo, and Ruckenstein; here, we will provide some results.
 
 While we were experimenting with this method, we did not use compression
 nor heatmaps in order to determine how well we were doing. However, the
-loose proof given in \[CCMR'24\] was enough motivation to believe that
+loose proof given in that paper was enough motivation to believe that
 this method could work well. We tested numerous things here and got many
-different results. We remind that the heatmaps here have an outdated
+different results. We remind that the heatmaps here use a different
 coloring scheme, with *purple* meaning the two circuits appear random to
 each other and *green* to mean the two circuits are equal.
 
@@ -1267,8 +1314,9 @@ method would be to simply precompute a table of all possible circuits of
 a given $n$ wires and $m$ gates. For now, this is what we will be moving
 forward with.
 
-The \$10,000 Bounty {#bounty}
--------------------
+<a id="bounty"></a>
+
+### The \$10,000 Bounty
 
 Trusting that the inflationary and kneading phases would be enough to
 stop any attacks on our circuit, we started up a bounty. We started with
@@ -1292,12 +1340,13 @@ compression attacks. For more details, see Killari's blog post on
 breaking the bounty. A detailed discussion can be found
 [here](https://paragraph.com/@killaridev/breaking-the-10-000-io-bounty-my-journey-to-crack-an-indistinguishability-obfuscation-implementation).
 
-After the Bounty {#after-the-bounty}
-----------------
+<a id="after-the-bounty"></a>
+
+### After the Bounty
 
 Now that we knew that our two phase method was incomplete, we moved on
 to looking at heatmaps. We wanted to better understand the circuits that
-we could \"obfuscate\" with this method. As a result, we generated
+we could "obfuscate" with this method. As a result, we generated
 numerous heatmaps to understand what was happening with different
 changes in parameters. Namely, how the circuits look after more rounds
 of kneading.
@@ -1305,27 +1354,32 @@ of kneading.
 Keeping to 64 wires, it was clear that a couple thousand number of
 rounds for the kneading stage was insufficient. The heatmap in Figure 7 below shows
 that there is still an extremely clear correlation between the original
-circuit and the \"obfuscated\" circuit as there is a clear green line
+circuit and the "obfuscated" circuit as there is a clear green line
 across $y = x$.
 
-<!-- Figure 7 -->
-![Heatmap showing the two phase method with 1,000 rounds of kneading](images/heatmapthousdanold.png){width=55%}
+![Heatmap showing the two phase method with 1,000 rounds of kneading](images/heatmapthousdanold.png)
+
+*Figure 7: Heatmap showing the two phase method with 1,000 rounds of kneading.*
 
 The two heatmaps in Figures 8 and 9 below show what the same circuit heatmaps look like with
 100,000 rounds of kneading and 1,000,000 rounds of kneading.
 
-<!-- Figure 8-9 -->
-![Heatmap showing the two phase method with 100,000 rounds of kneading](images/heatmap10millionold.png){width=55%}
+![Heatmap showing the two phase method with 100,000 rounds of kneading](images/heatmap10millionold.png)
 
-![Heatmap showing the two phase method with 1,000,000 rounds of kneading](images/heatmap1millionold.png){width=55%}
+*Figure 8: Heatmap showing the two phase method with 100,000 rounds of kneading.*
 
-While it is clear that our heatmap is indeed \"spreading out\", which
+![Heatmap showing the two phase method with 1,000,000 rounds of kneading](images/heatmap1millionold.png)
+
+*Figure 9: Heatmap showing the two phase method with 1,000,000 rounds of kneading.*
+
+While it is clear that our heatmap is indeed "spreading out", which
 means that we are indeed seeing more randomness, we also see that it
 would require tens or even hundreds of millions of kneading rounds.
-Thus, it was obvious that something needed to be changed. 
+Thus, it was obvious that something needed to be changed.
 
-The Butterfly Methods {#butterfly-methods}
-=====================
+<a id="butterfly-methods"></a>
+
+## The Butterfly Methods
 
 The main motivation for these methods, is to get
 incompressibility. There are two versions of the butterfly method that
@@ -1360,14 +1414,15 @@ the butterfly methods, we would always be able to compress back down to
 the original circuit. If we started with an identity, we would always be
 able to compress back down to zero gates. This means that we are largely
 unable to compress blocks and the gates $g$ in $R^*gR$ are not
-effectively being hidden. This means that we may need more \"room\" for
+effectively being hidden. This means that we may need more "room" for
 the gates, which means we may need to use more wires. We of course can
 still start with the 5 wire circuits, but the $R$ that we sample should
 be over 64 wires. This would allow us to sample circuits from $3$ wires
 to $7$ wires, giving us much more freedom.
 
-Moving on to more wires {#moving-to-more-wires}
------------------------
+<a id="moving-to-more-wires"></a>
+
+### Moving on to more wires
 
 One change becomes immediate as we move onto more wires. We can no
 longer sample contiguous circuits of size greater than 2 gates. This is
@@ -1376,19 +1431,24 @@ wires and 3 gates will span 9 wires, exceeding the limitations of our
 rainbow table.
 
 Before showing off some heatmaps, it is important to note that these
-results are from when we had a weaker compressor. So while the results
-won't match any longer, it maps our thought process as we changed our
-algorithms.
+results use a compressor restricted to replacements on at most 7 wires.
+They show what the butterfly method achieves against that compressor.
+We then strengthen the compressor and see what survives.
 
 Below gives our first heatmaps of $A$ vs $B$, $A$ vs $OA$, $A$ vs $2OA$.
 The results for $B$ are very much the same and so will not be shown.
 
-<!-- Figure 10-2 -->
-![Heatmap showing the circuit $A$ vs circuit $B$](images/AB.png){width=55%}
+![Heatmap showing the circuit $A$ vs circuit $B$](images/AB.png)
 
-![Heatmap showing the circuit $A$ vs circuit $OA$](images/AOA.png){width=55%}
+*Figure 10: Heatmap showing the circuit $A$ vs circuit $B$.*
 
-![Heatmap showing the circuit $A$ vs circuit $2OA$](images/AOOA.png){width=55%}
+![Heatmap showing the circuit $A$ vs circuit $OA$](images/AOA.png)
+
+*Figure 11: Heatmap showing the circuit $A$ vs circuit $OA$.*
+
+![Heatmap showing the circuit $A$ vs circuit $2OA$](images/AOOA.png)
+
+*Figure 12: Heatmap showing the circuit $A$ vs circuit $2OA$.*
 
 From the above heatmaps in Figures 10, 11, and 12, two things are clear. Firstly, there remains an
 obvious diagonal. Secondly, the number of gates has blown up greatly.
@@ -1408,24 +1468,30 @@ small (5-15 gates), medium (30-70 gates), large (100-150 gates) and
 large x2 (200-300 gates). We see that there is a gradual decrease in
 redness, which shows that indeed, longer wings will create more
 randomized obfuscated circuits. This is obvious as the gates we are
-trying to hide in each block are more \"buried\" within the arbitrary
+trying to hide in each block are more "buried" within the arbitrary
 gates in the wings.
 
-<!-- Figure 13-6 -->
-![Heatmap showing the circuit $A$ obfuscated with small wings](images/small.png){width=55%}
+![Heatmap showing the circuit $A$ obfuscated with small wings](images/small.png)
 
-![Heatmap showing the circuit $A$ obfuscated with medium wings](images/medium.png){width=55%}
+*Figure 13: Heatmap showing the circuit $A$ obfuscated with small wings.*
 
-![Heatmap showing the circuit $A$ obfuscated with large wings](images/large.png){width=55%}
+![Heatmap showing the circuit $A$ obfuscated with medium wings](images/medium.png)
 
-![Heatmap showing the circuit $A$ obfuscated with very large wings](images/largelarge.png){width=55%}
+*Figure 14: Heatmap showing the circuit $A$ obfuscated with medium wings.*
+
+![Heatmap showing the circuit $A$ obfuscated with large wings](images/large.png)
+
+*Figure 15: Heatmap showing the circuit $A$ obfuscated with large wings.*
+
+![Heatmap showing the circuit $A$ obfuscated with very large wings](images/largelarge.png)
+
+*Figure 16: Heatmap showing the circuit $A$ obfuscated with very large wings.*
 
 As there seemed to be little to gain from the heatmaps in Figure 15 and Figure 16, we kept with 100-200 gate wings and continued
-testing. It is at this point, that we made some implementation-level improvements in speed to
-our compressor, allowing us to compress at a much faster rate, and much
-more. We also allowed our compressor to use ancilla wires during the compression. For example, when searching for a 5 wire circuit, we would find the corresponding circuit permutation on 6 or 7 wires and then find a replacement in our 6 or 7 wire rainbow tables. These improvements make all the above results prior to this
-impossible. This actually made the entire butterfly method, as it was,
-useless. Suppose we have $A$ and attempted to generate $OA$. Well this
+testing. We then made compression faster and allowed it to use ancilla
+wires during a replacement, giving it access to equivalent circuits on more
+wires than the sampled window. For example, when searching for a 5 wire circuit, we would find the corresponding circuit permutation on 6 or 7 wires and then find a replacement in our 6 or 7 wire rainbow tables. With this stronger compressor, the expansion in those experiments could be
+undone. This made the butterfly method, with those parameters, ineffective. Suppose we have $A$ and attempted to generate $OA$. Well this
 would compress completely and we would just have $A = OA$. If we then
 tried to get $2OA$, then this would be equivalent to as if we were
 trying to generate $OA$ $A$. In other words, $A = OA = 2OA = \dots$. One
@@ -1435,14 +1501,21 @@ this question, to an extent. We start with a completely random circuit
 on 64 wires and 500 gates, and then take heatmaps as it is being
 compressed.
 
-<!-- Figure 17-20 -->
-![Heatmap showing circuit 500 before compression: 170,000 gates](images/1.png){width=55%}
+![Heatmap showing circuit 500 before compression: 170,000 gates](images/1.png)
 
-![Heatmap showing circuit 500 during compression: 50,000 gates](images/3.png){width=55%}
+*Figure 17: Heatmap showing circuit 500 before compression: 170,000 gates.*
 
-![Heatmap showing circuit 500 during compression: 1900 gates](images/5.png){width=55%}
+![Heatmap showing circuit 500 during compression: 50,000 gates](images/3.png)
 
-![Heatmap showing circuit 500 after compression: 900 gates](images/6.png){width=55%}
+*Figure 18: Heatmap showing circuit 500 during compression: 50,000 gates.*
+
+![Heatmap showing circuit 500 during compression: 1900 gates](images/5.png)
+
+*Figure 19: Heatmap showing circuit 500 during compression: 1900 gates.*
+
+![Heatmap showing circuit 500 after compression: 900 gates](images/6.png)
+
+*Figure 20: Heatmap showing circuit 500 after compression: 900 gates.*
 
 These results led us to instead stopping compression early, at
 around 1,000 gates. After each round, we would increase this by another
@@ -1457,8 +1530,9 @@ look into the 6 or 7 wire rainbow table, we could actually compress
 these down completely. Thus, we needed to include ancilla wires to our
 randomization in some way.
 
-Ancilla Wire Replacements {#ancilla-wire-replacements}
--------------------------
+<a id="ancilla-wire-replacements"></a>
+
+### Ancilla Wire Replacements
 
 When we are making replacements, we would add randomization in two ways.
 The first way is by randomly sampling a subcircuit. The second way is by
@@ -1466,7 +1540,7 @@ randomly choosing how many wires our subcircuit could be on. For
 example, we may try to only sample a 5 wire subcircuit as opposed to the
 much easier 7 wire one. One change that we could make to this, is to
 sample a 5 wire subcircuit, but then find how the circuit's permutation on 7 wires, and then use the 7 wire rainbow tables to
-make the replacement. In other words, we are adding ancilla wires to our replacements. To illustrate how we do this, consider a circuit on 3 wires. To compute its permutation, we would consider bits such as $000, 001, 010, \dots$. However, nothing stops us from treating a 4th wire as a "do nothing" wire, which then allows us to consider input bits $0000, 0001, 0010, \dots$ in order to compute a permutation on 4 wires as opposed to the original 3. We then need to search for this permutation in the 4 wire rainbow table, which allows us to find a functionally equivalent replacement of a 3 wire circuit with a 4 wire circuit. 
+make the replacement. In other words, we are adding ancilla wires to our replacements. To illustrate how we do this, consider a circuit on 3 wires. To compute its permutation, we would consider bits such as $000, 001, 010, \dots$. However, nothing stops us from treating a 4th wire as a "do nothing" wire, which then allows us to consider input bits $0000, 0001, 0010, \dots$ in order to compute a permutation on 4 wires as opposed to the original 3. We then need to search for this permutation in the 4 wire rainbow table, which allows us to find a functionally equivalent replacement of a 3 wire circuit with a 4 wire circuit.
 
 Ancilla wire replacements alone gave us
 incompressibility. One useful thing about this process, is that it gave
@@ -1474,17 +1548,19 @@ us even smaller incompressible circuits. The heatmap in Figure 21 below shows th
 still have the red beam in the top right corner, which tells us that we
 still need more randomization.
 
-<!-- Figure 21 -->
-![Heatmap showing a 100 gate circuit on 64 wires after the butterfly method with ancilla replacements](images/ancilla.png){width=55%}
+![Heatmap showing a 100 gate circuit on 64 wires after the butterfly method with ancilla replacements](images/ancilla.png)
 
-Blurring {#blurring}
-========
+*Figure 21: Heatmap showing a 100 gate circuit on 64 wires after the butterfly method with ancilla replacements.*
+
+<a id="blurring"></a>
+
+## Blurring
 
 With our new goal of randomization, we will consider various methods. As
 we are trying to make the heatmaps look more random, this means that we
-want to make our heatmap look more \"blurry\". Hence, we call this
-section \"blurring\". One easy way to blur is to randomize the gate
-ordering of non-colliding gates and then \"locking them in\" via the
+want to make our heatmap look more "blurry". Hence, we call this
+section "blurring". One easy way to blur is to randomize the gate
+ordering of non-colliding gates and then "locking them in" via the
 incompressibility of the butterfly method. Another way to do so is to
 replace gates entirely with rewired identities. For instance, if we have
 $g$ and an identity $I$, and then shuffle the bits of $I$ such that the
@@ -1492,8 +1568,9 @@ first gate of $I$ matches with $g$, then we have $I = gB$, for some $B$.
 This means that $B = g^{-1} = g$, since every gate r57 (and in fact every Toffoli gate) is its own inverse, and so we can replace $g$ with $B$. These two
 ideas will be the pillars of our discussions moving forward.
 
-Random Shooting vs Random Walking {#random-shooting-vs-walking}
----------------------------------
+<a id="random-shooting-vs-walking"></a>
+
+### Random Shooting vs Random Walking
 
 This is our first, and more basic, method to blurring. The processes are
 described below.
@@ -1528,7 +1605,7 @@ problem with sending a gate all the way left or right, because any gates
 in the same level can still be sent past it. For instance, say we have a
 circuit $abc$ such that no gates collide. If we send $c$ all the way to
 the left, then we have $cab$. We do not have to worry about $c$ getting
-\"stuck\" there, as if we send $b$ to the left, then we have $bca$.
+"stuck" there, as if we send $b$ to the left, then we have $bca$.
 However, there remains a concern that the very last gate that we shoot
 will be at the end, or the farthest it can be. It is unclear whether
 this causes any damage or not. Random walking is meant to circumvent
@@ -1576,17 +1653,21 @@ little gain in using random walking over random shooting given the
 additional algorithmic complexity in random walking.
 
 For an idea of how well we can actually mix, below are two heatmaps. Figure 22 is a random 100 gate circuit on itself as we saw earlier, which we expect to have a
-\"red beam\" along $y = x$ as the circuits are equal. Figure 23 is the
+"red beam" along $y = x$ as the circuits are equal. Figure 23 is the
 same 100 gate circuit but with random shooting. We note that the heatmap
 for random walking looks extremely similar.
 
-<!-- Figure 22-3 -->
-![Heatmap showing a 100 gate circuit with itself](images/100100.png){width=55%}
+![Heatmap showing a 100 gate circuit with itself](images/100100.png)
 
-![Heatmap showing a 100 gate circuit before and after random shooting](images/shoot.png){width=55%}
+*Figure 22: Heatmap showing a 100 gate circuit with itself.*
 
-Replacing Gates with Rewired Identities {#rewired-identities}
----------------------------------------
+![Heatmap showing a 100 gate circuit before and after random shooting](images/shoot.png)
+
+*Figure 23: Heatmap showing a 100 gate circuit before and after random shooting.*
+
+<a id="rewired-identities"></a>
+
+### Replacing Gates with Rewired Identities
 
 A more complex method of achieving blurring is to make single and pair
 gate replacements. The process for both is given below.
@@ -1608,7 +1689,7 @@ gate replacements. The process for both is given below.
 
 6.  Repeat.
 
-More formally, step 2 can be done by searching for a permutation that has multiple circuits computing it. We can then select two of them, say $C_i$ and $C_j$, and then we have $I = C_1C_2^{-1}$. 
+More formally, step 2 can be done by searching for a permutation that has multiple circuits computing it. We can then select two of them, say $C_i$ and $C_j$, and then we have $I = C_1C_2^{-1}$.
 
 For the pair replacements, we will classify each type of overlap from
 the right gate onto the left gate. For instance, $123;321$ we can say
@@ -1621,7 +1702,7 @@ pin. For pairs of gates, there are 33 different ways to have an overlap
 because there are 6 ways to have an overlap on every single wire of the
 left gate, 18 ways to have 2 overlaps on the left gate, and 9 ways to
 have an overlap on a single wire. This means we can easily identify each of the overlaps with an id. We can now define how to make pair
-replacements. 
+replacements.
 
 **Pair Gate Replacements**
 
@@ -1657,13 +1738,16 @@ Figures 24 and 25 are two heatmaps of tests that use random shooting, ancilla
 replacements, single gate replacements, and 5 and 30 rounds of
 asymmetric butterfly, respectively.
 
-<!-- Figure 24-5 -->
-![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 5 rounds of asymmetric butterfly](images/5single.png){width=55%}
+![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 5 rounds of asymmetric butterfly](images/5single.png)
 
-![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 30 rounds of asymmetric butterfly](images/30pair.png){width=55%}
+*Figure 24: Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 5 rounds of asymmetric butterfly.*
+
+![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 30 rounds of asymmetric butterfly](images/30pair.png)
+
+*Figure 25: Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, single gate replacements, combined in 30 rounds of asymmetric butterfly.*
 
 While we get incompressibility from the above results, we see that there
-remains a \"red beam\" in the top right corner. In addition, for much of
+remains a "red beam" in the top right corner. In addition, for much of
 the obfuscated circuit, we see that it doesn't move much, indicated by
 the red lines on the left until near the top of the heatmap. We call
 this a red boomerang. We suspected that this was a result of the
@@ -1672,19 +1756,21 @@ random circuits, the red boomerang remained. Thus, it would appear that
 we need to test with pair gate replacements. The heatmap below in Figure 26 shows the
 same test, but with only pair gate replacements.
 
-<!-- Figure 26 -->
-![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, pair gate replacements, combined in 4 rounds of asymmetric butterfly](images/pair.png){width=55%}
+![Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, pair gate replacements, combined in 4 rounds of asymmetric butterfly](images/pair.png)
+
+*Figure 26: Heatmap showing a 100 gate circuit after random shooting, ancilla replacements, pair gate replacements, combined in 4 rounds of asymmetric butterfly.*
 
 We quickly note that we have tested this a number of times and got
-similar results each time. We see no \"red beam\" anymore and the
+similar results each time. We see no "red beam" anymore and the
 randomness is much more spread out. There is still a very spread out red
-\"line\" on $y = x$ and so additional blurring is needed. This is the
+"line" on $y = x$ and so additional blurring is needed. This is the
 only way we have found so far that has managed to get the blurring and
 incompressibility that we desire. We also believe that it would be good
 to use both single and pair gate replacements, rather than just one.
 
-Methods on Pair Replacements {#pair-replacement-methods}
-============================
+<a id="pair-replacement-methods"></a>
+
+## Methods on Pair Replacements
 
 Above, we discussed a [partitioned pair gate replacement](#rewired-identities). However, this
 doesn't actually provide much mixing outside of the replacements
@@ -1704,8 +1790,9 @@ similar to the [ancilla replacements that we discussed before](#ancilla-wire-rep
 could span anywhere from 3 to 6 wires. Thus, all we need to do is make a
 replacement on 6 or 7 wires in order to use ancilla wires.
 
-Replace Pairs Sequentially {#replace-pairs-sequentially}
---------------------------
+<a id="replace-pairs-sequentially"></a>
+
+### Replace Pairs Sequentially
 
 In this method, we make pair replacements in a sequential manner before
 doing compression. For short, this method is called RCS. RCS is very
@@ -1751,8 +1838,9 @@ unclear whether this is a huge loss or not and we did not explore this
 much further as little to nothing was lost when switching to the simpler
 method discussed at first. Below, Figure 27 is the result of RCS after 3 rounds.
 
-<!-- Figure 27 -->
-![Heatmap showing a 100 gate circuit after 3 rounds of RCS](images/rcs.png){width=55%}
+![Heatmap showing a 100 gate circuit after 3 rounds of RCS](images/rcs.png)
+
+*Figure 27: Heatmap showing a 100 gate circuit after 3 rounds of RCS.*
 
 This heatmap is quite similar to the heatmap taken from our partitioned
 version of pair replacements. Of course there is more correlation
@@ -1763,13 +1851,15 @@ the pair gate replacements with asymmetric butterfly.
 For comparisons sake to the next method, Figure 28 depicts heatmap of
 a test done on 16 wires.
 
-<!-- Figure 28 -->
-![Heatmap showing a 100 gate circuit after 9 rounds of RCS on 16 wires](images/rcs_16.png){width=55%}
+![Heatmap showing a 100 gate circuit after 9 rounds of RCS on 16 wires](images/rcs_16.png)
+
+*Figure 28: Heatmap showing a 100 gate circuit after 9 rounds of RCS on 16 wires.*
 
 We will return to this method after discussing the other two methods.
 
-Replace Pairs by Distance {#replace-pairs-by-distance}
--------------------------
+<a id="replace-pairs-by-distance"></a>
+
+### Replace Pairs by Distance
 
 One problem with the above method is that we replace pairs in a very
 standard manner, without caring for the kinds of pairs that we replace.
@@ -1780,13 +1870,14 @@ The sequential method constantly gets close to the original states, and
 we wish to stay away from these points until the end of the circuit.
 This is the idea of the replace pairs by distance method (RCD).
 
-This method records of notion of \"distance\" in between each gate.
+This method records of notion of "distance" in between each gate.
 These distances measure how far we have gone from the original states of
-our original circuit. The idea is to track how far the circuit is from the **original circuit** after each gate. We call this the *distance*. As each gate can only flip a single bit, then a single gate can only affect the distance by $\pm 1$. So suppose we have a circuit $g_1g_2g_3$. Then there are 4 initial states for us to record: before $g_1$, between $g_1$ and $g_2$, between $g_2$ and $g_3$, and after $g_3$. As this is the original circuit, our starting distances is thus $[0,0,0,0]$. Now suppose we replace $g_1g_2$ with $u_1u_2u_3u_4$ (of course with equivalent functionality). Then the circuit becomes $u_1u_2u_3u_4g_3$. In addition, the gates within $u_1u_2u_3u_4$ will differ from $g_1g_2$. So suppose and input state $x_0$ is changed by $g_1$ to become $x_1$. Then $x_0$ may never be $x_1$ after any $u_i$. This means that the $u_i$ give us some *distance* from the original circuit. Our new distances become $[0,1,2,1,0,0]$. We note that $x_0$ after both $g_1g_2$ and $u_1u_2u_3u_4$ is equal as the circuits themselves are equivalent. We quickly note that this creates a small "hill" in the distances. Now let us replace $u_4g_3$ with $w1w_2\dots w_8$. The distances will then become $[0,1,2,1,1,2,3,4,3,2,1,0]$. The beginning and end are ascending and descending respectively. However, notice that the "second" distance in our list of distances can never be greater than 1. In other words, we can not have a distance like $[0,2,3,2,0]$. This means that $u_1u_2$ is already as "steep" as possible and can not be improved further. We can therefore ignore these "edges" and only need to consider the middle section $[1,1,2,3]$. Finally, notice that all the $0$s have been eliminated. If we continue with this process, we can work to eliminate all the $1$s, and then the $2$s, etc. $Ideally, we would be able to continue until we have removed all
-30s, but practically this becomes very hard due to gate blowup. Thus, our tests only go as far as removing all $10$s. 
+our original circuit. The idea is to track how far the circuit is from the **original circuit** after each gate. We call this the *distance*. As each gate can only flip a single bit, then a single gate can only affect the distance by $\pm 1$. So suppose we have a circuit $g_1g_2g_3$. Then there are 4 initial states for us to record: before $g_1$, between $g_1$ and $g_2$, between $g_2$ and $g_3$, and after $g_3$. As this is the original circuit, our starting distances is thus $[0,0,0,0]$. Now suppose we replace $g_1g_2$ with $u_1u_2u_3u_4$ (of course with equivalent functionality). Then the circuit becomes $u_1u_2u_3u_4g_3$. In addition, the gates within $u_1u_2u_3u_4$ will differ from $g_1g_2$. So suppose and input state $x_0$ is changed by $g_1$ to become $x_1$. Then $x_0$ may never be $x_1$ after any $u_i$. This means that the $u_i$ give us some *distance* from the original circuit. Our new distances become $[0,1,2,1,0,0]$. We note that $x_0$ after both $g_1g_2$ and $u_1u_2u_3u_4$ is equal as the circuits themselves are equivalent. We quickly note that this creates a small "hill" in the distances. Now let us replace $u_4g_3$ with $w1w_2\dots w_8$. The distances will then become $[0,1,2,1,1,2,3,4,3,2,1,0]$. The beginning and end are ascending and descending respectively. However, notice that the "second" distance in our list of distances can never be greater than 1. In other words, we can not have a distance like $[0,2,3,2,0]$. This means that $u_1u_2$ is already as "steep" as possible and can not be improved further. We can therefore ignore these "edges" and only need to consider the middle section $[1,1,2,3]$. Finally, notice that all the $0$s have been eliminated. If we continue with this process, we can work to eliminate all the $1$s, and then the $2$s, etc. Ideally, we would be able to continue until we have removed all
+30s, but practically this becomes very hard due to gate blowup. Thus, our tests only go as far as removing all $10$s.
 
-<!-- Figure 29 -->
-![Heatmap showing a 100 gate circuit after 5 rounds of RCD on 16 wires](images/rcd.png){width=55%}
+![Heatmap showing a 100 gate circuit after 5 rounds of RCD on 16 wires](images/rcd.png)
+
+*Figure 29: Heatmap showing a 100 gate circuit after 5 rounds of RCD on 16 wires.*
 
 Figure 29 looks extremely similar to that of the RCS method.
 With further rounds, we only get a lighter red line, but can't seem to
@@ -1800,15 +1891,23 @@ not to say that the above methods are useless though, as we have still
 achieved incompressibility. At this point, we are most concerned with
 the heatmap attacks.
 
-More on RCS and RCD {#rcs-and-rcd}
--------------------
+<a id="rcs-and-rcd"></a>
 
-We earlier discussed that our random circuits needed a sufficient number of gates to actually appear random. Figures 30 and 31 below show that tests on an insufficient number of wires indeed are not meaningful, as the heatmap in Figure 30, which uses 100 wires as a base, looks very blurry, while Figure 31, which uses 1000 wires, does not. 
+### More on RCS and RCD
 
-<!-- Figure 30-1 -->
-![Heatmap showing a 100 gate circuit after 10 rounds of RCS on 128 wires](images/100_128.png){width=55%}
+We earlier discussed that our random circuits needed a sufficient number of
+gates to actually appear random. Figures 30 and 31 below compare circuits on
+128 wires. Figure 30 uses 100 gates and still looks very blurry, while
+Figure 31 uses 1000 gates and does not. Thus, these tests also need enough
+gates for the number of wires.
 
-![Heatmap showing a 1000 gate circuit after 3 rounds of RCS on 128 wires](images/1000_128.png){width=55%}
+![Heatmap showing a 100 gate circuit after 10 rounds of RCS on 128 wires](images/100_128.png)
+
+*Figure 30: Heatmap showing a 100 gate circuit after 10 rounds of RCS on 128 wires.*
+
+![Heatmap showing a 1000 gate circuit after 3 rounds of RCS on 128 wires](images/1000_128.png)
+
+*Figure 31: Heatmap showing a 1000 gate circuit after 3 rounds of RCS on 128 wires.*
 
 One thing that we have retained throughout all of our experiments, is
 maintaining functionality of the circuit. As a result, we have always
@@ -1823,8 +1922,9 @@ way, expected as for equivalent circuits, we will always have
 correlation in the corners along $y=x$. Thus, one question to ask is if
 we really need to maintain equivalence?
 
-Generation Mixing {#generation-mixing}
------------------
+<a id="generation-mixing"></a>
+
+### Generation Mixing
 
 Generation mixing began as a variation on [RCD](#replace-pairs-by-distance). RCD tries to work on the
 parts of the circuit which remain closest to the original computation. Instead
@@ -1834,14 +1934,14 @@ rewritten. It also keeps the useful idea from [RCS](#replace-pairs-sequentially)
 overlap the next, rather than leaving a sequence of isolated replacement
 blocks.
 
-The first implementation made this very literal. It selected a gate at the
-lowest useful generation, shot it through the gates with which it commuted,
-replaced the window at the resulting collision, and continued from a gate made
-by that replacement. The current generation mixer grew out of this idea, but
-it no longer runs that generation-floor collision chain. Instead, it makes fresh
-database-replacement attempts under a size schedule and moves the products of
-each successful replacement outward. Repeated sampling and this outward motion
-are now what make the replacements overlap.
+A direct way to use the score is to select a gate at the lowest useful
+generation, shoot it through the gates with which it commutes, replace the
+window at the resulting collision, and continue from a gate made by that
+replacement. We can also obtain overlap without choosing the least rewritten
+gate each time. The method below makes fresh database-replacement attempts
+under a size schedule and moves the products of each successful replacement
+outward. Repeated sampling and this outward motion make the replacements
+overlap.
 
 This is the point at which the [frozen table](#frozen-table) is most
 useful. Apart from the occasional twist described below, every round attempts
@@ -1899,30 +1999,34 @@ After the $u_i$ are moved through their available commuting ranges, a later
 window may contain, for example, $u_3u_4g_4$. Replacing that window folds part
 of the first replacement together with previously untouched material. We no
 longer have a clean boundary at which we can separate the first replacement
-from the rest of the circuit. Repeating this process is the current version of
-the cascading behavior that motivated RCS and the earlier generation mixer.
+from the rest of the circuit. Repeating this process gives us the cascading
+behavior that motivated RCS.
 
-The implementation still records generations in order to measure this process.
+We can record generations in order to measure this process.
 Input gates begin at generation $0$. After a database replacement, every new
 gate receives one more than the upper median generation of the window which it
 replaced. The gates made by one replacement also share a **litter** label, which
 lets us recognize gates which were born together. These are coarse accounting
-tools rather than exact ancestry statements. In particular, the current full
-pipeline does not select its windows or decide when to stop from these labels;
-its main dose control is the [size schedule described next](#generation-mixing-schedule).
+tools rather than exact ancestry statements. In the method above, they
+measure the rewriting without selecting its windows or deciding when to stop.
+The [size schedule described next](#generation-mixing-schedule) controls how
+much mixing we do.
 
-### Expansion, Holding, and Compression {#generation-mixing-schedule}
+<a id="generation-mixing-schedule"></a>
 
-The general generation-mixing schedule supports three size periods:
+#### Expansion, Holding, and Compression
+
+A generation-mixing schedule can have three size periods:
 expansion, holding, and compression. Expansion gives us more alternative
 spellings and more room for the new gates to move into other neighborhoods.
 Holding keeps that space while many overlapping replacements re-spell the
 circuit. Earlier recipes then compressed part of the way back down.
 
-Our current GSS recipe uses only the first two periods. Its profile is
-`3,30,30,2,2`: grow toward twice the input size over three work units, then
-hold there for another 27. The two final times coincide and the two size
-factors are equal, so there is no shrinking leg. We leave the final
+The [complete mixing method](#current-mixing-method) uses only the first
+two periods here. We grow toward twice the incoming gate count over three
+work units, then hold that size for another 27. One work unit represents
+roughly one mixing round per gate, counting the circuit's changing
+size as we go. There is no shrinking period at this stage: we leave final
 compression until after splitting and crossing.
 
 The schedule controls the balance between MIX and COMP on every round. During
@@ -1933,7 +2037,9 @@ circuit receives proportionally more replacement attempts. Thus, the chosen
 peak size controls how much room the mixer has, while the length of the hold
 controls how long it continues re-encoding at that scale.
 
-### Changing the Internal Wire Frame {#changing-internal-wire-frame}
+<a id="changing-internal-wire-frame"></a>
+
+#### Changing the Internal Wire Frame
 
 A database replacement changes the inside of a short window while preserving
 the states at its two ends. Generation mixing also occasionally changes the
@@ -1955,10 +2061,9 @@ database moves hide it. Each boundary is instead synthesized directly as an
 all-r57 word which can absorb a few of the real neighboring gates. The new
 boundary gates are then moved outward in the same way as database products,
 and later database rounds may re-spell them again. This is the part of the
-current method which borrows the wire-frame idea developed in the [later SAMF
-section](#samfs). The present twist uses the swap part only; it does not add a separate
-maybe-flip operation. The older gate-by-gate SAMF construction itself is not a
-separate generation-mixing step.
+method which borrows the wire-frame idea developed in the [later SAMF
+section](#samfs). This twist uses the swap part only; it does not add the
+bit flips of the gate-by-gate SAMF construction.
 
 At the end of generation mixing, every gate is given one final random position
 within the full interval through which it can commute. This changes no gates
@@ -1968,8 +2073,9 @@ equivalent circuit whose database replacements are in the r57 vocabulary.
 Non-r57 gates from preprocessing can remain. The circuit has undergone many
 overlapping local re-spellings and changes of wire frame over long intervals.
 
-Pre-Interleaving {#pre-interleaving}
-----------------
+<a id="pre-interleaving"></a>
+
+### Pre-Interleaving
 
 In order to play around with the idea of not maintaining functionality, we must first establish that we
 can not just destroy all semblance of equivalence, as in the end, an
@@ -2014,10 +2120,13 @@ these 64 inputs. After, we took a heatmap on 128 wires, shown in Figure 33, whic
 should be quite difficult to relate to the original circuit due to the
 circuits not even being correlated.
 
-<!-- Figure 32-3 -->
-![Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 64 bits](images/int_64.png){width=55%}
+![Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 64 bits](images/int_64.png)
 
-![Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 128 bits](images/int_128.png){width=55%}
+*Figure 32: Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 64 bits.*
+
+![Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 128 bits](images/int_128.png)
+
+*Figure 33: Heatmap showing a 1000 gate circuit, interleaved with a second 1000 gate circuit, using inputs on 128 bits.*
 
 In a way, this might not be too unexpected. The butterfly methods that
 we worked on before, were initially tested on identities over 5 wires.
@@ -2026,14 +2135,16 @@ much we increased the wires, but that was largely due to our resulting
 circuit being heavily condensed on the original 5 wires. From this, it
 seems that adding gates on new wires is ineffective in randomizing a
 circuit. So while we leave the interleaving method largely untested from
-these results, we still find promise in this idea of \"leaving
-functionality behind\". Merging in more clever ways will eventually lead us to the [later gadgetization ideas](#linear-gadgetizing). 
+these results, we still find promise in this idea of "leaving
+functionality behind". Merging in more clever ways will eventually lead us to the [later gadgetization ideas](#linear-gadgetizing).
 
-SAMFs: Wire Shuffles and Bit Flips {#samfs}
-=================================
+<a id="samfs"></a>
 
-The following SAMF construction records an earlier mixing method. It is not
-a separate part of the current [generation mixer](#generation-mixing) or the [current full pipeline](#current-mixing-method).
+## SAMFs: Wire Shuffles and Bit Flips
+
+The following construction develops wire shuffles and bit flips as a mixing
+method. The swap part also gives us the change of wire frame used in
+[generation mixing](#changing-internal-wire-frame).
 
 A **SAMF**, short for *swap and maybe flip*, is a reversible circuit which
 swaps two selected wires and may also flip the value on either one. As we add
@@ -2060,15 +2171,15 @@ following.
 
 1.  Start with some circuit $C = g_1g_2g_3\dots g_m$
 
-2.  For $g_i$, replace it with some shuffle $B_{w_i} g_i' B_{w_i}^*$, where $g_i'$ has been shifted accordingly with $B_{w_i}$ so that functionality is maintained. 
+2.  For $g_i$, replace it with some shuffle $B_{w_i} g_i' B_{w_i}^*$, where $g_i'$ has been shifted accordingly with $B_{w_i}$ so that functionality is maintained.
 
 The above would yield something like
 $B_{w_1} g_1' B_{w_1}^* B_{w_2} g_2' B_{w_2}^* \dots$. One of the
 advantages of using our wire shuffles, is that they form a subgroup of
-all circuits. This can easily be verified. The identity is the trivial shuffle where nothing gets shuffled. Every shuffle can be shuffled in reverse order and so every shuffle has an inverse. Finally, if $C_1$ and $C_2$ are shuffles, then of course $C_1C_2$ is also a shuffle. 
+all circuits. This can easily be verified. The identity is the trivial shuffle where nothing gets shuffled. Every shuffle can be shuffled in reverse order and so every shuffle has an inverse. Finally, if $C_1$ and $C_2$ are shuffles, then of course $C_1C_2$ is also a shuffle.
 
 In addition, it is much easier to find equivalent wire
-shuffles than it is to find equivalent circuits. The main reason for this is that we do not need to work in the world of circuits. Instead, we can find two different shuffles $S_1$ and $S_2$ that compute the same permutation, and then convert each of them into a circuit. In addition, given a random permutation that is known to be a shuffle, we can find all the transpositions that make up the shuffle and then convert that into a circuit. Now consider the task of finding a circuit corresponding to a particular completely random circuit. On 16 wires, there are already 2^{16} different permutations, and it wouldn't even be known how many gates would be needed to compute the desired permutation. 
+shuffles than it is to find equivalent circuits. The main reason for this is that we do not need to work in the world of circuits. Instead, we can find two different shuffles $S_1$ and $S_2$ that compute the same permutation, and then convert each of them into a circuit. In addition, given a random permutation that is known to be a shuffle, we can find all the transpositions that make up the shuffle and then convert that into a circuit. Now consider the task of finding a circuit corresponding to a particular completely random circuit. On 16 wires, there are already 2^{16} different permutations, and it wouldn't even be known how many gates would be needed to compute the desired permutation.
 
 In mixing our shuffles, we can actually find a random, yet equivalent, circuit representation of $B_{w_1}^* B_{w_2}$. Thus, we would ideally never return to the original states until we reach the very end of the
 circuit. From what we see below in Figure 34, heatmaps reveal that we can not
@@ -2077,8 +2188,9 @@ the case. The many red horizontal lines show that we are constantly
 returning back to the original functionality, or at least getting close
 enough to it to reveal correlation.
 
-<!-- Figure 34 -->
-![Heatmap showing a 100 gate circuit on 64 wires after a butterfly-like shuffle of wires](images/relabed.png){width=55%}
+![Heatmap showing a 100 gate circuit on 64 wires after a butterfly-like shuffle of wires](images/relabed.png)
+
+*Figure 34: Heatmap showing a 100 gate circuit on 64 wires after a butterfly-like shuffle of wires.*
 
 Thus, we need to carry our wire shuffles throughout the entirety of the
 circuit. Let us take this in the simplest way possible.
@@ -2095,8 +2207,9 @@ Of course, as before, we can get two random circuits that compute $B_w$
 so that we are not merely reversing the same circuit. Thankfully, our
 sanity checks pass and our heatmap now looks extremely random, as shown in Figure 35.
 
-<!-- Figure 35 -->
-![Heatmap showing a 100 gate circuit on 64 wires after a simple shuffle of wires](images/relabed3.png){width=55%}
+![Heatmap showing a 100 gate circuit on 64 wires after a simple shuffle of wires](images/relabed3.png)
+
+*Figure 35: Heatmap showing a 100 gate circuit on 64 wires after a simple shuffle of wires.*
 
 The main reason that this works so much better, is that in no point in
 the circuit, are we returning to the original functionality. We remain
@@ -2113,7 +2226,11 @@ shuffle. Let us do the following instead.
 
 2.  For each gate, insert a $B_{w_i}$ and shift $g_i$ as needed to
     maintain functionality to get
-    $$B_{w_1} g_1' B_{w_2} g_2'' B_{w_3} g_3''' \dots B_{w_m} g_m^{(m)'} B^*,$$
+
+    $$
+    B_{w_1} g_1' B_{w_2} g_2'' B_{w_3} g_3''' \dots B_{w_m} g_m^{(m)'} B^*,
+    $$
+
     where $B^*$ is the inverse of the composition of all $B_{w_i}$.
 
 This alone makes it much harder to find our original gates $g_i$. If we
@@ -2124,8 +2241,9 @@ doing swaps or even hiding the original gates into these swaps, making
 it even harder for an attacker to determine which gates are part of
 swaps and which gates are from the original.
 
-<!-- Figure 36 -->
-![Heatmap showing a 100 gate circuit on 64 wires after gate-by-gate shuffles](images/shuffle.png){width=55%}
+![Heatmap showing a 100 gate circuit on 64 wires after gate-by-gate shuffles](images/shuffle.png)
+
+*Figure 36: Heatmap showing a 100 gate circuit on 64 wires after gate-by-gate shuffles.*
 
 As seen in Figure 36, the heatmap remains close to the ideal that we are
 looking for. One thing to note is that the blowup in the number of gates
@@ -2143,7 +2261,7 @@ and compression. In other words,
 1.  Start with a circuit $C = g_1g_2g_3\dots g_m$
 
 2.  Insert $x$ number of shuffles randomly in between the gates of $C$, as well as
-    before $g_1$ and after $g_m$. 
+    before $g_1$ and after $g_m$.
 
 3.  Mutate the shuffled $C$ via RCS
 
@@ -2176,52 +2294,60 @@ To compute heatmap between $C$ and $C'$ on $n$ wires:
 4. Average $|H(y)-H(y')|$ over $S$, where $H$ is Hamming weight.
 5. Repeat for all pairs $i,j$.
 
-Let us check on a circuit that has been shuffled using this new type of heatmap. We will test on 32 wires as to keep the wire blowup minimal, however, the results can be extended to a larger number of wires as well. We will test in the following manner. 
+Let us check on a circuit that has been shuffled using this new type of heatmap. We will test on 32 wires as to keep the wire blowup minimal, however, the results can be extended to a larger number of wires as well. We will test in the following manner.
 
 1. For a given $C$, shuffle/shoot the circuit
 2. From above, shoot/shuffle
 3. Compress
 
-<!-- Figure 37-8 -->
-![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gateshuffles, shooting, and compression](images/CoSoSu.png){width=55%}
+![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gateshuffles, shooting, and compression](images/CoSoSu.png)
 
-![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shooting, shuffles, and compression](images/CoSuSo.png){width=55%}
+*Figure 37: Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gateshuffles, shooting, and compression.*
 
-As we can see in Figures 37 and 38, whether we shoot or shuffle first, we can still clearly see the structure of the original circuit with shuffles. Thus, we need to destroy this structure in some way. 
+![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shooting, shuffles, and compression](images/CoSuSo.png)
+
+*Figure 38: Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shooting, shuffles, and compression.*
+
+As we can see in Figures 37 and 38, whether we shoot or shuffle first, we can still clearly see the structure of the original circuit with shuffles. Thus, we need to destroy this structure in some way.
 
 One way that we can introduce some functional changes to the
 circuit, is by introducing bit flips. We note that the set of all
 circuits which swap as well as flip bits, remains a subgroup of all
 circuits. Thus, we can do all of our methods above, but now allow our
-swaps to also flip a single bit. 
+swaps to also flip a single bit.
 
-<!-- Figure 39 -->
-![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shuffles & bit-flips, shooting, and compression](images/bitflips.png){width=55%}
+![Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shuffles & bit-flips, shooting, and compression](images/bitflips.png)
 
-From Figure 39, we can see that the information from the original circuit has been lost. 
+*Figure 39: Hamming weight heatmap showing a 100 gate circuit on 32 wires after gate-by-gate shuffles & bit-flips, shooting, and compression.*
 
-Beyond Heatmaps & Compression {#beyond-heatmaps}
-==========
+From Figure 39, we can see that this heatmap no longer shows the earlier
+correlation. We still need to test whether other observations recover
+information from the original circuit.
+
+<a id="beyond-heatmaps"></a>
+
+## Beyond Heatmaps & Compression
+
 We recall that a flat global heatmap only rules out the statistic and input
 distribution that we tested. We therefore repeat the same comparisons on pieces
 of the circuit and on deliberately chosen input families. These tests are more
 targeted, but they still do not rule out the other attacks listed in *How We
 Measure Success*.
 
-One variation of the heatmap that we showed briefly, was to instead take a heatmap on partial circuits. For instance, a 1000 gate circuit can be split into 100 gate "pieces", to which we can take a heatmap on each piece. This can either be done by treating each piece as its own isolated circuit, but also we can combine pieces together to form a partial circuit. The former method allows us to test whether each part of the larger circuit is truly random. Suppose a circuit is extremely correlated, except at the very beginning. Then the randomness incurred at the beginning of the circuit would propagate throughout the entire circuit. This method allows us to get around this. On the other hand, by attaching pieces together, we can measure how the progression of the circuit as we reach the final obfuscated version. Indeed, we can measure how the mean (from the heatmaps) of the circuit changes as we add more gates in order to see if it acts in line with a completely random circuit. 
+One variation of the heatmap that we showed briefly, was to instead take a heatmap on partial circuits. For instance, a 1000 gate circuit can be split into 100 gate "pieces", to which we can take a heatmap on each piece. This can either be done by treating each piece as its own isolated circuit, but also we can combine pieces together to form a partial circuit. The former method allows us to test whether each part of the larger circuit is truly random. Suppose a circuit is extremely correlated, except at the very beginning. Then the randomness incurred at the beginning of the circuit would propagate throughout the entire circuit. This method allows us to get around this. On the other hand, by attaching pieces together, we can measure how the progression of the circuit as we reach the final obfuscated version. Indeed, we can measure how the mean (from the heatmaps) of the circuit changes as we add more gates in order to see if it acts in line with a completely random circuit.
 
-We can also choose our inputs more carefully, instead of solely relying on random inputs. It is possible that some inputs will reveal more correlations than others. This is because even a single bit flip at the beginning of the circuit can cause many bit flips throughout the entire circuit. In other words, some inputs may look more random than others and there may be inputs that reveal much of the structure of the original circuit. We have three ways of going about this. First, it is to take inputs with only small hamming weight. The second is to take a random input $x_0$, and then only take $x_i$ such that the hamming distance between $x_i$ and $x_0$ is small. Thirdly, we can take a random input $x_0$ and then fix every single bit except for bit $k$. We can then flip $k$ to see how this single flip propagates throughout the entire circuit, and then do the same for every bit $k$ of $x_0$. 
+We can also choose our inputs more carefully, instead of solely relying on random inputs. It is possible that some inputs will reveal more correlations than others. This is because even a single bit flip at the beginning of the circuit can cause many bit flips throughout the entire circuit. In other words, some inputs may look more random than others and there may be inputs that reveal much of the structure of the original circuit. We have three ways of going about this. First, it is to take inputs with only small hamming weight. The second is to take a random input $x_0$, and then only take $x_i$ such that the hamming distance between $x_i$ and $x_0$ is small. Thirdly, we can take a random input $x_0$ and then fix every single bit except for bit $k$. We can then flip $k$ to see how this single flip propagates throughout the entire circuit, and then do the same for every bit $k$ of $x_0$.
 
-There are also methods for us to probe the circuit in order to attempt to determine what the original shuffles are. This remains largely untested and it remains unclear whether we are able to retrieve the original shuffle even after our randomization methods. In addition, even with the original shuffle, we may not be able to undo them as the original shuffle has been mixed throughout the circuit. In other words, finding the shuffle means having to reverse engineer it even through the noise we have added in compression and the pair replacement methods, and then undoing it means we have to deal with the noise as well. 
+There are also methods for us to probe the circuit in order to attempt to determine what the original shuffles are. This remains largely untested and it remains unclear whether we are able to retrieve the original shuffle even after our randomization methods. In addition, even with the original shuffle, we may not be able to undo them as the original shuffle has been mixed throughout the circuit. In other words, finding the shuffle means having to reverse engineer it even through the noise we have added in compression and the pair replacement methods, and then undoing it means we have to deal with the noise as well.
 
-Differential Attacks and Algebraic Degree {#differential-attacks}
-=========================================
+<a id="differential-attacks"></a>
+
+## Differential Attacks and Algebraic Degree
 
 We recall that the differential test writes every wire at a circuit prefix as a
 polynomial in the original inputs and looks at its algebraic degree. The final
 degree is fixed by the original functionality, so our goal is only to keep the
-intermediate states at high degree. We now ask whether a random circuit already
-gives us this property. For more on differential attacks, see Bard's
+intermediate states at high degree. For more on differential attacks, see Bard's
 *Algebraic Cryptanalysis*.
 
 It is natural to first ask whether a random circuit already gives us this
@@ -2253,13 +2379,14 @@ active. To get every wire high, the active wire cycles through all wires
 repeatedly, so that after a full pass every wire carries its own rung of the
 ladder.
 
-Gadgetizing {#linear-gadgetizing}
-===========
+<a id="linear-gadgetizing"></a>
 
-This section records the paired gadgetizer that preceded the current
-single-carrier product-share construction. Its RG policy, `rg_frequency`, wire
-count, and blowup formula are historical and should not be used to size a GSS
-build.
+## Gadgetizing
+
+We begin with a paired construction, where each logical value is the XOR
+of two physical wires. Its gadgets let us compute while keeping the values
+shared. We will then see where the linearity of this sharing hurts us, and
+how it motivates the nonlinear constructions which follow.
 
 We will call integrating our original circuit so that it carries high algebraic
 degree *gadgetizing* it. This is in reference to our heavy use of "gadgets" in
@@ -2289,7 +2416,9 @@ every use would expose the original computation in the middle of the circuit
 anyway. Instead we represent each computation value $w_i$ by a *secret* value
 $s_i$ and an auxiliary value $r_i$ with
 
-$$w_i = s_i \oplus r_i.$$
+$$
+w_i = s_i \oplus r_i.
+$$
 
 Here $w_i$ is the value the original circuit uses, while $s_i$ and $r_i$ are the
 two physical values the gadgetized circuit actually holds. We call the pair
@@ -2303,8 +2432,9 @@ $g_k$'s effect on the virtual ones. We do not want to decode $w_i$, apply the
 gate, and re-encode it, since that exposes $w_i$. The gadget must compute the
 r57 gate *homomorphically*, with the values staying encoded throughout.
 
-The gadgets {#linear-gadgets}
------------
+<a id="linear-gadgets"></a>
+
+### The gadgets
 
 An early version of this used a single 12 gate gadget,
 `[[0,3,5], [0,3,6], [0,4,5], [0,4,6], [1,0,2], [0,2,1], [2,0,1], [1,2,0], [0,2,1], [2,1,0], [0,3,4], [0,4,3]]`,
@@ -2327,7 +2457,9 @@ $r_a$ of the active value
 does not appear in the gadget at all and is left untouched, which is what lets
 the result decode. After the six gates,
 
-$$w_a' = s_a' \oplus r_a = w_a \oplus (w_b \vee \neg w_c),$$
+$$
+w_a' = s_a' \oplus r_a = w_a \oplus (w_b \vee \neg w_c),
+$$
 
 and both control pairings still carry $w_b$ and $w_c$ unchanged. So six physical
 gates perform exactly one original gate on the encoded state, without ever
@@ -2339,35 +2471,72 @@ period would leave an obvious trail, and so we also use the $RGi$ gadgets below.
 For **RG1**, assume we have virtual values $s_1, s_2$ where $s_1$ is carried by
 wires $w_0, w_1$ and $s_2$ is carried by $w_2, w_3$. That is:
 
-$$w_0 + w_1 = s_1$$
-$$w_2 + w_3 = s_2$$
+$$
+w_0 + w_1 = s_1
+$$
+
+$$
+w_2 + w_3 = s_2
+$$
 
 From the gate sequence above we have:
 
-$$w'_0 = w_0 + w_1 + w_2 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_1 w_2 + w_0 w_1 w_3$$
-$$w'_1 = w_0 + w_1 + w_3 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_1 w_2 + w_0 w_1 w_3$$
-$$w'_2 = 1 + w_0 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_2 w_3 + w_1 w_2 w_3$$
-$$w'_3 = 1 + w_1 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_2 w_3 + w_1 w_2 w_3$$
+$$
+w'_0 = w_0 + w_1 + w_2 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_1 w_2 + w_0 w_1 w_3
+$$
+
+$$
+w'_1 = w_0 + w_1 + w_3 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_1 w_2 + w_0 w_1 w_3
+$$
+
+$$
+w'_2 = 1 + w_0 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_2 w_3 + w_1 w_2 w_3
+$$
+
+$$
+w'_3 = 1 + w_1 + w_0 w_1 + w_1 w_2 + w_0 w_3 + w_2 w_3 + w_0 w_2 w_3 + w_1 w_2 w_3
+$$
 
 which means that:
 
-$$w'_0+w'_1=s_2$$
-$$w'_2+w'_3=s_1$$
+$$
+w'_0+w'_1=s_2
+$$
+
+$$
+w'_2+w'_3=s_1
+$$
 
 This swaps the secret values between the two pairs, and does not swap the
 auxiliary pairings.
 
 For **RG2** we have:
 
-$$w'_0=1+w_0+w_2+w_2w_3$$
-$$w'_1=1+w_0+w_1+w_2+w_3+w_0w_2+w_0w_3+w_2w_3$$
-$$w'_2=1+w_0+w_3+w_2w_3$$
-$$w'_3=1+w_2+w_3+w_0w_2+w_0w_3+w_2w_3$$
+$$
+w'_0=1+w_0+w_2+w_2w_3
+$$
+
+$$
+w'_1=1+w_0+w_1+w_2+w_3+w_0w_2+w_0w_3+w_2w_3
+$$
+
+$$
+w'_2=1+w_0+w_3+w_2w_3
+$$
+
+$$
+w'_3=1+w_2+w_3+w_0w_2+w_0w_3+w_2w_3
+$$
 
 which means that:
 
-$$w'_0+w'_2=s_2$$
-$$w'_1+w'_3=s_1$$
+$$
+w'_0+w'_2=s_2
+$$
+
+$$
+w'_1+w'_3=s_1
+$$
 
 This also swaps the secret values between the two pairs, but it swaps the
 auxiliary pairings along with them, so virtual value $i$ now lives on
@@ -2378,25 +2547,46 @@ much less stable across the circuit.
 
 For **RG3**, assume the virtual value $s_1$ is carried by wires $w_0, w_1$, i.e.
 
-$$w_0 + w_1 = s_1$$
+$$
+w_0 + w_1 = s_1
+$$
 
 and let $r_1, r_2$ be two further (arbitrary) wires. Writing
 $m = r_1 \vee \neg r_2 = 1 + r_2 + r_1 r_2$, we have:
 
-$$w'_0 = 1 + w_0 + r_2 + r_1 r_2$$
-$$w'_1 = 1 + w_1 + r_2 + r_1 r_2$$
-$$r'_1 = r_1$$
-$$r'_2 = r_2$$
+$$
+w'_0 = 1 + w_0 + r_2 + r_1 r_2
+$$
+
+$$
+w'_1 = 1 + w_1 + r_2 + r_1 r_2
+$$
+
+$$
+r'_1 = r_1
+$$
+
+$$
+r'_2 = r_2
+$$
 
 which means that:
 
-$$w'_0 + w'_1 = s_1$$
+$$
+w'_0 + w'_1 = s_1
+$$
 
 The same mask $m$ is added to both shares, so it cancels in the sum: the secret
 stays on its own pair and the share/pad pairing is unchanged. RG3 therefore
 re-randomizes the two shares of a single pair against two unrelated wires,
 without moving the secret value or swapping any pairings. It is also by far the
 cheapest of the three, at 2 gates rather than 6.
+
+The diagram below shows the six gates of SG and the two gates of RG3.
+The target's pad $r_a$ stays untouched during SG, while RG3 puts the
+same mask on both wires of a pair.
+
+![The six-gate SG and two-gate RG3 circuits](images/circuit-paired-gadgets.svg)
 
 Notice that within our $RGi$s, we no longer need to consider freed versus paired
 wires. In other words, we do not need to consider whether an auxiliary wire $r_i$
@@ -2407,8 +2597,9 @@ wire, and we had to schedule which wire that would be. This is no longer a
 problem. It also means that we can get away with only an additional $n$
 auxiliary wires, rather than the $n+1$ the older design needed to keep one free.
 
-Putting the gadgets together {#putting-linear-gadgets-together}
-----------------------------
+<a id="putting-linear-gadgets-together"></a>
+
+### Putting the gadgets together
 
 Recall that when integrating SAMFs into our earlier mixer, we didn't need to have a
 full wire shuffle every single time. While this indeed provides us with the most
@@ -2464,9 +2655,9 @@ throughout all $2n$. Of course, this can be done with separate XORs and SAMFs,
 but for three relocations we would need $6 \times 3$ gates. It is not clear
 though whether these $W_i$ are better than simply using our SAMFs.
 
-One implementation detail is worth stating, because it was a real bug. Since
-$W_i$ relocates wires, a naive fixed choice of destinations will have one $W_i$
-clobber a wire a later $W_i$ still needs. We therefore keep a live record of
+We need to choose these destinations carefully. Since $W_i$ relocates
+wires, a fixed choice of destinations can have one $W_i$ overwrite a wire
+which a later $W_i$ still needs. We therefore keep a live record of
 where every unencoded computation value, every auxiliary value, and every pair
 currently lives, and choose each $W_i$'s destinations against that live map. The
 unpairing block does the same in reverse, decoding values onto output wires in
@@ -2476,8 +2667,9 @@ skip $W_i^{-1}$ entirely and just XOR the other half in, which takes 4 gates
 instead of 11.
 
 In this paired gadgetizer's **gadgets block**, every gate of the original circuit becomes one SG, and
-every `rg_frequency` gates we insert one $RGi$ drawn uniformly from
-$\{RG1, RG2, RG3\}$. Its default frequency is 2, meaning two original gates are
+every $f$ original gates we insert one $RGi$ drawn uniformly from
+$\{RG1, RG2, RG3\}$. Here $f$ is the refresh spacing. We use $f=2$ in the
+benchmarks below, meaning two original gates are
 simulated and then one rerandomization gadget is inserted. The pairs $(i,j)$ that
 $RG1$ and $RG2$ act on, and the single index $i$ that $RG3$ acts on, are drawn
 from shuffled queues, so that every pair gets its turn before any pair repeats.
@@ -2491,8 +2683,9 @@ gadgetization is over, none of this map is saved. The only output is a sequence
 of r57 gates, so an adversary cannot simply look up which physical wires formed
 which pair.
 
-Some gate blowup benchmarks {#gadget-benchmarks}
----------------------------
+<a id="gadget-benchmarks"></a>
+
+### Some gate blowup benchmarks
 
 The randomization portion costs $\max(2n\lfloor \ln n \rfloor, 64)$ gates per
 bookend, and since there is one on each side, this contributes about
@@ -2508,21 +2701,24 @@ rather than an identity.
 Each $SG$ costs 6 gates, so if there are $m$ original computation gates this
 yields a $6m$ blowup. $RG1$ and $RG2$ take 6 gates each while $RG3$ takes 2, so
 an $RGi$ costs $\frac{6+6+2}{3} = \frac{14}{3}$ gates on average. We insert one
-every `rg_frequency` gates, so the total gate blowup is approximately
+every $f$ original gates, so the total gate blowup is approximately
 
-$$4n\lfloor \ln n \rfloor \;+\; 22n \;+\; \left(6 + \frac{14}{3\,\texttt{rg\_freq}}\right)m.$$
+$$
+4n\lfloor \ln n \rfloor \;+\; 22n \;+\; \left(6 + \frac{14}{3\,f}\right)m.
+$$
 
-At the default $\texttt{rg\_freq} = 2$ the coefficient on $m$ is
-$\frac{25}{3} \approx 8.33$; at $\texttt{rg\_freq} = 3$ it is
+At $f = 2$ the coefficient on $m$ is
+$\frac{25}{3} \approx 8.33$; at $f = 3$ it is
 $\frac{68}{9} \approx 7.56$.
 
-As a sanity check, on $n = 256$ with $m = 6768$ and the default frequency, the
+As a sanity check, on $n = 256$ with $m = 6768$ and $f=2$, the
 formula predicts $5120 + 2816 + 2816 + 40608 + 15792 = 67{,}152$ gates. Two
 recorded runs produced 67,104 and 67,184 gates on 512 wires, both within half a
 standard deviation of the $RGi$ draw.
 
-Where the linearity hurts {#where-linearity-hurts}
--------------------------
+<a id="where-linearity-hurts"></a>
+
+### Where the linearity hurts
 
 Everything above is an improvement on the 12 gate gadget, and it does what we
 asked of it: the auxiliary wires carry high algebraic degree, and that degree is
@@ -2578,13 +2774,14 @@ Thus, the diagonal cannot be removed by tuning the mixer. Since the leak comes
 from the linear decode, we need an encoding whose decode is itself nonlinear.
 We discuss this construction in [the next section](#nonlinear-gadgetization).
 
-The Earlier Product-Share Gadgetization {#nonlinear-gadgetization}
-=======================================
+<a id="nonlinear-gadgetization"></a>
 
-This section describes the product-share construction used in our earlier
-experiments. We retain its decode, Gray fold, and measurements here as the
-development that led to [quadratic masking](#quadratic-masking). New GSS runs
-use quadratic masking by default; product-2223 is retained for historical runs.
+## Nonlinear Product-Share Gadgetization
+
+The first nonlinear construction replaces the paired XOR decode with a
+carrier masked by products of band values. We describe its decode, Gray fold,
+and measurements before moving on to the attack which motivates
+[quadratic masking](#quadratic-masking).
 
 Let the circuit entering gadgetization have $q$ logical wires. The nonlinear
 gadgetization uses $2q$ physical wires: one carrier for each logical value and
@@ -2593,10 +2790,11 @@ entering gadgetization. The carriers hold the encoded computation, while the
 band wires supply the nonlinear product terms used to mask it. During
 gadgetization, a ledger records where every carrier and band variable currently
 lives, which mask terms belong to each logical value, and each value's
-compile-time constant.
+constant, chosen when the gadget is constructed.
 
-The product-share decode {#product-share-decode}
-------------------------
+<a id="product-share-decode"></a>
+
+### The product-share decode
 
 At an ordinary gadget boundary, each logical value $V_i$ is represented as
 
@@ -2604,21 +2802,21 @@ $$
 V_i=C_i\oplus M_i\oplus\kappa_i,
 $$
 
-where $C_i$ is the value's current carrier, $\kappa_i$ is a compile-time ledger
-constant, and
+where $C_i$ is the value's current carrier, $\kappa_i$ is a constant recorded in the ledger, and
 
 $$
 M_i=\bigoplus_j\prod_l(B_{b_{jl}}\oplus a_{jl})
 $$
 
 is its product mask. Each $B_b$ names a band variable, while each $a_{jl}$ is a
-compile-time bit which chooses whether that band variable is used normally or
+fixed bit which chooses whether that band variable is used normally or
 negated. The mask slots name band variables rather than physical wires. When a
 gate is emitted, the ledger resolves each variable to the wire which currently
 holds it. The offsets and $\kappa_i$ never need their own physical wires.
 
-The nonlinear band fill {#nonlinear-band-fill}
------------------------
+<a id="nonlinear-band-fill"></a>
+
+### The nonlinear band fill
 
 The second half of the physical wires initially contains incoming junk
 $z_1,\ldots,z_q$. We turn these wires into band variables
@@ -2653,10 +2851,11 @@ evaluated. Each $B_j$ is computed in place by XORing its selected terms into
 the wire which initially holds $z_j$. Once filled, it is a fixed physical bit
 until an explicit retire-and-refill step changes it. In particular, later
 source-gate updates to the logical values do not retroactively change the band
-or require every mask using it to be updated. 
+or require every mask using it to be updated.
 
-Mask injection {#mask-injection}
---------------
+<a id="mask-injection"></a>
+
+### Mask injection
 
 After filling the band, we draw four product terms for each logical value:
 three products of two band literals and one product of three band literals. A
@@ -2669,10 +2868,12 @@ The circuit injects the four terms into $V_i$'s carrier one at a time. If the
 carrier initially contains $V_i$, it contains
 $V_i\oplus M_i\oplus\kappa_i$ after the injection. The full value of $M_i$ is
 never collected on another wire: the ledger only records its four terms and
-resolves their current wire locations whenever it emits a gate. After the band injection, this means that the original $n$ wires hold $V_i \oplus M_i \oplus \kappa_i$ and the latter $n$ wires hold $B_i$. 
+resolves their current wire locations whenever it emits a gate. After the band injection, the first $q$ wires hold the masked carriers
+and the latter $q$ wires hold the band values.
 
-Gray Folding Source Gates {#gray-folding}
--------------------------
+<a id="gray-folding"></a>
+
+### Gray Folding Source Gates
 
 Suppose a source gate updates a logical target as
 
@@ -2722,10 +2923,10 @@ $$
 The circuit moves through them as
 
 $$
-A\xrightarrow{\text{gather }M_b}B
- \xrightarrow{\text{gather }M_c}C
- \xrightarrow{\text{strip }M_b}D
- \xrightarrow{\text{strip }M_c}A.
+A\overset{\text{gather }M_b}{\longrightarrow}B
+ \overset{\text{gather }M_c}{\longrightarrow}C
+ \overset{\text{strip }M_b}{\longrightarrow}D
+ \overset{\text{strip }M_c}{\longrightarrow}A.
 $$
 
 This is a Gray-code order because only one gathered mask changes between two
@@ -2776,7 +2977,7 @@ each appear twice. All of them cancel, leaving only $M_bM_c$. Finally,
 $L_bL_c$ does not use either accumulator, so it is XORed into the target once
 at any state. All four required terms have now been added to the same target
 carrier; the circuit never has to place their intermediate XOR on another
-wire. The implementation may randomize which equivalent bare and gathered
+wire. We may randomize which equivalent bare and gathered
 states receive the $L_bz$ and $uL_c$ contributions, but the same cancellation
 argument applies.
 
@@ -2788,39 +2989,28 @@ while it is gathered, and that helper is also restored. Fixed complements from
 the g57 spellings are absorbed into the fold's constant atoms, which are taken
 from the ledger.
 
-There is an important trace-security limitation. The statement above is true
-at one instant, but it is not true for an observer who combines two times. If
-$u_{
-m before}=u_0$ and
-$u_{
-m after}=u_0\mathbin\oplus M_b\mathbin\oplus\delta$, then
+The dirty accumulators are restored, but an observer can still compare
+their values before and after a gather. The unknown starting value then
+cancels and reveals the gathered mask. We explain this attack after the
+construction, in [Linear Correlators Across the Entire Circuit](#linear-correlators).
+Thus, the Gray fold solves the problem of wide gates while leaving a
+problem for an observer who combines different times.
 
-$$
-u_{\rm before}\mathbin\oplus u_{\rm after}
-=M_b\mathbin\oplus\delta.
-$$
-
-The unknown dirty value cancels, so two prefixes on the same physical wire
-reveal the complete aggregate mask. Together with the entry carrier and the
-known ledger residual this gives an exact identity for the logical operand.
-The exhaustive regression
-`prod_gray_fold_has_an_exact_space_time_operand_recovery` checks this over the
-whole small input domain. Dividing $M_b$ into several Gray gathers does not
-remove the issue: XORing all tile deltas reconstructs $M_b$.
-
-For this trace model, we also tested the no-Gray Phase-A preset
-(`PROD_PRESET=no-gray-phase-a`). It expands products atom-by-atom and ladders
-only fragments through width four. On the paired 64-wire experiment it made
-92.22% of all gates reachable in the frozen regular store, versus 97.37% for
-Gray, while never gathering the complete $M_i$ on one accumulator. Full
-laddering reached only 92.37% at substantially higher cost, and running
-`fcompress` before Phase A reduced the selective arm to 77.96%, so neither is
-preferred in that experiment. These measurements concern the earlier
-product-share construction, rather than the current quadratic-masking recipe.
+We also tested a version without the Gray fold. It expands the products
+one term at a time and uses dirty helpers to break only the three- and
+four-control fragments into two-control gates. The [borrowed-wire circuits
+below](#quadratic-fire) show these replacements. In a matched 64-wire
+experiment, this made 92.22% of all gates reachable by the frozen regular
+table, versus 97.37% with the Gray fold, while never gathering a complete
+mask on one accumulator. Breaking down every wide fragment reached only
+92.37% at substantially higher cost. Applying our [fragment compressor](#fcompress)
+before database mixing reduced the selective version to 77.96% reachability.
+These measurements compare variants of the product-share construction; they
+do not measure quadratic masking.
 
 That product-share construction uses this Gray fold for suitable two-control
 source gates. Other gate shapes use the same full-decode substitution but fall
-back to the ordinary fragment or dirty-ladder implementation. In either case,
+back to the direct fragments or the dirty-helper construction. In either case,
 constant contributions update $\kappa_t$, and the target's mask does not have
 to change merely because its logical value changed.
 
@@ -2848,14 +3038,15 @@ circuit inside the database's reach. The important number is reachability, not
 the raw database match rate: a gate outside the eligible width can never be
 re-encoded regardless of how many replacements the table stores.
 
-Thus, the Gray fold buys **digestibility, not hiding**. In particular, it must
-not be treated as hiding against a multi-prefix trace adversary. It is the nonlinear
-product-share encoding which removes the affine diagonal. The Gray fold keeps
-that encoding from producing wide fragments which would pass through the
-mixing stage unchanged.
+Thus, the Gray fold makes the product-share encoding easier for the
+database to reach. The nonlinear encoding removed the affine diagonal
+in the local-state tests we ran, while the fold kept it from producing
+wide fragments which would pass through the mixing stage unchanged.
+Neither result rules out a recovery which combines different times.
 
-A four-wire example {#four-wire-gadget-example}
--------------------
+<a id="four-wire-gadget-example"></a>
+
+### A four-wire example
 
 Let us walk through a simplified example. Suppose the source computation begins with four logical wires
 $x_1,x_2,x_3,x_4$. Gadgetizing this computation gives us eight physical wires,
@@ -2936,6 +3127,12 @@ $$
 M_1=M_{11}\oplus M_{12}\oplus M_{13}\oplus M_{14}.
 $$
 
+Here is the injection of these four terms. The cubic gate is drawn as
+one logical fragment; the [dirty-helper construction](#quadratic-fire)
+below shows how to implement it using two-control gates.
+
+![The four product terms injected into one carrier](images/circuit-product-share-injection.svg)
+
 The first three terms have degree 2 in the band variables. The last has degree
 3. In particular, treating a negated literal as
 $\neg B_3=1\oplus B_3$ gives
@@ -2966,7 +3163,7 @@ $$
 V_i=C_i\oplus M_i\oplus\kappa_i,
 $$
 
-where $\kappa_i$ is the compile-time ledger constant. Neither $V_i$ nor $M_i$
+where $\kappa_i$ is the constant recorded in the ledger. Neither $V_i$ nor $M_i$
 is reconstructed on a physical wire.
 
 Now suppose the next source gate is
@@ -2990,8 +3187,8 @@ F=1\oplus(C_3\oplus M_3\oplus\kappa_3)
           (C_3\oplus M_3\oplus\kappa_3).
 $$
 
-The ledger constants are known when the gadget is generated, so the compiler
-substitutes them and simplifies the expression. To display the nonconstant
+The ledger constants are known when the gadget is generated, so we
+substitute them and simplify the expression. To display the nonconstant
 parts clearly, suppose for one line that $\kappa_2=\kappa_3=0$. Algebraically,
 the required carrier update is then
 
@@ -3035,7 +3232,7 @@ the controls' constant atoms and restores every borrowed wire exactly.
 The four-wire example is meant to show the algebra of the fold. A literal
 four-carrier circuit does not leave enough spare carrier wires for both dirty
 accumulators and the helper used by degree-3 terms, so that tiny instance uses
-the ordinary fallback implementation. At the wider sizes where the Gray path
+the direct expansion with dirty helpers. At the wider sizes where the Gray path
 is available, it computes exactly the expansion shown here without placing a
 control or complete mask on a clean wire.
 
@@ -3083,8 +3280,9 @@ and strips the old term second, which means that the value is never left with
 less masking in between. Similarly, before retire-and-refill rewrites a band
 variable, every live mask which names that variable is re-sourced in this way.
 
-Moving and refreshing the representation {#refreshing-the-representation}
------------------------------------------
+<a id="refreshing-the-representation"></a>
+
+### Moving and refreshing the representation
 
 The construction also changes where the pieces of the representation live. A
 carrier relocation swaps the physical locations of two logical carriers and
@@ -3104,8 +3302,9 @@ wire, drawing those sources from other band variables and current carriers. The
 order is important: inject each replacement mask term first, remove the old
 term second, and refill the band variable only after all references are gone.
 
-Leaving the gadget {#leaving-the-gadget}
-------------------
+<a id="leaving-the-gadget"></a>
+
+### Leaving the gadget
 
 At the end of the gadget, the circuit strips each recorded mask term from its
 carrier using the band variables' current locations and discharges the remaining
@@ -3115,25 +3314,213 @@ and the band variables on the auxiliary wires. Finally, another nonlinear fill
 is emitted over the auxiliary side so that those outputs contain fresh junk
 rather than an exposed copy of the working band. The required outputs therefore
 compute the same function as the source circuit, while the other outputs remain
-unrestricted junk. Of course, further mixing with our database replacements will be needed to ensure these remain hidden. 
+unrestricted junk. Of course, further mixing with our database replacements will be needed to ensure these remain hidden.
 
-Quadratic Masking: the Current Gadgetization {#quadratic-masking}
-===========================================
+<a id="linear-correlators"></a>
 
-The product-share construction above records an earlier version of our
-gadgetizer. Our current default uses quadratic masking. The goal remains the
-same: we want to compute on encoded values without first recovering the
-original values on physical wires. We also want the masks to change throughout
-the computation, so that the observer is not following one fixed encoding.
+## Linear Correlators Across the Entire Circuit
+
+The nonlinear gadgetization above removes the simple XOR decode which hurt our
+paired construction. However, we recall what the last linear correlator
+heatmap actually checks. Each cell tries to recover a source value from the
+wires at one point in the gadgetized circuit. Even when the heatmap covers
+the entire circuit, each recovery is local to one state. It does not combine
+the wire values at different points in the computation.
+
+An observer of our circuit does not have this restriction. They can run the
+published gate list and keep the intermediate values. Thus, we should allow
+the correlator to use observations from across the entire circuit. Suppose
+$Z_w^{(j)}(x)$ is the value of physical wire $w$ after gate $j$, and $v(x)$ is
+one of the source circuit's intermediate values. We now ask whether
+
+$$
+v(x)=\kappa\oplus\bigoplus_{j,w}\alpha_{j,w}Z_w^{(j)}(x)
+$$
+
+for fixed coefficients $\kappa,\alpha_{j,w}\in GF(2)$. The coefficients may
+select different wires at different times, but they must work across the
+inputs. In other words, we have changed the information available to the
+attacker, while still only asking for a linear combination of that information.
+
+This is particularly problematic for the Gray fold. Recall that its dirty
+accumulator starts at $u_0$ and then becomes $u_0\oplus M_b\oplus\delta$,
+where $\delta$ is the fixed complement from its gate spelling. Neither state
+needs to contain the mask by itself. However,
+
+$$
+u_{\mathrm{before}}\oplus u_{\mathrm{after}}=M_b\oplus\delta.
+$$
+
+The unknown dirty value cancels. Combining these two observations with the
+entry carrier $C_b$ therefore gives
+
+$$
+V_b=C_b\oplus u_{\mathrm{before}}\oplus u_{\mathrm{after}}
+    \oplus\delta\oplus\kappa_b.
+$$
+
+This is an affine equation in three observations, even though $M_b$ is a
+nonlinear function of the band. Splitting the gather into smaller pieces does
+not remove the problem: the observer can XOR together the changes from all
+the pieces. The same concern applies when individual product masks appear
+as gate firing bits. Once a nonlinear product is itself an observation, the
+attacker can use it as one term in a linear combination.
+
+<a id="recording-the-trace"></a>
+
+### Recording the trace
+
+We do not need to store the complete state after every gate to perform this
+attack. Let $\Delta_j$ be the firing bit of physical gate $j$. Since our gates
+only change one target,
+
+$$
+\Delta_j=Z_{t_j}^{(j-1)}\oplus Z_{t_j}^{(j)},
+$$
+
+and every later wire value can be recovered as
+
+$$
+Z_w^{(r)}=Z_w^{(0)}\oplus
+\bigoplus_{\substack{j\le r\\t_j=w}}\Delta_j.
+$$
+
+Thus, the initial wire values and all gate firing bits already span every
+intermediate wire value. We can use these as the features of our linear
+system. This is still a linear attack in the trace values; it does not claim
+that those values are linear in the original inputs.
+
+We can display this attack as a cumulative heatmap. As we move through
+the gadgetized circuit, we add observations to one growing linear system.
+One version adds the full wire state at each sampled checkpoint. Another
+adds every gate's firing bit, giving the complete trace span. The last
+column therefore uses observations from across the circuit, rather than
+just its final state. Sampling only some checkpoints or gate deltas gives
+a restricted version of this attack.
+
+As before, we fit the equations on one set of inputs and check them on
+separate inputs. We use three independent sets: fitting inputs to find
+an equation, validation inputs to reject spurious relations and choose a
+witness, and test inputs to measure that chosen witness without changing it. A long trace can have many more features than fitting samples. If
+the fitted span reaches the number of fitting samples, it can fit
+arbitrary labels on those samples. At that point, a failed test on new
+inputs is inconclusive: the procedure may have chosen a spurious equation
+instead of another one which generalizes. We cannot treat this as evidence
+that no affine equation exists.
+
+<a id="approximate-linear-correlators"></a>
+
+### Correlations without exact recovery
+
+Exact recovery is only one kind of failure. A predictor which agrees with a
+source value on three quarters of the inputs fails an exact reconstruction
+test, but still reveals information. For a parity $P$ of observed trace bits,
+we can write its signed agreement with $v$ as
+
+$$
+\rho=\mathbb E[(-1)^{v\oplus P}].
+$$
+
+Choosing the better of $P$ and its complement gives agreement
+$(1+|\rho|)/2$. For instance, $|\rho|=1/2$ gives agreement $3/4$.
+We should therefore look for biased linear correlators as well as exact
+linear equations.
+
+To see why this matters for masking, suppose a carrier contains
+$v\oplus xy$, where $x,y$ are independent uniform bits, independent of $v$.
+The product is zero on three quarters of the inputs, so the carrier already
+guesses $v$ with agreement $3/4$. The decode is nonlinear, but the mask is
+biased. A wider product does not necessarily help: a product of three
+independent bits is zero seven eighths of the time.
+
+<a id="gadget-gauntlet"></a>
+
+### The gadget gauntlet
+
+We collect these tests in the **gadget gauntlet**. We begin with a chain of
+source r57 gates, gadgetize it, optionally mix it, and compare the two
+executions on the same inputs. For each source gate
+$c\mathrel{\oplus{=}}a\vee\neg b$, we record five target values:
+
+$$
+a,\qquad b,\qquad c_{\mathrm{old}},\qquad
+f=a\vee\neg b,\qquad c_{\mathrm{new}}.
+$$
+
+On the gadgetized side, we record the initial wires and, for each physical
+gate, its firing bit and new target value. This includes values which exist
+only briefly. The main tests are:
+
+| Test | What the observer can combine |
+|---|---|
+| `a1` | One recorded value, or its complement, to recover a source value exactly. |
+| `xrows` | Any affine combination of the wires at one physical-gate prefix. This is the local-state reconstruction test. |
+| `xtrace` | Any affine combination of initial wires and gate firing bits across the complete recorded execution. |
+| `w1` | Each individual trace feature, looking for statistical correlation. |
+| `w2`, `w3` | Pairs and triples from selected trace features. These include XOR correlators and limited nonlinear combinations such as AND and OR. |
+
+The numbers in `w2` and `w3` count the features used, not the algebraic
+degree of every predictor. The statistical score is centered so that a
+predictor does not count as useful merely because the source firing bit is
+usually one. Namely, for the $\pm1$ versions of $v$ and $P$, it measures
+
+$$
+\left|\mathbb E[(-1)^{v\oplus P}]
+-\mathbb E[(-1)^v]\mathbb E[(-1)^P]\right|.
+$$
+
+In the experiments below, we also run the same correlators against an
+independent random target. This gives us a noise baseline: a score can look
+nonzero merely because we have finitely many samples and try many predictors.
+A flag must exceed both the largest score against that random target for
+the same test and $6/\sqrt{N}$, where $N$ is the number of correlation samples. The affine
+recovery tests check their equations on held-out samples as well. The unprotected circuit is included as a positive control, so that
+we can check that the attacks find the structure they are meant to find.
+
+Of course, the gauntlet has limits. `w1` scans every recorded feature, but
+the usual `w2` and `w3` caps select 64 and 16 features respectively; they do
+not scan all pairs and triples of a large trace. `xtrace` also has a feature
+limit and explicitly reports when it is skipped. A skipped test is not a
+passed test. Small input domains can saturate the trace span, so the logical
+width, auxiliary-input policy, and sample counts must accompany the result.
+
+The auditor knows the source values because it runs the source circuit.
+Finding a recovery equation demonstrates a relation with that computation;
+it is not already a blind reconstruction of an unknown circuit or a SAT
+preimage. We use it to find weaknesses in the gadget before asking the
+complete mixing method to hide it.
+
+These attacks give us two concerns for the next construction. We want to
+compute without gathering a complete mask or temporarily making its decode
+linear. We also want the masks to be balanced and to change during the
+computation, so that simply observing a carrier or its change does not
+immediately give a useful correlator. This leads us to quadratic masking.
+
+<a id="quadratic-masking"></a>
+
+## Quadratic Masking
+
+These concerns lead us to quadratic masking. The idea is to leave
+quadratic masks open on our computation wires and compute from inside them. We do
+not gather a complete operand mask, and we do not first change the
+operand into a linear encoding just to read it. We also change the
+target mask during its update, so its before/after difference includes
+more than the source gate firing. These changes address particular
+relations found by the attacks above; we will return to the whole-trace
+test after describing the construction.
 
 Let $A$ be the circuit entering gadgetization, on $q$ wires. We add a band of
-$q$ wires, giving us $2q$ wires in total. In the full GSS construction, $A$ is
-the sliced sandwich, so $q=2n$ and the gadgetized circuit has $4n$ wires. The
+$q$ wires, giving us $2q$ wires in total. In the complete mixing method,
+$A$ is a [sliced sandwich](#sliced-sandwich): a circuit on $2n$ wires which,
+when its $n$ auxiliary inputs are zero, places $C(x)$ on one output half
+and allows the other half to contain junk.
+Thus, $q=2n$ and the gadgetized circuit has $4n$ wires. The
 first $q$ wires carry the masked computation, and the latter $q$ wires hold
 the band values $B_1,\ldots,B_q$. Their physical wire labels stay fixed.
 
-Open quadratic masks {#open-quadratic-masks}
---------------------
+<a id="open-quadratic-masks"></a>
+
+### Open quadratic masks
 
 Write $V_w$ for a logical value and $W_w$ for its current physical carrier. We
 maintain a collection $\mathcal O_w$ of masks which are *open* on that carrier:
@@ -3142,7 +3529,7 @@ $$
 V_w=W_w\oplus\bigoplus_{j\in\mathcal O_w}M_j(B).
 $$
 
-At our default mask size, each mask is
+We use masks of the form
 
 $$
 M_j(B)=1\oplus B_y\oplus B_xB_y\oplus B_z.
@@ -3153,9 +3540,16 @@ CNOT $W_w\mathrel{\oplus{=}}B_z$. Applying these gates again removes the mask
 as long as its band values have not changed. We call these open/close mask
 pairs locally geodesic identities, or LGIs.
 
+The two gates on the left open one balanced mask. Repeating them on
+the right closes it. In this picture the three band values are unchanged
+between the open and close; we explain how to refresh them below.
+
+![Opening and closing a balanced quadratic mask](images/circuit-quadratic-mask.svg)
+
 The extra $B_z$ matters. The r57 increment alone is one on three of its four
-inputs. Adding a separate uniform bit makes the mask balanced while retaining
-its quadratic term. This describes the mask as a function of its band
+inputs. Under independent uniform band values, a carrier under just this
+mask therefore remains correlated with the logical value. Adding a separate independent uniform bit makes the mask
+balanced while retaining its quadratic term. This describes the mask as a function of its band
 variables; our actual band is derived from the input, so its variables are not
 assumed to be mutually independent.
 
@@ -3166,8 +3560,16 @@ control, we add enough masks to reach the lower bound and keep those masks
 open afterward. We try to choose their band wires disjointly from the other
 masks on that carrier. Small bands can force this condition to be relaxed.
 
-Computing from inside the masks {#quadratic-fire}
--------------------------------
+Balancing alone does not settle the issue. A balancing wire is itself
+visible, and combining observations can cancel it. Keeping more than
+one mask open makes it harder for a single observed product to remove
+the remaining nonlinear part. This is why we check the mask depth
+throughout the computation, including around reads and band refreshes,
+rather than only counting how many masks we injected at the beginning.
+
+<a id="quadratic-fire"></a>
+
+### Computing from inside the masks
 
 Suppose the next logical gate is
 
@@ -3187,15 +3589,27 @@ Each operand is quadratic in the current physical variables, so their product
 has degree at most four. We emit its terms without first putting $V_a$ or
 $V_b$ on a physical wire. This is what we call **quadratic fire**.
 
-An earlier read completed each r57 mask with its reversed control pair,
-temporarily making the operand affine in the band. Later gate reorderings
-could stretch this interval across the operand's idle time. Keeping the
-quadratic masks in place removes that particular linearization step.
+To see what changed, write $h(x,y)=1\oplus y\oplus xy$ for the r57
+mask. The earlier read applied the reversed control pair because
+
+$$
+h(x,y)\oplus h(y,x)=x\oplus y.
+$$
+
+If a carrier held $v\oplus h(x,y)$, it now held $v\oplus x\oplus y$.
+The read was easier, but $v$ had become affine in the current wires.
+Adding a balancing wire would still leave an affine expression, with
+that wire simply included in the XOR. Applying the reversed pair again
+after the read restores the mask, but cannot erase the observation.
+Later gate reorderings could also stretch this interval across the
+operand's idle time. Quadratic fire removes this linearization step
+and expands the still-quadratic decode directly.
 
 For the degree-three and degree-four terms, we borrow dirty band wires and
-restore their incoming values after each small block. For example,
+restore their incoming values after each small block. In the gate lists
+below, `t ^= a & b` means $t\mathrel{\oplus{=}}ab$. For example,
 
-```
+```text
 t ^= h & c
 h ^= a & b
 t ^= h & c
@@ -3203,12 +3617,38 @@ h ^= a & b
 ```
 
 adds $abc$ to $t$ and restores $h$, regardless of the initial value of $h$.
-Degree-four terms use an eight-gate block with two helpers. Thus, the fire
-uses gates with at most two controls and requires no additional clean scratch
-wires. Its surrounding slice guards can still contain three-control gates.
+For a degree-four term $abcd$, we use two dirty helpers $h,k$:
 
-Shuffling the computation {#quadratic-masking-shuffles}
--------------------------
+```text
+t ^= h & k
+h ^= a & c
+t ^= h & k
+k ^= b & d
+t ^= h & k
+h ^= a & c
+t ^= h & k
+k ^= b & d
+```
+
+The four target updates visit all combinations of adding $ac$ to $h$
+and $bd$ to $k$. Their XOR is $(ac)(bd)=abcd$, and both helpers return
+to their incoming values. The cross-operand pairing matters: when
+$ab$ and $cd$ came from the two operand masks, we borrow $ac$ and $bd$
+instead of collecting one operand's own mask term on a helper.
+
+Thus, the fire uses gates with at most two controls and requires no
+additional clean scratch wires. Its surrounding slice guards can
+still contain three-control gates.
+
+Both borrowed-wire constructions are shown below. All displayed source
+and helper wires are distinct. The intermediate helper values can change,
+but their incoming values are restored at the end of each complete unit.
+
+![The four-gate cubic and eight-gate quartic dirty-helper circuits](images/circuit-dirty-helper-brackets.svg)
+
+<a id="quadratic-masking-shuffles"></a>
+
+### Shuffling the computation
 
 We treat each complete term block as a fire unit. Its internal order matters,
 but the complete units commute: each restores its helpers and adds its term
@@ -3219,9 +3659,14 @@ We also open a temporary mask on the target before the fire and close it
 afterward. Between the two shuffled halves, we open a new persistent target
 mask. Thus, the order is
 
-```
+```text
 temporary cover ; first half ; persistent mask open ; second half ; cover close
 ```
+
+![The target cover and persistent mask placed around the two fire halves](images/circuit-quadratic-fire.svg)
+
+Here $T$ is the temporary cover and $R$ is the new persistent mask. The
+two copies of $T$ cancel, while $R$ remains on the target.
 
 Where space permits, these new masks avoid the band wires appearing in the
 operand polynomials. The temporary cover protects the target during the
@@ -3232,73 +3677,147 @@ increment and a new mask.
 Filler masks are sampled throughout the computation, with target selection
 weighted by each wire's remaining mask budget. The logical gates are placed
 from a dependency-ready queue: reads remain after their earlier writes, and
-writes remain after earlier reads. The queue itself is FIFO. We randomize the
+writes remain after earlier reads. Among gates whose dependencies have
+been satisfied, we take the one which entered the ready queue first. We randomize the
 surrounding masks, refreshes, and fire units; we do not randomly violate the
 logical dependencies. These are changes to gate ordering and mask placement,
 rather than the physical wire swaps of the earlier paired gadgetizer.
 
-Band refresh and the two ports {#quadratic-masking-ports}
------------------------------
+<a id="quadratic-masking-ports"></a>
+
+### Band refresh and the two ports
 
 During the compute, we spread refresh bursts across the mask and logical-gate
-placements. With $m$ logical gates and the default pair size $k=2$, we use
-$\lfloor m/(4k)\rfloor$ slots of $8k=16$ updates each. A burst repeatedly
+placements. With $m$ logical gates, we use $\lfloor m/8\rfloor$ bursts
+of 16 updates each. A burst repeatedly
 updates one band wire by
 
 $$
 B_j\mathrel{\oplus{=}}\ell_a\ell_b.
 $$
 
-The literals are sampled from the live low data prefix and the band. Thus,
+Each $\ell$ is a wire value or its negation. We sample these literals
+from the band and the first $n$ data wires, which initially hold the source
+input and change as the computation proceeds. Thus,
 these refreshes use both pools, whereas the dirty helpers inside a quadratic
 fire are sampled only from the band. Before changing $B_j$, we open
 replacement masks where necessary, then close every mask which reads it.
 This preserves coverage without leaving a mask defined in terms of an obsolete
 band value. An optional repair refresh instead removes and reapplies the
-affected terms around the burst; this is off by default.
+affected terms around the burst. The construction described here uses
+the replacement-and-close method.
 
 The complete preprocessing has five parts:
 
-```
+```text
 opening guard ; band seed ; masked computation ; band reseed ; closing guard
 ```
 
-The opening guard reads the outer band and is dead when that band is zero.
+The opening guard is a collection of gates targeting the first $n$ data
+wires, each controlled by a positive literal from the outer band. Every
+such gate is dead when that band is zero. The outer band is the added
+masking register, separate from the sandwich's auxiliary register.
 We then seed each band wire with $x_a\oplus x_b$, choosing distinct wires
 from the original input prefix. After the masked computation, we close all
 remaining masks, leaving the sandwich output on its original $q$ wires. A
 separately seeded collection of two-CNOT updates then reseeds the band from
-the current low data prefix. This is not an inverse fill: the band remains
+the first $n$ data wires at that point. This is not an inverse fill: the band remains
 junk. Finally, the closing guard reads this band and changes only the
 sandwich's junk half.
 
-The guards distribute their slice controls across the band, shuffle those
-assignments, and shuffle their sampled gates. Their randomness is separate
-from the masked-compute stream. The seed and reseed also use distinct derived
-seeds. All these choices occur during circuit generation; evaluation remains
-deterministic.
+We distribute the guards' slice controls across the band, shuffle those
+assignments, and shuffle the sampled gates. We sample the guards separately
+from the masks used during computation, and make fresh choices for the
+initial band fill and the final refill. All these choices occur when we
+construct the circuit; evaluating its fixed gate list is deterministic.
 
-For the classic sandwich, the public promise is therefore
+For the sandwich which places the answer on the high half, the public
+promise is therefore
 
 $$
 G(x,0^n,0^{2n})=(\text{junk},C(x),\text{junk}).
 $$
 
-The circuit is reversible on all $4n$ wires, but we only constrain the answer
-block. The zero inputs specify the public slice, and neither junk output
-needs to be zero. The classic guards also preserve the reverse-slice answer
-$D^{-1}(p)$ on the high sandwich half. The balanced sandwich instead keeps
-its forward answer on the low half and mirrors the closing guard accordingly.
+The circuit is reversible on all $4n$ wires, but we only constrain the
+answer block. The zero inputs specify the public slice: the input states
+on which the circuit must return $C(x)$ in that block. Neither junk output
+needs to be zero. The [sandwich construction](#sliced-sandwich) below explains
+why we separate the answer from the junk, and how the corresponding reverse
+slice behaves.
 
-We also support a separate `nonlinear291` construction. It represents a value
-by two five-wire shares decoded through
-$E(s)=s_0\oplus s_1\oplus\operatorname{maj}(s_2,s_3,s_4)$ and uses fixed
-gate templates. It has a larger wire layout and ends with eight bounded
-passes of adjacent commuting swaps. This remains an alternative to the
-quadratic-masking construction described here.
+<a id="quadratic-gauntlet-results"></a>
 
-The Trapdoor Permutation Challenge {#trapdoor-permutation-challenge}
-==================================
+### What the gauntlet still finds
+
+The distinction between the local and whole-circuit attacks remains important
+for quadratic masking. Removing the linearized read closes that particular
+local-state recovery. It does not show that every logical value has left the
+span of the complete trace.
+
+We can see this directly before mixing. Each complete fire unit adds one
+polynomial term to the target and restores its helpers. Let $J$ contain the
+physical gates which update that target inside the fire units, excluding the
+separate mask injections. Then the source firing bit satisfies
+
+$$
+f=\bigoplus_{j\in J}\Delta_j.
+$$
+
+The persistent target mask changes the XOR across the complete write block,
+but an observer who identifies its constituent gates can omit its updates
+from this sum. With public source inputs, recovering the logical firing bits
+also lets the observer follow the logical wire updates. Thus, hiding the
+before/after difference of one block is not enough to rule out every linear
+combination across its interior. Later mixing can change these intermediate
+values, so we must test the mixed circuit as well.
+
+The following gauntlet experiments give a concrete example. Each circuit
+uses 128 logical wires, 128 band wires, and balanced quadratic masks, with
+an ordinary open-mask cap of three. The source is a chain of r57 gates.
+Each source gate contributes the five target values defined above, so
+16 gates give 80 targets and 64 gates give 320.
+
+| Source gates | Mixing moves | Physical gates | `a1` hits | `xrows` hits | `w1 / w2 / w3` flags | `xtrace` recoveries |
+|---|---:|---:|---:|---:|---|---:|
+| 16 | 0 | 5,546 | 0 | 0 | 0 / 0 / 0 | 77 / 80 |
+| 16 | 20,000 | 24,537 | 0 | 0 | 0 / 0 / 0 | 77 / 80 |
+| 64 | 20,000 | 38,424 | 0 | 0 | 0 / 0 / 0 | 314 / 320 |
+
+Here a recovery means that the fitted equation had no errors on the 2,048
+held-out samples. The fitting sets contained 11,648, 49,600, and 77,376
+samples respectively. All three whole-trace scans completed below their
+40,000-feature cap. The correlation scans used 16,384 samples, with the
+64-feature pair cap and 16-feature triple cap described above. The target
+counts are per source gate and target role; they need not be distinct Boolean
+functions. In particular, recovering the same Boolean function at two
+source-gate positions counts as two recovered target instances.
+
+The observed trace begins after the input values have been masked and
+ends before the outputs are decoded. Thus, it does not include the gates
+which expose the plain inputs or outputs. The initial band is uniformly
+random. These choices isolate the masked computation; the complete mixing
+method instead has public inputs and outputs and derives its band from the
+input. The 20,000 moves are local mixing moves applied to the gadgetized
+chain. They do not include the entire sandwich, splitting, crossing, and
+final compression construction. These are measurements of the stated
+experiments, and must not be treated as results for every choice of mask
+schedule, band construction, or subsequent mixing.
+
+Nevertheless, they show the problem clearly: the direct, single-state, and
+bounded-correlation tests can all report zero while a linear combination
+across the entire execution still recovers most of the tested source
+values. Thus, these quadratic-masking circuits have not passed the whole
+gadget gauntlet.
+
+We can apply the same tests to a larger band or a different encoding.
+Such a comparison must keep track of the physical width, the input
+distribution, and which parts of the execution the observer can see.
+Otherwise, a change in the result may come from giving the attacker a
+different problem.
+
+<a id="trapdoor-permutation-challenge"></a>
+
+## The Trapdoor Permutation Challenge
 
 Every measure of success we have used so far asks a question about resemblance.
 The heatmaps ask whether the obfuscated circuit's behavior still looks like the
@@ -3327,7 +3846,9 @@ $C$'s functionality is moved onto the high half, wires $n..2n$, and a fresh
 random circuit $D$ runs on the low half. On input $(x, y)$ the construction
 returns
 
-$$\mathrm{TDP}_C(x,y) = \bigl(\,\text{junk}\,,\; y \oplus C(x)\,\bigr),$$
+$$
+\mathrm{TDP}_C(x,y) = \bigl(\,\text{junk}\,,\; y \oplus C(x)\,\bigr),
+$$
 
 with the low half carrying material that has been pushed through $D$ and is
 meant to look like nothing in particular.
@@ -3339,50 +3860,52 @@ gate list, and a gate list is a circuit, so anyone can run it on any input with
 no secret at all. Thus, the "easy to compute" half of a trapdoor permutation is
 given by construction rather than by argument.
 
-On the other hand, reversing the circuit, which would normally allow reverse computation to recover preimages, is no longer possible due to $D$. The intended challenge is therefore easy to evaluate forward, while recovering a preimage without the original circuit is the problem we ask the attacker to solve. 
+The complete circuit can still be reversed if its complete output is
+known. The challenge reveals only the answer block, however, so an attacker
+would also have to find the missing junk before running it backward.
+Recovering a preimage from this partial output, without knowing $C$, is the
+problem we ask the attacker to solve.
 
-Fixing $y = 0$ collapses the high-half output to exactly $C(x)$, so the whole
-challenge becomes the single sentence "find $x$ with $C(x) = t$". The campaign
-instances do not literally use zero. The public block is pinned to a published
-constant $y^*$, and the constraint on output wire $n+i$ becomes
-$t_i \oplus y^*_i$. In other words, this only relabels the target, which makes
-the challenge clean to state.
+Fixing $y = 0$ collapses the high-half output to exactly $C(x)$, so the
+whole challenge becomes the single sentence "find $x$ with $C(x)=t$". More
+generally, we can fix $y$ to a public constant $y^*$. Given a target $t$ for
+the high-half output, we then seek $x$ with $C(x)=t\oplus y^*$. In other
+words, this only relabels the target.
 
-The trapdoor is $C$ and $D$ themselves. Whoever generated the instance holds the
-source circuit, the random $D$, and the seed that drove the transform, and can
-therefore invert immediately. $C$ is a reversible circuit of a few thousand r57
-gates, and every r57 gate is its own inverse, so inverting is nothing more than
-running $C$'s gate list backward on $t \oplus y$, while nobody else is supposed
-to be able to do that.
+Knowing the original circuit $C$ gives the intended trapdoor. Every r57
+gate is its own inverse, so we can find the preimage by running $C$'s gate
+list backward on $t\oplus y^*$. The proposed hiding comes from publishing
+the transformed circuit while keeping that original gate list secret.
 
-SAT Solvers {#sat-solvers}
-===========
+<a id="sat-solvers"></a>
+
+## SAT Solvers
 
 We introduced the general SAT test and the circuit-to-CNF translation in [*How
 We Measure Success*](#how-we-measure-success), so we will not repeat that process here. Instead, we now
 look at how we used this test against the TDP campaign. In these instances,
 $X$ is the only free input block.
 
-The campaign encoding {#campaign-encoding}
----------------------
+<a id="campaign-encoding"></a>
 
-The campaign encoder reads an `mpmct1` circuit,
-writes the resulting DIMACS formula, and calls its current-wire table `cur`.
-The important detail for this campaign is that the transformed circuits do not
+### The campaign encoding
+
+We translate the circuit into a conjunction of Boolean clauses as
+described above. The important detail is that the transformed circuits do not
 contain only r57 gates. Different kinds of gates need different numbers of
 clauses, so two circuits with the same number of gates do not necessarily
 produce SAT formulas of the same size.
 
 There is also one small optimization which matters for the numbers below. A
 zero-control gate with `comp` $= 0$ is an unconditional NOT. We can represent
-this by writing $-\texttt{cur}[t]$ back into the table, without adding a new
-variable or any clauses. A zero-control gate with `comp` $= 1$ never fires and
+this by using the negation of the Boolean variable which already
+represents the target, without adding a new variable or any clauses. A zero-control gate with `comp` $= 1$ never fires and
 can be dropped entirely.
 
 For r57 itself, $o = a \oplus (b \vee \neg c)$, the direct encoding is six
-clauses:
+clauses. Here `-b` means $\neg b$, and `or` is Boolean OR:
 
-```
+```text
 (-b or  a or  o)
 (-b or -a or -o)
 ( c or  a or  o)
@@ -3418,8 +3941,9 @@ variables.
 
 The direct form is smaller through $k = 3$. At $k = 3$, both forms use eight
 clauses, but the direct form still uses one fewer variable. For larger values
-of $k$, the auxiliary form becomes smaller. The default `--aux-threshold` is 3,
-while `--six` forces the direct form for every gate. In particular, the direct
+of $k$, the auxiliary form becomes smaller. We therefore use the direct
+form through three controls and the auxiliary form for wider gates. We can
+also compare this with using the direct form throughout. In particular, the direct
 encoding of a complemented two-control gate gives exactly the six r57 clauses
 shown above.
 
@@ -3440,7 +3964,7 @@ about $1.5\times$. This happens because 42% of its gates have at least four
 controls and therefore use the auxiliary encoding. The Gray fold breaks these
 gates back down to at most three controls, bringing the average back to about
 5.5 clauses per gate. The folded circuit has 384 zero-control gates, 248,464
-one-control gates, 735,689 two-control gates, and 4,806 three-control gates. This hints at the fact that using gates with *more* controls, can be effective at increasing the number of clauses, further emphasizing the limitation of relying solely on r57 gates. 
+one-control gates, 735,689 two-control gates, and 4,806 three-control gates. This hints at the fact that using gates with *more* controls, can be effective at increasing the number of clauses, further emphasizing the limitation of relying solely on r57 gates.
 
 For a circuit with $w$ input wires and $g$ r57 gates, this gives approximately
 $w+g$ variables and $6g$ clauses, followed by the unit clauses which pin the
@@ -3452,10 +3976,14 @@ $768 + 988{,}959 = 989{,}727$ variables. Its gate clauses are
 $4 \cdot 248{,}464 + 6 \cdot 735{,}689 + 8 \cdot 4{,}806 = 5{,}446{,}438$, and
 the 768 unit clauses bring the total to 5,447,206.
 
-The challenge that broke {#challenge-that-broke}
-------------------------
+<a id="challenge-that-broke"></a>
 
-We note that the below challenge uses a variation on the TDP construction that is done on $3n$ wires, rather than $2n$. This is now a legacy construction and we will not describe it deeply here, but the main idea is that the secret sharing in the linear gadgetization and TDP construction are combined into one and the secret shares are done between 1 data wire, 1 "TDP" wire (wires that will hold the old data wires when the data wires get overwritten, giving us our TDP construction), and one auxiliary wire. The first challenge we broke with this test used 384 wires. It placed $x$ on
+### The challenge that broke
+
+One preimage challenge used three $n$-wire registers. The first held the
+source input $x$, the second held the public value $y$ added to the answer,
+and the third held auxiliary values $z$ used by the masking. Here $n=128$,
+giving 384 physical wires. The input placed $x$ on
 wires $0\text{--}127$, $y$ on wires $128\text{--}255$, and $z$ on wires
 $256\text{--}383$. Its middle output block computed
 
@@ -3475,9 +4003,9 @@ $$
 C(x)=\text{target}.
 $$
 
-Kissat, run through PySAT, returned the following preimage:
+The SAT solver Kissat returned the following preimage:
 
-```
+```text
 target = 0x73f3f19f19ed8618653ee7ca759811e7
 x      = 0x1318d06b8d50e2324d1b935a584b7782
 ```
@@ -3487,8 +4015,9 @@ with $y=z=0$. The middle 128 output bits matched the target.
 
 We ran many tests of similar types and found that even with more and more expansion in the latter mixing stages, the longest average SAT solve time was only around 10 hours. We use average SAT solve times as our metric here as some targets are easier to find preimages for than others.
 
-Making the Solver Struggle {#making-the-solver-struggle}
-==========================
+<a id="making-the-solver-struggle"></a>
+
+## Making the Solver Struggle
 
 These observations lead us to two changes. First, we define the preimage
 challenge on one public input slice, so the auxiliary wires are not additional
@@ -3497,8 +4026,9 @@ on which most of this document was built. The first change defines the
 anti-inversion problem that we want to ask, while the second changes how that
 problem is presented to an attacker.
 
-Slicing and the sliced sandwich {#sliced-sandwich}
--------------------------------
+<a id="sliced-sandwich"></a>
+
+### Slicing and the sliced sandwich
 
 The goal of slicing is to stop the SAT solver from freely manipulating the auxiliary wires when trying to solve for preimages in the TDP challenge. One additional property we get from slicing is it stops the reversal of the published circuit from
 immediately giving us $C^{-1}$. If an attacker knows the complete output of an
@@ -3514,7 +4044,7 @@ $A$ on $2n$ wires. The first $n$ wires hold the free input $x$, while the
 second $n$ wires hold an auxiliary slice register $y$. $S_1$ and $S_2$ will both serve to enforce the slices. In other words, they yield the identity when the slice matches, and will permute the input bits otherwise. The sandwich has the
 form
 
-```
+```text
 A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
 ```
 
@@ -3522,14 +4052,14 @@ We first run $C$ on the first half while interleaving it with a slice block
 $S_1$. We then apply the copy step $N$, consisting of the $n$ CNOTs
 $y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random r57
 circuit $D$ on the first half while interleaving it with another slice block
-$S_2$. In the production construction, $D$ uses the same gate design and gate
-count as $C$. By default, this count is
+$S_2$. We give $D$ the same gate design and gate count as $C$. For the
+random source circuits considered here, we choose this count to be
 $\max(n,\operatorname{round}(n(\log_2 n)^2))$.
 
 Each slice block has $\max(n,\operatorname{round}(n\log_2 n))$ gates drawn from
 two shapes:
 
-```
+```text
 x_i ^= y_j            CNOT,  control in the second half      ~1/3 of gates
 x_i ^= x_j & y_k      CCNOT, one control per half            the rest
 ```
@@ -3551,7 +4081,14 @@ $$
 
 Thus,
 
-$$A(x,0)=(\text{junk},C(x)).$$
+$$
+A(x,0)=(\text{junk},C(x)).
+$$
+
+The diagram shows this public-slice computation before we scatter the
+copy CNOTs. Each horizontal line stands for a bundle of $n$ wires.
+
+![The classic sliced sandwich with its middle copy step](images/circuit-sliced-sandwich.svg)
 
 $S_1$ is dead while $C$ runs. The copy step then places $C(x)$ in the second
 half. After that, $D$ and $S_2$ may change the first half, but they cannot
@@ -3568,7 +4105,9 @@ $$
 
 Therefore,
 
-$$A^{-1}(p,0)=(\text{junk},D^{-1}(p)).$$
+$$
+A^{-1}(p,0)=(\text{junk},D^{-1}(p)).
+$$
 
 On this reverse slice, the reversed gate list exposes the random $D^{-1}$
 rather than $C^{-1}$. We give $D$ the same design and size as $C$ so that later
@@ -3578,12 +4117,12 @@ copy CNOT a random direction and commute it in that direction until it reaches
 a genuine collision. These moves preserve the function and both slice equations
 above, while removing the most obvious contiguous boundary.
 
-We then gadgetize all $2n$ sandwich values. The current quadratic gadgetizer
+We then gadgetize all $2n$ sandwich values. The quadratic gadgetizer
 uses one carrier per value and a band of the same $2n$ width. We add an
 opening zero-slice guard controlled by this band, seed it from the input,
 perform the masked computation, reseed it, and add a closing guard on the
 junk half. This outer band slice is separate from the sandwich's $n$-wire
-register $y$. Thus, the default width is
+register $y$. Thus, the width is
 
 $$
 n\ \text{source wires}
@@ -3631,8 +4170,9 @@ reverse-circuit attack. It is not the defense against affine reconstruction.
 On the zero slice, the sandwich alone still runs $C$ as plaintext;
 quadratic masking is the layer which makes the internal decoding nonlinear.
 
-Fragmentation: leaving r57 behind {#fragmentation}
----------------------------------
+<a id="fragmentation"></a>
+
+### Fragmentation: leaving r57 behind
 
 Earlier, when we [translated a circuit into SAT](#campaign-encoding), we saw that gates with more
 controls require more clauses. A direct $k$-control gate contributes $2k+2$
@@ -3654,7 +4194,9 @@ later, when conjunction fragments are split again while crossing colliders.
 
 We use this idea in two related fragmentation methods.
 
-[**Splitting.**]{#fragmentation-splitting} We first apply the randomized r57 split throughout the circuit.
+<a id="fragmentation-splitting"></a>
+
+**Splitting.** We first apply the randomized r57 split throughout the circuit.
 The two fragments begin where their parent was and receive opposite travel
 directions. If we left every pair beside one another, however, the original gate
 would still be easy to recognize. Selected splits are therefore used to make a
@@ -3683,8 +4225,10 @@ exhaustion of the complemented-gate population, with a safety exit after 100
 consecutive failed bracket searches. The result is a varied collection of plain
 conjunctions rather than one repeated complemented gate form.
 
-[**The crossing walk.**]{#crossing-walk} The crossing walk begins with those conjunction
-fragments and their saved directions, so it does not split r57 gates again. A
+<a id="crossing-walk"></a>
+
+**The crossing walk.** The crossing walk begins with those conjunction
+fragments and their assigned directions, so it does not split r57 gates again. A
 fragment first moves through every gate with which it commutes. When it reaches
 a true collider, we use one of three exact case-split rules. In R1 the collider
 writes a control of the moving fragment, so the moving fragment splits and its
@@ -3711,7 +4255,9 @@ hard width cap rejects any rewrite whose emitted residue would be too wide.
 Together, these two checks let the vocabulary grow without allowing wide gates
 to take over the circuit.
 
-[**Contraction during the crossing walk.**]{#fragmentation-contraction} Every successful crossing can replace
+<a id="fragmentation-contraction"></a>
+
+**Contraction during the crossing walk.** Every successful crossing can replace
 one or two gates with several fragments, so a walk which only moved forward
 would continue growing. We instead hold the gate count near a chosen target with
 a thermostat. While the circuit is below that target, another forward crossing
@@ -3766,13 +4312,15 @@ the size without steadily rebuilding the uniform gate form which fragmentation
 was meant to remove. This online pairwise contraction is separate from the
 stronger final compression pass described next.
 
-[**Compressing fragments with `fcompress`.**]{#fcompress} The frozen-database mixer was built
+<a id="fcompress"></a>
+
+**Compressing fragments.** The frozen-database mixer was built
 to move in both directions. It can expand or re-spell a window to create new
 structure, and it can later compress a window to control the size. The
 compression direction also acts as an attacker test: if our own compressor can
 immediately undo an expansion, we should assume that an attacker can do the
 same. We use this same idea after leaving r57. Splitting and crossing provide
-the expansion side for fragments, while `fcompress` provides the corresponding
+the expansion side for fragments, while our fragment compressor provides the corresponding
 fragment-aware compression side.
 
 The key observation is that several gates with the same active wire all XOR
@@ -3783,8 +4331,8 @@ $$
 t \mathrel{{\oplus}{=}} f_1 \oplus f_2 \oplus \cdots \oplus f_k,
 $$
 
-where each $f_i$ is one mixed-polarity conjunction. This is an ESOP, so
-`fcompress` can simplify the complete group instead of only looking at adjacent
+where each $f_i$ is one mixed-polarity conjunction. This is an exclusive
+OR of products, or ESOP, so the compressor can simplify the complete group instead of only looking at adjacent
 pairs.
 
 The pass repeats three steps. First, it **gathers** compatible gates in one
@@ -3795,18 +4343,18 @@ values may not change while the gates are being moved. These two rules ensure
 that every member of the group can legally commute to the point where the group
 is closed. Second, it **reduces** the gathered ESOP. It applies the same exact
 pairwise identities used above until none remain. When the group's total wire
-support is small enough, it also expands the group into ANF, cancels duplicate
-monomials, and keeps that spelling only when it is smaller. Third, it
+support is small enough, it also expands the group into algebraic normal form (ANF), an XOR of
+square-free monomials, cancels duplicate monomials, and keeps that spelling only when it is smaller. Third, it
 **re-emits** the surviving conjunction gates together at the closing point. The
 whole gather, reduce, and re-emit process repeats until the gate count stops
 shrinking or the iteration limit is reached.
 
 This is stronger than the online contraction used during the crossing walk.
 The walk can undo one intact crossing or merge one nearby compatible pair;
-`fcompress` can gather and reduce a larger same-target group after the mixing is
+our fragment compressor can gather and reduce a larger same-target group after the mixing is
 finished. It is deterministic and attacker-computable, so the size left after
 this pass is the honest effective size of the fragmented circuit. Any structure
-which `fcompress` removes is structure that we assume an attacker can remove as
+which this compressor removes is structure that we assume an attacker can remove as
 well.
 
 At the end of each fragmentation stage, we make one final positional float.
@@ -3827,14 +4375,14 @@ same r57 form.
 The frozen table emits r57 circuits, so all database mixing is completed before
 these two methods. Otherwise, each successful replacement would reintroduce the
 structure we had just removed. There is no need to return to pure r57 after the
-fragmentation stages. The [next section](#current-mixing-method) puts these parts into their current order
-and keeps the earlier attack measurements alongside them.
+fragmentation stages. The [next section](#current-mixing-method) puts these parts together and
+compares the questions asked by the different attacks.
 
-The Current Mixing Method {#current-mixing-method}
-=========================
+<a id="current-mixing-method"></a>
 
-Our current GSS method combines the constructions above in the following
-order. This is the default quadratic-masking recipe in the current code.
+## The Complete Mixing Method
+
+We combine the constructions above in the following order.
 
 1.  **[Build the sliced sandwich.](#sliced-sandwich)** We place the source computation inside a
     reversible circuit on $2n$ wires. On the zero slice, the first $n$ outputs
@@ -3845,30 +4393,29 @@ order. This is the default quadratic-masking recipe in the current code.
     to $4n$ wires. We keep balanced quadratic masks open on the carriers,
     compute through their decodes, shuffle complete fire units, and refresh
     the band. Opening/closing guards and the two band seed blocks preserve
-    the public payload. This stage writes `gss.mpmct1`.
+    the required answer on the public slice.
 
 3.  **[Run database mixing.](#generation-mixing)** While the circuit is still close to the
     r57 vocabulary, we repeatedly replace local windows with different
-    database spellings of the same function. This is the current descendant
-    of generation style mixing: the goal is repeated overlapping
-    re-encoding, rather than simply compressing each window. The default
-    profile grows to twice the incoming size and holds there, writing
-    `db_mixing.mpmct1`.
+    database spellings of the same function. As in generation mixing, we
+    want the replacements to overlap repeatedly. We grow to twice the
+    incoming gate count and then hold near that size while continuing
+    to replace windows.
 
 4.  **[Split the remaining r57 gates.](#fragmentation-splitting)** We rewrite the uniform r57 structure
     into one- and two-control pieces and use the splitting construction to
-    couple distant parts of the circuit. This writes `split.mpmct1` and the
-    checkpoint used by the next stage.
+    couple distant parts of the circuit. The resulting fragments keep
+    their assigned travel directions for the crossing walk.
 
 5.  **[Run the crossing walk.](#crossing-walk)** We shoot the resulting fragments through the
     circuit and fragment the gates which block them. This spreads the pieces
     of each earlier gate and creates a much wider range of conjunction
-    polynomials than r57 alone provides. This writes `crossing.mpmct1`.
+    polynomials than r57 alone provides.
 
-6.  **Run [`fcompress`](#fcompress).** Finally, we apply our whole-circuit compressor and
+6.  **[Compress the fragments.](#fcompress)** Finally, we apply our whole-circuit compressor and
     remove whatever local redundancy it can still recover. The compressed
     output, rather than the larger pre-compression circuit, is the final
-    artifact, packed as `final.esop1`.
+    published circuit.
 
 This ordering matters. The frozen database is most useful before
 fragmentation, while the gates still resemble the r57 circuits from which
@@ -3877,13 +4424,16 @@ without asking the database to translate it back into r57. The final
 compression pass is not another hiding layer; it makes sure that we do not
 count expansion which our own attacker-computable compressor can undo.
 
-Where this leaves the solver {#where-this-leaves-the-solver}
------------------------------
+<a id="where-this-leaves-the-solver"></a>
 
-We judge a complete method through SAT solving, affine reconstruction, and
-compression. The results below were recorded for the earlier full-pipeline
-experiments in this document. They are retained as measurements of those
-instances; changing the gadgetizer or recipe calls for new matched runs.
+### Where this leaves the solver
+
+We judge a complete method through SAT solving, local affine reconstruction,
+whole-trace reconstruction, and compression. The SAT, local heatmap, and
+compression results below concern the full-pipeline experiments with
+product-share gadgetization. The whole-trace results concern the
+quadratic-masking experiments in the [gadget gauntlet](#quadratic-gauntlet-results).
+These measurements belong to those constructions and input policies.
 
 **SAT solving.** In the SAT tests containing all six stages, the solver has not
 found a preimage within the allotted runs. This means that the complete method
@@ -3897,27 +4447,42 @@ boundaries remain, but between them the affine predictor we tested cannot
 follow the original circuit's intermediate states. This is exactly the leak
 which remained under the earlier linear gadgetization.
 
+**Whole-trace reconstruction (`xtrace`).** We still fail this test. An observer
+who combines wire values from different times can recover source intermediate
+values which the local heatmaps miss. In the quadratic-masking gauntlet,
+these recoveries remain after the tested mixing pass. Thus, removing the
+local affine diagonal has not removed the whole-circuit linear correlators.
+
 **Compression.** The final circuits are effectively incompressible under
-`fcompress`. Across four independent $n=128$ full-pipeline outputs, the
+our fragment compressor. Across four independent $n=128$ full-pipeline outputs, the
 compressor retained 93.7–93.8% of the gates, removing only 6.2–6.3%. Thus,
 the size of the final circuit is mostly mixing which survives our own
 compressor rather than easy expansion. Here, incompressibility is relative
-to `fcompress`; a stronger compressor may still find structure which ours
+to our fragment compressor; a stronger compressor may still find structure which ours
 does not.
 
-These tests ask different questions. The affine heatmap asks whether the
-original computation can still be followed, compression asks whether the
-expansion can simply be undone, and SAT asks for a preimage without first
-locating the original circuit. The method surviving all three is our strongest
-result so far, but it remains empirical evidence rather than a proof of
-security.
+These tests ask different questions. SAT asks for a preimage, while the
+classic indistinguishability game for iO asks an attacker to tell which of
+two equal-size circuits computing the same function was obfuscated. No
+efficient attacker should do appreciably better than guessing. The attacker
+knows both candidate circuits and need not recover a preimage or compress
+the published circuit to distinguish them.
 
-Conclusion {#conclusion}
-==========
+The remaining `xtrace` failure is therefore a failure of the hiding we need
+for that game. A source-dependent recovery relation can give the observer
+information about which computation is inside the obfuscation. The gauntlet
+measures those recovery relations; a complete game attack would also compare
+them between the two equivalent candidate circuits. We cannot treat the
+SAT timeouts or compression results as having settled indistinguishability.
+We do not yet have general iO.
 
-Our current construction is therefore the complete sliced-sandwich,
-quadratic-masking, database-mixing, splitting, crossing, and
-`fcompress` pipeline. Starting from a source computation on $n$ wires, the
+<a id="conclusion"></a>
+
+## Conclusion
+
+The complete construction combines the sliced sandwich, quadratic masking,
+database mixing, splitting, crossing, and final fragment compression.
+Starting from a source computation on $n$ wires, the
 sandwich and gadgetization take us to $4n$ physical wires. The later stages
 change and spread the gate representation without requiring another increase
 in the wire count.
@@ -3925,25 +4490,36 @@ in the wire count.
 Each part addresses a different failure from the earlier methods. The
 nonlinear masks address the affine direction left by linear
 gadgetization. Quadratic fire keeps those masks nonlinear while we read the
-values. Database mixing repeatedly changes the local spelling while
-that database is still useful. Splitting and crossing leave the uniform r57
+values. The gadget gauntlet checks both local recovery and linear
+relations across the entire circuit; the quadratic-masking
+tests still have whole-trace recoveries. Database mixing repeatedly
+changes the local spelling while that database is still useful. Splitting and crossing leave the uniform r57
 gate form and spread the resulting fragments throughout the circuit. The
 final compressor then removes the redundancy which remains easy for us to
 find.
 
 The earlier experiments above did not yield a SAT preimage within their
 budgets, did not reveal the old affine diagonal, and retained most gates
-under `fcompress`. These results motivate the construction, but describe
+under our fragment compressor. These results motivate the construction, but describe
 the particular circuits, attacks, and budgets we tested. They are neither
-a proof of security nor new measurements of the present default recipe.
+a proof of security nor measurements of the complete method with
+quadratic masking substituted for the product-share construction.
 
-Our tests have primarily been on random circuits, and we have not shown that we can effectively obfuscate general circuits. Local mixing has not yet reached this point and so is not a full-fledged iO scheme. Instead, our results are focused on showing we can get iO for random circuits and some related families. We hope that these are enough to get things like trapdoor permutations, but we have not yet reached the level of FHE/FE/SNARKS. 
+Our tests have primarily been on random circuits and related families, and
+the `xtrace` failure remains. Thus, we have not yet achieved the
+indistinguishability required for general iO. Our results concern progress
+on particular hiding and preimage tests. We hope that these ideas can give
+us things like trapdoor permutations, but we have not yet reached the level
+of fully homomorphic encryption, functional encryption, or succinct
+non-interactive arguments of knowledge.
 
-References {#references}
-==========
-R. Canetti, C. Chamon, E. Muccilio, A. Ruckenstein, *Towards
-general-purpose program-obfuscation via local mixing*, 2024.\
+<a id="references"></a>
+
+## References
+
+R. Canetti, C. Chamon, E. Mucciolo, A. Ruckenstein, *Towards
+general-purpose program-obfuscation via local mixing*.\
 <https://eprint.iacr.org/2024/006>
 
-G. V. Bard, *Algebraic Cryptanalysis*, Springer, 2009.\
+G. V. Bard, *Algebraic Cryptanalysis*, Springer.\
 <https://link.springer.com/book/10.1007/978-0-387-88757-9>

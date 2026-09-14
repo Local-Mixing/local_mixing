@@ -10,7 +10,7 @@ pub fn command() -> Command {
                 .long("config")
                 .value_name("PATH")
                 .value_parser(clap::value_parser!(PathBuf))
-                .help("TOML recipe (default: configs/gss.toml); existing marked Markdown recipes remain readable"),
+                .help("TOML recipe (default: configs/gss.toml)"),
         )
         .arg(
             Arg::new("dry_run")

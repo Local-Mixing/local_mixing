@@ -1,6 +1,4 @@
 //! G57 polynomial composition and canonical lookup preparation.
-#[cfg(feature = "legacy-tools")]
-use super::legacy_environment::bench_canon_enabled;
 use super::options::*;
 use super::{cache::*, canonicalize::*, keys::*, polynomial::*};
 use crate::circuit::{CircuitSeq, Permutation};
@@ -86,7 +84,7 @@ impl CircuitSeq {
         self.canonicalize_polys_single_using(reversed, None)
     }
 
-    /// Explicit limits, without environment reads or the process-wide legacy cache.
+    /// Explicit limits, without environment reads or the process-wide cache.
     /// The supplied options are independent between calls and between threads.
     pub fn canonicalize_polys_single_with_options(
         &self,
@@ -129,7 +127,7 @@ impl CircuitSeq {
         self.canonicalize_polys_single_hashed_using(reversed, None)
     }
 
-    /// Explicit limits, without environment reads or the process-wide legacy cache.
+    /// Explicit limits, without environment reads or the process-wide cache.
     /// The supplied options are independent between calls and between threads.
     pub fn canonicalize_polys_single_hashed_with_options(
         &self,
@@ -232,13 +230,6 @@ impl CircuitSeq {
             None => c.to_polynomial(n, 0, c.gates.len()),
         };
 
-        #[cfg(feature = "legacy-tools")]
-        let bench_polys = if options.is_none() && bench_canon_enabled() {
-            Some(polys.clone())
-        } else {
-            None
-        };
-
         let t4 = Instant::now();
         let canon = match canonicalize_polys_4_using(
             polys,
@@ -252,7 +243,6 @@ impl CircuitSeq {
             }
         };
         let canon_elapsed = t4.elapsed();
-        CANON4_CORE_TIME.fetch_add(canon_elapsed.as_nanos() as u64, Ordering::Relaxed);
         if trace_enabled(options.map(|value| &value.canonicalization))
             && canon_elapsed.as_millis()
                 >= trace_threshold_ms(options.map(|value| &value.canonicalization))
@@ -264,15 +254,6 @@ impl CircuitSeq {
                 used.len(),
                 canon_elapsed.as_millis()
             );
-        }
-
-        #[cfg(feature = "legacy-tools")]
-        if let Some(polys) = bench_polys {
-            let tp = Instant::now();
-            let perm = crate::experimental::poly_canon_graph::canonicalize_graph(&polys, n);
-            let _form = crate::experimental::poly_canon_graph::canonical_form(&polys, &perm);
-            POLYCANON_CORE_TIME.fetch_add(tp.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            CANON_BENCH_CALLS.fetch_add(1, Ordering::Relaxed);
         }
 
         // All cap exits return above, so the exact cache can contain only
@@ -315,7 +296,7 @@ impl CircuitSeq {
         self.canonicalize_polys_single_neg_using(negated_inputs, None)
     }
 
-    /// Input-negation canonicalization with explicit limits and no legacy cache.
+    /// Input-negation canonicalization with explicit limits and no shared cache.
     pub fn canonicalize_polys_single_neg_with_options(
         &self,
         negated_inputs: &[u16],

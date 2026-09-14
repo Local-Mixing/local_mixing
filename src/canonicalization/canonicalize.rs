@@ -1,5 +1,5 @@
 //! Deterministic polynomial ordering, bounded Rule-L search and counters.
-pub use super::legacy_environment::{canon_monomial_cap, canon_rule_l_branch_cap};
+pub use super::environment::{canon_monomial_cap, canon_rule_l_branch_cap};
 use super::options::*;
 use super::polynomial::*;
 use crate::circuit::Permutation;
@@ -7,9 +7,6 @@ use rustc_hash::FxHashSet as HashSet;
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-pub static CANON4_CORE_TIME: AtomicU64 = AtomicU64::new(0);
-pub static POLYCANON_CORE_TIME: AtomicU64 = AtomicU64::new(0);
-pub static CANON_BENCH_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_BRANCHES: AtomicU64 = AtomicU64::new(0);

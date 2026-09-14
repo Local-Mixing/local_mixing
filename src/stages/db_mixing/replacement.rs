@@ -1,9 +1,9 @@
 //! Frozen-store lookup for a single heterogeneous [`XGate`] window, used by the
-//! fmix DB contraction move (see [`crate::engine::mix`]).
+//! fmix DB contraction move (see [`crate::engine::mixer`]).
 //!
 //! A convex/contiguous window of arbitrary-width, mixed-polarity XGates is keyed
 //! by its exact function polynomial ([`crate::canonicalization::xgate`]) — identical to
-//! the legacy g57 key path, so one frozen store serves both — and looked up in
+//! the G57 key path, so one frozen store serves both — and looked up in
 //! the regular store. Stored friends are g57 circuits; strictly shorter ones are
 //! decoded back into XGates and one is returned at random.
 //!
@@ -15,12 +15,13 @@
 //! DB was built under. The caller may still verify each replacement for
 //! functional equivalence before splicing (optional; see the mixer's db_move).
 
+use crate::canonicalization::polys_repr_blob;
 use crate::canonicalization::xgate::{
     CanonicalXPolys, XPolyBudget, XPolyError, canonicalize_xgates_single,
     canonicalize_xgates_single_capped, xgates_to_polynomial,
 };
 use crate::circuit::xgate::XGate;
-use crate::circuit::{CircuitSeq, Permutation, polys_repr_blob};
+use crate::circuit::{CircuitSeq, Permutation};
 use crate::database::frozen::{FrozenDb, QcLookupLimit};
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -679,8 +680,8 @@ pub fn db_replace(
         rng,
         |key, want_curated| {
             // Every probe goes through the exact process-wide lookup cache
-            // (see security_tests/support/db_mixing/replace.rs): the store is immutable, so cached
-            // hits AND misses are byte-identical to raw probes.
+            // in database::lookup_cache: the store is immutable, so cached hits
+            // and misses are byte-identical to raw probes.
             use crate::database::lookup_cache::{
                 LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, cached_db_get,
             };
@@ -1077,9 +1078,8 @@ where
             Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
             Err(_) => {}
         }
-        // The regular store is keyed by min(canon_fwd, canon_rev) (see the
-        // MIN_DIR_LOOKUP note in security_tests/support/db_mixing/replace.rs): when both directions
-        // composed, the default Min mode probes only the min direction — the
+        // The regular store is keyed by min(canon_fwd, canon_rev). When both
+        // directions compose, the default Min mode probes only the min direction — the
         // non-min key can only exist if it equals the min key, so the candidate
         // set is unchanged. Legacy restores the historical probe-both cascade;
         // Validate probes the other direction on a miss and counts violations.
@@ -1269,7 +1269,7 @@ fn is_reorder(a: &[XGate], b: &[XGate]) -> bool {
 /// Experiment knob — composes with every mode (e.g. `--db-mode any` +
 /// band = uniform draw over the banded lengths).
 fn incoming_length_band(options: Option<&ReplacementOptions>) -> Option<(usize, usize)> {
-    options.map_or_else(super::legacy_environment::len_band, |options| {
+    options.map_or_else(super::environment::len_band, |options| {
         options.incoming_length_band
     })
 }

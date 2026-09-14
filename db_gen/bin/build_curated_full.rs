@@ -455,15 +455,15 @@ struct CyclicCompress {
 impl CyclicCompress {
     fn probe(
         identity: &CircuitSeq,
-        db: &local_mixing::db_mixing::frozen::FrozenDb,
-        budget: local_mixing::engine::xpoly::XPolyBudget,
+        db: &local_mixing::database::frozen::FrozenDb,
+        budget: local_mixing::canonicalization::xgate::XPolyBudget,
         num_wires: usize,
         rng: &mut rand::rngs::StdRng,
         probes: &mut u64,
     ) -> Self {
         use local_mixing::circuit::xgate::XGate;
-        use local_mixing::db_mixing::db_replace::{db_g57_to_xgate, db_probe};
-        use local_mixing::engine::rules::verify_rewrite;
+        use local_mixing::engine::moves::rules::verify_rewrite;
+        use local_mixing::stages::db_mixing::replacement::{db_g57_to_xgate, db_probe};
 
         let n = identity.gates.len();
         let gates: Vec<XGate> = identity.gates.iter().map(|&g| db_g57_to_xgate(g)).collect();
@@ -471,7 +471,7 @@ impl CyclicCompress {
         for start in 0..n {
             for len in 2..n {
                 let window: Vec<XGate> = (0..len).map(|i| gates[(start + i) % n].clone()).collect();
-                if local_mixing::engine::xpoly::xgate_used_wires(&window).len() > 30 {
+                if local_mixing::canonicalization::xgate::xgate_used_wires(&window).len() > 30 {
                     continue;
                 }
                 *probes += 1;
@@ -535,8 +535,8 @@ fn from_frozen_identities(
     let input = path_text(input)?.to_string();
     let output_db = Arc::new(DB::open(&composite_options(true), path_text(output)?)?);
     put_format_marker(&output_db)?;
-    let db = good_splits.then(|| local_mixing::db_mixing::frozen::FrozenDb::open(&input, None));
-    let budget = local_mixing::engine::xpoly::XPolyBudget::default();
+    let db = good_splits.then(|| local_mixing::database::frozen::FrozenDb::open(&input, None));
+    let budget = local_mixing::canonicalization::xgate::XPolyBudget::default();
 
     let classes = AtomicU64::new(0);
     let identities = AtomicU64::new(0);
@@ -559,7 +559,7 @@ fn from_frozen_identities(
             0x9d_00_00 ^ shard as u64,
         );
         let mut error: Option<AnyError> = None;
-        local_mixing::db_mixing::frozen::scan_shard(&input, shard, &mut |value| {
+        local_mixing::database::frozen::scan_shard(&input, shard, &mut |value| {
             if error.is_some() {
                 return;
             }
@@ -785,7 +785,7 @@ fn from_frozen_identities_v2(
     let shard_count = shards.clamp(1, 256);
     (0..shard_count).into_par_iter().try_for_each(|shard| -> AnyResult<()> {
         let mut error: Option<AnyError> = None;
-        local_mixing::db_mixing::frozen::scan_shard(&input_text, shard, &mut |value| {
+        local_mixing::database::frozen::scan_shard(&input_text, shard, &mut |value| {
             if error.is_some() {
                 return;
             }

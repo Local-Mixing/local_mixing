@@ -11,9 +11,9 @@
 //   fmix_stats --input cdcnot_m3000_sm50_fmix_s1.txt \
 //     --origins cdcnot_m3000_sm50_fmix_s1.origins.txt
 use clap::Parser;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format;
-use local_mixing::engine::mix::ORIGIN_SYNTH;
+use local_mixing::engine::mixer::ORIGIN_SYNTH;
 use local_mixing::engine::stats;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

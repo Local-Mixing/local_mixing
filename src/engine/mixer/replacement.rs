@@ -147,7 +147,7 @@ impl Mixer {
         // geometry-conditional length impossible to express, and it also let the
         // best-of-`litter_samples` selection compare windows drawn under
         // different geometries. One coin per round fixes both.
-        // Pair coin first (docs/NONLOCAL_PHASE_A.md), and only for non-COMP
+        // Pair coin first, and only for non-COMP
         // rounds: COMP admits only non-growing spellings, and with both bans
         // armed a commuting pair has no admissible same-length spelling, so a
         // COMP pair round could never splice. p_pair == 0 draws no RNG — the

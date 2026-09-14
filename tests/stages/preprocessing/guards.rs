@@ -43,11 +43,9 @@ fn nonlinear_guard_decomposition_preserves_every_slice_and_restores_scratch() {
     for seed in 0..4 {
         let mut wide_rng = StdRng::seed_from_u64(seed);
         let mut narrow_rng = StdRng::seed_from_u64(seed);
-        let wide =
-            try_nonlinear_slice_zero_preblock_dims(n, nondata, gates, false, 6, 7, &mut wide_rng)
-                .unwrap();
+        let wide = try_slice_zero_block_dims(n, 0, n, nondata, gates, &mut wide_rng).unwrap();
         let narrow =
-            try_nonlinear_slice_zero_preblock_dims(n, nondata, gates, true, 6, 7, &mut narrow_rng)
+            try_nonlinear_slice_zero_preblock_dims(n, nondata, gates, 6, 7, &mut narrow_rng)
                 .unwrap();
         assert!(narrow.gates.iter().all(|gate| gate.ctrls.len() <= 2));
         for state in 0..1 << (n + nondata) {
@@ -63,27 +61,15 @@ fn nonlinear_guard_decomposition_preserves_every_slice_and_restores_scratch() {
 }
 
 #[test]
-fn nonlinear_preblock_weight2_decomposition_is_exact_and_bounded() {
+fn nonlinear_preblock_fan_in_two_preserves_zero_slice_and_dirty_auxiliaries() {
     let (n, nondata, logical_gates) = (8usize, 20usize, 200usize);
     let scratch = n as u16;
     let scratch2 = (n + 1) as u16;
-    let mut wide_rng = StdRng::seed_from_u64(0xcc88_0001);
-    let wide = try_nonlinear_slice_zero_preblock_dims(
-        n,
-        nondata,
-        logical_gates,
-        false,
-        scratch,
-        scratch2,
-        &mut wide_rng,
-    )
-    .unwrap();
     let mut weight2_rng = StdRng::seed_from_u64(0xcc88_0001);
     let weight2 = try_nonlinear_slice_zero_preblock_dims(
         n,
         nondata,
         logical_gates,
-        true,
         scratch,
         scratch2,
         &mut weight2_rng,
@@ -91,32 +77,24 @@ fn nonlinear_preblock_weight2_decomposition_is_exact_and_bounded() {
     .unwrap();
 
     let quads = (logical_gates - logical_gates / 3) / 2;
-    assert_eq!(wide.gates.len(), logical_gates);
     assert_eq!(weight2.gates.len(), logical_gates + 3 * quads);
     assert!(weight2.gates.iter().all(|gate| gate.ctrls.len() <= 2));
-    assert_eq!(wide.num_wires, n + nondata);
     assert_eq!(weight2.num_wires, n + nondata);
 
     for input in 0..(1u64 << n) {
-        assert_eq!(eval_u64(&wide.gates, input), input);
         assert_eq!(eval_u64(&weight2.gates, input), input);
     }
 
     let mut state_rng = StdRng::seed_from_u64(0xcc88_0002);
     let state_mask = (1u64 << (n + nondata)) - 1;
-    let dirty_q_mask = (1u64 << scratch) | (1u64 << scratch2);
+    let auxiliary_mask = state_mask ^ ((1u64 << n) - 1);
     for _ in 0..512 {
         let state = rand::RngCore::next_u64(&mut state_rng) & state_mask;
         let decomposed = eval_u64(&weight2.gates, state);
         assert_eq!(
-            decomposed,
-            eval_u64(&wide.gates, state),
-            "dirty-q decomposition changed the preblock function"
-        );
-        assert_eq!(
-            decomposed & dirty_q_mask,
-            state & dirty_q_mask,
-            "dirty-q decomposition did not restore its scratch wires"
+            decomposed & auxiliary_mask,
+            state & auxiliary_mask,
+            "preblock did not restore its auxiliary wires"
         );
     }
 }

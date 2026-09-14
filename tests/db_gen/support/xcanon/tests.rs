@@ -1,6 +1,6 @@
 use super::*;
+use crate::canonicalization::xgate::{XPolyBudget, xgates_to_polynomial};
 use crate::circuit::CircuitSeq;
-use crate::engine::xpoly::{XPolyBudget, xgates_to_polynomial};
 
 struct Lcg(u64);
 impl Lcg {

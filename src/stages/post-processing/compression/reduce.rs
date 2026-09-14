@@ -498,7 +498,7 @@ pub(super) fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits
 // table (n <= 4), greedy subcube cover + maximum matching, matching alone.
 // Depends on nothing but (support, monomials), so it is a function of the
 // activation function: applied to a packed ANF gate it yields one
-// compacted spelling per function (postprocessing::compress::compact).
+// compacted spelling per function (stages::post_processing::compression::compact).
 // Returns (cubes, parity_delta, exact_used).
 pub(super) fn esop_from_monomials(support: &[u16], monos: &[u64]) -> (Vec<Lits>, bool, bool) {
     let n = support.len();

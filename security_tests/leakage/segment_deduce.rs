@@ -23,8 +23,8 @@
 //!   segment_deduce --source <c.mpmct1> --pred <p.mpmct1> [--pred-cuts K]
 //!                  [--samples N] [--degree 1|2] [--pred-wires W]
 //!                  [--source-mode segments|cuts] [--source-cuts K] [--csv out.csv]
+use local_mixing::circuit::formats::read_mpmct;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::read_mpmct;
 use std::io::Write;
 use std::time::Instant;
 

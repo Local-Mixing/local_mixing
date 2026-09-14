@@ -11,13 +11,9 @@
 //!   <prefix>.targets.bin  bit-packed columns: per source gate (a, b, c_old,
 //!                         f, c_new), plus a trailing NULL random column
 //!
-//! Gadget arms (the unified ladder, weakest to strongest):
+//! Gadget arms:
 //!   none  — G = C verbatim (positive control: every attack must fire)
-//!   ss    — paired secret-share  w = s ⊕ r   (gadgetize_xgates, masks/prod off)
-//!   semi  — single-carrier product-share  V = C ⊕ M(B) ⊕ κ, Gray fold
-//!           (gadgetize_xgates_single, ProdConfig::production_single(); "band"
-//!           accepted as an alias)
-//!   bv5   — blinded-V5 LGI compute (gadgetize_blinded_v5, production preset:
+//!   bv5   — quadratic-masking LGI compute (current production preset:
 //!           K=2, max_open=3, quad-fire, auto burst rerand) with ENCODED I/O:
 //!           the data wires enter and leave the trace under pre-opened masks
 //!           (the encode/decode LGI gates are applied out of band, never
@@ -42,19 +38,19 @@
 //! are zero (`--aux zero`, the hmap_affine convention) or random (`--aux random`).
 
 use clap::Parser;
+use local_mixing::circuit::Circuit;
+use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format::{read_mpmct, write_mpmct};
-use local_mixing::engine::mix::{MixParams, MixStop, Mixer};
-use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5};
-use local_mixing::preprocessing::gadgets::{
-    CnotCircuit, MaskConfig, ProdConfig, gadgetize_xgates, gadgetize_xgates_single,
+use local_mixing::engine::mixer::{MixParams, MixStop, Mixer};
+use local_mixing::stages::preprocessing::quadratic_masking::{
+    QuadraticMaskingParams, preprocess_quadratic_masking,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 
 #[derive(Parser)]
 struct Args {
-    /// none | ss | semi | band | bv5 | bv5bal | file
+    /// none | bv5 | bv5bal | file
     #[arg(long)]
     gadget: String,
     /// band wires for the bv5 arms (0 = auto = max(32, n))
@@ -223,7 +219,6 @@ fn main() {
     assert_eq!(cn, args.n, "--n must match the chain's wire count");
 
     // ---------------- gadgetize ----------------
-    let mut grng = StdRng::seed_from_u64(args.gadget_seed);
     let mut file_header: Option<(usize, usize)> = None;
     // bv5 arms: the off-trace encode (pre) and decode (post) LGI gates
     let mut bv5_io: Option<(Vec<XGate>, Vec<XGate>)> = None;
@@ -238,39 +233,18 @@ fn main() {
         std::process::exit(2);
     }
     let gcirc = match args.gadget.as_str() {
-        "none" => CnotCircuit {
+        "none" => Circuit {
             gates: source.clone(),
             num_wires: args.n,
         },
-        "ss" => gadgetize_xgates(
-            &source,
-            args.n,
-            2,
-            &MaskConfig::off(),
-            &ProdConfig::off(),
-            &mut grng,
-        ),
-        "semi" | "band" => gadgetize_xgates_single(
-            &source,
-            args.n,
-            2,
-            &ProdConfig {
-                // band=8 (the band=n default at n=8) exhausts its slot space at
-                // ~13 gates (560 slots vs 45 masks/gate); band=16 gives headroom
-                // for the k=16 chain. Everything else = production_single().
-                band: 16,
-                ..ProdConfig::production_single()
-            },
-            &mut grng,
-        ),
         "bv5" | "bv5bal" => {
             let r = if args.bv5_band == 0 {
                 args.n.max(32)
             } else {
                 args.bv5_band
             };
-            let base = BlindedV5Params::production(args.gadget_seed);
-            let p = BlindedV5Params {
+            let base = QuadraticMaskingParams::production(args.gadget_seed);
+            let p = QuadraticMaskingParams {
                 r,
                 balanced: args.gadget == "bv5bal",
                 encoded_io: true,
@@ -282,9 +256,9 @@ fn main() {
                 ..base
             };
             bv5_max_open = p.max_open;
-            let o = gadgetize_blinded_v5(&source, args.n, &p);
+            let o = preprocess_quadratic_masking(&source, args.n, &p);
             println!(
-                "[{}] blinded-v5 K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
+                "[{}] quadratic-masking K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
                 args.gadget,
                 p.k,
                 p.max_open,
@@ -297,7 +271,7 @@ fn main() {
             );
             bv5_scratch = o.scratch_wires;
             bv5_io = Some((o.pre_gates, o.post_gates));
-            CnotCircuit {
+            Circuit {
                 gates: o.gates,
                 num_wires: o.num_wires,
             }
@@ -309,7 +283,7 @@ fn main() {
             });
             let (gates, gw) = read_mpmct(path).expect("read gadgetized circuit");
             file_header = Some((gw, gates.len()));
-            CnotCircuit {
+            Circuit {
                 gates,
                 num_wires: gw,
             }
@@ -652,8 +626,8 @@ fn main() {
     let (flips, newvals) = simulate(&gates, &mut state, samples);
 
     // ---------------- behavioral check ----------------
-    // Rust-native gadgets: the logical value sits on wire v at the end (ss:
-    // w = s⊕r verbatim; semi retires clean) -- compare directly.  File mode:
+    // Rust-native gadgets: decode any off-trace output masks, then compare
+    // each logical wire with the source circuit. File mode:
     // decode each logical wire from the buildmeta recipe (10 wires =
     // E(P1)^E(P2)) on the FINAL state -- a genuine end-to-end check of the
     // (possibly mixed) circuit.

@@ -13,9 +13,9 @@ use lmdb::Transaction;
 #[allow(dead_code)] // This fixture uses the writer/validator subset of the offline builder.
 mod frozen_build;
 use frozen_build::{LmdbShards, stage_tables, stage_validate, stage_write};
-#[cfg(feature = "legacy-db-tools")]
+use local_mixing::database::frozen::FrozenDb;
+#[cfg(feature = "db-tools")]
 use local_mixing::db_generation;
-use local_mixing::db_mixing::frozen::FrozenDb;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -40,6 +40,68 @@ fn synth_value(rng: &mut StdRng) -> Vec<u8> {
         }
     }
     value
+}
+
+#[cfg(feature = "db-tools")]
+#[test]
+fn rocksdb_bands_merge_keys_and_deduplicate_candidates_within_the_shard() {
+    use frozen_build::{MultiBandShards, ShardReader};
+
+    let base = std::env::temp_dir().join(format!("frozen_multiband_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let key = |shard, tail| {
+        let mut key = [0u8; 16];
+        key[0] = shard;
+        key[15] = tail;
+        key
+    };
+    let first = vec![3, 0, 1, 2];
+    let second = vec![3, 2, 1, 0];
+    let repeated: Vec<u8> = first.iter().chain(&first).copied().collect();
+    let combined: Vec<u8> = first.iter().chain(&second).copied().collect();
+    let bands = [
+        vec![
+            (key(0x20, 1), first.clone()),
+            (key(0x21, 1), repeated),
+            (key(0x21, 3), second.clone()),
+        ],
+        vec![
+            (key(0x21, 1), combined.clone()),
+            (key(0x21, 2), first.clone()),
+            (key(0x22, 1), second.clone()),
+        ],
+        Vec::new(),
+    ];
+    let mut paths = Vec::new();
+    for (index, records) in bands.iter().enumerate() {
+        let path = base.join(index.to_string());
+        let db = rocksdb::DB::open_default(&path).unwrap();
+        for (key, value) in records {
+            db.put(key, value).unwrap();
+        }
+        db.flush().unwrap();
+        drop(db);
+        paths.push(path.to_str().unwrap().to_owned());
+    }
+    let source = MultiBandShards::open(&paths);
+    let collect = |shard, limit| {
+        let mut entries = Vec::new();
+        source.for_each_entry(shard, limit, &mut |key, value| {
+            entries.push((key.to_vec(), value.to_vec()));
+        });
+        entries
+    };
+    let expected = vec![
+        (key(0x21, 1).to_vec(), combined),
+        (key(0x21, 2).to_vec(), first),
+        (key(0x21, 3).to_vec(), second),
+    ];
+    assert_eq!(collect(0x21, None), expected);
+    assert_eq!(collect(0x21, Some(1)), expected[..1]);
+    assert!(collect(0x23, None).is_empty());
+    drop(source);
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 #[test]
@@ -112,7 +174,7 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
     // --- scan_shard's sequential walk sees exactly the stored values ---
     let mut walked: Vec<Vec<u8>> = Vec::new();
     for s in 0..256 {
-        local_mixing::db_mixing::frozen::scan_shard(od, s, &mut |v: &[u8]| walked.push(v.to_vec()));
+        local_mixing::database::frozen::scan_shard(od, s, &mut |v: &[u8]| walked.push(v.to_vec()));
     }
     let mut want: Vec<Vec<u8>> = entries.iter().map(|(_, v)| v.clone()).collect();
     walked.sort();

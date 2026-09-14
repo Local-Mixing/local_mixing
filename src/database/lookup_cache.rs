@@ -1,7 +1,7 @@
 //! Shared immutable-store cache and canonical lookup direction policy.
 
-use super::legacy_environment::lookup_cache_cap_bytes;
-pub(crate) use super::legacy_environment::min_dir_lookup_mode;
+use super::environment::lookup_cache_cap_bytes;
+pub(crate) use super::environment::min_dir_lookup_mode;
 use crate::database::frozen::FrozenDb;
 use dashmap::DashMap;
 use std::sync::OnceLock;

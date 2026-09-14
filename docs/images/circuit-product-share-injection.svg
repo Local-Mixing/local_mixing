@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="430" viewBox="0 0 1000 430" role="img" aria-labelledby="title desc">
+<title id="title">Product-share mask injection</title><desc id="desc">The four terms of the toy mask are XORed directly into C1: B1 B2, not B1 times B3, B2 times not B4, and B1 times not B3 times B4. The final cubic term is a logical fragment that can be decomposed with a dirty helper.</desc>
+<rect width="1000" height="430" rx="12" fill="white"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#586979"/></marker></defs>
+<text x="28" y="34" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600">Product-share mask injection</text>
+<text x="129" y="116" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B₁</text>
+<line x1="145" y1="110" x2="845" y2="110" stroke="#8593a0" stroke-width="1.8"/>
+<text x="129" y="168" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B₂</text>
+<line x1="145" y1="162" x2="845" y2="162" stroke="#8593a0" stroke-width="1.8"/>
+<text x="129" y="220" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B₃</text>
+<line x1="145" y1="214" x2="845" y2="214" stroke="#8593a0" stroke-width="1.8"/>
+<text x="129" y="272" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B₄</text>
+<line x1="145" y1="266" x2="845" y2="266" stroke="#8593a0" stroke-width="1.8"/>
+<text x="129" y="336" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">C₁ = V₁</text>
+<line x1="145" y1="330" x2="845" y2="330" stroke="#8593a0" stroke-width="1.8"/>
+<line x1="245" y1="110" x2="245" y2="330" stroke="#183042" stroke-width="1.8"/>
+<circle cx="245" cy="110" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="245" cy="162" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="245" cy="330" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="235" y1="330" x2="255" y2="330" stroke="#183042" stroke-width="1.8"/>
+<line x1="245" y1="320" x2="245" y2="340" stroke="#183042" stroke-width="1.8"/>
+<line x1="415" y1="110" x2="415" y2="330" stroke="#183042" stroke-width="1.8"/>
+<circle cx="415" cy="110" r="5" fill="white" stroke="#183042" stroke-width="1.7"/>
+<circle cx="415" cy="214" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="415" cy="330" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="405" y1="330" x2="425" y2="330" stroke="#183042" stroke-width="1.8"/>
+<line x1="415" y1="320" x2="415" y2="340" stroke="#183042" stroke-width="1.8"/>
+<line x1="585" y1="162" x2="585" y2="330" stroke="#183042" stroke-width="1.8"/>
+<circle cx="585" cy="162" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="585" cy="266" r="5" fill="white" stroke="#183042" stroke-width="1.7"/>
+<circle cx="585" cy="330" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="575" y1="330" x2="595" y2="330" stroke="#183042" stroke-width="1.8"/>
+<line x1="585" y1="320" x2="585" y2="340" stroke="#183042" stroke-width="1.8"/>
+<line x1="755" y1="110" x2="755" y2="330" stroke="#183042" stroke-width="1.8"/>
+<circle cx="755" cy="110" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="755" cy="214" r="5" fill="white" stroke="#183042" stroke-width="1.7"/>
+<circle cx="755" cy="266" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="755" cy="330" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="745" y1="330" x2="765" y2="330" stroke="#183042" stroke-width="1.8"/>
+<line x1="755" y1="320" x2="755" y2="340" stroke="#183042" stroke-width="1.8"/>
+<text x="245" y="79" fill="#183042" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17">B₁B₂</text>
+<text x="415" y="79" fill="#183042" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17">(¬B₁)B₃</text>
+<text x="585" y="79" fill="#183042" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17">B₂(¬B₄)</text>
+<text x="755" y="79" fill="#183042" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17">B₁(¬B₃)B₄</text>
+<text x="860" y="336" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="18">V₁ ⊕ M₁</text>
+<text x="28" y="382" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">Each term goes straight into the carrier; M₁ is never gathered on a separate clean wire.</text>
+<text x="28" y="410" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="15">Logical fragments shown here. The cubic fragment can be lowered with a dirty helper; κ₁ is omitted.</text>
+</svg>

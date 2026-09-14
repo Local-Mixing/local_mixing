@@ -1,23 +1,23 @@
-//! Standalone driver for the blinded-V5 computation-stage gadgetizer
-//! (see `local_mixing::preprocessing::blinded_v5`). Reads an mpmct1 source A,
+//! Standalone driver for the quadratic-masking computation-stage gadgetizer
+//! (see `local_mixing::stages::preprocessing::quadratic_masking`). Reads an mpmct1 source A,
 //! gadgetizes it, writes the result. The same gadgetizer is wired into
-//! `gen_sandwich_gadget` as the `blinded-v5` mode with the production preset.
+//! `gen_sandwich_gadget` as the `quadratic-masking` mode with the production preset.
 //!
-//! Usage: blinded_v5_gadgetize <src.mpmct1> <out.mpmct1> [K=2] [R=0(auto=n)]
+//! Usage: quadratic_masking_gadgetize <src.mpmct1> <out.mpmct1> [K=2] [R=0(auto=n)]
 //!            [seed=1] [rerand_level=0(auto=m/4k slots)] [max_open=3]
 //!            [active_wires=0] [extra_lgis=2] [rerand_repair=0] [rerand_burst=0(auto=8k)]
 //!            [min_mask=0(auto=max_open)]
 
-use local_mixing::engine::format::{read_mpmct, write_mpmct};
-use local_mixing::preprocessing::blinded_v5::{
-    BlindedV5Params, gadgetize_blinded_v5, seed_band_mode,
+use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
+use local_mixing::stages::preprocessing::quadratic_masking::{
+    QuadraticMaskingParams, preprocess_quadratic_masking, seed_band_mode,
 };
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 3 {
         eprintln!(
-            "usage: blinded_v5_gadgetize <src> <out> [K=2] [R=0(auto=n)] [seed=1] \
+            "usage: quadratic_masking_gadgetize <src> <out> [K=2] [R=0(auto=n)] [seed=1] \
              [rerand_level=0(auto=m/4k slots)] [max_open=3] \
              [active_wires=0(all; set to n for a 2n-wire zero-slice sandwich)] \
              [extra_lgis=2] [rerand_repair=0] [rerand_burst=0(auto=8k)] \
@@ -39,7 +39,7 @@ fn main() {
     let min_mask: usize = a.get(12).map(|s| s.parse().unwrap()).unwrap_or(0);
 
     let (src, np) = read_mpmct(src_path).expect("read source");
-    let params = BlindedV5Params {
+    let params = QuadraticMaskingParams {
         k,
         r,
         seed,
@@ -59,7 +59,7 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(2),
     };
-    let g = gadgetize_blinded_v5(&src, np, &params);
+    let g = preprocess_quadratic_masking(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).
     let r_used = if params.r == 0 { np } else { params.r };
     // Modules 2 and 4: band seed BEFORE the compute and re-seed AFTER it. The

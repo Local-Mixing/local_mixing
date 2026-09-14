@@ -6,6 +6,3 @@ pub struct Circuit {
     pub gates: Vec<XGate>,
     pub num_wires: usize,
 }
-
-/// Historical name retained for callers; the tape supports general X gates.
-pub use Circuit as CnotCircuit;

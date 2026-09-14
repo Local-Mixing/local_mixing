@@ -14,7 +14,7 @@
 //! frozen_class_census FROZEN_DIR [--shards N]
 //! ```
 
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 
 const MAX_CLASS: usize = 4096;
 

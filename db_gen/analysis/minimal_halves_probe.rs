@@ -20,13 +20,13 @@
 //! minimal_halves_probe FROZEN_REGULAR_DIR [--shards N] [--wires W]
 //! ```
 
+use local_mixing::canonicalization::xgate::XPolyBudget;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::cancel_adjacent_duplicates;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::db_mixing::db_replace::{db_g57_to_xgate, db_probe};
-use local_mixing::db_mixing::frozen::{FrozenDb, scan_shard};
-use local_mixing::engine::rules::verify_rewrite;
-use local_mixing::engine::xpoly::XPolyBudget;
+use local_mixing::database::frozen::{FrozenDb, scan_shard};
+use local_mixing::engine::moves::rules::verify_rewrite;
+use local_mixing::stages::db_mixing::replacement::{db_g57_to_xgate, db_probe};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rayon::prelude::*;
@@ -78,7 +78,7 @@ fn has_shorter_window(
     for len in 2..=hi.min(n) {
         for at in 0..=(n - len) {
             let window = &gates[at..at + len];
-            if local_mixing::engine::xpoly::xgate_used_wires(window).len() > 30 {
+            if local_mixing::canonicalization::xgate::xgate_used_wires(window).len() > 30 {
                 continue;
             }
             *probes += 1;

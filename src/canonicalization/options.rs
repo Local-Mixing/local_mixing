@@ -1,5 +1,5 @@
 //! Explicit options for reusable canonicalization computations.
-use super::legacy_environment;
+use super::environment;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CanonicalizationOptions {
@@ -17,17 +17,16 @@ pub struct G57CanonicalizationOptions {
     pub canonicalization: CanonicalizationOptions,
 }
 
-// The Option selects only the compatibility adapter; explicit callers always
-// supply Some. Keep the legacy trace threshold lazy until tracing is enabled.
+// None selects the process environment; explicit callers supply Some. Read the
+// environment trace threshold lazily, only when tracing is enabled.
 pub(super) fn trace_enabled(options: Option<&CanonicalizationOptions>) -> bool {
-    options.map_or_else(legacy_environment::compression_trace_enabled, |value| {
+    options.map_or_else(environment::compression_trace_enabled, |value| {
         value.trace_threshold_ms.is_some()
     })
 }
 
 pub(super) fn trace_threshold_ms(options: Option<&CanonicalizationOptions>) -> u128 {
-    options.map_or_else(
-        legacy_environment::compression_trace_threshold_ms,
-        |value| value.trace_threshold_ms.unwrap_or(u128::MAX),
-    )
+    options.map_or_else(environment::compression_trace_threshold_ms, |value| {
+        value.trace_threshold_ms.unwrap_or(u128::MAX)
+    })
 }

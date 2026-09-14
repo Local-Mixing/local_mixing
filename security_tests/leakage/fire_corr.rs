@@ -17,8 +17,8 @@
 //! segments and over increments, with the arg-max G gate, wire and position),
 //! <out>.grid.csv (max |phi| by C-gate decile x G-position decile).
 use clap::Parser;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use rayon::prelude::*;
 use std::io::Write;
 use std::time::Instant;

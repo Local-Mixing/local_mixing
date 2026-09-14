@@ -17,9 +17,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 mod checkpoint;
+mod environment;
 mod indices;
 mod leakage_repair;
-mod legacy_environment;
 mod params;
 mod piecewise;
 mod provenance;

@@ -4,4 +4,4 @@ pub mod frozen;
 pub mod lookup_cache;
 pub mod validation;
 
-mod legacy_environment;
+mod environment;

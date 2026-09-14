@@ -6,7 +6,7 @@
 //
 // Nothing here mutates a circuit or consumes the mixing chain's RNG; callers
 // that need sampling pass their own (metrics-only) RNG.
-use super::mix::ORIGIN_SYNTH;
+use super::mixer::ORIGIN_SYNTH;
 use crate::circuit::xgate::XGate;
 use rand::Rng;
 

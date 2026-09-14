@@ -6,8 +6,8 @@ representation we want to mix. The next three change its local structure, and
 the last step removes redundancy and packs the circuit.
 
 ```text
-C → sliced sandwich → gadgetization → DB mixing → splitting → crossing → final.esop1
-        step 1           step 2         step 3       step 4      step 5       step 6
+C → sliced sandwich → gadgetization → DB mixing → splitting → crossing → compress and pack → final.esop1
+        step 1           step 2         step 3       step 4      step 5         step 6           output
 ```
 
 This is a guide to the current code. For commands and configuration, start
@@ -59,13 +59,13 @@ the public slice on which we ask it to reproduce the source computation.
 
 Start at `preprocess_sandwich` in
 [src/stages/preprocessing/construct.rs](../src/stages/preprocessing/construct.rs).
-The masking and shuffles are in
+The masking, band seed blocks and shuffles are in
 [quadratic_masking.rs](../src/stages/preprocessing/quadratic_masking.rs);
-the guard and seed blocks are in
+the slice guards are in
 [slice_guards.rs](../src/stages/preprocessing/slice_guards.rs).
 [verify.rs](../src/stages/preprocessing/verify.rs) checks the promised outputs.
 The optional `nonlinear291` mode has its own adapter in the same directory.
-See [gadgetization](GADGETIZATION.md) for the mask and shuffle construction.
+See [gadgetization](gadgetization.md) for the mask and shuffle construction.
 
 The generator's command handling is in
 [src/programs/gen_sandwich_gadget.rs](../src/programs/gen_sandwich_gadget.rs).
@@ -84,16 +84,16 @@ final shrinking leg in this GSS stage. Optional leakage repair runs here too.
 The output is `db_mixing.mpmct1`, with `db_mixing.state` and `stage3.log`.
 
 Start with [src/programs/fmix/mod.rs](../src/programs/fmix/mod.rs) for how the
-mode is selected. Follow the mixer loop in
-[src/engine/mixer/runtime.rs](../src/engine/mixer/runtime.rs).
+mode is selected. Follow `Mixer::run` in
+[src/engine/mixer/scheduling.rs](../src/engine/mixer/scheduling.rs).
 [src/engine/mixer/replacement.rs](../src/engine/mixer/replacement.rs) samples,
 verifies and splices the replacement; it calls
 [src/stages/db_mixing/replacement.rs](../src/stages/db_mixing/replacement.rs)
 for lookup and candidate selection.
 [src/canonicalization/](../src/canonicalization/) builds the keys;
 [src/database/](../src/database/) reads and decodes the stored values. The
-[frozen DB](FROZEN_DATABASE.md) and
-[canonicalization](POLYNOMIAL_CANONICALIZATION.md) guides explain these parts.
+[frozen DB](frozen_database.md) and
+[canonicalization](polynomial_canonicalization.md) guides explain these parts.
 
 ## 4. Split the remaining complemented gates
 
@@ -158,6 +158,11 @@ readers/writers are in [src/circuit/formats.rs](../src/circuit/formats.rs).
 The mutable gate tape used by `fmix` is in
 [src/engine/arena.rs](../src/engine/arena.rs). Mixer state, sampling, checkpoint
 I/O, and reporting live together in [src/engine/mixer/](../src/engine/mixer/).
+
+Use these current module paths directly. The old top-level `preprocessing`,
+`db_mixing` and `postprocessing` wrappers have been removed. Files named
+`environment.rs` read settings that the current GSS driver pins for the run;
+they still support the current cache and mixing behavior.
 
 Stages 3–4 can run on contiguous pieces in parallel; the coordinator is
 [piecewise.rs](../src/engine/mixer/piecewise.rs). Correctness checks live in

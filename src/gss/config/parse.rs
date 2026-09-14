@@ -1,139 +1,34 @@
-//! Read TOML and historical Markdown, normalizing aliases before validation.
+//! Read the current TOML recipe, normalizing supported aliases before validation.
 use super::*;
 
-pub(crate) fn parse_markdown(document: &str) -> Result<RawConfig, String> {
-    let lines: Vec<&str> = document.lines().collect();
-    let begins: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| (line.trim() == CONFIG_BEGIN).then_some(index))
-        .collect();
-    let ends: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| (line.trim() == CONFIG_END).then_some(index))
-        .collect();
-
-    if begins.len() != 1 || ends.len() != 1 {
-        return Err(format!(
-            "expected exactly one {CONFIG_BEGIN} / {CONFIG_END} pair; found {} begin marker(s) and {} end marker(s)",
-            begins.len(),
-            ends.len()
-        ));
-    }
-    let (begin, end) = (begins[0], ends[0]);
-    if begin >= end {
-        return Err(format!("{CONFIG_BEGIN} must occur before {CONFIG_END}"));
-    }
-
-    let region = &lines[begin + 1..end];
-    let nonblank: Vec<usize> = region
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| (!line.trim().is_empty()).then_some(index))
-        .collect();
-    let Some((&fence_start, rest)) = nonblank.split_first() else {
-        return Err(format!("line {}: config block is empty", begin + 2));
-    };
-    let Some(&fence_end) = rest.last() else {
-        return Err(format!(
-            "line {}: config block needs an opening ```ini fence and a closing ``` fence",
-            begin + fence_start + 2
-        ));
-    };
-    if region[fence_start].trim() != "```ini" {
-        return Err(format!(
-            "line {}: expected opening ```ini fence",
-            begin + fence_start + 2
-        ));
-    }
-    if region[fence_end].trim() != "```" {
-        return Err(format!(
-            "line {}: expected closing ``` fence",
-            begin + fence_end + 2
-        ));
-    }
-    for (index, line) in region.iter().enumerate() {
-        if index < fence_start || index > fence_end {
-            if !line.trim().is_empty() {
-                return Err(format!(
-                    "line {}: only the fenced config may appear between the markers",
-                    begin + index + 2
-                ));
-            }
-        }
-    }
-
-    let mut config = RawConfig {
-        legacy_markdown: true,
-        ..RawConfig::default()
-    };
-    for (index, line) in region
-        .iter()
-        .enumerate()
-        .take(fence_end)
-        .skip(fence_start + 1)
-    {
-        let line_number = begin + index + 2;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if trimmed.starts_with("```") {
-            return Err(format!(
-                "line {line_number}: nested Markdown fences are not allowed in the config"
-            ));
-        }
-        let Some((raw_key, raw_value)) = trimmed.split_once('=') else {
-            return Err(format!(
-                "line {line_number}: expected `key = value`, got {trimmed:?}"
-            ));
-        };
-        let key = raw_key.trim();
-        let value = raw_value.trim();
-        if !KNOWN_KEYS.contains(&key) {
-            return Err(format!(
-                "line {line_number}: unknown GSS config key {key:?}"
-            ));
-        }
-        if config.entries.contains_key(key) {
-            let first = config.entries[key].line;
-            return Err(format!(
-                "line {line_number}: duplicate GSS config key {key:?} (first set on line {first})"
-            ));
-        }
-        if value.chars().any(char::is_control) {
-            return Err(format!(
-                "line {line_number}: control characters are not allowed in config values"
-            ));
-        }
-        if value.contains(['\'', '"']) {
-            return Err(format!(
-                "line {line_number}: values are literal and must not be quoted"
-            ));
-        }
-        config.entries.insert(
-            key.to_owned(),
-            ConfigEntry {
-                value: (!value.is_empty()).then(|| value.to_owned()),
-                line: line_number,
-            },
-        );
-    }
-    Ok(config)
-}
-
-/// Read the current TOML recipe, or an explicitly supplied older Markdown recipe.
 pub(crate) fn parse_config(document: &str) -> Result<RawConfig, String> {
-    if document.contains(CONFIG_BEGIN) || document.contains(CONFIG_END) {
-        return parse_markdown(document);
+    if document.contains("<!-- GSS_MIX_CONFIG_BEGIN -->")
+        || document.contains("<!-- GSS_MIX_CONFIG_END -->")
+    {
+        return Err("Markdown GSS recipes have been retired; use a TOML recipe based on configs/gss.example.toml".into());
     }
     parse_toml(document)
 }
 
+pub(crate) fn parse_preprocessing_mode(raw: &RawConfig) -> Result<PreprocessingMode, String> {
+    let value = raw
+        .value("gadgetization_mode")
+        .unwrap_or("quadratic-masking");
+    if let Some(mode) = PreprocessingMode::parse(value) {
+        return Ok(mode);
+    }
+    let message = match value {
+        "product-2223" | "2223" | "nonlinear193" => format!(
+            "{value} has been retired from GSS; preprocessing.mode must be quadratic-masking or nonlinear291"
+        ),
+        other => format!("expected quadratic-masking or nonlinear291; got {other:?}"),
+    };
+    Err(config_error(raw, "gadgetization_mode", &message))
+}
+
 // Canonical TOML name, compatibility spelling, internal recipe key, value type.
-// Internal keys remain stable so historical Markdown recipes and manifests keep
-// their meaning. Public names are resolved here before value validation.
+// Internal keys remain stable to preserve saved-run manifest identity.
+// Public names are resolved here before value validation.
 pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
     ("run.directory", "run.directory", "run_dir", "string"),
     (

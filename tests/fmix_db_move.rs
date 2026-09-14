@@ -12,14 +12,14 @@ use lmdb::Transaction;
 #[allow(dead_code)] // This fixture uses the writer/validator subset of the offline builder.
 mod frozen_build;
 use frozen_build::{LmdbShards, stage_tables, stage_validate, stage_write};
-use local_mixing::circuit::polys_repr_blob;
+use local_mixing::canonicalization::polys_repr_blob;
+use local_mixing::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
 use local_mixing::circuit::xgate::{XGate, eval_lanes};
-#[cfg(feature = "legacy-db-tools")]
+use local_mixing::database::frozen::FrozenDb;
+#[cfg(feature = "db-tools")]
 use local_mixing::db_generation;
-use local_mixing::db_mixing::db_replace::DbMode;
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::mix::{MixParams, MixStop, Mixer, PieceCfg, run_piecewise};
-use local_mixing::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+use local_mixing::engine::mixer::{MixParams, MixStop, Mixer, PieceCfg, run_piecewise};
+use local_mixing::stages::db_mixing::replacement::DbMode;
 use xxhash_rust::xxh3::xxh3_128;
 
 fn key_of(window: &[XGate], reversed: bool) -> [u8; 16] {

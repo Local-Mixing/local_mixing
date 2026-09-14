@@ -8,7 +8,7 @@ only by the names of their wires to share an entry.
 We do this in two parts. First, we write the function of each output wire as a
 polynomial in the input wires. Then we choose a canonical labeling of those
 wires. The resulting polynomial list is what we hash for the
-[frozen database](FROZEN_DATABASE.md).
+[frozen database](frozen_database.md).
 
 ## Writing a circuit as polynomials
 
@@ -156,7 +156,7 @@ output negations, affine changes of basis, or internal shuffles. The legacy
 $x_w\leftarrow x_w+1$ for specified pending input NOTs. That is a requested
 change to the function being keyed, rather than a search over every possible
 negation. Likewise, the shuffles in
-[gadgetization](GADGETIZATION.md) are actual circuit operations, not labels
+[gadgetization](gadgetization.md) are actual circuit operations, not labels
 that canonicalization can simply discard.
 
 ## Keeping local lookups affordable
@@ -198,6 +198,6 @@ these caches approximately 256 MiB and 1024 MiB respectively. On exceeding
 their configured capacity, they clear the map. These are separate from the
 frozen database's lookup cache, which remembers database hits and misses.
 
-For the surrounding flow, see the [six GSS steps](GSS_PIPELINE.md). For the
+For the surrounding flow, see the [six GSS steps](gss_pipeline.md). For the
 longer mathematical discussion and examples, see
 [Local Mixing Documentation](Local_Mixing_Documentation.pdf).

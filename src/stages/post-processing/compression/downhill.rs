@@ -14,7 +14,7 @@
 // optionally lane-verifies every rewritten span against its original.
 //
 // Shared by the fmix_downhill binary (scan/report/apply on a whole file) and
-// by postprocessing::compress, which interleaves one pass per gather/reduce
+// by stages::post_processing::compression, which interleaves one pass per gather/reduce
 // iteration — gathering makes runs contiguous, which is what feeds this pass.
 use super::{AncBits, or_anc};
 use crate::circuit::xgate::{Lits, XGate, eval_lanes};

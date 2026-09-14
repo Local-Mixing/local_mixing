@@ -11,12 +11,12 @@
 //! separately for each (store, direction).
 //!
 //! Usage: db_curated_probe <circuit.mpmct1> [samples] [max_window]
+use local_mixing::canonicalization::xgate::XPolyBudget;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::db_mixing::db_replace::db_probe;
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::format;
-use local_mixing::engine::rules::verify_rewrite;
-use local_mixing::engine::xpoly::XPolyBudget;
+use local_mixing::database::frozen::FrozenDb;
+use local_mixing::engine::moves::rules::verify_rewrite;
+use local_mixing::stages::db_mixing::replacement::db_probe;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -54,7 +54,7 @@ fn main() {
             skipped += 1;
             continue;
         }
-        if local_mixing::engine::xpoly::xgate_used_wires(&win).len() > 30 {
+        if local_mixing::canonicalization::xgate::xgate_used_wires(&win).len() > 30 {
             skipped += 1;
             continue;
         }

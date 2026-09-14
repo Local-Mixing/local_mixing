@@ -8,7 +8,7 @@ use crate::engine::mixer::{Meta, Mixer, Tap};
 use crate::engine::moves::rules;
 use rand::Rng;
 
-// Split-stage rank restamp cadence, in moves (docs/FMIX_SPLIT_TWIST.md §5).
+// Split-stage rank restamp cadence, in moves.
 const RANK_EVERY: u64 = 8192;
 
 // Flip the polarity of the literal on `w`, if the gate carries one. The
@@ -23,7 +23,7 @@ fn flip_wire_literal(g: &mut XGate, w: u16) {
 }
 
 impl Mixer {
-    // ---- the split twist (docs/FMIX_SPLIT_TWIST.md) ----
+    // ---- the split twist ----
     //
     // One move: split a random g57 into its presplit pair, then with
     // probability p_join wrap an ABSORBED pure-NOT twist on the g57's target

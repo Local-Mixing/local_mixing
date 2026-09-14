@@ -17,8 +17,7 @@
 //! `ran-balanced`, `blinded-v5` and `blinded_v5` alias `quadratic-masking`. The separate
 //! mirrored sandwich remains selectable via the final positional argument or
 //! SANDWICH_VARIANT; it does not provide the classic reverse-port guarantee.
-//! BV5_* comparison overrides retain their existing interpretation. Legacy
-//! product/nonlinear193 modes and PROD_* controls require `legacy-tools`.
+//! BV5_* overrides retain their existing interpretation.
 //!
 //! `seed` fixes C (fastrand), `sandwich_seed` drives D, slicing and N-float,
 //! and `gadget_seed` drives gadgetization. GSS_SOURCE_C optionally supplies C
@@ -26,7 +25,7 @@
 //! are written beside the output as .source_c.g57 and .sandwich.mpmct1.
 
 use crate::circuit::formats::write_mpmct;
-use crate::stages::preprocessing::nonlinear291::{NonlinearGssMode, nonlinear_gss_resource_plan};
+use crate::stages::preprocessing::nonlinear291::nonlinear_gss_resource_plan;
 use crate::stages::preprocessing::quadratic_masking::{
     QuadraticMaskingExecution, QuadraticMaskingParams,
 };
@@ -37,48 +36,6 @@ use crate::stages::sandwich::{
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-
-// Comparison implementations are compiled only when explicitly requested.
-#[cfg(feature = "legacy-tools")]
-#[path = "../../security_tests/support/preprocessing/generator.rs"]
-mod legacy;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum GadgetizationMode {
-    #[default]
-    QuadraticMasking,
-    Nonlinear291,
-    #[cfg(feature = "legacy-tools")]
-    Legacy(legacy::GadgetizationMode),
-}
-
-impl GadgetizationMode {
-    fn parse(value: &str) -> Option<Self> {
-        if let Some(mode) = PreprocessingMode::parse(value) {
-            return Some(match mode {
-                PreprocessingMode::QuadraticMasking => Self::QuadraticMasking,
-                PreprocessingMode::Nonlinear291 => Self::Nonlinear291,
-            });
-        }
-        #[cfg(feature = "legacy-tools")]
-        {
-            legacy::GadgetizationMode::parse(value).map(Self::Legacy)
-        }
-        #[cfg(not(feature = "legacy-tools"))]
-        {
-            None
-        }
-    }
-
-    fn canonical_name(self) -> &'static str {
-        match self {
-            Self::QuadraticMasking => PreprocessingMode::QuadraticMasking.canonical_name(),
-            Self::Nonlinear291 => PreprocessingMode::Nonlinear291.canonical_name(),
-            #[cfg(feature = "legacy-tools")]
-            Self::Legacy(mode) => mode.canonical_name(),
-        }
-    }
-}
 
 pub fn run() {
     let mut a = std::env::args().skip(1);
@@ -104,11 +61,11 @@ pub fn run() {
     let gadgetization_mode = a
         .next()
         .as_deref()
-        .map(GadgetizationMode::parse)
-        .unwrap_or(Some(GadgetizationMode::default()))
+        .map(PreprocessingMode::parse)
+        .unwrap_or(Some(PreprocessingMode::default()))
         .unwrap_or_else(|| {
             panic!(
-                "unknown preprocessing mode; expected quadratic-masking (alias ran-balanced/blinded-v5) or nonlinear291; historical comparisons require legacy-tools"
+                "unknown or retired preprocessing mode; expected quadratic-masking (alias ran-balanced/blinded-v5) or nonlinear291"
             )
         });
     // Chosen per run, never per build: the final positional argument, or
@@ -128,25 +85,16 @@ pub fn run() {
         a.next().is_none(),
         "too many arguments; the sandwich variant is the final optional argument"
     );
-    #[cfg(feature = "legacy-tools")]
-    if let GadgetizationMode::Legacy(mode) = gadgetization_mode {
-        mode.preflight(n, m_c, m_d, s, slice_gates);
-    }
-    if gadgetization_mode == GadgetizationMode::Nonlinear291 {
+    if gadgetization_mode == PreprocessingMode::Nonlinear291 {
         let sandwich_gate_count = m_c
             .checked_add(m_d)
             .and_then(|count| count.checked_add(s.checked_mul(2)?))
             .and_then(|count| count.checked_add(n))
             .expect("sandwich gate-count overflow");
-        nonlinear_gss_resource_plan(
-            sandwich_n,
-            sandwich_gate_count,
-            slice_gates,
-            NonlinearGssMode::Nonlinear291,
-        )
-        .unwrap_or_else(|error| panic!("nonlinear291 capacity check failed: {error}"));
+        nonlinear_gss_resource_plan(sandwich_n, sandwich_gate_count, slice_gates)
+            .unwrap_or_else(|error| panic!("nonlinear291 capacity check failed: {error}"));
     }
-    if !cfg!(feature = "legacy-tools") || gadgetization_mode == GadgetizationMode::Nonlinear291 {
+    {
         let mut overrides: Vec<String> = std::env::vars_os()
             .filter_map(|(key, _)| key.into_string().ok())
             .filter(|key| key.starts_with("PROD_"))
@@ -154,7 +102,7 @@ pub fn run() {
         overrides.sort();
         assert!(
             overrides.is_empty(),
-            "PROD_* controls require a historical product comparison; unset {}",
+            "PROD_* controls have been retired; unset {}",
             overrides.join(", ")
         );
     }
@@ -214,7 +162,7 @@ pub fn run() {
     let mut rng = StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E);
 
     let (gadget, guarded) = match gadgetization_mode {
-        GadgetizationMode::QuadraticMasking => {
+        PreprocessingMode::QuadraticMasking => {
             let envu = |k: &str, d: usize| {
                 std::env::var(k)
                     .ok()
@@ -222,7 +170,7 @@ pub fn run() {
                     .unwrap_or(d)
             };
             // Managed and raw defaults share data-and-band burst refresh;
-            // historical direct callers can still request band-only bursts.
+            // direct callers can still request band-only bursts.
             let base = QuadraticMaskingParams::managed_gss(gadget_seed, n);
             let params = QuadraticMaskingParams {
                 active_wires: n,
@@ -281,12 +229,9 @@ pub fn run() {
                     let _ = std::fs::write(path, body);
                 }
             }
-            let gadget = output.circuit;
-            #[cfg(feature = "legacy-tools")]
-            let gadget = legacy::post_fragment(gadget, None, &mut rng);
-            (gadget, output.guarded)
+            (output.circuit, output.guarded)
         }
-        GadgetizationMode::Nonlinear291 => {
+        PreprocessingMode::Nonlinear291 => {
             let output = preprocess_sandwich(
                 &sandwich,
                 n,
@@ -297,10 +242,6 @@ pub fn run() {
             )
             .unwrap_or_else(|error| panic!("nonlinear291 preprocessing failed: {error}"));
             (output.circuit, output.guarded)
-        }
-        #[cfg(feature = "legacy-tools")]
-        GadgetizationMode::Legacy(mode) => {
-            legacy::gadgetize(&sandwich, n, rg_freq, slice_gates, mode, &mut rng)
         }
     };
     println!(

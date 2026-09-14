@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1110" height="800" viewBox="0 0 1110 800" role="img" aria-labelledby="title desc">
+<title id="title">Dirty helpers for cubic and quartic terms</title><desc id="desc">Top: the four-gate bracket adds abc to t and restores arbitrary h. Bottom: the eight-gate bracket adds abcd to t and restores arbitrary h1 and h2; products ac and bd pair factors from different operands ab and cd. All gates execute left to right.</desc>
+<rect width="1110" height="800" rx="12" fill="white"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#586979"/></marker></defs>
+<text x="28" y="34" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600">Dirty helpers for cubic and quartic terms</text>
+<text x="28" y="73" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="600">Cubic term: t′ = t ⊕ abc</text>
+<text x="78" y="122" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">a</text>
+<line x1="94" y1="116" x2="780" y2="116" stroke="#8593a0" stroke-width="1.8"/>
+<text x="795" y="122" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">a</text>
+<text x="78" y="166" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">b</text>
+<line x1="94" y1="160" x2="780" y2="160" stroke="#8593a0" stroke-width="1.8"/>
+<text x="795" y="166" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">b</text>
+<text x="78" y="210" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">c</text>
+<line x1="94" y1="204" x2="780" y2="204" stroke="#8593a0" stroke-width="1.8"/>
+<text x="795" y="210" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">c</text>
+<text x="78" y="254" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">h</text>
+<line x1="94" y1="248" x2="780" y2="248" stroke="#8593a0" stroke-width="1.8"/>
+<text x="795" y="254" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">h restored</text>
+<text x="78" y="298" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">t</text>
+<line x1="94" y1="292" x2="780" y2="292" stroke="#8593a0" stroke-width="1.8"/>
+<text x="795" y="298" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">t ⊕ abc</text>
+<line x1="185" y1="204" x2="185" y2="292" stroke="#183042" stroke-width="1.8"/>
+<circle cx="185" cy="248" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="185" cy="204" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="185" cy="292" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="175" y1="292" x2="195" y2="292" stroke="#183042" stroke-width="1.8"/>
+<line x1="185" y1="282" x2="185" y2="302" stroke="#183042" stroke-width="1.8"/>
+<text x="185" y="97" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">1</text>
+<line x1="353" y1="116" x2="353" y2="248" stroke="#183042" stroke-width="1.8"/>
+<circle cx="353" cy="116" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="353" cy="160" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="353" cy="248" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="343" y1="248" x2="363" y2="248" stroke="#183042" stroke-width="1.8"/>
+<line x1="353" y1="238" x2="353" y2="258" stroke="#183042" stroke-width="1.8"/>
+<text x="353" y="97" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">2</text>
+<line x1="521" y1="204" x2="521" y2="292" stroke="#183042" stroke-width="1.8"/>
+<circle cx="521" cy="248" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="521" cy="204" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="521" cy="292" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="511" y1="292" x2="531" y2="292" stroke="#183042" stroke-width="1.8"/>
+<line x1="521" y1="282" x2="521" y2="302" stroke="#183042" stroke-width="1.8"/>
+<text x="521" y="97" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">3</text>
+<line x1="689" y1="116" x2="689" y2="248" stroke="#183042" stroke-width="1.8"/>
+<circle cx="689" cy="116" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="689" cy="160" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="689" cy="248" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="679" y1="248" x2="699" y2="248" stroke="#183042" stroke-width="1.8"/>
+<line x1="689" y1="238" x2="689" y2="258" stroke="#183042" stroke-width="1.8"/>
+<text x="689" y="97" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">4</text>
+<text x="28" y="335" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">h may begin as 0 or 1: h₀c ⊕ (h₀ ⊕ ab)c = abc.</text>
+<line x1="28" y1="358" x2="1080" y2="358" stroke="#d9e0e5" stroke-width="1"/>
+<text x="28" y="392" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="600">Quartic term: (ab)(cd), grouped across the operands as (ac)(bd)</text>
+<text x="78" y="443" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">a</text>
+<line x1="94" y1="437" x2="946" y2="437" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="443" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">a</text>
+<text x="78" y="484" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">b</text>
+<line x1="94" y1="478" x2="946" y2="478" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="484" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">b</text>
+<text x="78" y="525" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">c</text>
+<line x1="94" y1="519" x2="946" y2="519" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="525" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">c</text>
+<text x="78" y="566" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">d</text>
+<line x1="94" y1="560" x2="946" y2="560" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="566" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">d</text>
+<text x="78" y="617" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">h₁</text>
+<line x1="94" y1="611" x2="946" y2="611" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="617" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">h₁ restored</text>
+<text x="78" y="668" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">h₂</text>
+<line x1="94" y1="662" x2="946" y2="662" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="668" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">h₂ restored</text>
+<text x="78" y="719" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">t</text>
+<line x1="94" y1="713" x2="946" y2="713" stroke="#8593a0" stroke-width="1.8"/>
+<text x="961" y="719" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">t ⊕ abcd</text>
+<line x1="150" y1="611" x2="150" y2="713" stroke="#183042" stroke-width="1.8"/>
+<circle cx="150" cy="611" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="150" cy="662" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="150" cy="713" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="140" y1="713" x2="160" y2="713" stroke="#183042" stroke-width="1.8"/>
+<line x1="150" y1="703" x2="150" y2="723" stroke="#183042" stroke-width="1.8"/>
+<text x="150" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">1</text>
+<line x1="256" y1="437" x2="256" y2="611" stroke="#183042" stroke-width="1.8"/>
+<circle cx="256" cy="437" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="256" cy="519" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="256" cy="611" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="246" y1="611" x2="266" y2="611" stroke="#183042" stroke-width="1.8"/>
+<line x1="256" y1="601" x2="256" y2="621" stroke="#183042" stroke-width="1.8"/>
+<text x="256" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">2</text>
+<line x1="362" y1="611" x2="362" y2="713" stroke="#183042" stroke-width="1.8"/>
+<circle cx="362" cy="611" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="362" cy="662" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="362" cy="713" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="352" y1="713" x2="372" y2="713" stroke="#183042" stroke-width="1.8"/>
+<line x1="362" y1="703" x2="362" y2="723" stroke="#183042" stroke-width="1.8"/>
+<text x="362" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">3</text>
+<line x1="468" y1="478" x2="468" y2="662" stroke="#183042" stroke-width="1.8"/>
+<circle cx="468" cy="478" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="468" cy="560" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="468" cy="662" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="458" y1="662" x2="478" y2="662" stroke="#183042" stroke-width="1.8"/>
+<line x1="468" y1="652" x2="468" y2="672" stroke="#183042" stroke-width="1.8"/>
+<text x="468" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">4</text>
+<line x1="574" y1="611" x2="574" y2="713" stroke="#183042" stroke-width="1.8"/>
+<circle cx="574" cy="611" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="574" cy="662" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="574" cy="713" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="564" y1="713" x2="584" y2="713" stroke="#183042" stroke-width="1.8"/>
+<line x1="574" y1="703" x2="574" y2="723" stroke="#183042" stroke-width="1.8"/>
+<text x="574" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">5</text>
+<line x1="680" y1="437" x2="680" y2="611" stroke="#183042" stroke-width="1.8"/>
+<circle cx="680" cy="437" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="680" cy="519" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="680" cy="611" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="670" y1="611" x2="690" y2="611" stroke="#183042" stroke-width="1.8"/>
+<line x1="680" y1="601" x2="680" y2="621" stroke="#183042" stroke-width="1.8"/>
+<text x="680" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">6</text>
+<line x1="786" y1="611" x2="786" y2="713" stroke="#183042" stroke-width="1.8"/>
+<circle cx="786" cy="611" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="786" cy="662" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="786" cy="713" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="776" y1="713" x2="796" y2="713" stroke="#183042" stroke-width="1.8"/>
+<line x1="786" y1="703" x2="786" y2="723" stroke="#183042" stroke-width="1.8"/>
+<text x="786" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">7</text>
+<line x1="892" y1="478" x2="892" y2="662" stroke="#183042" stroke-width="1.8"/>
+<circle cx="892" cy="478" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="892" cy="560" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="892" cy="662" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="882" y1="662" x2="902" y2="662" stroke="#183042" stroke-width="1.8"/>
+<line x1="892" y1="652" x2="892" y2="672" stroke="#183042" stroke-width="1.8"/>
+<text x="892" y="419" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13">8</text>
+<text x="28" y="760" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="17">h₁ and h₂ have arbitrary incoming values. Four reads of h₁h₂ cancel their contributions.</text>
+<text x="28" y="787" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16">All displayed source and helper wires are distinct. Every gate has at most two controls.</text>
+</svg>

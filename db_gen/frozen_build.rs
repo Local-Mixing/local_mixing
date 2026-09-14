@@ -539,7 +539,7 @@ impl ShardReader for LmdbShards {
 /// have had in LMDB. Byte-for-byte the same input the LMDB path produced:
 /// RocksDB orders `key || blob` lexicographically, so groups arrive in the same
 /// key order and each group's records in the same blob order.
-#[cfg(feature = "legacy-db-tools")]
+#[cfg(feature = "db-tools")]
 pub struct CompositeShards {
     db: rocksdb::DB,
     /// Drop any key whose shortest candidate has fewer than this many gates.
@@ -549,7 +549,7 @@ pub struct CompositeShards {
     min_gates: usize,
 }
 
-#[cfg(feature = "legacy-db-tools")]
+#[cfg(feature = "db-tools")]
 impl CompositeShards {
     /// Keep every key.
     pub fn open(dir: &str) -> Self {
@@ -583,7 +583,7 @@ impl CompositeShards {
     }
 }
 
-#[cfg(feature = "legacy-db-tools")]
+#[cfg(feature = "db-tools")]
 impl ShardReader for CompositeShards {
     fn for_each_entry(
         &self,
@@ -640,6 +640,102 @@ impl ShardReader for CompositeShards {
         if let Some(previous) = current {
             if min_gates >= self.min_gates {
                 visit(&previous, &value);
+            }
+        }
+    }
+}
+
+/// Reads N plain regular band RocksDBs directly (no LMDB, no composite hop) and
+/// k-way merges them per shard in ascending key order. Bands already store the
+/// legacy value framing (`[len][blob]...`, blob length a multiple of 3), so a
+/// key present in several bands has its candidate blobs concatenated and
+/// de-duplicated -- byte-identical to what `append_merge` produced when the
+/// LMDB path pre-combined them. Bands must be compacted (self-merged) so
+/// read-only iteration sees no pending merge operands.
+#[cfg(feature = "db-tools")]
+pub struct MultiBandShards {
+    dbs: Vec<rocksdb::DB>,
+}
+
+#[cfg(feature = "db-tools")]
+impl MultiBandShards {
+    pub fn open(dirs: &[String]) -> Self {
+        let dbs = dirs
+            .iter()
+            .map(|d| {
+                let mut o = rocksdb::Options::default();
+                o.create_if_missing(false);
+                rocksdb::DB::open_for_read_only(&o, d, false)
+                    .unwrap_or_else(|e| panic!("open band {d}: {e}"))
+            })
+            .collect();
+        Self { dbs }
+    }
+}
+
+#[cfg(feature = "db-tools")]
+impl ShardReader for MultiBandShards {
+    fn for_each_entry(
+        &self,
+        shard: usize,
+        limit: Option<usize>,
+        visit: &mut dyn FnMut(&[u8], &[u8]),
+    ) {
+        use rocksdb::{Direction, IteratorMode};
+        let start = [shard as u8];
+        let mut iters: Vec<_> = self
+            .dbs
+            .iter()
+            .map(|db| db.iterator(IteratorMode::From(&start, Direction::Forward)))
+            .collect();
+        let advance = |it: &mut rocksdb::DBIterator<'_>| -> Option<(Box<[u8]>, Box<[u8]>)> {
+            match Iterator::next(it) {
+                Some(Ok((k, v))) if !k.is_empty() && k[0] as usize == shard => Some((k, v)),
+                _ => None,
+            }
+        };
+        let mut heads: Vec<Option<(Box<[u8]>, Box<[u8]>)>> =
+            iters.iter_mut().map(|it| advance(it)).collect();
+        let mut seen = 0usize;
+        loop {
+            // Smallest key among live heads.
+            let mut min_key: Option<&[u8]> = None;
+            for h in heads.iter() {
+                if let Some((k, _)) = h {
+                    match min_key {
+                        Some(m) if k.as_ref() >= m => {}
+                        _ => min_key = Some(k.as_ref()),
+                    }
+                }
+            }
+            let Some(mk) = min_key.map(|k| k.to_vec()) else {
+                break;
+            };
+            // Concatenate + de-dup candidate blobs across all heads at mk.
+            let mut merged: Vec<u8> = Vec::new();
+            let mut dedup: std::collections::HashSet<Box<[u8]>> = std::collections::HashSet::new();
+            for i in 0..heads.len() {
+                let eq = matches!(&heads[i], Some((k, _)) if k.as_ref() == mk.as_slice());
+                if eq {
+                    let (_, v) = heads[i].take().unwrap();
+                    match parse_value(&v) {
+                        Some(blobs) => {
+                            for b in blobs {
+                                if dedup.insert(Box::from(b)) {
+                                    merged.push(b.len() as u8);
+                                    merged.extend_from_slice(b);
+                                }
+                            }
+                        }
+                        None => merged.extend_from_slice(&v),
+                    }
+                    heads[i] = advance(&mut iters[i]);
+                }
+            }
+            visit(&mk, &merged);
+            seen += 1;
+            if limit.is_some_and(|c| seen >= c) {
+                break;
             }
         }
     }

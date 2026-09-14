@@ -7,12 +7,12 @@
 //! Every candidate returned by [`wide_probe`] is PROVEN equivalent to the
 //! window by ANF comparison before it is handed back — the strongest
 //! correctness contract any consumer could ask for.
-use crate::circuit::polys_repr_blob;
+use crate::canonicalization::polys_repr_blob;
+use crate::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
 use crate::circuit::xgate::XGate;
+use crate::db_generation::mpx1;
 use crate::db_generation::regular::append_merge_wide;
-use crate::db_mixing::db_replace::polys_equivalent;
-use crate::engine::mpx1;
-use crate::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+use crate::stages::db_mixing::replacement::polys_equivalent;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use rocksdb::{DB, Options};

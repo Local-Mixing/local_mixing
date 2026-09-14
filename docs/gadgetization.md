@@ -6,7 +6,7 @@ The idea is to keep the intermediate values under nonlinear masks while still
 being able to compute on them. All random choices are made when we generate
 the circuit. Evaluating the resulting circuit requires only its gate list.
 
-The six-stage order is described in [the pipeline guide](GSS_PIPELINE.md). Here,
+The six-stage order is described in [the pipeline guide](gss_pipeline.md). Here,
 we describe what happens in its first two stages, including the shuffles which
 are already present before database mixing begins.
 

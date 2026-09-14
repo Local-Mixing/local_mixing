@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="330" viewBox="0 0 1100 330" role="img" aria-labelledby="title desc">
+<title id="title">One quadratic fire, with a mask opened in the middle</title><desc id="desc">A temporary target cover surrounds two shuffled halves of the quadratic fire. A fresh persistent mask is opened between the halves and remains open after the temporary cover closes. Each complete term block restores its dirty helpers.</desc>
+<rect width="1100" height="330" rx="12" fill="white"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#586979"/></marker></defs>
+<text x="28" y="34" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600">One quadratic fire, with a mask opened in the middle</text>
+<line x1="52" y1="85" x2="1055" y2="85" stroke="#586979" stroke-width="1.4" marker-end="url(#arrow)"/>
+<text x="553.5" y="76" fill="#586979" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14">gates run left to right</text>
+<line x1="45" y1="163" x2="1050" y2="163" stroke="#8593a0" stroke-width="1.8"/>
+<rect x="55" y="128" width="150" height="70" rx="6" fill="#eaf2fa" stroke="#2165a8" stroke-width="1.5"/>
+<text x="130.0" y="169" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600">open T</text>
+<rect x="237" y="128" width="165" height="70" rx="6" fill="#edf6f1" stroke="#24715d" stroke-width="1.5"/>
+<text x="319.5" y="169" fill="#24715d" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600">fire: half 1</text>
+<rect x="435" y="128" width="193" height="70" rx="6" fill="#fbf3e9" stroke="#9b601c" stroke-width="1.5"/>
+<text x="531.5" y="169" fill="#9b601c" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600">open R</text>
+<rect x="661" y="128" width="165" height="70" rx="6" fill="#edf6f1" stroke="#24715d" stroke-width="1.5"/>
+<text x="743.5" y="169" fill="#24715d" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600">fire: half 2</text>
+<rect x="859" y="128" width="165" height="70" rx="6" fill="#eaf2fa" stroke="#2165a8" stroke-width="1.5"/>
+<text x="941.5" y="169" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600">close T</text>
+<text x="535" y="224" fill="#9b601c" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17">R stays open</text>
+<text x="28" y="266" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19">Wₜ,out = Wₜ,in ⊕ F₁ ⊕ F₂ ⊕ R</text>
+<text x="590" y="266" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19">F₁ ⊕ F₂ = 1 ⊕ V<tspan baseline-shift="sub" font-size="75%">b</tspan> ⊕ VₐV<tspan baseline-shift="sub" font-size="75%">b</tspan></text>
+<text x="28" y="307" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16">T cancels. Each half shuffles whole term blocks; the gates inside a dirty-helper bracket stay in order.</text>
+</svg>

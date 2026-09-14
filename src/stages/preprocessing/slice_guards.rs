@@ -143,7 +143,7 @@ pub(crate) fn try_slice_zero_block_dims(
     Err(format!(
         "no slice preblock with every nonzero slice disturbed found at n={n} \
          band={band} gates={gate_count} in 1000 draws: {n} data wires may be too \
-         few to disturb 2^{nondata} slices distinctly — raise n or lower --prod-band"
+         few to disturb 2^{nondata} slices distinctly — raise the data width or reduce the auxiliary width"
     ))
 }
 
@@ -214,18 +214,14 @@ pub const SLICE_ZERO_CCNOT_GATES_PER_WIRE: usize = 10;
 
 /// Nonlinear-GSS counterpart of [`try_slice_zero_block_dims`].
 ///
-/// The draw and gate-shape policy deliberately matches the established
-/// product-family constructor, but wide-slice validation uses an indexed,
-/// batched checker.  Nonlinear layouts can have tens of thousands of slice
-/// wires, where replaying the whole preblock once per singleton slice is
-/// quadratic and makes an otherwise admissible layout impractical to build.
-/// Keeping this as a separate entry point preserves the product constructor's
-/// byte-for-byte RNG stream and artifacts.
+/// Uses the same logical probes as the standard guard, decomposed to fan-in
+/// two. Nonlinear layouts can have tens of thousands of slice wires, so an
+/// indexed, batched checker validates their disturbance without replaying the
+/// whole preblock once per singleton slice.
 pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
     n: usize,
     nondata: usize,
     gate_count: usize,
-    fanin_two: bool,
     scratch: u16,
     scratch2: u16,
     rng: &mut impl Rng,
@@ -253,35 +249,30 @@ pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
             "every non-data wire must be read: needs at least {nondata} gates, got {gate_count}"
         ));
     }
-    if fanin_two {
-        for (name, wire) in [("scratch", scratch), ("scratch2", scratch2)] {
-            if !(n..total).contains(&(wire as usize)) {
-                return Err(format!(
-                    "nonlinear fan-in-two preblock {name} wire {wire} must be a non-data wire in {n}..{total}"
-                ));
-            }
-        }
-        if scratch == scratch2 {
+    for (name, wire) in [("scratch", scratch), ("scratch2", scratch2)] {
+        if !(n..total).contains(&(wire as usize)) {
             return Err(format!(
-                "nonlinear fan-in-two preblock scratch wires must be distinct, got {scratch} twice"
+                "nonlinear fan-in-two preblock {name} wire {wire} must be a non-data wire in {n}..{total}"
             ));
         }
+    }
+    if scratch == scratch2 {
+        return Err(format!(
+            "nonlinear fan-in-two preblock scratch wires must be distinct, got {scratch} twice"
+        ));
     }
 
     let cnots = gate_count / 3;
     let rest = gate_count - cnots;
     let quads = rest / 2;
     let ccnots = rest - quads;
-    let emitted_count =
-        if fanin_two {
-            gate_count
-                .checked_add(quads.checked_mul(3).ok_or_else(|| {
-                    "nonlinear preblock decomposed gate-count overflow".to_string()
-                })?)
-                .ok_or_else(|| "nonlinear preblock emitted gate-count overflow".to_string())?
-        } else {
-            gate_count
-        };
+    let emitted_count = gate_count
+        .checked_add(
+            quads
+                .checked_mul(3)
+                .ok_or_else(|| "nonlinear preblock decomposed gate-count overflow".to_string())?,
+        )
+        .ok_or_else(|| "nonlinear preblock emitted gate-count overflow".to_string())?;
 
     #[derive(Clone, Copy)]
     struct MacroSpec {
@@ -345,27 +336,16 @@ pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
         }
         for spec in macros {
             let start = gates.len();
-            match (fanin_two, spec.data_len) {
-                (_, 0) => gates.push(
+            match spec.data_len {
+                0 => gates.push(
                     XGate::conj(spec.target, [(spec.slice, true)])
                         .expect("preblock target and slice control are distinct"),
                 ),
-                (_, 1) => gates.push(
+                1 => gates.push(
                     XGate::conj(spec.target, [(spec.data[0], true), (spec.slice, true)])
                         .expect("preblock target and controls are distinct"),
                 ),
-                (false, 2) => gates.push(
-                    XGate::conj(
-                        spec.target,
-                        [
-                            (spec.data[0], true),
-                            (spec.data[1], true),
-                            (spec.slice, true),
-                        ],
-                    )
-                    .expect("preblock target and controls are distinct"),
-                ),
-                (true, 2) => {
+                2 => {
                     // Exact dirty-q decomposition of t ^= a*b*c.  q may start
                     // arbitrarily and is restored by the contiguous macro:
                     // q^=ab; t^=qc; q^=ab; t^=qc.
@@ -384,7 +364,7 @@ pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
                     gates.push(build_q);
                     gates.push(use_q);
                 }
-                (_, other) => unreachable!("unsupported preblock data-control count {other}"),
+                other => unreachable!("unsupported preblock data-control count {other}"),
             }
             by_slice[spec.slice as usize - n].push((start, gates.len()));
         }

@@ -22,8 +22,8 @@
 //!
 //! Usage: ladder_mobility <circuit.mpmct1> [sample=3000] [cap=4096] [seed=1]
 
+use local_mixing::circuit::formats::read_mpmct;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::read_mpmct;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 

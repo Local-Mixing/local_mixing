@@ -3,8 +3,10 @@
 // elapsed time alongside the Rule-L counters, so we can tell a Rule-L blowup from a
 // tiebreak-loop or polynomial-build blowup. Respects CANON_MONOMIAL_CAP.
 // Usage: canon_probe <circuit.txt>
+use local_mixing::canonicalization::{
+    CANON4_RULE_L_BRANCHES, CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME,
+};
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::circuit::{CANON4_RULE_L_BRANCHES, CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME};
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 

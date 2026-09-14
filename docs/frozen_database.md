@@ -49,7 +49,7 @@ k = \operatorname{XXH3\text{-}128}(\operatorname{serialize}(P(C))).
 $$
 
 The serialization and wire mapping are described in
-[Polynomial Canonicalization](POLYNOMIAL_CANONICALIZATION.md). The regular
+[Polynomial Canonicalization](polynomial_canonicalization.md). The regular
 builder compares the forward and inverse canonical forms and stores the
 smaller one, so reversing a circuit does not require a separate entry. The
 curated store uses the forward canonical form of the function being replaced.
@@ -146,7 +146,7 @@ uncapped curated store can still require substantial memory for one key.
 
 ## From a key to a replacement
 
-During [step 3 of GSS](GSS_PIPELINE.md), we first canonicalize the sampled
+During [step 3 of GSS](gss_pipeline.md), we first canonicalize the sampled
 window. When curated lookup is enabled for the move, we check its forward key
 in the curated store. The regular lookup is used when the curated stage has
 no candidates, or when the move goes directly to regular. Some mixing policies
@@ -228,6 +228,21 @@ target/release/frozen_from_lmdb write REGULAR_LMDB FRESH_FROZEN_OUT
 target/release/frozen_from_lmdb validate REGULAR_LMDB FRESH_FROZEN_OUT
 target/release/frozen_filters_build from-frozen FRESH_FROZEN_OUT
 ```
+
+We can also freeze regular RocksDB bands directly. Put one band directory per
+line in `bands.txt`, then use `--bands` for all three conversion stages:
+
+```bash
+target/release/frozen_from_lmdb tables bands.txt FRESH_FROZEN_OUT --bands
+target/release/frozen_from_lmdb write bands.txt FRESH_FROZEN_OUT --bands
+target/release/frozen_from_lmdb validate bands.txt FRESH_FROZEN_OUT --bands
+target/release/frozen_filters_build from-frozen FRESH_FROZEN_OUT
+```
+
+`MultiBandShards` merges keys in order and removes repeated candidate blobs
+within and across bands. The bands must already be compacted so their pending
+merge operands have been resolved. This route skips the intermediate LMDB
+export and writes the same frozen format.
 
 For the full curated construction, the composite RocksDB uses
 `[function key][circuit bytes]` as its key. This deduplicates complete

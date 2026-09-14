@@ -10,7 +10,7 @@ pub struct Gate {
 }
 
 // Circuits stored as a sequence of gates [u16;3]
-// Gate type is legacy
+// Each triple stores the target, positive control and negative control.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct CircuitSeq {
     pub gates: Vec<[u16; 3]>,

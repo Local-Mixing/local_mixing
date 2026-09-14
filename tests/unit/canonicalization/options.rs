@@ -113,11 +113,11 @@ fn explicit_window_budgets_do_not_replay_cached_successes() {
 }
 
 #[test]
-fn explicit_calls_leave_legacy_first_reads_lazy_and_cached() {
+fn explicit_calls_leave_environment_first_reads_lazy_and_cached() {
     const CHILD: &str = "CANON_OPTIONS_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "canonicalization::options_tests::explicit_calls_leave_legacy_first_reads_lazy_and_cached", "--test-threads=1"])
+            .args(["--exact", "canonicalization::options_tests::explicit_calls_leave_environment_first_reads_lazy_and_cached", "--test-threads=1"])
             .env(CHILD, "1")
             .env("CANON_RULE_L_BRANCH_CAP", "1")
             .env("CANON_MONOMIAL_CAP", "1")
@@ -125,7 +125,6 @@ fn explicit_calls_leave_legacy_first_reads_lazy_and_cached() {
             .env("XPOLY_CANON_CACHE_MB", "1")
             .env_remove("COMPRESSION_TRACE")
             .env("COMPRESSION_TRACE_MS", "1")
-            .env_remove("BENCH_CANON")
             .output().unwrap();
         assert!(
             output.status.success(),
@@ -163,19 +162,16 @@ fn explicit_calls_leave_legacy_first_reads_lazy_and_cached() {
         std::env::set_var("XPOLY_CANON_CACHE_MB", "invalid");
         std::env::set_var("COMPRESSION_TRACE", "");
         std::env::set_var("COMPRESSION_TRACE_MS", "37");
-        std::env::set_var("BENCH_CANON", "");
     }
     assert_eq!(canon_rule_l_branch_cap(), Some(23));
     assert_eq!(canon_monomial_cap(), Some(29));
-    assert_eq!(legacy_environment::canon_cache_cap_bytes(), 0);
+    assert_eq!(environment::canon_cache_cap_bytes(), 0);
     assert_eq!(
-        legacy_environment::xpoly_canon_cache_cap_bytes(),
+        environment::xpoly_canon_cache_cap_bytes(),
         1024 * 1024 * 1024
     );
-    assert!(legacy_environment::compression_trace_enabled());
-    assert_eq!(legacy_environment::compression_trace_threshold_ms(), 37);
-    #[cfg(feature = "legacy-tools")]
-    assert!(legacy_environment::bench_canon_enabled());
+    assert!(environment::compression_trace_enabled());
+    assert_eq!(environment::compression_trace_threshold_ms(), 37);
     unsafe {
         std::env::set_var("CANON_RULE_L_BRANCH_CAP", "31");
         std::env::set_var("CANON_MONOMIAL_CAP", "31");
@@ -183,19 +179,16 @@ fn explicit_calls_leave_legacy_first_reads_lazy_and_cached() {
         std::env::set_var("XPOLY_CANON_CACHE_MB", "31");
         std::env::remove_var("COMPRESSION_TRACE");
         std::env::set_var("COMPRESSION_TRACE_MS", "31");
-        std::env::remove_var("BENCH_CANON");
     }
     assert_eq!(canon_rule_l_branch_cap(), Some(23));
     assert_eq!(canon_monomial_cap(), Some(29));
-    assert_eq!(legacy_environment::canon_cache_cap_bytes(), 0);
+    assert_eq!(environment::canon_cache_cap_bytes(), 0);
     assert_eq!(
-        legacy_environment::xpoly_canon_cache_cap_bytes(),
+        environment::xpoly_canon_cache_cap_bytes(),
         1024 * 1024 * 1024
     );
-    assert!(legacy_environment::compression_trace_enabled());
-    assert_eq!(legacy_environment::compression_trace_threshold_ms(), 37);
-    #[cfg(feature = "legacy-tools")]
-    assert!(legacy_environment::bench_canon_enabled());
+    assert!(environment::compression_trace_enabled());
+    assert_eq!(environment::compression_trace_threshold_ms(), 37);
     assert_eq!(
         circuit.canonicalize_polys_single(false),
         circuit

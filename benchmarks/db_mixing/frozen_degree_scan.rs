@@ -12,9 +12,9 @@
 //! --sample K keeps every K-th entry; --limit N stops a shard after N kept
 //! entries. Shards are hash-partitioned, so one shard is an unbiased sample.
 
-use local_mixing::db_mixing::db_replace::db_g57_to_xgate;
-use local_mixing::db_mixing::frozen::scan_shard;
-use local_mixing::engine::xpoly::{XPolyBudget, xgates_to_polynomial};
+use local_mixing::canonicalization::xgate::{XPolyBudget, xgates_to_polynomial};
+use local_mixing::database::frozen::scan_shard;
+use local_mixing::stages::db_mixing::replacement::db_g57_to_xgate;
 use std::collections::BTreeMap;
 
 fn main() {

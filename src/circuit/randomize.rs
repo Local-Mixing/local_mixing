@@ -1,4 +1,4 @@
-use crate::circuit::{CircuitSeq, Gate};
+use crate::circuit::{CircuitSeq, Gate, XGate};
 
 use rand::Rng;
 
@@ -89,6 +89,49 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
             }
         }
     }
+}
+
+/// Rerandomize commuting gates and return the applied order: the gate at new
+/// position `i` previously occupied `order[i]`. Callers can apply the same order
+/// to per-gate origins and other sidecars.
+///
+/// Three alternating-direction insertion passes let gates move across any
+/// commuting suffix. Each move is a sequence of adjacent commuting swaps, so
+/// the circuit function and the relative order of colliding pairs are preserved.
+pub fn commuting_shuffle_order(gates: &mut Vec<XGate>, rng: &mut impl Rng) -> Vec<u32> {
+    let m = gates.len();
+    if m < 2 {
+        return (0..m as u32).collect();
+    }
+    let mut order: Vec<u32> = (0..m as u32).collect();
+    const PASSES: usize = 3;
+    for _ in 0..PASSES {
+        insertion_pass(&mut order, gates, rng);
+        order.reverse();
+    }
+    if PASSES % 2 == 1 {
+        order.reverse();
+    }
+    let mut reordered = Vec::with_capacity(m);
+    for &i in &order {
+        reordered.push(gates[i as usize].clone());
+    }
+    *gates = reordered;
+    order
+}
+
+fn insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
+    let mut out: Vec<u32> = Vec::with_capacity(order.len());
+    for &gi in order.iter() {
+        let g = &gates[gi as usize];
+        let mut span = 0usize;
+        while span < out.len() && !XGate::collides(g, &gates[out[out.len() - 1 - span] as usize]) {
+            span += 1;
+        }
+        let pos = out.len() - rng.random_range(0..=span);
+        out.insert(pos, gi);
+    }
+    *order = out;
 }
 
 #[cfg(test)]

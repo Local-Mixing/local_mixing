@@ -1,5 +1,6 @@
 //! Resolve typed values and validate resource/path constraints before run creation.
 use super::*;
+use crate::gss::manifest::CURRENT_RECIPE_VERSION;
 
 pub(crate) fn resolve_config<F>(
     raw: &RawConfig,
@@ -53,26 +54,7 @@ where
         "native",
         &["native", "legacy-swapped-controls"],
     )?;
-    let preprocessing_mode = parse_gadgetization_mode(raw)?;
-    let production_preset = parse_enum(raw, "production_preset", "production", PRODUCTION_PRESETS)?;
-    let post_fragment =
-        parse_optional_enum(raw, "post_fragment", &["off", "exact", "native-deep"])?;
-    if preprocessing_mode != RecipePreprocessingMode::Product2223 {
-        if raw.value("production_preset").is_some() {
-            return Err(config_error(
-                raw,
-                "production_preset",
-                "production_preset applies only to `gadgetization_mode = product-2223`; leave it blank for nonlinear modes",
-            ));
-        }
-        if raw.value("post_fragment").is_some() {
-            return Err(config_error(
-                raw,
-                "post_fragment",
-                "post_fragment applies only to `gadgetization_mode = product-2223`; leave it blank for nonlinear modes",
-            ));
-        }
-    }
+    let preprocessing_mode = parse_preprocessing_mode(raw)?;
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
         .value("calibration_seed_file")
@@ -81,11 +63,7 @@ where
         return Err(config_error(
             raw,
             "calibration_seed_file",
-            if raw.legacy_markdown {
-                "requires `calibration_only = true`; explicit seeds must never be used for deliverables"
-            } else {
-                "requires `calibration.enabled = true`; explicit seeds must never be used for deliverables"
-            },
+            "requires `calibration.enabled = true`; explicit seeds must never be used for deliverables",
         ));
     }
     let calibration_seed = calibration_seed_file
@@ -118,8 +96,8 @@ where
         mcd = Some(count);
         source_hash = Some(xxhash_rust::xxh3::xxh3_128(&bytes));
     }
-    // Old recipes may record K=1 (the generator clamped it to 2). Keep reading
-    // them; current-run validation rejects that misleading setting.
+    // Validate the mask layout together with the preprocessing choice below.
+    // Nonlinear291 does not use the default mask controls.
     let bv5_k = parse_usize(raw, "bv5_k", 2, 1, 64)?;
     let bv5_max_open = parse_usize(raw, "bv5_max_open", 3, 2, 64)?;
     let bv5_min_open = parse_usize(raw, "bv5_min_open", 2, 1, 63)?;
@@ -156,7 +134,7 @@ where
                 })
         })
         .transpose()?;
-    if let Some(mode) = preprocessing_mode.nonlinear() {
+    if preprocessing_mode == PreprocessingMode::Nonlinear291 {
         let m = mcd
             .as_deref()
             .map(|value| value.parse::<usize>().expect("validated mcd"))
@@ -175,7 +153,7 @@ where
         let slice_gates = logical_n
             .checked_mul(10)
             .ok_or_else(|| config_error(raw, "gadgetization_mode", "slice gate-count overflow"))?;
-        nonlinear_gss_resource_plan(logical_n, gate_count, slice_gates, mode).map_err(|error| {
+        nonlinear_gss_resource_plan(logical_n, gate_count, slice_gates).map_err(|error| {
             config_error(
                 raw,
                 "gadgetization_mode",
@@ -197,13 +175,8 @@ where
         |value| (0.0..=10_000.0).contains(&value),
         "must be in 0..=10000",
     )?;
-    // The shell's hold is 27 (profile 3,30,30). Preserve v3's historical
-    // omitted representation only when reading an old Markdown recipe.
-    let hold = if raw.legacy_markdown {
-        hold
-    } else {
-        Some(hold.unwrap_or_else(|| "27".into()))
-    };
+    // The shell's hold is 27 (profile 3,30,30); lock the resolved default.
+    let hold = Some(hold.unwrap_or_else(|| "27".into()));
     let xr = parse_optional_f64(
         raw,
         "xr",
@@ -227,11 +200,7 @@ where
         return Err(config_error(
             raw,
             "min_block_size",
-            if raw.legacy_markdown {
-                "is mutually exclusive with `pieces` (including pieces = 1)"
-            } else {
-                "is mutually exclusive with `parallel.pieces` (including parallel.pieces = 1)"
-            },
+            "is mutually exclusive with `parallel.pieces` (including parallel.pieces = 1)",
         ));
     }
     let piece_threads = parse_optional_u64(raw, "piece_threads", 1, 1024)?;
@@ -242,11 +211,7 @@ where
         return Err(config_error(
             raw,
             "piece_threads",
-            if raw.legacy_markdown {
-                "applies only when `pieces` is greater than 1 or `min_block_size` is set"
-            } else {
-                "applies only when `parallel.pieces` is greater than 1 or `parallel.target_piece_gates` is set"
-            },
+            "applies only when `parallel.pieces` is greater than 1 or `parallel.target_piece_gates` is set",
         ));
     }
     let allow_empty_store = parse_bool(raw, "allow_empty_store", false)?;
@@ -264,7 +229,7 @@ where
     };
 
     Ok(ResolvedConfig {
-        recipe_version: if raw.legacy_markdown { 3 } else { 7 },
+        recipe_version: CURRENT_RECIPE_VERSION,
         source_path,
         source_hash,
         bv5_k,
@@ -286,8 +251,6 @@ where
         frozen_curated,
         curated_value_convention,
         preprocessing_mode,
-        production_preset,
-        post_fragment,
         calibration_only,
         calibration_seed,
         mcd,
@@ -405,30 +368,8 @@ pub(crate) fn parse_enum(
     Ok(value.to_owned())
 }
 
-pub(crate) fn parse_optional_enum(
-    raw: &RawConfig,
-    key: &str,
-    allowed: &[&str],
-) -> Result<Option<String>, String> {
-    let Some(value) = raw.value(key) else {
-        return Ok(None);
-    };
-    if !allowed.contains(&value) {
-        return Err(config_error(
-            raw,
-            key,
-            &format!("expected one of {}; got {value:?}", allowed.join(", ")),
-        ));
-    }
-    Ok(Some(value.to_owned()))
-}
-
 pub(crate) fn config_error(raw: &RawConfig, key: &str, message: &str) -> String {
-    let display_key = if raw.legacy_markdown {
-        key
-    } else {
-        canonical_config_key(key)
-    };
+    let display_key = canonical_config_key(key);
     match raw.line(key) {
         Some(line) => format!("line {line} ({display_key}): {message}"),
         None => format!("{display_key}: {message}"),

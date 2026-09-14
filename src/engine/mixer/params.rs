@@ -46,7 +46,7 @@ pub enum DbSample {
     /// seed adjacent to it, and hand back the fused 2-gate window. The other
     /// samplers cannot build this window: Convex only absorbs colliders (a
     /// commuting gate is hopped past), and Contiguous pairs commuting gates
-    /// only at physical distance 1. See docs/NONLOCAL_PHASE_A.md.
+    /// only at physical distance 1.
     Pair,
     /// Not a sampler: the tag stamped on the two endpoint splices of a bridge
     /// round (`bridge_round`), which fuses two gates that commutation CANNOT
@@ -56,7 +56,7 @@ pub enum DbSample {
     Bridge,
 }
 
-/// One planned bridge round (docs/NONLOCAL_PHASE_A.md): the two target gates,
+/// One planned bridge round: the two target gates,
 // The twist menu is a single SWAP FAMILY (see `twist_move`): a wire swap,
 // optionally composed with a negation of one or both swapped wires. The
 // variant is chosen by two independent fair coins (alpha, beta) at move time,
@@ -220,7 +220,7 @@ pub struct MixParams {
     // among the minimal ones — more growth and diversity per paid splice,
     // and a stronger up-lever for the profile controller.
     pub mix_pay_random: bool,
-    // Layer-2 db_mixing size profile (docs/POSTMIX_MANUAL §2.1.2): effective-
+    // Layer-2 db_mixing size profile: effective-
     // work marks [n0, n1, n2] and size ratios [r1, r2] vs the input size.
     // n2 == 0 -> no profile. While a profile is active the controller is the
     // ONLY size authority: it owns target_size (the thermostat pulls toward
@@ -327,7 +327,7 @@ pub struct MixParams {
     // does not fight the store. Off by default: it changes trajectories, so the
     // A/B is one flag.
     pub db_advance: bool,
-    // ---- pair geometry (docs/NONLOCAL_PHASE_A.md) ----
+    // ---- pair geometry ----
     // p_pair: probability a non-COMP DB round samples its window with the PAIR
     // geometry: the seed plus one far COMMUTING partner, floated adjacent and
     // fused into a 2-gate window. The db_mixing transport move — the fused
@@ -340,7 +340,7 @@ pub struct MixParams {
     // Partner policy: false = farthest eligible gate in the box (max transport
     // per move), true = uniform over the eligible box.
     pub pair_pick_uniform: bool,
-    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md) ----
+    // ---- bridge fusion ----
     // p_bridge: per-round probability of one bridge round — jointly re-encode
     // two gates commutation cannot bring together, by conjugating the interior
     // through a carrier (wake corrections on interior colliders) and
@@ -506,7 +506,7 @@ pub struct MixParams {
     // regimes where the generation census is not meaningful (e.g. pure-split
     // phase B, p_db = 0). Choose a multiple of report_every. 0 = off.
     pub snap_every_moves: u64,
-    // ---- the split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // ---- the split stage ----
     // split: arm the split stage. While it is live the split twist is the ONLY
     // move running (the round's other slots are withheld); the stage ends on
     // g57 exhaustion or split_fail_limit consecutive bracket failures, after
@@ -529,7 +529,7 @@ pub struct MixParams {
     // Length bias of the bracket draw: k candidates sampled on the picked
     // g57's own side, farthest wins. 1 = uniform, larger = longer spans.
     pub split_reach_k: usize,
-    // ---- min-dgen cross-shot bias (docs/FMIX_SPLIT_TWIST.md addendum) ----
+    // ---- min-dgen cross-shot bias ----
     // p_mincross: probability a cross shot is drawn from the min-dgen pool
     // (the K least-split lineages) instead of uniformly. The uniform draw is
     // a rich-get-richer sampler — families that already split carry more
@@ -723,8 +723,8 @@ impl Default for MixParams {
 }
 
 /// Resolved twist, phase-stop and reference-store controls. Database-backed
-/// walks retain their legacy replacement/cache policy. These options replace
-/// the corresponding historical environment overrides and are deliberately not part
+/// walks retain their default replacement/cache policy. These options replace
+/// the corresponding environment overrides and are deliberately not part
 /// of the versioned checkpoint format; supply them again when resuming.
 #[derive(Clone)]
 pub struct MixRuntimeOptions {

@@ -104,8 +104,9 @@ pub struct MixCounters {
     // Same joint histogram, curated-store splices only (splice_sizes minus
     // this = regular). A shape: not carried across resumes.
     pub splice_sizes_curated: Vec<Vec<u64>>,
-    // Litter census (observation only — nothing bans or prefers on these yet;
-    // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
+    // Litter census, grouped by the preserved construction origins. These are
+    // observation counters, not sampling preferences. `litter_windows` and
+    // `litter_distinct_sum` give
     // the mean distinct litters per sampled DB window, i.e. how fast churn
     // fragments litters. `litter_full_spliced` counts splices whose outgoing
     // window was exactly one COMPLETE litter — precisely the replacements an
@@ -221,7 +222,7 @@ pub struct MixCounters {
     pub scatters: u64,
     pub scatter_steps: u64,
     pub dropped_neverfire: u64,
-    // ---- split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // ---- split stage ----
     // Splits of the picked g57 (step 2), of the bracket g57 (4a/4c), and the
     // forced segment splits (5a); twist successes, step-4e failures, and
     // successes whose brackets sat in different circuit halves.
@@ -241,7 +242,7 @@ pub struct MixCounters {
     pub split_span_hist: [u64; 20],
     // Cross shots drawn from the min-dgen pool (vs uniform).
     pub cross_pool_shots: u64,
-    // ---- pair geometry (docs/NONLOCAL_PHASE_A.md; session-local) ----
+    // ---- pair geometry (session-local) ----
     // Rounds that drew the pair geometry, scans with no eligible partner,
     // scans cut by pair_scan_cap, fused windows and their splices, box-size
     // and fused-transport-distance tallies (sum/max over fused windows), and
@@ -256,7 +257,7 @@ pub struct MixCounters {
     pub pair_dist_sum: u64,
     pub pair_dist_max: u64,
     pub pair_perm_skips: u64,
-    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md; session-local) ----
+    // ---- bridge fusion (session-local) ----
     // Rounds, walks clipped at the circuit tail, plans refused (carrier
     // unbuildable / mode-c collider / collider budget), pre-insert store
     // misses, far-splice rollbacks, half commits (near window missed after
@@ -322,8 +323,7 @@ pub(crate) struct Meta {
     // one id AND the count still equals that recorded size, so churn makes the
     // test conservative (it misses, never over-fires) exactly as in ssg.
     //
-    // Observation only today — nothing bans or prefers on these yet; see
-    // docs/FMIX_MENU.md §2.6.
+    // Observation only today — nothing bans or prefers on these yet.
     pub(crate) litter: u64,
     pub(crate) litter_size: u16,
 }
@@ -517,7 +517,7 @@ pub struct Mixer {
     // rung), with a running failure count so the fraction is O(1).
     pub(super) canary: VecDeque<bool>,
     pub(super) canary_failures: usize,
-    // ---- split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // ---- split stage ----
     // Live stage flag (params.split arms it; exits clear it), the
     // consecutive-4e-failure streak, and a one-move latch run() reads to stop
     // at the boundary under split_stop.
@@ -792,7 +792,7 @@ impl Mixer {
         };
         let split_on0 = params.split;
         let mut mx = Mixer {
-            runtime: RuntimeControls::LegacyEnvironment,
+            runtime: RuntimeControls::Environment,
             arena: Arena::from_gates(gates.clone()),
             params,
             counters: MixCounters::default(),

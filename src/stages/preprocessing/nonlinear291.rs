@@ -1,6 +1,5 @@
 //! Native adapter from heterogeneous GSS source gates to the canonical
-//! `nonlinear291` E-encoding gadgets. The shared 193 topology is compiled only
-//! for historical callers with `legacy-tools`.
+//! `nonlinear291` E-encoding gadgets.
 //!
 //! Each logical value is represented by two five-wire blocks with
 //! `E(x) = x0 ^ x1 ^ maj(x2, x3, x4)`.  The public low wires are deliberately
@@ -26,18 +25,6 @@ use crate::circuit::xgate::{Lits, XGate, sort_lits};
 use rand::Rng;
 use std::sync::OnceLock;
 
-#[cfg(feature = "legacy-tools")]
-const TEMPLATE_193_R57: &str =
-    include_str!("../../../security_tests/gadgetization/templates/nonlinear193_r57.mpmct1");
-#[cfg(feature = "legacy-tools")]
-const TEMPLATE_193_NAB: &str =
-    include_str!("../../../security_tests/gadgetization/templates/nonlinear193_nab.mpmct1");
-#[cfg(feature = "legacy-tools")]
-const TEMPLATE_193_AND: &str =
-    include_str!("../../../security_tests/gadgetization/templates/nonlinear193_and.mpmct1");
-#[cfg(feature = "legacy-tools")]
-const TEMPLATE_193_COPY: &str =
-    include_str!("../../../security_tests/gadgetization/templates/nonlinear193_copy.mpmct1");
 const TEMPLATE_291_R57: &str = include_str!("templates/nonlinear291_r57.mpmct1");
 const TEMPLATE_291_NAB: &str = include_str!("templates/nonlinear291_nab.mpmct1");
 const TEMPLATE_291_AND: &str = include_str!("templates/nonlinear291_and.mpmct1");
@@ -51,25 +38,6 @@ const NONLINEAR_SHUFFLE_PASSES: usize = 8;
 // boundary for direct callers so a hostile `slice_gate_count` cannot turn a
 // small, otherwise valid layout into an unbounded allocation request.
 const MAX_SLICE_GATES_PER_NONDATA_WIRE: usize = 64;
-
-/// Canonical nonlinear E-gadget body selected for each source operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NonlinearGssMode {
-    #[cfg(feature = "legacy-tools")]
-    Nonlinear193,
-    Nonlinear291,
-}
-
-impl NonlinearGssMode {
-    fn shared_ancillas(self) -> usize {
-        match self {
-            #[cfg(feature = "legacy-tools")]
-            NonlinearGssMode::Nonlinear193 => 0,
-            // Two fallback, 24 persistent-prefix, and one temporary wire.
-            NonlinearGssMode::Nonlinear291 => 27,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TemplateOp {
@@ -132,9 +100,9 @@ struct GateWires {
 struct SharedWires {
     scratch: u16,
     scratch2: u16,
-    decomp: Option<[u16; 2]>,
-    persistent: Option<[u16; 24]>,
-    temporary: Option<u16>,
+    decomp: [u16; 2],
+    persistent: [u16; 24],
+    temporary: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -152,12 +120,8 @@ struct PhysicalLayout {
 /// `u16` XGate ceiling. Callers may use it before sampling or writing source
 /// artifacts; construction uses the same function, so preflight cannot drift
 /// from the actual layout.
-pub fn nonlinear_gss_wire_count(
-    logical_n: usize,
-    gate_count: usize,
-    mode: NonlinearGssMode,
-) -> Result<usize, String> {
-    // raw n + E carriers 10n + output deltas n + per-gate 12 + shared 2/29.
+pub fn nonlinear_gss_wire_count(logical_n: usize, gate_count: usize) -> Result<usize, String> {
+    // raw n + E carriers 10n + output deltas n + per-gate 12 + shared 29.
     let logical = logical_n
         .checked_mul(12)
         .ok_or_else(|| "nonlinear GSS wire-count overflow in 12*logical_n".to_string())?;
@@ -166,12 +130,12 @@ pub fn nonlinear_gss_wire_count(
         .ok_or_else(|| "nonlinear GSS wire-count overflow in 12*gate_count".to_string())?;
     let total = logical
         .checked_add(per_gate)
-        .and_then(|value| value.checked_add(2 + mode.shared_ancillas()))
+        .and_then(|value| value.checked_add(29))
         .ok_or_else(|| "nonlinear GSS total wire-count overflow".to_string())?;
     if total > u16::MAX as usize {
         return Err(format!(
             "nonlinear GSS adapter needs {total} wires for logical_n={logical_n}, \
-             gates={gate_count}, mode={mode:?}; the XGate capacity is {}",
+             gates={gate_count}; the XGate capacity is {}",
             u16::MAX
         ));
     }
@@ -184,12 +148,8 @@ fn take_array<const N: usize>(cursor: &mut usize) -> [u16; N] {
     std::array::from_fn(|offset| (start + offset) as u16)
 }
 
-fn build_layout(
-    logical_n: usize,
-    gate_count: usize,
-    mode: NonlinearGssMode,
-) -> Result<PhysicalLayout, String> {
-    let total = nonlinear_gss_wire_count(logical_n, gate_count, mode)?;
+fn build_layout(logical_n: usize, gate_count: usize) -> Result<PhysicalLayout, String> {
+    let total = nonlinear_gss_wire_count(logical_n, gate_count)?;
     // 0..logical_n are the stable raw public wires.
     let mut cursor = logical_n;
     let values = (0..logical_n)
@@ -207,15 +167,9 @@ fn build_layout(
         .collect();
     let scratch = take_array::<1>(&mut cursor)[0];
     let scratch2 = take_array::<1>(&mut cursor)[0];
-    let (decomp, persistent, temporary) = match mode {
-        #[cfg(feature = "legacy-tools")]
-        NonlinearGssMode::Nonlinear193 => (None, None, None),
-        NonlinearGssMode::Nonlinear291 => (
-            Some(take_array(&mut cursor)),
-            Some(take_array(&mut cursor)),
-            Some(take_array::<1>(&mut cursor)[0]),
-        ),
-    };
+    let decomp = take_array(&mut cursor);
+    let persistent = take_array(&mut cursor);
+    let temporary = take_array::<1>(&mut cursor)[0];
     let deltas = (0..logical_n)
         .map(|_| take_array::<1>(&mut cursor)[0])
         .collect();
@@ -308,20 +262,12 @@ fn classify_source(source: &[XGate], logical_n: usize) -> Result<Vec<SourceOp>, 
         .collect()
 }
 
-fn expected_template_shape(mode: NonlinearGssMode, op: TemplateOp) -> (usize, usize, usize) {
-    match (mode, op) {
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::R57) => (44, 193, 4),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::Nab) => (44, 190, 4),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::And) => (44, 193, 4),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::Copy) => (34, 85, 3),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::R57) => (71, 291, 2),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::Nab) => (71, 288, 2),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::And) => (71, 291, 2),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::Copy) => (61, 127, 2),
+fn expected_template_shape(op: TemplateOp) -> (usize, usize, usize) {
+    match op {
+        TemplateOp::R57 => (71, 291, 2),
+        TemplateOp::Nab => (71, 288, 2),
+        TemplateOp::And => (71, 291, 2),
+        TemplateOp::Copy => (61, 127, 2),
     }
 }
 
@@ -341,9 +287,9 @@ fn parse_usize(token: Option<&str>, context: &str) -> Result<usize, String> {
         .map_err(|_| format!("{context}: invalid unsigned integer"))
 }
 
-fn parse_template(text: &str, mode: NonlinearGssMode, op: TemplateOp) -> Result<Template, String> {
-    let name = format!("{mode:?}_{} template", op.name());
-    let (expected_wires, expected_gates, expected_max_fanin) = expected_template_shape(mode, op);
+fn parse_template(text: &str, op: TemplateOp) -> Result<Template, String> {
+    let name = format!("Nonlinear291_{} template", op.name());
+    let (expected_wires, expected_gates, expected_max_fanin) = expected_template_shape(op);
     let mut tokens = text.split_whitespace();
     if tokens.next() != Some("mpmct1") {
         return Err(format!("{name}: missing mpmct1 header"));
@@ -406,35 +352,19 @@ fn parse_template(text: &str, mode: NonlinearGssMode, op: TemplateOp) -> Result<
     Ok(Template { num_wires, gates })
 }
 
-fn canonical_template(mode: NonlinearGssMode, op: TemplateOp) -> Result<&'static Template, String> {
-    #[cfg(feature = "legacy-tools")]
-    static T193_R57: OnceLock<Result<Template, String>> = OnceLock::new();
-    #[cfg(feature = "legacy-tools")]
-    static T193_NAB: OnceLock<Result<Template, String>> = OnceLock::new();
-    #[cfg(feature = "legacy-tools")]
-    static T193_AND: OnceLock<Result<Template, String>> = OnceLock::new();
-    #[cfg(feature = "legacy-tools")]
-    static T193_COPY: OnceLock<Result<Template, String>> = OnceLock::new();
+fn canonical_template(op: TemplateOp) -> Result<&'static Template, String> {
     static T291_R57: OnceLock<Result<Template, String>> = OnceLock::new();
     static T291_NAB: OnceLock<Result<Template, String>> = OnceLock::new();
     static T291_AND: OnceLock<Result<Template, String>> = OnceLock::new();
     static T291_COPY: OnceLock<Result<Template, String>> = OnceLock::new();
 
-    let (cell, text) = match (mode, op) {
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::R57) => (&T193_R57, TEMPLATE_193_R57),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::Nab) => (&T193_NAB, TEMPLATE_193_NAB),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::And) => (&T193_AND, TEMPLATE_193_AND),
-        #[cfg(feature = "legacy-tools")]
-        (NonlinearGssMode::Nonlinear193, TemplateOp::Copy) => (&T193_COPY, TEMPLATE_193_COPY),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::R57) => (&T291_R57, TEMPLATE_291_R57),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::Nab) => (&T291_NAB, TEMPLATE_291_NAB),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::And) => (&T291_AND, TEMPLATE_291_AND),
-        (NonlinearGssMode::Nonlinear291, TemplateOp::Copy) => (&T291_COPY, TEMPLATE_291_COPY),
+    let (cell, text) = match op {
+        TemplateOp::R57 => (&T291_R57, TEMPLATE_291_R57),
+        TemplateOp::Nab => (&T291_NAB, TEMPLATE_291_NAB),
+        TemplateOp::And => (&T291_AND, TEMPLATE_291_AND),
+        TemplateOp::Copy => (&T291_COPY, TEMPLATE_291_COPY),
     };
-    cell.get_or_init(|| parse_template(text, mode, op))
+    cell.get_or_init(|| parse_template(text, op))
         .as_ref()
         .map_err(Clone::clone)
 }
@@ -475,13 +405,9 @@ fn append_template(
     map[scratch] = shared.scratch as usize;
     map[scratch2] = shared.scratch2 as usize;
     map_block(&mut map, chaff_start, &wires.chaff);
-    if let (Some(decomp), Some(persistent), Some(temporary)) =
-        (shared.decomp, shared.persistent, shared.temporary)
-    {
-        map_block(&mut map, extra_start, &decomp);
-        map_block(&mut map, extra_start + 2, &persistent);
-        map[extra_start + 26] = temporary as usize;
-    }
+    map_block(&mut map, extra_start, &shared.decomp);
+    map_block(&mut map, extra_start + 2, &shared.persistent);
+    map[extra_start + 26] = shared.temporary as usize;
     if let Some(local) = map.iter().position(|&wire| wire == usize::MAX) {
         return Err(format!(
             "{} template local wire {local} has no semantic mapping",
@@ -543,7 +469,6 @@ fn emit_balanced_data_mask(target: u16, data_n: usize, rng: &mut impl Rng, out: 
 fn checked_preblock_gate_counts(
     nondata: usize,
     slice_gate_count: usize,
-    mode: NonlinearGssMode,
 ) -> Result<(usize, usize), String> {
     let minimum = nondata
         .checked_mul(SLICE_ZERO_CCNOT_GATES_PER_WIRE)
@@ -560,33 +485,21 @@ fn checked_preblock_gate_counts(
         ));
     }
 
-    let emitted = match mode {
-        #[cfg(feature = "legacy-tools")]
-        NonlinearGssMode::Nonlinear193 => requested,
-        NonlinearGssMode::Nonlinear291 => {
-            let cnots = requested / 3;
-            let rest = requested - cnots;
-            let quads = rest / 2;
-            let ccnots = rest - quads;
-            cnots
-                .checked_add(ccnots)
-                .and_then(|count| count.checked_add(quads.checked_mul(4)?))
-                .ok_or_else(|| {
-                    "nonlinear291 decomposed slice-preblock gate-count overflow".to_string()
-                })?
-        }
-    };
+    let cnots = requested / 3;
+    let rest = requested - cnots;
+    let quads = rest / 2;
+    let ccnots = rest - quads;
+    let emitted = cnots
+        .checked_add(ccnots)
+        .and_then(|count| count.checked_add(quads.checked_mul(4)?))
+        .ok_or_else(|| "nonlinear291 decomposed slice-preblock gate-count overflow".to_string())?;
     Ok((requested, emitted))
 }
 
-fn checked_body_gate_count(
-    source_ops: &[SourceOp],
-    logical_n: usize,
-    mode: NonlinearGssMode,
-) -> Result<usize, String> {
+fn checked_body_gate_count(source_ops: &[SourceOp], logical_n: usize) -> Result<usize, String> {
     let templates = source_ops.iter().try_fold(0usize, |count, op| {
         count
-            .checked_add(expected_template_shape(mode, op.kind).1)
+            .checked_add(expected_template_shape(op.kind).1)
             .ok_or_else(|| "nonlinear GSS template gate-count overflow".to_string())
     })?;
     let logical = logical_n
@@ -612,18 +525,13 @@ pub fn nonlinear_gss_resource_plan(
     logical_n: usize,
     gate_count: usize,
     slice_gate_count: usize,
-    mode: NonlinearGssMode,
 ) -> Result<(usize, usize), String> {
-    let total_wires = nonlinear_gss_wire_count(logical_n, gate_count, mode)?;
+    let total_wires = nonlinear_gss_wire_count(logical_n, gate_count)?;
     let nondata = total_wires
         .checked_sub(logical_n)
         .ok_or_else(|| "nonlinear GSS nondata wire-count underflow".to_string())?;
-    let (_, emitted_preblock) = checked_preblock_gate_counts(nondata, slice_gate_count, mode)?;
-    let max_template = match mode {
-        #[cfg(feature = "legacy-tools")]
-        NonlinearGssMode::Nonlinear193 => 193usize,
-        NonlinearGssMode::Nonlinear291 => 291usize,
-    };
+    let (_, emitted_preblock) = checked_preblock_gate_counts(nondata, slice_gate_count)?;
+    let max_template = 291usize;
     let logical_bookends = logical_n
         .checked_mul(INGRESS_GATES_PER_LOGICAL + EGRESS_GATES_PER_LOGICAL)
         .ok_or_else(|| "nonlinear GSS logical bookend gate-count overflow".to_string())?;
@@ -672,21 +580,19 @@ fn bounded_commuting_reorder(gates: &mut [XGate], rng: &mut impl Rng) {
 /// control), `!a & b`, positive AND, and positive copy.  All targets and
 /// controls must name distinct wires below `logical_n`.  Every source gate gets
 /// unique five-wire resharing, three clean output, and four chaff regions;
-/// restored scratch and (for 291) decomposition/cache wires are shared.
+/// restored scratch and decomposition/cache wires are shared.
 /// `data_n` names the stable raw prefix used to derive balanced ingress masks;
 /// GSS passes the original source width while `logical_n` is the sandwich's
 /// doubled width.  Correctness is guaranteed when all wires at and above
 /// `logical_n` start at zero.
 ///
-/// The exact body gate counts are 193/190/193/85 for r57/nab/and/copy in
-/// `Nonlinear193`, and 291/288/291/127 in `Nonlinear291`.  The returned circuit
-/// additionally contains ingress, egress, and slice-preblock gates.
-pub fn gadgetize_xgates_nonlinear_gss(
+/// The exact body gate counts are 291/288/291/127 for r57/nab/and/copy.
+/// The returned circuit also contains ingress, egress, and slice-preblock gates.
+pub fn preprocess_nonlinear291(
     source: &[XGate],
     logical_n: usize,
     data_n: usize,
     slice_gate_count: usize,
-    mode: NonlinearGssMode,
     rng: &mut impl Rng,
 ) -> Result<CnotCircuit, String> {
     if logical_n < 3 {
@@ -702,24 +608,23 @@ pub fn gadgetize_xgates_nonlinear_gss(
     // Bound the source-dependent layout before `classify_source` allocates its
     // parallel operation vector or any physical-wire layout is constructed.
     let (planned_total, planned_output_upper) =
-        nonlinear_gss_resource_plan(logical_n, source.len(), slice_gate_count, mode)?;
+        nonlinear_gss_resource_plan(logical_n, source.len(), slice_gate_count)?;
     let source_ops = classify_source(source, logical_n)?;
-    let layout = build_layout(logical_n, source.len(), mode)?;
+    let layout = build_layout(logical_n, source.len())?;
     debug_assert_eq!(layout.total, planned_total);
 
     // Parse every used template before constructing output, so a canonical
     // artifact mismatch fails without returning a partially built circuit.
     for op in &source_ops {
-        canonical_template(mode, op.kind)?;
+        canonical_template(op.kind)?;
     }
 
     let nondata = layout.total - logical_n;
-    // The nonlinear layout has far more slice wires than the product family.
-    // Preserve the existing ten-probes-per-slice-wire budget instead of
-    // collapsing to one read per auxiliary, which is unstable at small widths.
+    // Ten probes per slice wire keep the guard effective across the large
+    // auxiliary layout, including at small source widths.
     let (preblock_gates, emitted_preblock_gates) =
-        checked_preblock_gate_counts(nondata, slice_gate_count, mode)?;
-    let planned_body_gates = checked_body_gate_count(&source_ops, logical_n, mode)?;
+        checked_preblock_gate_counts(nondata, slice_gate_count)?;
+    let planned_body_gates = checked_body_gate_count(&source_ops, logical_n)?;
     let planned_output_gates = emitted_preblock_gates
         .checked_add(planned_body_gates)
         .ok_or_else(|| "nonlinear GSS total emitted gate-count overflow".to_string())?;
@@ -728,7 +633,6 @@ pub fn gadgetize_xgates_nonlinear_gss(
         logical_n,
         nondata,
         preblock_gates,
-        mode == NonlinearGssMode::Nonlinear291,
         layout.shared.scratch,
         layout.shared.scratch2,
         rng,
@@ -775,7 +679,7 @@ pub fn gadgetize_xgates_nonlinear_gss(
         let target = current[op.target];
         let a = op.a.map(|wire| current[wire]);
         let b = current[op.b];
-        let template = canonical_template(mode, op.kind)?;
+        let template = canonical_template(op.kind)?;
         append_template(
             &mut body,
             template,
@@ -828,25 +732,6 @@ pub fn gadgetize_xgates_nonlinear_gss(
     // preserving the zero-slice contract exactly.
     bounded_commuting_reorder(&mut circuit.gates, rng);
     Ok(circuit)
-}
-
-/// Supported nonlinear291 constructor with the mode fixed explicitly. Logical
-/// data lives on `0..logical_n`; every higher input wire must start at zero.
-pub fn preprocess_nonlinear291(
-    source: &[XGate],
-    logical_n: usize,
-    data_n: usize,
-    slice_gate_count: usize,
-    rng: &mut impl Rng,
-) -> Result<CnotCircuit, String> {
-    gadgetize_xgates_nonlinear_gss(
-        source,
-        logical_n,
-        data_n,
-        slice_gate_count,
-        NonlinearGssMode::Nonlinear291,
-        rng,
-    )
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Polynomial construction and deterministic database-key canonicalization.
 mod cache;
-mod legacy_environment;
+mod environment;
 mod options;
 pub use options::{CanonicalizationOptions, G57CanonicalizationOptions};
 pub mod canonicalize;

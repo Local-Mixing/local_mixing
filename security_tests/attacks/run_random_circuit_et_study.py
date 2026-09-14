@@ -433,7 +433,7 @@ def make_k_values_plan(args: argparse.Namespace, m_plan: dict[int, list[int]]) -
 
 
 def ensure_tools(args: argparse.Namespace) -> None:
-    for path in [args.genran, args.converter]:
+    for path in [args.generator, args.converter]:
         if not Path(path).exists():
             raise FileNotFoundError(path)
     for solver in load_solvers(args):
@@ -475,8 +475,8 @@ def prepare_inputs(args: argparse.Namespace, m_plan: dict[int, list[int]], k_val
             if not circuit_path.exists():
                 subprocess.run(
                     [
-                        args.genran,
-                        "genran",
+                        args.generator,
+                        "circuit", "generate",
                         "-n",
                         str(n),
                         "-m",
@@ -531,7 +531,7 @@ def main() -> int:
     parser.add_argument("--time-limit", type=int, default=60)
     parser.add_argument("--concurrency", type=int, default=18)
     parser.add_argument("--study-seed", type=int, default=20260627)
-    parser.add_argument("--genran", default="/home/cc/local_mixing/target/release/legacy_mixing")
+    parser.add_argument("--generator", default="target/release/local_mixing_bin")
     parser.add_argument("--converter", default="/home/cc/local_mixing/work/et_study_tools/circuit_to_cnf_lowtarget_leading0_wide")
     parser.add_argument("--kissat", default="/home/cc/local_mixing/work/kissat/build/kissat")
     parser.add_argument("--cadical", default="/home/cc/local_mixing/work/solver_portfolio_20260627/src/cadical-sc2025/build/cadical")

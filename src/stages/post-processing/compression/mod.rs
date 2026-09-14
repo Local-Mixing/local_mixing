@@ -33,7 +33,7 @@ pub struct CompressParams {
     pub group_cap: usize,
     // ANF rewrite attempted only when the group support fits (mask bits).
     pub anf_support_cap: usize,
-    // Interleave one conjugation-descent pass (postprocessing::downhill) after each
+    // Interleave one conjugation-descent pass (compression::downhill) after each
     // gather/reduce iteration.
     pub downhill: bool,
     // Float groups across writers of their control wires by conjugation

@@ -21,7 +21,7 @@
 //!              the gap ends by commuting swaps. Forced diversity over all
 //!              wires; every wire masked at every cut but its own use points.
 //! Cross budget B (arg 7, conj/adaptive only): on collision, spend one unit
-//! to cross via the exact splitting rules (engine::rules R1/R2/R3, g57
+//! to cross via the exact splitting rules (engine::moves::rules R1/R2/R3, g57
 //! colliders pre-split first); the lead shot piece floats on, other pieces
 //! stay where they land. B=0 = commuting swaps only.
 //!
@@ -31,10 +31,10 @@
 //! <outbase>.source_c.g57, <outbase>.k0.mpmct1 (= C) and <outbase>.k<k>.mpmct1.
 
 use local_mixing::circuit::U1024;
+use local_mixing::circuit::formats::write_mpmct;
 use local_mixing::circuit::random_circuit;
 use local_mixing::circuit::xgate::{XGate, eval_u1024};
-use local_mixing::engine::format::write_mpmct;
-use local_mixing::engine::rules::{Outcome, Role, cross, presplit};
+use local_mixing::engine::moves::rules::{Outcome, Role, cross, presplit};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 

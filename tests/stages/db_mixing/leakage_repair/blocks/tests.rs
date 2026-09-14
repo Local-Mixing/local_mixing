@@ -1,6 +1,6 @@
 use super::*;
-use crate::db_mixing::db_replace::polys_equivalent;
-use crate::engine::xpoly::XPolyBudget;
+use crate::canonicalization::xgate::XPolyBudget;
+use crate::stages::db_mixing::replacement::polys_equivalent;
 
 fn limits() -> BlockLimits {
     BlockLimits {

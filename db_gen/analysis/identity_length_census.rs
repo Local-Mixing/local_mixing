@@ -12,7 +12,7 @@
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::cancel_adjacent_duplicates;
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::Mutex;

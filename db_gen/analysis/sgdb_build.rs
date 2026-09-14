@@ -27,7 +27,7 @@
 //! span histogram is printed at the end so a final DB can be sub-sampled
 //! from a larger pool by span.
 
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};

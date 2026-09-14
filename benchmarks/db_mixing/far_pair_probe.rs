@@ -16,11 +16,11 @@
 //! work over slow mounts.
 
 use clap::Parser;
+use local_mixing::canonicalization::xgate::XPolyBudget;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::db_mixing::db_replace::db_probe;
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
-use local_mixing::engine::xpoly::XPolyBudget;
+use local_mixing::database::frozen::FrozenDb;
+use local_mixing::stages::db_mixing::replacement::db_probe;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 

@@ -27,8 +27,8 @@
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::cancel_adjacent_duplicates;
+use local_mixing::database::frozen::{FrozenDb, scan_shard};
 use local_mixing::db_generation::curated_full::split_composite_key;
-use local_mixing::db_mixing::frozen::{FrozenDb, scan_shard};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

@@ -7,11 +7,11 @@
 //! calculus; no provenance or generator-run data is consulted.
 
 use clap::Parser;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::{XGate, eval_lanes};
 use local_mixing::engine::arena::{Arena, Dir, NIL};
-use local_mixing::engine::format;
-use local_mixing::engine::rules::{self, BlockReason, Outcome, RuleKind};
-use local_mixing::postprocessing::compress::liveness_prune;
+use local_mixing::engine::moves::rules::{self, BlockReason, Outcome, RuleKind};
+use local_mixing::stages::post_processing::compression::liveness_prune;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

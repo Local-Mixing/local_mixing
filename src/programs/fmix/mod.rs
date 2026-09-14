@@ -334,7 +334,7 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.p_pair > 0.0 {
         println!(
-            "[fmix] pair geometry ON: p_pair={} scan_cap={} pick={} (far-pair fusion, docs/NONLOCAL_PHASE_A.md)",
+            "[fmix] pair geometry ON: p_pair={} scan_cap={} pick={} (far-pair fusion)",
             args.p_pair,
             args.pair_scan_cap,
             if args.pair_pick_uniform {
@@ -346,7 +346,7 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.p_bridge > 0.0 {
         println!(
-            "[fmix] bridge fusion ON: p_bridge={} span=[{},{}] max_colliders={} — wake corrections are non-g57 (polf > 0 expected; docs/NONLOCAL_PHASE_A.md)",
+            "[fmix] bridge fusion ON: p_bridge={} span=[{},{}] max_colliders={} — wake corrections are non-g57 (polf > 0 expected)",
             args.p_bridge, args.bridge_min_span, args.bridge_max_span, args.bridge_max_colliders
         );
     }
@@ -859,10 +859,10 @@ pub fn run(matches: clap::ArgMatches) {
     mixer.split_tap_summary();
     {
         use std::sync::atomic::Ordering;
-        let rl = crate::circuit::CANON_RULE_L_SKIPS.load(Ordering::Relaxed);
-        let mc = crate::circuit::CANON_CAP_SKIPS.load(Ordering::Relaxed);
-        let rlb = crate::circuit::CANON4_RULE_L_BRANCHES.load(Ordering::Relaxed);
-        let rlc = crate::circuit::CANON4_RULE_L_CALLS.load(Ordering::Relaxed);
+        let rl = crate::canonicalization::CANON_RULE_L_SKIPS.load(Ordering::Relaxed);
+        let mc = crate::canonicalization::CANON_CAP_SKIPS.load(Ordering::Relaxed);
+        let rlb = crate::canonicalization::CANON4_RULE_L_BRANCHES.load(Ordering::Relaxed);
+        let rlc = crate::canonicalization::CANON4_RULE_L_CALLS.load(Ordering::Relaxed);
         println!(
             "[fmix] canon caps: rule_l_skips={rl} monomial_skips={mc} rule_l_calls={rlc} rule_l_branches={rlb}"
         );

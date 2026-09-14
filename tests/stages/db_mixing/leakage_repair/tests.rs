@@ -1,9 +1,9 @@
 use super::*;
-use crate::circuit::polys_repr_blob;
-use crate::db_mixing::db_replace::{polys_equivalent, qc_candidates_with};
-use crate::db_mixing::frozen::FrozenDb;
-use crate::engine::mix::MixParams;
-use crate::engine::xpoly::canonicalize_xgates_single;
+use crate::canonicalization::polys_repr_blob;
+use crate::canonicalization::xgate::canonicalize_xgates_single;
+use crate::database::frozen::FrozenDb;
+use crate::engine::mixer::MixParams;
+use crate::stages::db_mixing::replacement::{polys_equivalent, qc_candidates_with};
 use xxhash_rust::xxh3::xxh3_128;
 
 fn input() -> Vec<XGate> {

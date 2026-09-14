@@ -1,6 +1,6 @@
 //! Exact G57 window cache and its memory budget.
 use super::Polynomial;
-pub(super) use super::legacy_environment::canon_cache_cap_bytes;
+pub(super) use super::environment::canon_cache_cap_bytes;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 // ---------------------------------------------------------------------------
@@ -8,8 +8,8 @@ use std::sync::atomic::AtomicU64;
 //
 // canonicalize_polys_single is pure: the canonical polys and final order are
 // fully determined by the dense-remapped, gate-canonicalized window. The
-// expansion/compression games draw the same windows over and over (SAMF
-// templates recur all over the circuit), so an exact process-wide cache
+// expansion/compression games draw the same windows over and over (gadget
+// templates recur throughout the circuit), so an exact process-wide cache
 // skips to_polynomial + canonicalize_polys_4 entirely on repeats.
 //
 // CANON_CACHE_MB caps the approximate entry-byte footprint (default 256 MiB;

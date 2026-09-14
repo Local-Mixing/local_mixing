@@ -11,11 +11,11 @@
 //! curated) store for every distinct key in both direction frames and
 //! reports the yield: how many of these functions are NOT already reachable
 //! in the existing g57-only store. Without the var, prints keys only.
-use local_mixing::circuit::polys_repr_blob;
+use local_mixing::canonicalization::polys_repr_blob;
+use local_mixing::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
 use local_mixing::circuit::xgate::XGate;
+use local_mixing::database::frozen::FrozenDb;
 use local_mixing::db_generation::wide_gates::wide_gates_for_circuit_filtered;
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
 use std::collections::BTreeMap;
 use xxhash_rust::xxh3::xxh3_128;
 

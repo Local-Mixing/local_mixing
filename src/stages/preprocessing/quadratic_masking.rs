@@ -1636,14 +1636,6 @@ pub fn preprocess_quadratic_masking_with_execution(
     }
 }
 
-// Forwarding names for tests/tools migrating from the historical API.
-#[doc(hidden)]
-pub use QuadraticMaskingOutput as BlindedV5Output;
-#[doc(hidden)]
-pub use QuadraticMaskingParams as BlindedV5Params;
-#[doc(hidden)]
-pub use preprocess_quadratic_masking as gadgetize_blinded_v5;
-
 #[cfg(test)]
 #[path = "../../../tests/stages/preprocessing/quadratic_masking.rs"]
 mod tests;

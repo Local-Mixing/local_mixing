@@ -17,10 +17,10 @@
 //!   db_match_synth <store_dir> [--samples N] [--seed S] [--dense-only|--sparse-only]
 //! Env: FROZEN_FILTER=1 recommended; CANON_RULE_L_BRANCH_CAP guards canon.
 
+use local_mixing::canonicalization::xgate::XPolyBudget;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::db_mixing::db_replace::{DbMode, DegreeGuard, db_replace};
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::xpoly::XPolyBudget;
+use local_mixing::database::frozen::FrozenDb;
+use local_mixing::stages::db_mixing::replacement::{DbMode, DegreeGuard, db_replace};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 

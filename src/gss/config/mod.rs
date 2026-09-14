@@ -1,11 +1,10 @@
 //! Typed GSS recipes. Parsing, validation and saved-run compatibility have separate owners.
-mod legacy_recipe;
 mod parse;
 mod validate;
 use crate::gss::paths::*;
-use crate::stages::preprocessing::nonlinear291::{NonlinearGssMode, nonlinear_gss_resource_plan};
+pub(crate) use crate::stages::preprocessing::PreprocessingMode;
+use crate::stages::preprocessing::nonlinear291::nonlinear_gss_resource_plan;
 use crate::stages::sandwich::{sandwich_default_m, sandwich_default_s};
-pub(crate) use legacy_recipe::*;
 pub(crate) use parse::*;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -13,64 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 pub(crate) use validate::*;
 
-pub(crate) const CONFIG_BEGIN: &str = "<!-- GSS_MIX_CONFIG_BEGIN -->";
-
-pub(crate) const CONFIG_END: &str = "<!-- GSS_MIX_CONFIG_END -->";
-
 pub(crate) const MAX_SEED_FILE_BYTES: u64 = 64;
-
-pub(crate) const KNOWN_KEYS: &[&str] = &[
-    "n",
-    "run_dir",
-    "build_release",
-    "build_target_dir",
-    "adopt_existing_run",
-    "frozen_db_dir",
-    "frozen_curated_dir",
-    "curated_value_convention",
-    "gadgetization_mode",
-    "production_preset",
-    "post_fragment",
-    "calibration_only",
-    "calibration_seed_file",
-    "mcd",
-    "expand",
-    "hold",
-    "xr",
-    "xb",
-    "xc",
-    "xtdiv",
-    "xmoves",
-    "stop_after",
-    "force_from",
-    "allow_empty_store",
-    "frozen_filter",
-    "pieces",
-    "min_block_size",
-    "piece_threads",
-    "bv5_k",
-    "bv5_max_open",
-    "bv5_min_open",
-    "bv5_balanced",
-    "source_path",
-    "qc_enabled",
-    "qc_seed",
-    "qc_reference",
-];
-
-pub(crate) const PRODUCTION_PRESETS: &[&str] = &[
-    "production",
-    "no-gray-phase-a",
-    "micro-gray",
-    "sentinel-gray",
-    "no-gray-post-exact",
-    "no-gray-post-native",
-    "five-carrier",
-    "strong-five-carrier",
-    "six-carrier",
-    "strong-six-carrier",
-    "seven-carrier",
-];
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigEntry {
@@ -80,7 +22,6 @@ pub(crate) struct ConfigEntry {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RawConfig {
-    pub(crate) legacy_markdown: bool,
     pub(crate) entries: BTreeMap<String, ConfigEntry>,
 }
 
@@ -150,9 +91,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) frozen_db: SourcedPath,
     pub(crate) frozen_curated: SourcedPath,
     pub(crate) curated_value_convention: String,
-    pub(crate) preprocessing_mode: RecipePreprocessingMode,
-    pub(crate) production_preset: String,
-    pub(crate) post_fragment: Option<String>,
+    pub(crate) preprocessing_mode: PreprocessingMode,
     pub(crate) calibration_only: bool,
     pub(crate) calibration_seed: Option<String>,
     pub(crate) mcd: Option<String>,
@@ -167,7 +106,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) force_from: Option<String>,
     pub(crate) allow_empty_store: bool,
     pub(crate) frozen_filter: FrozenFilter,
-    // Stages 3-4 piecewise-parallel rounds (docs/FMIX_PIECEWISE.md). `pieces`
+    // Stages 3-4 piecewise-parallel rounds. `pieces`
     // and `min_block_size` are locked recipe values; threads are lifecycle.
     pub(crate) pieces: Option<String>,
     pub(crate) min_block_size: Option<String>,

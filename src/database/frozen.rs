@@ -1053,14 +1053,14 @@ pub struct FrozenOpenOptions {
 
 #[derive(Clone, Copy)]
 enum FilterSetting {
-    LegacyEnvironment,
+    Environment,
     Resolved(bool),
 }
 
 impl FilterSetting {
     fn enabled(self) -> bool {
         match self {
-            Self::LegacyEnvironment => super::legacy_environment::filters_enabled(),
+            Self::Environment => super::environment::filters_enabled(),
             Self::Resolved(enabled) => enabled,
         }
     }
@@ -1070,29 +1070,27 @@ impl FilterSetting {
 ///
 /// `open`/`from_env` require the regular store. The curated store is optional
 /// so commands that only compress against the regular table do not need to
-/// open it. (Deviation from the shuffletests original: `regular` is an Option
-/// so `FrozenDb::empty()` can model this branch's legacy DB-less modes — the
-/// paths that used to pass empty shard-db slices, e.g. the unsamf-cycle tests
-/// and interleave's no-lookup arm.)
+/// open it. `FrozenDb::empty()` supplies an all-miss handle for isolated tests
+/// and mixing operations that do not use database replacements.
 pub struct FrozenDb {
     regular: Option<Frozen>,
     curated: Option<Frozen>,
 }
 
 impl FrozenDb {
-    /// Open explicit directories with historical environment overrides.
+    /// Open explicit directories with environment overrides.
     /// See `open_with_options` for a fully resolved storage boundary.
     pub fn open(regular_dir: &str, curated_dir: Option<&str>) -> Self {
         let regular_convention =
-            super::legacy_environment::value_convention("FROZEN_REGULAR_VALUE_CONVENTION");
+            super::environment::value_convention("FROZEN_REGULAR_VALUE_CONVENTION");
         let curated_convention =
-            super::legacy_environment::value_convention("FROZEN_CURATED_VALUE_CONVENTION");
+            super::environment::value_convention("FROZEN_CURATED_VALUE_CONVENTION");
         Self::open_resolved(
             regular_dir,
             curated_dir,
             regular_convention,
             curated_convention,
-            FilterSetting::LegacyEnvironment,
+            FilterSetting::Environment,
         )
     }
 
@@ -1141,8 +1139,7 @@ impl FrozenDb {
         Self { regular, curated }
     }
 
-    /// A handle with no stores: every lookup misses. Stands in for the legacy
-    /// empty-shard-slice convention where a caller ran without any DB.
+    /// A handle with no stores: every lookup misses.
     pub fn empty() -> Self {
         Self {
             regular: None,
@@ -1151,9 +1148,9 @@ impl FrozenDb {
     }
 
     /// Open stores from `FROZEN_DB_DIR` and optional `FROZEN_CURATED_DIR`.
-    /// The regular store is required because there is no legacy fallback.
+    /// The regular store is required.
     pub fn from_env() -> Self {
-        let (regular, curated) = super::legacy_environment::frozen_directories();
+        let (regular, curated) = super::environment::frozen_directories();
         Self::open(&regular, curated.as_deref())
     }
 

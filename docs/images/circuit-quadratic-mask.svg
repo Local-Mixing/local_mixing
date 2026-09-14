@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1030" height="414" viewBox="0 0 1030 414" role="img" aria-labelledby="title desc">
+<title id="title">Opening and closing one balanced quadratic mask</title><desc id="desc">Open one mask by applying r57 [W,Bx,By] and CNOT [W,Bz]. Repeat the same two gates to close the mask when the three band values are unchanged. The repeated sequence restores the carrier if no computation intervenes.</desc>
+<rect width="1030" height="414" rx="12" fill="white"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="#586979"/></marker></defs>
+<text x="28" y="34" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600">Opening and closing one balanced quadratic mask</text>
+<text x="84" y="120" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">Bₓ</text>
+<line x1="100" y1="114" x2="875" y2="114" stroke="#8593a0" stroke-width="1.8"/>
+<text x="84" y="177" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B<tspan baseline-shift="sub" font-size="75%">y</tspan></text>
+<line x1="100" y1="171" x2="875" y2="171" stroke="#8593a0" stroke-width="1.8"/>
+<text x="84" y="234" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">B<tspan baseline-shift="sub" font-size="75%">z</tspan></text>
+<line x1="100" y1="228" x2="875" y2="228" stroke="#8593a0" stroke-width="1.8"/>
+<text x="84" y="307" fill="#183042" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="18">W</text>
+<line x1="100" y1="301" x2="875" y2="301" stroke="#8593a0" stroke-width="1.8"/>
+<rect x="149" y="69" width="227" height="270" rx="6" fill="none" stroke="#c6d9eb" stroke-width="1.5"/>
+<rect x="565" y="69" width="227" height="270" rx="6" fill="none" stroke="#c6d9eb" stroke-width="1.5"/>
+<text x="261" y="60" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600">open</text>
+<text x="678" y="60" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600">close</text>
+<line x1="211" y1="114" x2="211" y2="301" stroke="#2165a8" stroke-width="1.8"/>
+<circle cx="211" cy="114" r="9" fill="#2165a8" stroke="#2165a8" stroke-width="1.7"/>
+<text x="211" y="118" fill="white" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="600">1</text>
+<circle cx="211" cy="171" r="9" fill="#2165a8" stroke="#2165a8" stroke-width="1.7"/>
+<text x="211" y="175" fill="white" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="600">2</text>
+<rect x="186" y="287" width="50" height="28" rx="6" fill="#eaf2fa" stroke="#2165a8" stroke-width="1.5"/>
+<text x="211" y="306" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="600">r57</text>
+<line x1="325" y1="228" x2="325" y2="301" stroke="#183042" stroke-width="1.8"/>
+<circle cx="325" cy="228" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="325" cy="301" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="315" y1="301" x2="335" y2="301" stroke="#183042" stroke-width="1.8"/>
+<line x1="325" y1="291" x2="325" y2="311" stroke="#183042" stroke-width="1.8"/>
+<line x1="627" y1="114" x2="627" y2="301" stroke="#2165a8" stroke-width="1.8"/>
+<circle cx="627" cy="114" r="9" fill="#2165a8" stroke="#2165a8" stroke-width="1.7"/>
+<text x="627" y="118" fill="white" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="600">1</text>
+<circle cx="627" cy="171" r="9" fill="#2165a8" stroke="#2165a8" stroke-width="1.7"/>
+<text x="627" y="175" fill="white" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="600">2</text>
+<rect x="602" y="287" width="50" height="28" rx="6" fill="#eaf2fa" stroke="#2165a8" stroke-width="1.5"/>
+<text x="627" y="306" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="600">r57</text>
+<line x1="741" y1="228" x2="741" y2="301" stroke="#183042" stroke-width="1.8"/>
+<circle cx="741" cy="228" r="5" fill="#183042" stroke="#183042" stroke-width="1.7"/>
+<circle cx="741" cy="301" r="10" fill="white" stroke="#183042" stroke-width="1.7"/>
+<line x1="731" y1="301" x2="751" y2="301" stroke="#183042" stroke-width="1.8"/>
+<line x1="741" y1="291" x2="741" y2="311" stroke="#183042" stroke-width="1.8"/>
+<text x="470" y="278" fill="#2165a8" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="19">W ⊕ M</text>
+<text x="897" y="307" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19">W</text>
+<text x="28" y="376" fill="#183042" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="19">M = 1 ⊕ B<tspan baseline-shift="sub" font-size="75%">y</tspan> ⊕ BₓB<tspan baseline-shift="sub" font-size="75%">y</tspan> ⊕ B<tspan baseline-shift="sub" font-size="75%">z</tspan></text>
+<text x="540" y="376" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16">Bₓ, B<tspan baseline-shift="sub" font-size="75%">y</tspan>, B<tspan baseline-shift="sub" font-size="75%">z</tspan> stay unchanged during this identity.</text>
+<text x="28" y="402" fill="#586979" text-anchor="start" font-family="Arial, Helvetica, sans-serif" font-size="16">The three band wires are distinct. Flipping B<tspan baseline-shift="sub" font-size="75%">z</tspan> always flips M.</text>
+</svg>

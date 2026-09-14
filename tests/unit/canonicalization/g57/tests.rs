@@ -909,8 +909,7 @@ fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
 // change to these values means the DB has been silently invalidated. Do not regenerate
 // casually. Regenerated 2026-07-18 after fixing a swapped-argument bug in to_polynomial
 // (the g57 monomial was b*NOT(c); the executor and from_g57 use NOT(b)*c) — this realigns
-// our DB keys with the source/upstream convention. Regenerate via the #[ignore]d
-// regenerate_canon_golden test only when the canonical form legitimately changes.
+// our DB keys with the source/upstream convention.
 #[test]
 fn canonical_form_golden() {
     const GOLDEN: &[(&str, &str)] = &[
@@ -988,17 +987,6 @@ fn canonical_form_golden() {
             "canonical form changed for {}",
             tag
         );
-    }
-}
-
-#[test]
-#[ignore]
-fn regenerate_canon_golden() {
-    for i in 0..30u64 {
-        let g = canon_hash(i, 10, 8);
-        let h = canon_hash(i.wrapping_mul(0x9e37), 14, 12);
-        println!("(\"G{i}\", \"{:032x}\"),", g);
-        println!("(\"H{i}\", \"{:032x}\"),", h);
     }
 }
 

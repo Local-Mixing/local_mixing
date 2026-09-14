@@ -9,8 +9,8 @@
 //!
 //! Usage: leeway_by_width <circuit.mpmct1> [cap=4096] [format=mpmct1|g57]
 
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 
 fn pct(v: &[usize], p: f64) -> usize {
     if v.is_empty() {

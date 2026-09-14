@@ -15,9 +15,9 @@
 use std::time::Instant;
 
 use clap::Parser;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::{XGate, eval_lanes, eval_u64, eval_u1024, max_wire};
 use local_mixing::circuit::{CircuitSeq, Gate, U1024, lane_state_len};
-use local_mixing::engine::format;
 use primitive_types::U256;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

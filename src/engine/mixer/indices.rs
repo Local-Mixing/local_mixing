@@ -51,7 +51,7 @@ impl Mixer {
     // These hooks stay with the shared merge index because every splice and
     // in-place rewrite must update both structures atomically. The Stage-4
     // selection/reporting algorithms that consume the indexes live in
-    // postprocessing::splitting.
+    // stages::post_processing::splitting.
 
     pub(super) fn side_add(&mut self, id: u32) {
         let idu = id as usize;

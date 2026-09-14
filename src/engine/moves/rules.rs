@@ -1,4 +1,4 @@
-// The splitting rules (docs/gate_commutation_rules.html), rightward form: given the
+// The splitting rules, rightward form: given the
 // adjacent pair [g, h] with shot gate g (a pure conjunction; g57 shots are
 // pre-split first) and colliding gate h, produce a functionally equal sequence.
 // Leftward crossings use the inverse trick: every gate here is an involution, so

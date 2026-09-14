@@ -1,7 +1,8 @@
 mod support;
 
+use local_mixing::canonicalization::canonicalize_polys_4;
+use local_mixing::circuit::Permutation;
 use local_mixing::circuit::random_circuit;
-use local_mixing::circuit::{Permutation, canonicalize_polys_4};
 use std::hint::black_box;
 use std::time::Instant;
 use support::{SEEDS, default_m, gen_polys, selected_n_grid, trimmed_polys};
@@ -28,7 +29,10 @@ fn is_valid(seed: u64, n: usize, m: usize, allow_rule_l: bool) -> bool {
     }
 }
 
-fn benchmark(polys: Vec<local_mixing::circuit::Polynomial>, allow_rule_l: bool) -> (u128, bool) {
+fn benchmark(
+    polys: Vec<local_mixing::canonicalization::Polynomial>,
+    allow_rule_l: bool,
+) -> (u128, bool) {
     let warmup_ok = black_box(canonicalize_polys_4(black_box(polys.clone()), allow_rule_l)).is_ok();
     let inputs: Vec<_> = (0..K).map(|_| polys.clone()).collect();
     let mut nanos = Vec::with_capacity(K);

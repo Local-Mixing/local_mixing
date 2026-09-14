@@ -6,7 +6,7 @@
 //! Usage: frozen_census <store_dir> [--shards a,b,..]
 //! Default: every shard_XX.frz present in the dir.
 
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 use std::collections::BTreeMap;
 
 /// Multiplicity bucket: exact 1..=8, then pow2 ranges (9-16, 17-32, ...).

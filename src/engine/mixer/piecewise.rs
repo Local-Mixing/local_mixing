@@ -1,5 +1,4 @@
-//! Piecewise-parallel rounds for the GSS fragmentation stages (db_mixing DB
-//! mixing, the split stage), docs/FMIX_PIECEWISE.md.
+//! Piecewise-parallel rounds for GSS database mixing and the split stage.
 //!
 //! One round: cut the whole circuit into `p` contiguous pieces of roughly
 //! equal length, run one `Mixer` per piece IN PARALLEL (all sharing the one

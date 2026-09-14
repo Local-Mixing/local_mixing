@@ -3,8 +3,8 @@
 //! unchanged) and write the result. An optional litter sidecar is permuted
 //! identically so litter identity survives the float.
 //! Usage: shuffle_mpmct <in.mpmct1> <out.mpmct1> <seed> [litter_in litter_out]
-use local_mixing::engine::format::{read_mpmct, write_mpmct};
-use local_mixing::preprocessing::gadgets::commuting_shuffle_order;
+use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
+use local_mixing::circuit::randomize::commuting_shuffle_order;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::io::Write;

@@ -38,7 +38,7 @@
 //!     --input c.g57 --n 64 --output cprime.g57 --passes 10000 --seed 1
 use clap::Parser;
 use local_mixing::circuit::{CircuitSeq, Permutation};
-use local_mixing::db_mixing::frozen::FrozenDb;
+use local_mixing::database::frozen::FrozenDb;
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};

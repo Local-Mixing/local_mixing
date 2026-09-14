@@ -396,7 +396,7 @@ impl Mixer {
         Some((ids, dir1))
     }
 
-    // Pair: fuse the seed with a far COMMUTING partner (docs/NONLOCAL_PHASE_A.md).
+    // Pair: fuse the seed with a far COMMUTING partner.
     // Scan the seed's commutation box — the gates it could float past in its
     // own direction, out to the first collider or pair_scan_cap — then float
     // the seed adjacent to the chosen partner and return the fused 2-gate

@@ -1,5 +1,6 @@
+use local_mixing::canonicalization::Polynomial;
+use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::random_circuit;
-use local_mixing::circuit::{CircuitSeq, Polynomial};
 use std::collections::HashMap;
 
 /// Generate reproducible polynomials for a given circuit configuration.

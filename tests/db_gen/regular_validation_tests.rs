@@ -15,7 +15,8 @@ use super::{
     circuit_blob, count_mappings_pruned, decode_rocks_entry, for_each_mapping,
     for_each_mapping_capped, open_db_for_read, validate_value_chain,
 };
-use crate::circuit::{CircuitSeq, Polynomial, canonicalize_polys_4, polys_repr_blob};
+use crate::canonicalization::{Polynomial, canonicalize_polys_4, polys_repr_blob};
+use crate::circuit::CircuitSeq;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::xxh3_128;
 

@@ -1,8 +1,8 @@
 //! Generate a fresh random g57 circuit and write it as mpmct1.
 //! Usage: gen_random_mpmct <out.mpmct1> <n> <m> <seed>
+use local_mixing::circuit::formats::write_mpmct;
 use local_mixing::circuit::random_circuit;
 use local_mixing::circuit::xgate::XGate;
-use local_mixing::engine::format::write_mpmct;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();

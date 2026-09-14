@@ -16,8 +16,8 @@
 //! curated_coverage_census FROZEN_REGULAR_DIR CURATED_COMPOSITE_ROCKS [--shards N]
 //! ```
 
+use local_mixing::database::frozen::{mix76, scan_shard_entries, split_key};
 use local_mixing::db_generation::curated_full::split_composite_key;
-use local_mixing::db_mixing::frozen::{mix76, scan_shard_entries, split_key};
 use rayon::prelude::*;
 use rocksdb::{DB, IteratorMode, Options};
 use rustc_hash::FxHashSet;

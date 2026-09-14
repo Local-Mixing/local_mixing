@@ -9,13 +9,13 @@
 //! both sides of every maximal same-target run and reports substitutions that
 //! reduce the number of ESOP cubes after exact catalogue reduction.
 //!
-//! The scan/apply core lives in local_mixing::postprocessing::downhill, shared with
+//! The scan/apply core lives in local_mixing::stages::post_processing::compression::downhill, shared with
 //! fcompress (which interleaves the same pass with its gather/reduce loop).
 
 use clap::Parser;
+use local_mixing::circuit::formats as format;
 use local_mixing::circuit::xgate::eval_lanes;
-use local_mixing::engine::format;
-use local_mixing::postprocessing::downhill::{apply_candidates, scan};
+use local_mixing::stages::post_processing::compression::downhill::{apply_candidates, scan};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;

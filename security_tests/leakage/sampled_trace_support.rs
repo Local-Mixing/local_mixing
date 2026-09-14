@@ -12,8 +12,8 @@
 //! selected catalog, chronological basis order, sample split, and support cap.
 
 use clap::{Parser, ValueEnum};
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{BTreeSet, HashMap};

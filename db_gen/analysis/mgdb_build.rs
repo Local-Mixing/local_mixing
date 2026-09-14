@@ -36,7 +36,7 @@
 //! pools). Identity pair lengths outside what the store offers make that T
 //! unavailable; the build reports the realized length histogram.
 
-use local_mixing::db_mixing::frozen::scan_shard;
+use local_mixing::database::frozen::scan_shard;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};

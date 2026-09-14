@@ -1,5 +1,5 @@
 //! Optional gate-wise leakage audit and surgical DB repair, independent of the
-//! ordinary mixing sampler. See docs/DB_QUALITY_CONTROL.md for statistical scope.
+//! ordinary mixing sampler. Detection and validation live in this module.
 
 pub mod blocks;
 pub mod detect;

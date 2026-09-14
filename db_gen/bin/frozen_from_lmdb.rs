@@ -26,6 +26,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let curated = args.iter().any(|a| a == "--curated");
     let composite = args.iter().any(|a| a == "--composite");
+    let bands = args.iter().any(|a| a == "--bands");
     let prefix = if curated { "curated_" } else { "" };
     // Drop keys whose shortest circuit has fewer than N gates. Composite input
     // only -- an LMDB value is already a flat blob with no per-key rebuild step
@@ -56,7 +57,9 @@ fn main() {
         .unwrap_or_default();
     let pos: Vec<&String> = args
         .iter()
-        .filter(|a| *a != "--curated" && *a != "--composite" && !skip.contains(a))
+        .filter(|a| {
+            *a != "--curated" && *a != "--composite" && *a != "--bands" && !skip.contains(a)
+        })
         .collect();
 
     let Some(input) = pos.get(2) else {
@@ -88,8 +91,28 @@ fn main() {
         require_curated_full_manifest(input);
     }
 
-    let source: Box<dyn ShardReader> = if composite {
-        #[cfg(feature = "legacy-db-tools")]
+    let source: Box<dyn ShardReader> = if bands {
+        #[cfg(feature = "db-tools")]
+        {
+            let dirs: Vec<String> = std::fs::read_to_string(input)
+                .unwrap_or_else(|e| {
+                    eprintln!("read bands manifest {input}: {e}");
+                    std::process::exit(2);
+                })
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect();
+            eprintln!("[source] {} regular bands (direct k-way merge)", dirs.len());
+            Box::new(local_mixing::db_generation::frozen_build::MultiBandShards::open(&dirs))
+        }
+        #[cfg(not(feature = "db-tools"))]
+        {
+            eprintln!("--bands requires the db-tools feature");
+            std::process::exit(2);
+        }
+    } else if composite {
+        #[cfg(feature = "db-tools")]
         {
             if min_gates > 0 {
                 eprintln!("[source] composite {input}, dropping keys with min-gates < {min_gates}");
@@ -100,9 +123,9 @@ fn main() {
                 ),
             )
         }
-        #[cfg(not(feature = "legacy-db-tools"))]
+        #[cfg(not(feature = "db-tools"))]
         {
-            eprintln!("--composite requires the legacy-db-tools feature");
+            eprintln!("--composite requires the db-tools feature");
             std::process::exit(2);
         }
     } else {

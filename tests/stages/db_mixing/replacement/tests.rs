@@ -837,7 +837,7 @@ fn poly_verifier_agrees_with_the_exhaustive_one() {
         } else {
             mk(&mut rng)
         };
-        let exhaustive = crate::engine::rules::verify_rewrite(&a, &b);
+        let exhaustive = crate::engine::moves::rules::verify_rewrite(&a, &b);
         let poly = polys_equivalent(&a, &b, budget).expect("6 wires is decidable");
         assert_eq!(
             exhaustive, poly,

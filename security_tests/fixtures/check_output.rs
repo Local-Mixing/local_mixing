@@ -4,8 +4,8 @@
 //! sandwich A(x,0), and does C(x) appear on the high half?
 //! Usage: check_output <C.g57> <G> <g57|mpmct1> <n> <A.g57 2n-wire> <aux:zero|rand>
 use local_mixing::circuit::U1024;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::eval_u1024;
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 

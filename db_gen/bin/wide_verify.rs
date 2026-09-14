@@ -4,9 +4,9 @@
 //! key. Any mismatch means the encode/canonical-mapping path is broken.
 //!
 //! Usage: wide_verify <wide_db_dir>
-use local_mixing::circuit::polys_repr_blob;
-use local_mixing::engine::mpx1;
-use local_mixing::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
+use local_mixing::canonicalization::polys_repr_blob;
+use local_mixing::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
+use local_mixing::db_generation::mpx1;
 use rocksdb::{DB, IteratorMode, Options};
 use xxhash_rust::xxh3::xxh3_128;
 

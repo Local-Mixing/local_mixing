@@ -447,7 +447,7 @@ impl Mixer {
                 self.rebuild_pool();
                 self.pool_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
-            // The split stage (docs/FMIX_SPLIT_TWIST.md): while live it owns
+            // The split stage: while live it owns
             // the whole round — every other slot is withheld, and the stage
             // boundary optionally ends the run (--split-stop).
             let took_split = self.params.split && self.split_on && {
@@ -507,7 +507,7 @@ impl Mixer {
                     self.global_shuffle();
                     true
                 };
-            // Slot 1c: one bridge fusion (docs/NONLOCAL_PHASE_A.md), at a
+            // Slot 1c: one bridge fusion, at a
             // fixed rate like the twist. p_bridge == 0 draws no RNG.
             let took_bridge = !took_split
                 && !took_twist

@@ -37,11 +37,11 @@
 //! Requires FROZEN_DB_DIR, exactly as fmix does.
 
 use clap::Parser;
+use local_mixing::canonicalization::xgate::XPolyBudget;
+use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
-use local_mixing::db_mixing::db_replace::{DbMode, DegreeGuard, db_replace_with};
-use local_mixing::db_mixing::frozen::FrozenDb;
-use local_mixing::engine::format::{read_g57_file, read_mpmct};
-use local_mixing::engine::xpoly::XPolyBudget;
+use local_mixing::database::frozen::FrozenDb;
+use local_mixing::stages::db_mixing::replacement::{DbMode, DegreeGuard, db_replace_with};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rayon::prelude::*;

@@ -412,7 +412,7 @@ impl Mixer {
                 rate(self.geo_hits[1], self.geo_attempts[1]),
             );
         }
-        // Pair-geometry meters (docs/NONLOCAL_PHASE_A.md), only when armed.
+        // Pair-geometry meters, only when armed.
         if self.params.p_pair > 0.0 {
             let fused = c.pair_fused.max(1) as f64;
             println!(
@@ -429,7 +429,7 @@ impl Mixer {
                 c.pair_dist_max,
             );
         }
-        // Bridge-fusion meters (docs/NONLOCAL_PHASE_A.md), only when armed.
+        // Bridge-fusion meters, only when armed.
         if self.params.p_bridge > 0.0 {
             let commits = (c.bridge_committed + c.bridge_half).max(1) as f64;
             println!(
