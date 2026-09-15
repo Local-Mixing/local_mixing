@@ -34,31 +34,30 @@ what an attacker can still recover.
 
 ## Introduction
 
-Indistinguishability Obfuscation (iO) asks us to transform a circuit while
+Circuit Obfuscation asks us to transform a circuit while
 preserving what it computes, so that an efficient attacker cannot distinguish
-the obfuscations of two equal-size circuits computing the same function. It is
-immensely powerful. For instance, it can be used to achieve almost every other cryptographic
+the obfuscations of two equal-size circuits computing the same function. The prevalent measure of security for program obfuscation is called *Indistinguishability Obfuscation (iO).*  iO-level obfuscation  is
+immensely powerful. For instance, it can be combined with essentially  any source of computational hardness to achieve almost every other cryptographic
 task, such as trapdoor permutations or non-interactive zero-knowledge.
-If combined with lossy encryption, even a beast like fully homomorphic
+Combined with lossy encryption, it beast like fully homomorphic
 encryption can be achieved.
 
-The history of achieving iO is quite intriguing. In fact, there have
-already been results that prove iO can in fact exist. However, there are
-numerous problems with these existing tools. Some of these tools include
-evasive learning with errors (LWE), multi-linear maps, learning parity with noise, etc. These
-tools can be highly structured resulting in constructions that are both
-complex and impractical. As a result, local mixing of reversible circuits serves to answer the
-following question: Can we achieve iO with "first principles"? The
-paper by Canetti, Chamon, Mucciolo, and Ruckenstein proposes a solution
-to such a question: local mixing of reversible circuits.
+The history of attempts to construct iO is quite intriguing,  but is beyond the scope of this document. 
+Instead,  the starting point of this document is the TCC'24 
+paper by Canetti, Chamon, Mucciolo, and Ruckenstein , which proposes a "first principles''  
+approach to constructing program obfuscation: obfuscation by way of a local mixing process applied to reversible cicuits. 
+Indeed, this approach  is very different from the state of the art.
 
-This paper serves as a documentation for our experiments, results, as
-well as questions that remain for local mixing of reversible circuits. We note that we solely
+This document serves as an account of our efforts to flesh out and realize the approach  outlined  in CCMP'24. 
+It describes our experiments, results, and questions that remain for local mixing of reversible circuits. 
+We note that we solely
 rely on the structure of reversible circuits, but this of course is not
 a problem as we can reduce any arbitrary circuit to a reversible
-circuit. A reversible circuit maps each input state to a unique output state,
-so every operation can be undone. We will write circuits as lists of gates,
-with the state of a wire being one bit. Extra wires used to carry temporary
+circuit. 
+
+A reversible circuit maps each input state to a sequence of unique intermediate states, and eventually  a unique output state.  This means that 
+ every operation can be readily undone. A  state consists of a sequence of $$n$$ bits  (also called wires).  We  write circuits as lists of gates, where a gate applies to three wires in a state. 
+ Extra wires used to carry temporary
 values are called auxiliary or ancilla wires. When they start with specified
 values, those values are part of the function we are asking the circuit to
 compute.
