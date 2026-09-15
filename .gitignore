@@ -45,3 +45,4 @@ challenges/
 .mplconfig/
 .sage_tmp
 third_party/
+__pycache__

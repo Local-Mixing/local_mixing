@@ -47,7 +47,7 @@ fn compression_trace_threshold_ms() -> u128 {
 // We are only concerned with gate g57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gate {
-    pub pins: [usize; 3], //one active wire (0) and two control wires (1,2)
+    pub pins: [u16; 3], //one active wire (0) and two control wires (1,2)
 }
 
 // Circuits stored as a sequence of gates [u16;3]
