@@ -7,7 +7,7 @@ The following document details the ideas and experiments of Ran Canetti, Nichola
 We begin with small local replacements and work through the attacks which
 motivate each construction. This leads us from linear gadgetization to
 product-share gadgetization, then to whole-circuit linear correlators and
-quadratic masking. The experiments belong to the constructions and parameters
+embedded masking. The experiments belong to the constructions and parameters
 described alongside them. Together, they explain what each method hides and
 what an attacker can still recover.
 
@@ -24,7 +24,7 @@ what an attacker can still recover.
 - [Linear gadgetization](#linear-gadgetizing)
 - [Nonlinear product-share gadgetization](#nonlinear-gadgetization)
 - [Whole-circuit linear correlators and the gadget gauntlet](#linear-correlators)
-- [Quadratic masking](#quadratic-masking) and [what the gauntlet still finds](#quadratic-gauntlet-results)
+- [embedded masking](#embedded-masking) and [what the gauntlet still finds](#embedded-gauntlet-results)
 - [The trapdoor permutation challenge](#trapdoor-permutation-challenge) and [SAT solvers](#sat-solvers)
 - [Slicing and fragmentation](#making-the-solver-struggle)
 - [The complete mixing method](#current-mixing-method)
@@ -2780,7 +2780,7 @@ We discuss this construction in [the next section](#nonlinear-gadgetization).
 The first nonlinear construction replaces the paired XOR decode with a
 carrier masked by products of band values. We describe its decode, Gray fold,
 and measurements before moving on to the attack which motivates
-[quadratic masking](#quadratic-masking).
+[embedded masking](#embedded-masking).
 
 Let the circuit entering gadgetization have $q$ logical wires. The nonlinear
 gadgetization uses $2q$ physical wires: one carrier for each logical value and
@@ -2998,14 +2998,14 @@ problem for an observer who combines different times.
 We also tested a version without the Gray fold. It expands the products
 one term at a time and uses dirty helpers to break only the three- and
 four-control fragments into two-control gates. The [borrowed-wire circuits
-below](#quadratic-fire) show these replacements. In a matched 64-wire
+below](#embedded-fire) show these replacements. In a matched 64-wire
 experiment, this made 92.22% of all gates reachable by the frozen regular
 table, versus 97.37% with the Gray fold, while never gathering a complete
 mask on one accumulator. Breaking down every wide fragment reached only
 92.37% at substantially higher cost. Applying our [fragment compressor](#fcompress)
 before database mixing reduced the selective version to 77.96% reachability.
 These measurements compare variants of the product-share construction; they
-do not measure quadratic masking.
+do not measure embedded masking.
 
 That product-share construction uses this Gray fold for suitable two-control
 source gates. Other gate shapes use the same full-decode substitution but fall
@@ -3079,7 +3079,7 @@ B_4&=z_4\oplus x_1\oplus x_4\oplus x_2x_3\oplus x_2x_4,
 $$
 
 For example, $B_1$ starts with the junk value $z_1$. The construction XORs in
-pivot $x_2$, the extra linear source $x_4$, and the two quadratic terms
+pivot $x_2$, the extra linear source $x_4$, and the two embedded terms
 $x_1x_3$ and $x_1x_4$. Nothing besides the pivot term depends on $x_2$.
 Likewise, the remaining expressions exclude their stated pivots from every
 other term. The first two bands deliberately show that pivots do not have to be
@@ -3089,7 +3089,7 @@ This particular four-wire draw uses only data wires because each displayed
 band ends up depending on all four data inputs. At larger widths, an eligible
 earlier band may be used as one source of a later product, and this is how the
 band fill can rise above degree 2. For example, suppose an earlier band contains
-a quadratic term $x_ax_b$ and a later fill includes the product $B_rx_c$.
+a embedded term $x_ax_b$ and a later fill includes the product $B_rx_c$.
 Expanding just that product gives
 
 $$
@@ -3127,7 +3127,7 @@ M_1=M_{11}\oplus M_{12}\oplus M_{13}\oplus M_{14}.
 $$
 
 Here is the injection of these four terms. The cubic gate is drawn as
-one logical fragment; the [dirty-helper construction](#quadratic-fire)
+one logical fragment; the [dirty-helper construction](#embedded-fire)
 below shows how to implement it using two-control gates.
 
 ![The four product terms injected into one carrier](images/circuit-product-share-injection.svg)
@@ -3493,14 +3493,14 @@ These attacks give us two concerns for the next construction. We want to
 compute without gathering a complete mask or temporarily making its decode
 linear. We also want the masks to be balanced and to change during the
 computation, so that simply observing a carrier or its change does not
-immediately give a useful correlator. This leads us to quadratic masking.
+immediately give a useful correlator. This leads us to embedded masking.
 
-<a id="quadratic-masking"></a>
+<a id="embedded-masking"></a>
 
-## Quadratic Masking
+## embedded Masking
 
-These concerns lead us to quadratic masking. The idea is to leave
-quadratic masks open on our computation wires and compute from inside them. We do
+These concerns lead us to embedded masking. The idea is to leave
+embedded masks open on our computation wires and compute from inside them. We do
 not gather a complete operand mask, and we do not first change the
 operand into a linear encoding just to read it. We also change the
 target mask during its update, so its before/after difference includes
@@ -3517,9 +3517,9 @@ Thus, $q=2n$ and the gadgetized circuit has $4n$ wires. The
 first $q$ wires carry the masked computation, and the latter $q$ wires hold
 the band values $B_1,\ldots,B_q$. Their physical wire labels stay fixed.
 
-<a id="open-quadratic-masks"></a>
+<a id="open-embedded-masks"></a>
 
-### Open quadratic masks
+### Open embedded masks
 
 Write $V_w$ for a logical value and $W_w$ for its current physical carrier. We
 maintain a collection $\mathcal O_w$ of masks which are *open* on that carrier:
@@ -3543,12 +3543,12 @@ The two gates on the left open one balanced mask. Repeating them on
 the right closes it. In this picture the three band values are unchanged
 between the open and close; we explain how to refresh them below.
 
-![Opening and closing a balanced quadratic mask](images/circuit-quadratic-mask.svg)
+![Opening and closing a balanced embedded mask](images/circuit-embedded-mask.svg)
 
 The extra $B_z$ matters. The r57 increment alone is one on three of its four
 inputs. Under independent uniform band values, a carrier under just this
 mask therefore remains correlated with the logical value. Adding a separate independent uniform bit makes the mask
-balanced while retaining its quadratic term. This describes the mask as a function of its band
+balanced while retaining its embedded term. This describes the mask as a function of its band
 variables; our actual band is derived from the input, so its variables are not
 assumed to be mutually independent.
 
@@ -3566,7 +3566,7 @@ the remaining nonlinear part. This is why we check the mask depth
 throughout the computation, including around reads and band refreshes,
 rather than only counting how many masks we injected at the beginning.
 
-<a id="quadratic-fire"></a>
+<a id="embedded-fire"></a>
 
 ### Computing from inside the masks
 
@@ -3584,9 +3584,9 @@ $$
 W_t\mathrel{\oplus{=}}1\oplus P_b\oplus P_aP_b.
 $$
 
-Each operand is quadratic in the current physical variables, so their product
+Each operand is embedded in the current physical variables, so their product
 has degree at most four. We emit its terms without first putting $V_a$ or
-$V_b$ on a physical wire. This is what we call **quadratic fire**.
+$V_b$ on a physical wire. This is what we call **embedded fire**.
 
 To see what changed, write $h(x,y)=1\oplus y\oplus xy$ for the r57
 mask. The earlier read applied the reversed control pair because
@@ -3601,8 +3601,8 @@ Adding a balancing wire would still leave an affine expression, with
 that wire simply included in the XOR. Applying the reversed pair again
 after the read restores the mask, but cannot erase the observation.
 Later gate reorderings could also stretch this interval across the
-operand's idle time. Quadratic fire removes this linearization step
-and expands the still-quadratic decode directly.
+operand's idle time. embedded fire removes this linearization step
+and expands the still-embedded decode directly.
 
 For the degree-three and degree-four terms, we borrow dirty band wires and
 restore their incoming values after each small block. In the gate lists
@@ -3645,7 +3645,7 @@ but their incoming values are restored at the end of each complete unit.
 
 ![The four-gate cubic and eight-gate quartic dirty-helper circuits](images/circuit-dirty-helper-brackets.svg)
 
-<a id="quadratic-masking-shuffles"></a>
+<a id="embedded-masking-shuffles"></a>
 
 ### Shuffling the computation
 
@@ -3662,7 +3662,7 @@ mask. Thus, the order is
 temporary cover ; first half ; persistent mask open ; second half ; cover close
 ```
 
-![The target cover and persistent mask placed around the two fire halves](images/circuit-quadratic-fire.svg)
+![The target cover and persistent mask placed around the two fire halves](images/circuit-embedded-fire.svg)
 
 Here $T$ is the temporary cover and $R$ is the new persistent mask. The
 two copies of $T$ cancel, while $R$ remains on the target.
@@ -3682,7 +3682,7 @@ surrounding masks, refreshes, and fire units; we do not randomly violate the
 logical dependencies. These are changes to gate ordering and mask placement,
 rather than the physical wire swaps of the earlier paired gadgetizer.
 
-<a id="quadratic-masking-ports"></a>
+<a id="embedded-masking-ports"></a>
 
 ### Band refresh and the two ports
 
@@ -3698,7 +3698,7 @@ $$
 Each $\ell$ is a wire value or its negation. We sample these literals
 from the band and the first $n$ data wires, which initially hold the source
 input and change as the computation proceeds. Thus,
-these refreshes use both pools, whereas the dirty helpers inside a quadratic
+these refreshes use both pools, whereas the dirty helpers inside a embedded
 fire are sampled only from the band. Before changing $B_j$, we open
 replacement masks where necessary, then close every mask which reads it.
 This preserves coverage without leaving a mask defined in terms of an obsolete
@@ -3744,12 +3744,12 @@ needs to be zero. The [sandwich construction](#sliced-sandwich) below explains
 why we separate the answer from the junk, and how the corresponding reverse
 slice behaves.
 
-<a id="quadratic-gauntlet-results"></a>
+<a id="embedded-gauntlet-results"></a>
 
 ### What the gauntlet still finds
 
 The distinction between the local and whole-circuit attacks remains important
-for quadratic masking. Removing the linearized read closes that particular
+for embedded masking. Removing the linearized read closes that particular
 local-state recovery. It does not show that every logical value has left the
 span of the complete trace.
 
@@ -3771,7 +3771,7 @@ combination across its interior. Later mixing can change these intermediate
 values, so we must test the mixed circuit as well.
 
 The following gauntlet experiments give a concrete example. Each circuit
-uses 128 logical wires, 128 band wires, and balanced quadratic masks, with
+uses 128 logical wires, 128 band wires, and balanced embedded masks, with
 an ordinary open-mask cap of three. The source is a chain of r57 gates.
 Each source gate contributes the five target values defined above, so
 16 gates give 80 targets and 64 gates give 320.
@@ -3805,7 +3805,7 @@ schedule, band construction, or subsequent mixing.
 Nevertheless, they show the problem clearly: the direct, single-state, and
 bounded-correlation tests can all report zero while a linear combination
 across the entire execution still recovers most of the tested source
-values. Thus, these quadratic-masking circuits have not passed the whole
+values. Thus, these embedded-masking circuits have not passed the whole
 gadget gauntlet.
 
 We can apply the same tests to a larger band or a different encoding.
@@ -4116,7 +4116,7 @@ copy CNOT a random direction and commute it in that direction until it reaches
 a genuine collision. These moves preserve the function and both slice equations
 above, while removing the most obvious contiguous boundary.
 
-We then gadgetize all $2n$ sandwich values. The quadratic gadgetizer
+We then gadgetize all $2n$ sandwich values. The embedded gadgetizer
 uses one carrier per value and a band of the same $2n$ width. We add an
 opening zero-slice guard controlled by this band, seed it from the input,
 perform the masked computation, reseed it, and add a closing guard on the
@@ -4167,7 +4167,7 @@ There are three limits to keep in mind:
 Slicing therefore defines the preimage problem and prevents the immediate
 reverse-circuit attack. It is not the defense against affine reconstruction.
 On the zero slice, the sandwich alone still runs $C$ as plaintext;
-quadratic masking is the layer which makes the internal decoding nonlinear.
+embedded masking is the layer which makes the internal decoding nonlinear.
 
 <a id="fragmentation"></a>
 
@@ -4388,8 +4388,8 @@ We combine the constructions above in the following order.
     are allowed to contain junk and the latter $n$ outputs contain the desired
     value $C(x)$.
 
-2.  **[Apply quadratic masking.](#quadratic-masking)** This takes the sandwich
-    to $4n$ wires. We keep balanced quadratic masks open on the carriers,
+2.  **[Apply embedded masking.](#embedded-masking)** This takes the sandwich
+    to $4n$ wires. We keep balanced embedded masks open on the carriers,
     compute through their decodes, shuffle complete fire units, and refresh
     the band. Opening/closing guards and the two band seed blocks preserve
     the required answer on the public slice.
@@ -4431,7 +4431,7 @@ We judge a complete method through SAT solving, local affine reconstruction,
 whole-trace reconstruction, and compression. The SAT, local heatmap, and
 compression results below concern the full-pipeline experiments with
 product-share gadgetization. The whole-trace results concern the
-quadratic-masking experiments in the [gadget gauntlet](#quadratic-gauntlet-results).
+embedded-masking experiments in the [gadget gauntlet](#embedded-gauntlet-results).
 These measurements belong to those constructions and input policies.
 
 **SAT solving.** In the SAT tests containing all six stages, the solver has not
@@ -4448,7 +4448,7 @@ which remained under the earlier linear gadgetization.
 
 **Whole-trace reconstruction (`xtrace`).** We still fail this test. An observer
 who combines wire values from different times can recover source intermediate
-values which the local heatmaps miss. In the quadratic-masking gauntlet,
+values which the local heatmaps miss. In the embedded-masking gauntlet,
 these recoveries remain after the tested mixing pass. Thus, removing the
 local affine diagonal has not removed the whole-circuit linear correlators.
 
@@ -4479,7 +4479,7 @@ We do not yet have general iO.
 
 ## Conclusion
 
-The complete construction combines the sliced sandwich, quadratic masking,
+The complete construction combines the sliced sandwich, embedded masking,
 database mixing, splitting, crossing, and final fragment compression.
 Starting from a source computation on $n$ wires, the
 sandwich and gadgetization take us to $4n$ physical wires. The later stages
@@ -4488,9 +4488,9 @@ in the wire count.
 
 Each part addresses a different failure from the earlier methods. The
 nonlinear masks address the affine direction left by linear
-gadgetization. Quadratic fire keeps those masks nonlinear while we read the
+gadgetization. embedded fire keeps those masks nonlinear while we read the
 values. The gadget gauntlet checks both local recovery and linear
-relations across the entire circuit; the quadratic-masking
+relations across the entire circuit; the embedded-masking
 tests still have whole-trace recoveries. Database mixing repeatedly
 changes the local spelling while that database is still useful. Splitting and crossing leave the uniform r57
 gate form and spread the resulting fragments throughout the circuit. The
@@ -4502,7 +4502,7 @@ budgets, did not reveal the old affine diagonal, and retained most gates
 under our fragment compressor. These results motivate the construction, but describe
 the particular circuits, attacks, and budgets we tested. They are neither
 a proof of security nor measurements of the complete method with
-quadratic masking substituted for the product-share construction.
+embedded masking substituted for the product-share construction.
 
 Our tests have primarily been on random circuits and related families, and
 the `xtrace` failure remains. Thus, we have not yet achieved the
