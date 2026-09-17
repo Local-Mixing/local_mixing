@@ -45,7 +45,7 @@ Let $P(C)$ be the canonical output polynomials of a circuit $C$. The function
 key is computed as
 
 $$
-k = \operatorname{XXH3\text{-}128}(\operatorname{serialize}(P(C))).
+k = \mathrm{XXH3\text{-}128}(\mathrm{serialize}(P(C))).
 $$
 
 The serialization and wire mapping are described in

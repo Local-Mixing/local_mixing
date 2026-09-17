@@ -151,9 +151,9 @@ can we mix gates in a way that we can not identify points of
 replacement?
 
 With these questions in mind, let us introduce the obfuscation
-strategies that we have tried. We write $R^*$ or $R^{-1}$ for the inverse of
+strategies that we have tried. We write $R^{\ast}$ or $R^{-1}$ for the inverse of
 a circuit $R$. Each gate in our vocabulary is its own inverse, so reversing
-the order of the gates gives the inverse circuit. Thus, $RR^*$ is an
+the order of the gates gives the inverse circuit. Thus, $RR^{\ast}$ is an
 identity: it leaves every input state unchanged.
 
 1.  **[The Two Phase Strategy](#two-phase-strategy)**: This strategy splits up the obfuscation
@@ -601,7 +601,7 @@ Given this definition, we continue with our algorithm.
 
 Below are some examples for $(3)$.
 
-**Phase 1** — Suppose wires $\{x_0, x_1, x_2\}$ all share the same degree
+**Phase 1** — Suppose wires $\lbrace x_0, x_1, x_2\rbrace$ all share the same degree
 profile and form class $C_1$, with $P_{x_0} = P_{x_1} = x_0x_1x_2 + x_0x_1 +
 x_2$ and $P_{x_2} = x_0x_1x_2 + x_0x_2 + x_1$. Their class polynomial is
 $P_{C_1} = 3x_0x_1x_2 + 2x_0x_1 + x_0x_2 + x_1 + 2x_2$. We start with the empty
@@ -1048,10 +1048,10 @@ inputs and compare the two intermediate states. The displayed heatmap value is
 
 $$
 D(i,j)=\frac{1}{n|S|}\sum_{x\in S}
-\operatorname{HD}\!\left(C_{1,i}(x),C_{2,j}(x)\right),
+\mathrm{HD}\!\left(C_{1,i}(x),C_{2,j}(x)\right),
 $$
 
-where $\operatorname{HD}$ is Hamming distance. In other words, each cell
+where $\mathrm{HD}$ is Hamming distance. In other words, each cell
 averages the number of differing state bits across the shared inputs, and we
 normalize by $n$ for display. This ordinary heatmap assumes that the physical
 wire positions of the two circuits are comparable. A wire relabeling can
@@ -1107,7 +1107,7 @@ permutation can make the ordinary map look random without actually hiding the
 computation. Since a permutation preserves Hamming weight, we also compare
 
 $$
-\left|\operatorname{wt}(C_{1,i}(x))-\operatorname{wt}(C_{2,j}(x))\right|.
+\left|\mathrm{wt}(C_{1,i}(x))-\mathrm{wt}(C_{2,j}(x))\right|.
 $$
 
 This Hamming-weight heatmap catches the simple wire-shuffle case, although bit
@@ -2301,7 +2301,7 @@ We compute it as follows.
 To compute heatmap between $C$ and $C'$ on $n$ wires:
 
 1. Let $i$ be the $i$th gate of $C$ and $j$ be the $j$th gate of $C'$.
-2. Choose a shared set $S$ of random input states in $\{0,1\}^n$.
+2. Choose a shared set $S$ of random input states in $\lbrace 0,1\rbrace^n$.
 3. For each $x\in S$, compute $y=C_i[x]$ and $y'=C'_j[x]$.
 4. Average $|H(y)-H(y')|$ over $S$, where $H$ is Hamming weight.
 5. Repeat for all pairs $i,j$.
@@ -2680,7 +2680,7 @@ instead of 11.
 
 In this paired gadgetizer's **gadgets block**, every gate of the original circuit becomes one SG, and
 every $f$ original gates we insert one $RGi$ drawn uniformly from
-$\{RG1, RG2, RG3\}$. Here $f$ is the refresh spacing. We use $f=2$ in the
+$\lbrace RG1, RG2, RG3\rbrace$. Here $f$ is the refresh spacing. We use $f=2$ in the
 benchmarks below, meaning two original gates are
 simulated and then one rerandomization gadget is inserted. The pairs $(i,j)$ that
 $RG1$ and $RG2$ act on, and the single index $i$ that $RG3$ acts on, are drawn
@@ -3880,8 +3880,8 @@ problem we ask the attacker to solve.
 
 Fixing $y = 0$ collapses the high-half output to exactly $C(x)$, so the
 whole challenge becomes the single sentence "find $x$ with $C(x)=t$". More
-generally, we can fix $y$ to a public constant $y^*$. Given a target $t$ for
-the high-half output, we then seek $x$ with $C(x)=t\oplus y^*$. In other
+generally, we can fix $y$ to a public constant $y^{\ast}$. Given a target $t$ for
+the high-half output, we then seek $x$ with $C(x)=t\oplus y^{\ast}$. In other
 words, this only relabels the target.
 
 Knowing the original circuit $C$ gives the intended trapdoor. Every r57
@@ -4066,9 +4066,9 @@ $y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random r57
 circuit $D$ on the first half while interleaving it with another slice block
 $S_2$. We give $D$ the same gate design and gate count as $C$. For the
 random source circuits considered here, we choose this count to be
-$\max(n,\operatorname{round}(n(\log_2 n)^2))$.
+$\max(n,\mathrm{round}(n(\log_2 n)^2))$.
 
-Each slice block has $\max(n,\operatorname{round}(n\log_2 n))$ gates drawn from
+Each slice block has $\max(n,\mathrm{round}(n\log_2 n))$ gates drawn from
 two shapes:
 
 ```text

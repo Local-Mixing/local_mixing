@@ -301,7 +301,7 @@ these runtime checks catch construction mistakes.
 construction. Each logical value uses two five-wire shares decoded by
 
 $$
-E(s)=s_0\oplus s_1\oplus\operatorname{maj}(s_2,s_3,s_4),
+E(s)=s_0\oplus s_1\oplus\mathrm{maj}(s_2,s_3,s_4),
 \qquad V=E(S_1)\oplus E(S_2).
 $$
 

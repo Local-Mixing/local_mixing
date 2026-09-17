@@ -57,7 +57,7 @@ and writes a timestamped directory under `runs/`. Database files are separate
 from the source checkout; building the project does not generate them.
 
 By default we generate a source circuit $C$ on 128 wires with 6,272 gates,
-using $\operatorname{round}(n\log_2(n)^2)$ gates. To use your own G57 source,
+using $\mathrm{round}(n\log_2(n)^2)$ gates. To use your own G57 source,
 edit `[source]`:
 
 ```toml

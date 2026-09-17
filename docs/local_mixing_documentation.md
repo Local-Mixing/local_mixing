@@ -78,7 +78,7 @@ the same sampled input set $S$:
 
 $$
 D(i,j)=\frac{1}{n|S|}\sum_{x\in S}
-\operatorname{HD}(C_{1,i}(x),C_{2,j}(x)).
+\mathrm{HD}(C_{1,i}(x),C_{2,j}(x)).
 $$
 
 The normalized metric is zero for identical states and has expectation one
@@ -686,7 +686,7 @@ the construction behind those attack questions.
 We write a circuit as a list of gates executed from left to right. A wire
 holds one bit, and each gate XORs a function of its controls into a distinct
 target. Such a gate is its own inverse. Reversing the list therefore computes
-the inverse circuit. We write $R^{-1}$ or $R^*$ for that inverse, so $RR^*$ is
+the inverse circuit. We write $R^{-1}$ or $R^{\ast}$ for that inverse, so $RR^{\ast}$ is
 an identity on every input.
 
 Throughout, $+$ and $\oplus$ denote XOR for Boolean values; multiplication
@@ -978,7 +978,7 @@ Given this definition, we continue with our algorithm.
 
 Below are some examples for $(3)$.
 
-**Phase 1** — Suppose wires $\{x_0, x_1, x_2\}$ all share the same degree
+**Phase 1** — Suppose wires $\lbrace x_0, x_1, x_2\rbrace$ all share the same degree
 profile and form class $C_1$, with $P_{x_0} = P_{x_1} = x_0x_1x_2 + x_0x_1 +
 x_2$ and $P_{x_2} = x_0x_1x_2 + x_0x_2 + x_1$. Their class polynomial is
 $P_{C_1} = 3x_0x_1x_2 + 2x_0x_1 + x_0x_2 + x_1 + 2x_2$. We start with the empty
@@ -1289,9 +1289,9 @@ $y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random r57
 circuit $D$ on the first half while interleaving it with another slice block
 $S_2$. We give $D$ the same gate design and gate count as $C$. For the
 random source circuits considered here, we choose this count to be
-$\max(n,\operatorname{round}(n(\log_2 n)^2))$.
+$\max(n,\mathrm{round}(n(\log_2 n)^2))$.
 
-Each slice block has $\max(n,\operatorname{round}(n\log_2 n))$ gates drawn from
+Each slice block has $\max(n,\mathrm{round}(n\log_2 n))$ gates drawn from
 two shapes:
 
 ```text
@@ -2191,7 +2191,7 @@ file's byte size are different measurements and should be reported separately.
 
 The crossing target defaults to twice the incoming split-stage gate count.
 Its width-penalty base is 3 with threshold 1, and the size tolerance uses
-$\max(64,\operatorname{round}(\mathrm{target}/25))$. The default additional
+$\max(64,\mathrm{round}(\mathrm{target}/25))$. The default additional
 move budget is six times the crossing target. These are managed-recipe
 defaults, not security parameters with proven lower bounds.
 
