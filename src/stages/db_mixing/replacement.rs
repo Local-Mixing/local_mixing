@@ -1,5 +1,5 @@
 //! Frozen-store lookup for a single heterogeneous [`XGate`] window, used by the
-//! fmix DB contraction move (see [`crate::engine::mixer`]).
+//! circuit_mixer DB contraction move (see [`crate::engine::mixer`]).
 //!
 //! A convex/contiguous window of arbitrary-width, mixed-polarity XGates is keyed
 //! by its exact function polynomial ([`crate::canonicalization::xgate`]) — identical to
@@ -1149,7 +1149,7 @@ where
                         if let Some(value) = lookup(&alt_key, false) {
                             MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
                             eprintln!(
-                                "[min-dir-violation] fmix db_replace: non-min canonical key present while min key absent (window={})",
+                                "[min-dir-violation] circuit_mixer db_replace: non-min canonical key present while min key absent (window={})",
                                 window.len()
                             );
                             catalogue(
@@ -1264,7 +1264,7 @@ fn is_reorder(a: &[XGate], b: &[XGate]) -> bool {
 /// tests whether staying WITHIN curated (highly inflated) material is stable,
 /// so a curated answer with no near-size member is a miss — the same-size
 /// regular spelling stays discarded unseen, by design.
-/// Optional ABSOLUTE incoming-length band, `FMIX_DB_LEN_BAND=lo,hi` (read
+/// Optional ABSOLUTE incoming-length band, `MIXER_DB_LEN_BAND=lo,hi` (read
 /// once): candidates outside lo..=hi are dropped before any mode logic.
 /// Experiment knob — composes with every mode (e.g. `--db-mode any` +
 /// band = uniform draw over the banded lengths).
@@ -1533,5 +1533,5 @@ trait CandLen {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/stages/db_mixing/replacement/tests.rs"]
+#[path = "../../../tests/unit/stages/db_mixing/replacement/tests.rs"]
 mod tests;

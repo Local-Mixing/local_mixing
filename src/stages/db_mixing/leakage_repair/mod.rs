@@ -317,5 +317,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/stages/db_mixing/leakage_repair/tests.rs"]
+#[path = "../../../../tests/unit/stages/db_mixing/leakage_repair/tests.rs"]
 mod tests;

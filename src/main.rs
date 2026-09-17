@@ -3,17 +3,17 @@ mod commands;
 
 fn main() {
     let command = Command::new("local_mixing")
-        .about("GSS mixing and circuit utilities")
+        .about("TDP generation and circuit utilities")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(commands::gss::command())
+        .subcommand(commands::tdp_gen::command())
         .subcommand(commands::circuit::command());
     #[cfg(feature = "db-tools")]
     let command = command.subcommand(commands::db::command());
     let matches = command.get_matches();
     let result = match matches.subcommand() {
-        Some(("gss", sub)) => {
-            commands::gss::run(sub);
+        Some(("tdp_gen", sub)) => {
+            commands::tdp_gen::run(sub);
             Ok(())
         }
         Some(("circuit", sub)) => commands::circuit::run(sub),

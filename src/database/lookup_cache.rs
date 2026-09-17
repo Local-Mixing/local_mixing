@@ -177,5 +177,5 @@ impl<'db> LookupCache<'db> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/database/lookup_cache.rs"]
+#[path = "../../tests/unit/database/lookup_cache.rs"]
 mod tests;

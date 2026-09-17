@@ -1,4 +1,4 @@
-//! Frozen-store environment settings used by the GSS stage executables.
+//! Frozen-store environment settings used by the TDP stage executables.
 //! Store paths and conventions are read at open time; cache controls are cached
 //! independently when first read. Explicit options bypass these settings.
 use super::frozen::ValueConvention;

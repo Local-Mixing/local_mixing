@@ -12,7 +12,7 @@
 //! structure or only litter-union transport.
 //!
 //! Requires FROZEN_DB_DIR (and FROZEN_CURATED_DIR for the curated side),
-//! exactly as fmix does. Run it on fleet phase-A material; the store does not
+//! exactly as circuit_mixer does. Run it on fleet phase-A material; the store does not
 //! work over slow mounts.
 
 use clap::Parser;
@@ -98,7 +98,7 @@ fn entangles(cand: &[XGate], a: &[u16], b: &[u16], num_wires: usize) -> bool {
 }
 
 /// Candidate is a permutation of the window (identity/reorder — the trivial
-/// spellings the fmix bans refuse).
+/// spellings the circuit_mixer bans refuse).
 fn is_trivial(cand: &[XGate], window: &[XGate]) -> bool {
     if cand.len() != window.len() {
         return false;

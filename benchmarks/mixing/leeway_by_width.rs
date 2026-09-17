@@ -1,7 +1,7 @@
 //! Per-width commutation-leeway census of a circuit file: for every gate, the
 //! two-sided float-box size (steps past non-colliders in each direction until
 //! the first collider, capped per direction — the exact `XGate::collides` /
-//! fmix `float_distance` semantics), binned by control count and split by
+//! circuit_mixer `float_distance` semantics), binned by control count and split by
 //! comp (g57-class, no opposite-literal separation exemption) vs plain
 //! conjunction (exempt: an opposite shared literal separates). This is the
 //! static mobility curve D(k) — the direct test of "wider gates have more

@@ -229,5 +229,5 @@ pub fn wide_gates_for_circuit_filtered(
 }
 
 #[cfg(test)]
-#[path = "../tests/db_gen/wide_gates/tests.rs"]
+#[path = "../tests/unit/db_gen/wide_gates/tests.rs"]
 mod tests;

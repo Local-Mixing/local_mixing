@@ -182,7 +182,7 @@ fn cmp_level_key_4(a: &MonomialLevelKey4, b: &MonomialLevelKey4) -> CmpOrdering 
 // level walk. `canonicalize_polys_4` checks the degree bound once per top
 // call (`compact_ok`); class polys and D-class polys reuse the same
 // monomials, so that one check covers every scan in the recursion. Measured
-// on the DB-armed fmix recipe the bound always holds; the fat path stays as
+// on the DB-armed circuit_mixer recipe the bound always holds; the fat path stays as
 // the deg>16 fallback.
 
 #[derive(Clone, Copy)]

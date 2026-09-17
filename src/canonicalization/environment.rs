@@ -1,4 +1,4 @@
-//! Process-wide canonicalization controls used by the GSS stage executables.
+//! Process-wide canonicalization controls used by the TDP stage executables.
 //! Each control is cached independently when first read. Explicit computation
 //! options bypass these reads and the shared caches.
 use std::sync::OnceLock;

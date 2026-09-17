@@ -709,5 +709,5 @@ impl SplitMix64 {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/stages/db_mixing/leakage_repair/detect/tests.rs"]
+#[path = "../../../../tests/unit/stages/db_mixing/leakage_repair/detect/tests.rs"]
 mod tests;

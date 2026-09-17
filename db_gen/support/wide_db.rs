@@ -1,6 +1,6 @@
 //! S9 (v1) of the wide-gate design: the wide sidecar store's read path, as
 //! FEATURE-GATED PROBE TOOLING. The runtime invariant "lookup does not pull
-//! in RocksDB" stands — production fmix arming waits for the frozen-wide
+//! in RocksDB" stands — production circuit_mixer arming waits for the frozen-wide
 //! container (FRZWID01); until then this module serves verification bins and
 //! offline experiments, and the shipped runtime binary is byte-identical.
 //!
@@ -176,5 +176,5 @@ pub fn wide_probe(
 }
 
 #[cfg(test)]
-#[path = "../../tests/db_gen/support/wide_db/tests.rs"]
+#[path = "../../tests/unit/db_gen/support/wide_db/tests.rs"]
 mod tests;

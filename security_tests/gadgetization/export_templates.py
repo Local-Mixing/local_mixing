@@ -56,8 +56,8 @@ EXPECTED_GATE_COUNTS: Mapping[tuple[Variant, Operation], int] = MappingProxyType
 MAX_PHYSICAL_FANIN: Mapping[Variant, int] = MappingProxyType(
     {"nonlinear193": 4, "nonlinear291": 2}
 )
-# Historical 193 templates stay with the reference tools. The four 291
-# templates have one authoritative runtime owner beside the native adapter.
+# The nonlinear193 templates belong to the reference tools. The four
+# nonlinear291 templates belong to the runtime beside the native adapter.
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 RUNTIME_TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "src/stages/preprocessing/templates"
 TEMPLATE_DIRECTORIES = (TEMPLATE_DIR, RUNTIME_TEMPLATE_DIR)

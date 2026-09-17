@@ -128,7 +128,14 @@ fn load(prefix: &str) -> Bundle {
     assert!(
         matches!(
             gadget.as_str(),
-            "none" | "ss" | "semi" | "band" | "file" | "bv5" | "bv5bal"
+            "none"
+                | "ss"
+                | "semi"
+                | "band"
+                | "file"
+                | "embedded-masking"
+                | "embedded-masking-balanced"
+                | "embedded-masking-shuffled"
         ),
         "unsupported gadget metadata {gadget}"
     );
@@ -144,6 +151,33 @@ fn load(prefix: &str) -> Bundle {
         "n_features must equal n_wires + 2*n_gates"
     );
     assert!(n > 0 && n <= n_wires, "invalid logical wire count");
+    if gadget == "embedded-masking-shuffled" {
+        assert_eq!(meta.get("encoded_io").map(String::as_str), Some("true"));
+        assert_eq!(meta.get("aux").map(String::as_str), Some("random"));
+        let segments: usize = meta["shuffling_segments"].parse().unwrap();
+        assert!(
+            segments >= 8,
+            "invalid preprocessing shuffling segment count"
+        );
+        let return_home: bool = meta["shuffling_return_home"].parse().unwrap();
+        let layout: Vec<usize> = meta["mask_final_layout"]
+            .split(',')
+            .map(|wire| wire.parse().unwrap())
+            .collect();
+        assert_eq!(layout.len(), n_wires, "final layout width mismatch");
+        let mut sorted_layout = layout.clone();
+        sorted_layout.sort_unstable();
+        assert!(
+            sorted_layout.iter().copied().eq(0..n_wires),
+            "final layout must be a permutation of every physical wire"
+        );
+        if return_home {
+            assert!(
+                layout[..n].iter().copied().eq(0..n),
+                "return-home shuffling must preserve physical data ports"
+            );
+        }
+    }
     let expected_targets = k
         .checked_mul(5)
         .and_then(|value| value.checked_add(1))

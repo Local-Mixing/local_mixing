@@ -127,5 +127,5 @@ pub fn plan_convex_block(
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/stages/db_mixing/leakage_repair/blocks/tests.rs"]
+#[path = "../../../../tests/unit/stages/db_mixing/leakage_repair/blocks/tests.rs"]
 mod tests;

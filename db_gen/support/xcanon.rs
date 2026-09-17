@@ -69,5 +69,5 @@ pub fn xgate_canonicalize(gates: &mut Vec<XGate>) {
 }
 
 #[cfg(test)]
-#[path = "../../tests/db_gen/support/xcanon/tests.rs"]
+#[path = "../../tests/unit/db_gen/support/xcanon/tests.rs"]
 mod tests;

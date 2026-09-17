@@ -9,7 +9,7 @@ use super::*;
 // merged). Packing spells each run as ONE generalized gate t ^= f(controls)
 // with f in algebraic normal form -- the XOR of positive monomials, the
 // unique representation of a Boolean function. The point is not size (the
-// ANF is ~2.4x the cube count on GSS finals) but the removal of information:
+// ANF is ~2.4x the cube count on TDP finals) but the removal of information:
 // the cube list fcompress emits is the catalogue-reduced descendant of the
 // cubes the mixer left, so it carries history, while the ANF depends on
 // nothing but the function. Exact and attacker-computable like the rest of

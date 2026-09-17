@@ -215,7 +215,7 @@ fn main() {
 
     write_mpmct(&outp, &out, wires).expect("write output");
     // Litter sidecar: one id per output gate, matching gate order — each host
-    // gate's block is one litter (fmix --litter-in consumes this).
+    // gate's block is one litter (circuit_mixer --litter-in consumes this).
     {
         use std::io::Write;
         let mut f = std::fs::File::create(format!("{outp}.litter")).expect("litter sidecar");

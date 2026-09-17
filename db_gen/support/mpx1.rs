@@ -160,5 +160,5 @@ fn decode_chunk(chunk: &[u8]) -> io::Result<Vec<XGate>> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/db_gen/support/mpx1/tests.rs"]
+#[path = "../../tests/unit/db_gen/support/mpx1/tests.rs"]
 mod tests;

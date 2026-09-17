@@ -1,11 +1,11 @@
-//! Zero-slice guards for the full GSS input and output ports.
+//! Zero-slice guards for the full TDP input and output ports.
 
 use crate::circuit::Circuit as CnotCircuit;
 use crate::circuit::randomize::random_wire_except;
 use crate::circuit::xgate::XGate;
 use rand::{Rng, prelude::SliceRandom};
 
-/// The junk-half slice guard (used at both GSS ports): a slice
+/// The junk-half slice guard (used at both TDP ports): a slice
 /// block — identity exactly on the zero slice, every nonzero slice perturbs
 /// the data — whose targets are restricted to the LOW half of the data
 /// wires (the sandwich's forward-junk half). Under the symmetric-ports
@@ -209,10 +209,10 @@ fn slice_preblock_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut 
     true
 }
 
-/// Number of logical slice probes per auxiliary wire in managed GSS.
+/// Number of logical slice probes per auxiliary wire in managed TDP.
 pub const SLICE_ZERO_CCNOT_GATES_PER_WIRE: usize = 10;
 
-/// Nonlinear-GSS counterpart of [`try_slice_zero_block_dims`].
+/// Nonlinear-TDP counterpart of [`try_slice_zero_block_dims`].
 ///
 /// Uses the same logical probes as the standard guard, decomposed to fan-in
 /// two. Nonlinear layouts can have tens of thousands of slice wires, so an
@@ -388,7 +388,7 @@ pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
     ))
 }
 
-/// Scalable wide-slice checker used only by the nonlinear GSS adapter.
+/// Scalable wide-slice checker used only by the nonlinear TDP adapter.
 ///
 /// Each generated macro has one positive slice control and restores any dirty
 /// decomposition scratch before the next macro. With a singleton or pair
@@ -518,5 +518,5 @@ fn nonlinear_slice_preblock_spot_check(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/stages/preprocessing/guards.rs"]
+#[path = "../../../tests/unit/stages/preprocessing/slice_guards.rs"]
 mod tests;

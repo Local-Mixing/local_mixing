@@ -1,4 +1,4 @@
-// Production GSS Stage 4: split every complemented g57 gate, optionally
+// Production TDP Stage 4: split every complemented g57 gate, optionally
 // join it to a long-range absorbed NOT twist, and finish the move with one
 // crossing shot supplied by the sibling `cross_walk` module. Shared arena,
 // provenance, and checkpoint state remain on Mixer.
@@ -457,7 +457,10 @@ impl Mixer {
             });
         }
         if !self.quiet {
-            println!("[fmix] split: planted {} canaries", self.taps.len());
+            println!(
+                "[circuit_mixer] split: planted {} canaries",
+                self.taps.len()
+            );
         }
     }
 
@@ -484,7 +487,7 @@ impl Mixer {
         }
         let c = &self.counters;
         println!(
-            "[fmix] split mv={} size={} comp={} prims={} hspl={} segs={} joins={} xmid={} fails={} streak={} tapf={} span={}",
+            "[circuit_mixer] split mv={} size={} comp={} prims={} hspl={} segs={} joins={} xmid={} fails={} streak={} tapf={} span={}",
             self.moves_done,
             self.arena.len(),
             self.comp_ids.len(),
@@ -510,7 +513,7 @@ impl Mixer {
         }
         let cells: Vec<String> = c.split_span_hist.iter().map(|&v| v.to_string()).collect();
         println!(
-            "[fmix] split spans: mean={:.0} gates over {} twists; frac-of-circuit hist (5% buckets 0-100): {}",
+            "[circuit_mixer] split spans: mean={:.0} gates over {} twists; frac-of-circuit hist (5% buckets 0-100): {}",
             c.split_span_sum as f64 / c.split_joins as f64,
             c.split_joins,
             cells.join(" ")
@@ -538,7 +541,7 @@ impl Mixer {
     pub(crate) fn announce_split_end(&mut self, reason: &str) {
         let c = &self.counters;
         println!(
-            "[fmix] split stage ENDED at move {}: {reason} — prims={} hspl={} segs={} joins={} xmid={} fails={} size={} comp={}",
+            "[circuit_mixer] split stage ENDED at move {}: {reason} — prims={} hspl={} segs={} joins={} xmid={} fails={} size={} comp={}",
             self.moves_done,
             c.split_prims,
             c.split_hsplits,
@@ -573,7 +576,7 @@ impl Mixer {
                 .filter(|&r| r != NIL)
                 .map(|r| (r as usize * 1000) / n);
             println!(
-                "[fmix] canary wire={} orig={} now={} flips={}",
+                "[circuit_mixer] canary wire={} orig={} now={} flips={}",
                 t.wire,
                 t.orig_permille,
                 now.map_or(-1i64, |x| x as i64),
@@ -593,7 +596,7 @@ impl Mixer {
             })
             .collect();
         println!(
-            "[fmix] canary deciles (mean flips by ORIGINAL position, left to right): {}",
+            "[circuit_mixer] canary deciles (mean flips by ORIGINAL position, left to right): {}",
             cells.join(" ")
         );
     }

@@ -1,12 +1,12 @@
 # Gadgetization
 
-Our current GSS gadgetizer uses **quadratic masking**. We begin with the sliced
+Our current TDP gadgetizer uses **embedded masking**. We begin with the sliced
 sandwich on $2n$ wires and add $2n$ band wires, giving us $4n$ wires in total.
 The idea is to keep the intermediate values under nonlinear masks while still
 being able to compute on them. All random choices are made when we generate
 the circuit. Evaluating the resulting circuit requires only its gate list.
 
-The six-stage order is described in [the pipeline guide](gss_pipeline.md). Here,
+The six-stage order is described in [the pipeline guide](tdp_pipeline.md). Here,
 we describe what happens in its first two stages, including the shuffles which
 are already present before database mixing begins.
 
@@ -51,7 +51,7 @@ The gadgetizer wraps the masked computation in the following order:
 opening guard -> band seed -> masked computation -> band reseed -> closing guard
 ```
 
-These are five parts within stage 2, not five additional GSS stages.
+These are five parts within stage 2, not five additional TDP stages.
 
 1. **Opening guard.** We add a slice block which reads the outer band and
    targets the low $n$ wires. It is dead when the band is zero. Its slice
@@ -80,14 +80,18 @@ sandwich fixed while changing the gadgetization.
 
 ## Open quadratic masks
 
-Write $V_w$ for a logical sandwich value and $W_w$ for the physical wire which
-currently carries it. A mask is *open* after its injection and before its
+Before the optional shuffling transform, write $V_w$ for a logical sandwich
+value and $W_w$ for its carrier value. A mask is *open* after its injection and before its
 removal. If $\mathcal O_w$ is the collection of masks currently open on wire
 $w$, we maintain
 
 $$
 V_w=W_w\oplus\bigoplus_{j\in\mathcal O_w}M_j(B).
 $$
+
+During a shuffled fire block, outstanding escort masks add linear XOR terms
+to this invariant; the [shuffling section](#optional-preprocessing-shuffling)
+describes their removal.
 
 At the default mask size, one balanced mask has the form
 
@@ -211,9 +215,58 @@ The sandwich gates themselves are placed using a dependency-ready queue.
 Reads remain after the earlier writes they depend on, and writes remain after
 earlier reads of that wire. Gates which only XOR into the same target can
 commute. The queue is FIFO; the randomness comes from the sampled masks,
-refreshes, and fire-unit shuffles. This construction keeps the carrier and band
-wire labels fixed. It does not insert the physical wire-swap network used by
-the earlier paired gadgetizer.
+refreshes, and fire-unit shuffles. The default keeps carrier and band roles on
+fixed physical wires. The optional preprocessing shuffling below changes that
+layout inside each fire block.
+
+## Optional preprocessing shuffling
+
+`preprocessing.shuffling_segments = 8` enables internal role transfers in the
+embedded-masking compute. It defaults to `0` (off). The standalone generator
+accepts `EMBEDDED_MASKING_SHUFFLING=8`; configuration parsing stays in the
+executable adapters. Enabled segment counts must be at least eight.
+
+The emitter records exact boundaries between complete mask atoms and fire
+units, together with the target's open-mask support. An adjacent post-emission
+transform chooses boundaries near equal shares of target writes. It chooses
+a least-written eligible band destination, excluding the target's masks,
+all controls in any remaining atomic unit that writes the target, and
+previously used partners. This includes controls used only by helper gates
+inside a borrowed-ancilla bracket. If no partner
+is available, it skips the transfer while retaining every original gate.
+
+With target value `X` on `p` and band value `w` on `q`, the two CNOTs
+`q ^= p; p ^= q` leave `w` on `p` and `X XOR w` on `q`. The target role moves
+to `q`; its extra mask is tracked until removal at the end of the block.
+Transfers never split a borrowed-ancilla unit. The pass rejects a block that
+reads its target, since such a read would observe the temporary masks.
+
+TDP generation requires `preprocessing.shuffling_return_home = true`. At the
+end boundary, after the final original write in the block, a reserved transfer
+returns the target to its original physical wire and removes the first
+temporary mask. The remaining temporary masks close there as well. An
+unavailable interior partner causes a skipped transfer; it never moves the
+return before the final write.
+Band roles keep their permutation. Every subsequent gate, including band
+refreshes and final mask closes, is emitted through that permutation. The
+five-part sandwich and its physical output ports therefore retain their
+existing contract.
+
+The low-level compute API also supports a carried layout for comparison
+experiments. Its `final_layout[role]` gives the output's physical location;
+encoded-I/O `post_gates` already use this layout. Callers must interpret data
+outputs through the map. The full sandwich constructor rejects this mode.
+
+The transform uses an independently seeded RNG. Disabling it leaves the
+original seeded gate stream unchanged. `shuffling_stats` records gate overhead,
+transfer locations, all-write histograms and original-target-work histograms.
+The latter prevents extra routing gates from artificially improving the
+reported distribution. Hot-interval diagnostics use logical roles and gate
+indices from the original compute stream, before physical wire remapping.
+They describe mask scheduling, not physical splice positions in the shuffled
+output. This is an experimental policy; write distribution and correctness
+checks do not establish resistance to the Gauntlet attacks. Measure the
+current return-home and carried-layout arms separately.
 
 ## What the output promises
 
@@ -255,7 +308,7 @@ $$
 It uses fixed gate templates, fresh per-operation storage, an ingress slice
 guard, and an egress which writes the decoded answer to the public wires.
 For $q$ sandwich wires and $m$ sandwich gates, its width is $12q+12m+29$,
-so the $4n$ width of quadratic masking does not apply. After construction,
+so the $4n$ width of embedded masking does not apply. After construction,
 eight bounded passes randomly swap adjacent gates only when they commute.
 Its complete stage-2 output has at most two controls per gate.
 
@@ -268,11 +321,12 @@ not the implementation selected by either of these two current mode names.
 |---|---|
 | [`sandwich/construct.rs`](../src/stages/sandwich/construct.rs) | Slice blocks, interleaving, and floating the copy column. |
 | [`preprocessing/construct.rs`](../src/stages/preprocessing/construct.rs) | The five-part envelope and guard placement. |
-| [`preprocessing/quadratic_masking.rs`](../src/stages/preprocessing/quadratic_masking.rs) | `production`, `emit_lgi`, `product_fire`, band seeding, dependency order, and the refresh/open/close loop. |
+| [`preprocessing/embedded_masking.rs`](../src/stages/preprocessing/embedded_masking.rs) | `production`, `emit_lgi`, `product_fire`, band seeding, dependency order, and the refresh/open/close loop. |
+| [`preprocessing/preprocessing_shuffling.rs`](../src/stages/preprocessing/preprocessing_shuffling.rs) | Optional role transfers, temporary-mask removal, output layout and write-count diagnostics. |
 | [`preprocessing/slice_guards.rs`](../src/stages/preprocessing/slice_guards.rs) | Guard sampling and its zero-slice checks. |
 | [`preprocessing/verify.rs`](../src/stages/preprocessing/verify.rs) | Forward and reverse payload verification. |
 | [`preprocessing/nonlinear291.rs`](../src/stages/preprocessing/nonlinear291.rs) | The optional E-encoding adapter, resource plan, and final commuting passes. |
-| [`gen_sandwich_gadget.rs`](../src/programs/gen_sandwich_gadget.rs) | Source loading, separate seeds, mode selection, and writing the artifacts. |
+| [`gen_sandwich_gadget.rs`](../src/programs/gen_sandwich_gadget/mod.rs) | Source loading, separate seeds, mode selection, and writing the artifacts. |
 
-See the [README](../README.md) for running GSS and selecting preprocessing
+See the [README](../README.md) for running TDP and selecting preprocessing
 parameters.

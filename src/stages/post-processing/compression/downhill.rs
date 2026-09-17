@@ -13,7 +13,7 @@
 // shrinks in (gates, lits), applies a maximal non-overlapping subset, and
 // optionally lane-verifies every rewritten span against its original.
 //
-// Shared by the fmix_downhill binary (scan/report/apply on a whole file) and
+// Shared by the circuit_mixer_downhill binary (scan/report/apply on a whole file) and
 // by stages::post_processing::compression, which interleaves one pass per gather/reduce
 // iteration — gathering makes runs contiguous, which is what feeds this pass.
 use super::{AncBits, or_anc};

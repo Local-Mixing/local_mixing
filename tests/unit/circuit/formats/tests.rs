@@ -62,8 +62,8 @@ fn read_str(body: &str, tag: &str) -> io::Result<(Vec<XGate>, usize)> {
     out
 }
 
-// The byte reader replaced a `lines()` + `split_whitespace()` + `parse()`
-// one. These are the input shapes that reader tolerated.
+// The byte reader must accept the same whitespace and blank lines as a
+// `lines()` + `split_whitespace()` + `parse()` reader.
 #[test]
 fn opt_equiv_read_mpmct_keeps_whitespace_and_blank_line_tolerance() {
     let want = vec![

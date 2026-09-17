@@ -226,7 +226,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} sled={}/{} m123={} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[circuit_mixer] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} sled={}/{} m123={} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -381,7 +381,11 @@ impl Mixer {
             .map(|(l, &c)| format!("{l}:{c}"))
             .collect();
         if !hs.is_empty() {
-            println!("[fmix] dminh mv={} {}", self.moves_done, hs.join(" "));
+            println!(
+                "[circuit_mixer] dminh mv={} {}",
+                self.moves_done,
+                hs.join(" ")
+            );
         }
         let ms: Vec<String> = self
             .m123_class_hist
@@ -391,7 +395,11 @@ impl Mixer {
             .map(|(l, &c)| format!("M{l}:{c}"))
             .collect();
         if !ms.is_empty() {
-            println!("[fmix] m123class mv={} {}", self.moves_done, ms.join(" "));
+            println!(
+                "[circuit_mixer] m123class mv={} {}",
+                self.moves_done,
+                ms.join(" ")
+            );
         }
         if self.geo_attempts[0] + self.geo_attempts[1] > 0 {
             let rate = |h: u64, a: u64| {
@@ -402,7 +410,7 @@ impl Mixer {
                 }
             };
             println!(
-                "[fmix] geo mv={} ctg={}/{} ({:.2}%) cvx={}/{} ({:.2}%)",
+                "[circuit_mixer] geo mv={} ctg={}/{} ({:.2}%) cvx={}/{} ({:.2}%)",
                 self.moves_done,
                 self.geo_hits[0],
                 self.geo_attempts[0],
@@ -416,7 +424,7 @@ impl Mixer {
         if self.params.p_pair > 0.0 {
             let fused = c.pair_fused.max(1) as f64;
             println!(
-                "[fmix] pair rounds={} fused={} splices={} permskip={} empty={} trunc={} box avg={:.1} max={} dist avg={:.1} max={}",
+                "[circuit_mixer] pair rounds={} fused={} splices={} permskip={} empty={} trunc={} box avg={:.1} max={} dist avg={:.1} max={}",
                 c.pair_rounds,
                 c.pair_fused,
                 c.pair_splices,
@@ -433,7 +441,7 @@ impl Mixer {
         if self.params.p_bridge > 0.0 {
             let commits = (c.bridge_committed + c.bridge_half).max(1) as f64;
             println!(
-                "[fmix] bridge rounds={} committed={} half={} rollback={} probemiss={} refused={} short={} span avg={:.1} max={} colliders avg={:.2} wake={}",
+                "[circuit_mixer] bridge rounds={} committed={} half={} rollback={} probemiss={} refused={} short={} span avg={:.1} max={} colliders avg={:.2} wake={}",
                 c.bridge_rounds,
                 c.bridge_committed,
                 c.bridge_half,
@@ -457,16 +465,16 @@ impl Mixer {
         }
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {
-            println!("[fmix] splice sizes out->in: {sizes}");
+            println!("[circuit_mixer] splice sizes out->in: {sizes}");
         }
         let csizes = self.splice_size_line_curated();
         if !csizes.is_empty() {
-            println!("[fmix] splice sizes (curated) out->in: {csizes}");
+            println!("[circuit_mixer] splice sizes (curated) out->in: {csizes}");
         }
         if let Some(p) = &self.prof {
             let s_star = prof_target(self.params.prof_n, self.params.prof_r, p.s_in, p.eff);
             println!(
-                "[fmix] profile: phase={} eff={:.2} size={} S*={:.0} pmix={:.3} ghat={:+.4} shat={:+.4} dhat={:+.4} integ={:+.3} sat={}",
+                "[circuit_mixer] profile: phase={} eff={:.2} size={} S*={:.0} pmix={:.3} ghat={:+.4} shat={:+.4} dhat={:+.4} integ={:+.3} sat={}",
                 p.phase,
                 p.eff,
                 self.arena.len(),
@@ -488,7 +496,7 @@ impl Mixer {
             let n = c.len_attempts.len();
             if n > 0 && c.len_attempts.iter().sum::<u64>() > 0 {
                 println!(
-                    "[fmix] per-length: len attempts hits hit% removed added net span_skip deg_skip"
+                    "[circuit_mixer] per-length: len attempts hits hit% removed added net span_skip deg_skip"
                 );
                 let g = |v: &Vec<u64>, k: usize| v.get(k).copied().unwrap_or(0);
                 for k in 1..n {
@@ -500,7 +508,7 @@ impl Mixer {
                     let rm = g(&c.len_removed, k);
                     let ad = g(&c.len_added, k);
                     println!(
-                        "[fmix] len {k:>3} {a:>9} {h:>8} {:>6.2} {rm:>8} {ad:>6} {:>+6} {:>10} {:>9}",
+                        "[circuit_mixer] len {k:>3} {a:>9} {h:>8} {:>6.2} {rm:>8} {ad:>6} {:>+6} {:>10} {:>9}",
                         100.0 * h as f64 / a as f64,
                         rm as i64 - ad as i64,
                         g(&c.len_span_skip, k),
@@ -518,7 +526,7 @@ impl Mixer {
             };
             let hist: Vec<String> = c.tg_net_hist.iter().map(|v| v.to_string()).collect();
             println!(
-                "[fmix] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1} slides={} retries={}",
+                "[circuit_mixer] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1} slides={} retries={}",
                 c.tg_consumed,
                 c.tg_emitted,
                 hist.join(","),

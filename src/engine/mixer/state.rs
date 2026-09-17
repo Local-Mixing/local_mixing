@@ -887,7 +887,7 @@ impl Mixer {
     pub fn enable_db_record(&mut self, path: &str) {
         match std::fs::File::create(path) {
             Ok(f) => self.db_record = Some(std::io::BufWriter::new(f)),
-            Err(e) => eprintln!("[fmix] could not open --db-record {path}: {e}"),
+            Err(e) => eprintln!("[circuit_mixer] could not open --db-record {path}: {e}"),
         }
     }
 

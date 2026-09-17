@@ -1,4 +1,4 @@
-// Production GSS Stage 5: the directional crossing walk and its
+// Production TDP Stage 5: the directional crossing walk and its
 // thermostat contraction channels. The shared Mixer owns arena, provenance,
 // checkpoint, and database state; this module owns the concrete cross/undo/
 // merge walk operations.

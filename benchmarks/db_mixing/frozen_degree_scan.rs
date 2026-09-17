@@ -3,7 +3,7 @@
 //! Walks shard buckets sequentially (`frozen::scan_shard`), decodes each
 //! entry's FIRST friend (all friends under one key compute the same function,
 //! hence share one ANF degree) and histograms exact max output degree by gate
-//! count. Used to pick `--db-max-degree` for the fmix DB move: a window whose
+//! count. Used to pick `--db-max-degree` for the circuit_mixer DB move: a window whose
 //! degree exceeds the store's true maximum can never match.
 //!
 //! Usage:

@@ -295,7 +295,7 @@ impl Mixer {
             }
         };
         let mut o = String::with_capacity(ids.len() * 48);
-        let _ = writeln!(o, "fmix-state {STATE_VERSION}");
+        let _ = writeln!(o, "circuit-mixer-state {STATE_VERSION}");
         let _ = writeln!(o, "wires {}", self.num_wires);
         let _ = writeln!(o, "moves {}", self.moves_done);
         let _ = writeln!(o, "next_event {}", self.next_event);
@@ -468,8 +468,10 @@ impl Mixer {
             .next()
             .ok_or_else(|| bad("empty state file"))?
             .split_whitespace();
-        if hdr.next() != Some("fmix-state") {
-            return Err(bad("missing fmix-state header"));
+        // The program rename changes new headers, but existing checkpoint
+        // bodies still have the same versioned fields and remain readable.
+        if !matches!(hdr.next(), Some("circuit-mixer-state" | "fmix-state")) {
+            return Err(bad("missing circuit-mixer-state header"));
         }
         let v: u32 = hdr
             .next()
@@ -776,7 +778,7 @@ impl Mixer {
                     mx.split_on = mx.params.split;
                     if !mx.params.split {
                         eprintln!(
-                            "[fmix] WARNING: state file has a LIVE split stage but --split was not \
+                            "[circuit_mixer] WARNING: state file has a LIVE split stage but --split was not \
                              given — the stage stays OFF and part-2 moves run on unsplit material"
                         );
                     }

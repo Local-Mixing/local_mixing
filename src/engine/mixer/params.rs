@@ -23,7 +23,7 @@ pub struct ResolvedDbKnobs {
 }
 
 /// How a DB move samples its outgoing window. Drawn ONCE per round, at the top
-/// of `db_attempt_inner`, because the window length now depends on it: the GSS
+/// of `db_attempt_inner`, because the window length now depends on it: the TDP
 /// profile wants a wide convex probe and a narrow contiguous one in the same
 /// mode (`--s-db-ctg` / `--s-db-comp-ctg`).
 ///
@@ -246,12 +246,12 @@ pub struct MixParams {
     // `s_db_comp` ships at 12 and `p_convex_comp` at 0.9 -- so both fired
     // unconditionally and silently shadowed an explicit `--s-db` / `--p-convex`
     // in COMP rounds. Worse, 0 is a LEGITIMATE value here: `p_mingen_comp = 0`
-    // is what the GSS profile wants, and a sentinel scheme cannot tell it from
+    // is what the TDP profile wants, and a sentinel scheme cannot tell it from
     // "unset".
     //
     // Resolution is by specificity and lives entirely in the `active_*` methods
     // below. Deciding WHICH level the user actually asked for is the CLI's job
-    // (fmix.rs), because only there can clap's ValueSource distinguish "the
+    // (circuit_mixer.rs), because only there can clap's ValueSource distinguish "the
     // user passed this value" from "this is merely the default".
     pub s_db_comp: Option<usize>,
     pub p_convex_comp: Option<f64>,
@@ -286,7 +286,7 @@ pub struct MixParams {
     pub db_verify: bool,
     // Measurement mode: sample windows and record the DB match count via
     // --db-record but NEVER splice (the circuit stays stationary). With
-    // p_db = 1.0 and all other weights 0 this makes fmix a pure match-rate
+    // p_db = 1.0 and all other weights 0 this makes circuit_mixer a pure match-rate
     // sampler over the input circuit.
     pub db_dry_run: bool,
     // Degree pre-filter for DB lookups: a window whose function degree exceeds
@@ -624,7 +624,7 @@ impl Default for MixParams {
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
             // value, and any positive DB rate here would make every construction
-            // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the fmix
+            // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the circuit_mixer
             // CLI, where a run that wants the store asks for it -- as of
             // 2026-08-03 that means s_db 9, p_convex 0.4, s_db_comp 12,
             // p_convex_comp 0.9, db_prefixes/curated/curated_exhaust/

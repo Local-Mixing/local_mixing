@@ -13,7 +13,7 @@
 //! toward the mean friend length rather than down.
 //!
 //! `--target-gates N` adds a TERMINAL constraint on top of that, because the
-//! consumer (`gen_sandwich_gadget` via GSS_SOURCE_C) asserts |C| == m_C and
+//! consumer (`gen_sandwich_gadget` via TDP_SOURCE_C) asserts |C| == m_C and
 //! sizes the whole pipeline from it: C and C' must come out at the same gate
 //! count or the size difference is itself a signal. The walk stays uniform
 //! over all friends until the circuit first reaches N; from then on the draw
@@ -23,15 +23,13 @@
 //! can undershoot by a gate or two, and reverting to the unrestricted rule
 //! there would let a single long friend jump the count far above N again.
 //!
-//! The lookup below replicates `pairs.rs::frozen_lookup` rather than calling
-//! it: that function is private and its helpers (`cached_db_get`,
-//! `LOOKUP_NS_*`, `min_dir_lookup_mode`) are `pub(crate)`, so a separate bin
-//! crate cannot reach them and nothing in `src/` had to be widened for this
-//! experiment. The replica probes curated-forward, then regular forward and
-//! reverse -- the MIN_DIR_LOOKUP=Legacy order, which replace.rs documents as
-//! exactly equivalent to the min-direction default (the shard DBs are keyed by
-//! min(canon_fwd, canon_rev), so probing both directions is a superset). It
-//! also skips the process-wide lookup cache, so probe cost is the raw store's.
+//! The lookup below follows the policy in `src/stages/db_mixing/replacement.rs`
+//! using direct store access: the shared lookup/cache helpers are crate-private
+//! and unavailable to this separate executable. It probes curated-forward,
+//! then regular forward and reverse. The regular shard DBs are keyed by
+//! min(canon_fwd, canon_rev), so probing both directions yields the same
+//! candidates as the min-direction policy. It skips the process-wide lookup
+//! cache, so probe cost is the raw store's.
 //!
 //! Example:
 //!   FROZEN_DB_DIR=... FROZEN_CURATED_DIR=... id_rewrite \

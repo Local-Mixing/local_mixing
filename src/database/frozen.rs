@@ -1212,5 +1212,5 @@ impl FrozenDb {
 }
 
 #[cfg(test)]
-#[path = "../../tests/database/frozen/tests.rs"]
+#[path = "../../tests/unit/database/frozen/tests.rs"]
 mod tests;

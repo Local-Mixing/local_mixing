@@ -40,7 +40,7 @@
 //! likewise at the far end. Cell (0,0) is therefore 1.0 in EVERY build and any
 //! statistic that includes it says nothing. The summary below reports the
 //! interior separately for that reason, and
-//! `security_tests/reporting/band_hardening_20260725/stat_readout.py` is the reader — NOT
+//! `security_tests/heatmaps/stat_readout.py` is the reader — NOT
 //! `plot_hmap_ridge.py`, which assumes hmap_affine's inverted convention
 //! (there low is leaky; here high is) and would trace nonsense on this plate.
 //!

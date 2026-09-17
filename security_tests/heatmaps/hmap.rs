@@ -142,7 +142,7 @@ fn indices(start: usize, end: usize, step: usize) -> Vec<usize> {
 
 // Run `gates`, snapshotting the lane state at each prefix length in `idx`
 // (sorted, first element >= 0). Returns one Vec<u64> (nw lanes-words) per index.
-fn snapshots(gates: &[XGate], nw: usize, init: &[u64], idx: &[usize]) -> Vec<Vec<u64>> {
+fn snapshots(gates: &[XGate], init: &[u64], idx: &[usize]) -> Vec<Vec<u64>> {
     let mut state = init.to_vec();
     let mut out = Vec::with_capacity(idx.len());
     let mut k = 0;
@@ -222,8 +222,8 @@ fn main() {
         for pos in (0..args.seed_pos).rev() {
             c[pos].apply_lanes(&mut init);
         }
-        let cs = snapshots(&c, nw, &init, &i_idx);
-        let ds = snapshots(&d, nw, &init, &j_idx);
+        let cs = snapshots(&c, &init, &i_idx);
+        let ds = snapshots(&d, &init, &j_idx);
         for (ri, cv) in cs.iter().enumerate() {
             let base = ri * cols;
             for (cj, dv) in ds.iter().enumerate() {

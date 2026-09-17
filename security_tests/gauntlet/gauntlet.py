@@ -39,19 +39,8 @@ DEFAULT_W2_CAP = 64
 DEFAULT_W3_CAP = 16
 DEFAULT_XTRACE_MAX_FEATURES = 40_000
 
-# name -> construction policy.
-#
-# Trimmed 2026-09-08 to the supported set: the unprotected positive control,
-# blinded-V5 balanced (the shipped compute) with its two flag variants from
-# 046337ea, and nonlinear291.
-#
-# Removed: secretshare14, bandproduct92 (native comparison controls);
-# blindedv5 (balanced masks OFF - the pre-95b9bbd2 behaviour, kept until now
-# only to show what balancing bought); nonlinear193 and the four
-# nonlinear*_band0/_band16 pool-integration arms. None of their
-# implementations were deleted - `ss`, `semi`, `bv5` and the nonlinear193
-# builder all still exist, so any of these can be restored by pasting its
-# entry back here.
+# Supported construction policies. Keep the unprotected positive control so
+# every run can distinguish a working detector from an empty attack result.
 ARMS: dict[str, dict[str, Any]] = {
     # Positive control: G = C verbatim. Every attack must fire on this. Keep it
     # -- without it a clean sheet cannot be shown to mean anything.
@@ -60,41 +49,37 @@ ARMS: dict[str, dict[str, Any]] = {
         "aux": ("zero", "random"),
         "rust_gadget": "none",
     },
-    # blinded-V5 LGI compute, balanced masks, two-control fire on borrowed
-    # dirty wires (046337ea). Encoded I/O (inputs/outputs masked off-trace),
+    # Embedded masking, balanced masks, two-control fire on borrowed
+    # dirty wires. Encoded I/O (inputs/outputs masked off-trace),
     # random band: the band is a uniform pool, never input-seeded.
-    "blindedv5_balanced": {
+    "embedded_masking_balanced": {
         "kind": "native",
         "aux": ("random",),
-        "rust_gadget": "bv5bal",
+        "rust_gadget": "embedded-masking-balanced",
+    },
+    # Same baseline with explicit internal preprocessing shuffling. Keep the
+    # production-compatible return-home and measured carried-layout variants
+    # separate so their security results are never pooled inadvertently.
+    "embedded_masking_shuffled": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "embedded-masking-shuffled",
+    },
+    "embedded_masking_shuffled_carried": {
+        "kind": "native",
+        "aux": ("random",),
+        "rust_gadget": "embedded-masking-shuffled",
+        "gen_args": ("--shuffling-carry-layout",),
     },
     # a wider band: the residual three-feature correlation needs the borrowed
     # partial products to line up with a mask sum, which is only possible because
     # band wires are mutually correlated; more of them should dilute it
-    "blindedv5_balanced_wideband": {
+    "embedded_masking_balanced_wideband": {
         "kind": "native",
         "aux": ("random",),
-        "rust_gadget": "bv5bal",
-        "gen_args": ("--bv5-band", "256"),
+        "rust_gadget": "embedded-masking-balanced",
+        "gen_args": ("--mask-band", "256"),
     },
-    # balanced masks with the open-mask cap lowered to 2 (read polynomial back
-    # to the plain build's size; every mask term still unbiased).
-    #
-    # WARNING: this arm PANICS at 046337ea. production() sets min_open = 2 and
-    # blinded_v5.rs asserts min_open < max_open, so a cap of 2 aborts
-    # generation with "min_open (2) must be below max_open (2)". The clamp on
-    # the line above the assert already yields the 1 this arm wants, and
-    # gauntlet_gen exposes no --bv5-min-open, so there is no way to configure
-    # around it. Either relax the assert to match the clamp, or add the flag
-    # and pass ("--bv5-min-open", "1") here.
-    # PARKED, not deleted: this arm cannot run at 046337ea. Uncomment once one
-    # of the two fixes below is in, then it is a supported variant again.
-    #     "blindedv5_balanced_mo2": {
-    #         "kind": "native",
-    #         "aux": ("random",),
-    #         "rust_gadget": "bv5bal",
-    #         "gen_args": ("--bv5-max-open", "2"),
-    #     },
     "nonlinear291": {
         "kind": "file",
         "aux": ("builder",),
@@ -321,6 +306,8 @@ def generation_config(
     aux: str,
     k: int,
     mix_on: bool,
+    mix_seed: int | None,
+    shuffling_segments: int,
     correlation_samples: int,
     mix_moves: int,
     pool_keys: int,
@@ -335,7 +322,7 @@ def generation_config(
         "n": N_WIRES,
         "mix": mix_on,
         "mix_moves": mix_moves if mix_on else 0,
-        "mix_seed": 777,
+        "mix_seed": mix_seed,
         "seed": 100 + k,
         "gadget_seed": 7_000 + k,
         "correlation_samples": correlation_samples,
@@ -344,6 +331,8 @@ def generation_config(
         "generator_binary": binary_signature(gen_binary),
         "generator_source": source_signature(SCRIPT_DIR / "gauntlet_gen.rs"),
     }
+    if policy.get("rust_gadget") == "embedded-masking-shuffled":
+        config["shuffling_segments"] = shuffling_segments
     if policy["kind"] == "file":
         config["builder_source"] = source_signature(BUILD_SCRIPT)
         config["nonlinear193_source"] = source_signature(
@@ -384,20 +373,23 @@ def maps_config(*, audit_digest: str) -> dict[str, Any]:
     }
 
 
-def cell_name(arm: str, aux: str, mix_on: bool) -> str:
+def cell_name(arm: str, aux: str, mix_on: bool, mix_seed: int | None) -> str:
     auxiliary = f"_{aux}" if aux != "builder" else ""
-    return f"{arm}{auxiliary}_{'mix' if mix_on else 'nomix'}"
+    suffix = f"mix_seed{mix_seed}" if mix_on else "nomix"
+    return f"{arm}{auxiliary}_{suffix}"
 
 
 def iter_cells(
-    arms: Sequence[str], ks: Sequence[int], mix_modes: Sequence[bool]
-) -> list[tuple[int, str, str, bool]]:
+    arms: Sequence[str], ks: Sequence[int], mix_modes: Sequence[bool],
+    mix_seeds: Sequence[int],
+) -> list[tuple[int, str, str, bool, int | None]]:
     return [
-        (k, arm, aux, mix_on)
+        (k, arm, aux, mix_on, mix_seed)
         for k in ks
         for arm in arms
         for aux in ARMS[arm]["aux"]
         for mix_on in mix_modes
+        for mix_seed in (mix_seeds if mix_on else (None,))
     ]
 
 
@@ -477,6 +469,8 @@ def generate_cell(
     aux: str,
     k: int,
     mix_on: bool,
+    mix_seed: int | None,
+    shuffling_segments: int,
     chain: Path,
     gen_binary: Path,
     correlation_samples: int,
@@ -535,6 +529,8 @@ def generate_cell(
                 "zero",
                 "--mix",
                 str(mix_moves),
+                "--mix-seed",
+                str(mix_seed),
                 "--size-only",
             ]
             run(
@@ -612,8 +608,10 @@ def generate_cell(
             aux,
         ]
         command.extend(policy.get("gen_args", ()))
+        if policy["rust_gadget"] == "embedded-masking-shuffled":
+            command.extend(("--shuffling-segments", str(shuffling_segments)))
     if mix_on:
-        command.extend(("--mix", str(mix_moves)))
+        command.extend(("--mix", str(mix_moves), "--mix-seed", str(mix_seed)))
     run(command, cdir / "gen.log", env_extra=env, append=False)
 
     metadata = read_kv(Path(f"{prefix}.meta"))
@@ -621,6 +619,8 @@ def generate_cell(
         raise RuntimeError(
             f"generated circuit failed its behavioral check; see {prefix}.meta and {cdir / 'gen.log'}"
         )
+    if mix_on and int(metadata["mix_seed"]) != mix_seed:
+        raise RuntimeError("generator metadata disagrees with the requested mixer seed")
 
 
 def audit_cell(
@@ -693,6 +693,7 @@ def build_report(
     arms: Sequence[str],
     ks: Sequence[int],
     mix_modes: Sequence[bool],
+    mix_seeds: Sequence[int],
 ) -> None:
     lines = [
         "# Gadget gauntlet report",
@@ -701,7 +702,11 @@ def build_report(
         "security proof. `w1` covers every recorded feature; `w2` and `w3` use "
         "deterministic strided feature subsets. Each row records its actual sampled "
         "feature counts, so a report remains accurate when regenerated with different "
-        "CLI defaults. See `security_tests/gauntlet/README.md` for the exact attack families.",
+        "CLI defaults. See `security_tests/README.md` for the exact attack families.",
+        "",
+        "Rows retain the construction arm and mixer seed independently. Seeds are "
+        "paired across arms, with construction and input-sampling seeds fixed for "
+        "each chain length. Unmixed controls appear once; no arms or seeds are pooled.",
         "",
     ]
     index: list[dict[str, Any]] = []
@@ -716,8 +721,12 @@ def build_report(
         )
         for arm in arms:
             for aux in ARMS[arm]["aux"]:
-                for mix_on in mix_modes:
-                    name = cell_name(arm, aux, mix_on)
+                for mix_on, mix_seed in (
+                    (mode, seed)
+                    for mode in mix_modes
+                    for seed in (mix_seeds if mode else (None,))
+                ):
+                    name = cell_name(arm, aux, mix_on, mix_seed)
                     cdir = outdir / f"k{k}" / name
                     audit_log = cdir / "audit.log"
                     audit_artifacts = [
@@ -725,6 +734,7 @@ def build_report(
                         audit_log,
                     ]
                     manifest = read_json(cdir / "cell-config.json", {})
+                    saved_generation = manifest.get("stages", {}).get("generation", {})
                     saved_audit = manifest.get("stages", {}).get("audit")
                     if saved_audit is None and not audit_log.exists():
                         continue
@@ -736,6 +746,17 @@ def build_report(
                             f"{cdir}: audit artifacts failed manifest integrity; "
                             "rerun the audit stage"
                         )
+                    generation = saved_generation.get("config", {})
+                    if (
+                        generation.get("arm") != arm
+                        or generation.get("aux") != aux
+                        or generation.get("k") != k
+                        or generation.get("mix") != mix_on
+                        or (mix_on and generation.get("mix_seed") != mix_seed)
+                        or saved_audit.get("config", {}).get("generation_digest")
+                        != saved_generation.get("digest")
+                    ):
+                        raise RuntimeError(f"{cdir}: audit provenance does not match this cell")
                     result = last_prefixed_line(audit_log, "RESULT")
                     values = parse_result(result)
                     if not values:
@@ -768,7 +789,20 @@ def build_report(
                         f"{values.get('w3flag', '?')} | {coverage} |"
                     )
                     index.append(
-                        {"cell": [k, name], "result": result, "fields": values}
+                        {
+                            "cell": [k, name],
+                            "arm": arm,
+                            "aux": aux,
+                            "k": k,
+                            "mixed": mix_on,
+                            "mix_seed": mix_seed,
+                            "input_seed": generation["seed"],
+                            "gadget_seed": generation["gadget_seed"],
+                            "shuffling_segments": generation.get("shuffling_segments", 0),
+                            "policy": generation["policy"],
+                            "result": result,
+                            "fields": values,
+                        }
                     )
         lines.append("")
     (outdir / "REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -885,9 +919,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--n-wires",
         type=int,
         default=N_WIRES,
-        help="logical wires of the source chain (native arms only; file arms need 8)",
+        help="logical wires of the source chain (at least 6)",
     )
     parser.add_argument("--mix", choices=("both", "on", "off"), default="both")
+    parser.add_argument(
+        "--mix-seeds", default="777",
+        help="comma-separated mixer seeds, paired across arms; unmixed cells run once",
+    )
+    parser.add_argument(
+        "--shuffling-segments", type=int, default=8,
+        help="transfer segments for both shuffled masking arms (at least 8)",
+    )
     parser.add_argument("--arms", default=",".join(ARMS), help="comma-separated arms")
     parser.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
     parser.add_argument("--bin-dir", type=Path, default=DEFAULT_BIN_DIR)
@@ -937,6 +979,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         parser.error(f"invalid --ks: {error}")
     arms = [value for value in args.arms.split(",") if value]
+    try:
+        mix_seeds = [int(value) for value in args.mix_seeds.split(",")]
+    except ValueError as error:
+        parser.error(f"invalid --mix-seeds: {error}")
+    if not mix_seeds or any(not 0 <= seed < 2**64 for seed in mix_seeds):
+        parser.error("--mix-seeds must contain unsigned 64-bit integers")
+    if len(set(mix_seeds)) != len(mix_seeds):
+        parser.error("--mix-seeds must not repeat a seed")
     unknown = [arm for arm in arms if arm not in ARMS]
     if unknown:
         parser.error(f"unknown arms: {', '.join(unknown)}")
@@ -944,6 +994,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--ks must contain positive integers")
     if not arms:
         parser.error("--arms cannot be empty")
+    if len(set(ks)) != len(ks) or len(set(arms)) != len(arms):
+        parser.error("--ks and --arms must not repeat entries (cells share output paths)")
+    if args.shuffling_segments < 8:
+        parser.error("--shuffling-segments must be at least 8")
     if args.n_wires < 6:
         parser.error("--n-wires must be at least 6 (the chain recipe uses offsets 3 and 5)")
     # gauntlet_build.py is n-general (--n, validated n >= 3; every layout is
@@ -978,6 +1032,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arms=arms,
             ks=ks,
             mix_modes=mix_modes,
+            mix_seeds=mix_seeds,
         )
         return 0
 
@@ -992,16 +1047,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     prepare_output(outdir, force=args.force)
 
-    cells = iter_cells(arms, ks, mix_modes)
+    cells = iter_cells(arms, ks, mix_modes, mix_seeds)
     # Create shared deterministic inputs before worker threads start so no two
     # cells can observe a partially written chain.
     for k in ks:
         source_chain(outdir / "_inputs" / f"chain_k{k}.mpmct1", k)
     rayon_threads = max(1, (os.cpu_count() or 1) // args.jobs)
 
-    def do_cell(cell: tuple[int, str, str, bool]) -> None:
-        k, arm, aux, mix_on = cell
-        name = cell_name(arm, aux, mix_on)
+    def do_cell(cell: tuple[int, str, str, bool, int | None]) -> None:
+        k, arm, aux, mix_on, mix_seed = cell
+        name = cell_name(arm, aux, mix_on, mix_seed)
         cdir = outdir / f"k{k}" / name
         cdir.mkdir(parents=True, exist_ok=True)
         prefix = cdir / "bundle"
@@ -1014,6 +1069,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             aux=aux,
             k=k,
             mix_on=mix_on,
+            mix_seed=mix_seed,
+            shuffling_segments=args.shuffling_segments,
             correlation_samples=correlation_samples,
             mix_moves=args.mix_moves,
             pool_keys=args.pool_keys,
@@ -1046,6 +1103,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 aux=aux,
                 k=k,
                 mix_on=mix_on,
+                mix_seed=mix_seed,
+                shuffling_segments=args.shuffling_segments,
                 chain=chain,
                 gen_binary=gen_binary,
                 correlation_samples=correlation_samples,
@@ -1124,6 +1183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arms=arms,
             ks=ks,
             mix_modes=mix_modes,
+            mix_seeds=mix_seeds,
         )
     return 0
 

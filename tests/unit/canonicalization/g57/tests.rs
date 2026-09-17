@@ -9,8 +9,8 @@ fn polynomial_from_terms_sorts_and_cancels_pairs() {
     assert_eq!(polynomial_from_terms([5, 3, 5, 1, 3, 5, 7, 7]), vec![1, 5]);
 }
 
-// The byte parser replaced a char-by-char one. This is the old
-// implementation verbatim, so any grammar drift shows up as a diff.
+// A character-by-character reference parser checks grammar agreement with
+// the byte parser.
 fn ref_from_string(s: &str) -> CircuitSeq {
     fn char_to_wire(c: char) -> u8 {
         match c {
@@ -207,7 +207,7 @@ fn opt_equiv_evaluate_index_list_64_matches_wider_kernels() {
     }
 }
 
-// Limb-indexed wide kernels must be bit-exact against the original
+// Limb-indexed wide kernels must be bit-exact against the reference
 // full-width bignum shift formulation for every in-range wire, including
 // limb boundaries.
 #[test]
@@ -294,7 +294,7 @@ fn opt_equiv_probably_equal_512_arm_agrees() {
     assert!(c.probably_equal(&c3, 300, 64).is_err());
 }
 
-// The stack-style pass must reproduce the historical drain-with-backtrack
+// The stack-style pass must reproduce the reference drain-with-backtrack
 // cancellation exactly, including tag lockstep.
 #[test]
 fn opt_equiv_cancel_adjacent_duplicates_matches_drain_reference() {
@@ -384,41 +384,41 @@ fn evaluate_128_matches_256_for_supported_wires() {
     }
 }
 
-fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {
+fn reference_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {
     if !poly.remove(&m) {
         poly.insert(m);
     }
 }
 
-fn old_xor(mut left: BTreeSet<Monomial>, right: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+fn reference_xor(mut left: BTreeSet<Monomial>, right: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
     for m in right {
-        old_toggle(&mut left, m);
+        reference_toggle(&mut left, m);
     }
     left
 }
 
-fn old_and(left: &BTreeSet<Monomial>, right: &BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+fn reference_and(left: &BTreeSet<Monomial>, right: &BTreeSet<Monomial>) -> BTreeSet<Monomial> {
     let mut result = BTreeSet::new();
     for &m1 in left {
         for &m2 in right {
-            old_toggle(&mut result, m1 | m2);
+            reference_toggle(&mut result, m1 | m2);
         }
     }
     result
 }
 
-fn old_not(poly: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
-    old_xor(BTreeSet::from([0u64]), poly)
+fn reference_not(poly: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+    reference_xor(BTreeSet::from([0u64]), poly)
 }
 
-fn old_hashset_style_to_polynomial(circuit: &CircuitSeq, n: usize) -> Vec<Polynomial> {
+fn reference_set_to_polynomial(circuit: &CircuitSeq, n: usize) -> Vec<Polynomial> {
     let mut polys: Vec<BTreeSet<Monomial>> = (0..n).map(|i| BTreeSet::from([1u64 << i])).collect();
 
     for &[a, b, c] in &circuit.gates {
-        let not_b = old_not(polys[b as usize].clone());
-        let term = old_and(&polys[c as usize], &not_b);
-        let mut new_a = old_xor(polys[a as usize].clone(), term);
-        old_toggle(&mut new_a, 0u64);
+        let not_b = reference_not(polys[b as usize].clone());
+        let term = reference_and(&polys[c as usize], &not_b);
+        let mut new_a = reference_xor(polys[a as usize].clone(), term);
+        reference_toggle(&mut new_a, 0u64);
         polys[a as usize] = new_a;
     }
 
@@ -429,7 +429,7 @@ fn old_hashset_style_to_polynomial(circuit: &CircuitSeq, n: usize) -> Vec<Polyno
 }
 
 #[test]
-fn to_polynomial_matches_old_hashset_style_implementation() {
+fn to_polynomial_matches_set_reference() {
     let mut rng = fastrand::Rng::with_seed(0x706f_6c79_7665_6375);
     for _ in 0..200 {
         let n = rng.usize(3..=12);
@@ -439,7 +439,7 @@ fn to_polynomial_matches_old_hashset_style_implementation() {
 
         assert_eq!(
             circuit.to_polynomial(n, 0, circuit.gates.len()),
-            old_hashset_style_to_polynomial(&circuit, n)
+            reference_set_to_polynomial(&circuit, n)
         );
     }
 }
@@ -504,7 +504,7 @@ fn eval_polys(polys: &[Polynomial], input: usize) -> usize {
 fn probably_equal_widens_to_actual_circuit_wires() {
     // Both circuits compute w2 ^= (w1 AND NOT w0) on the 200-wire compare
     // contract, via a zero-initialized aux wire. A's aux lives at wire
-    // 300/301 — beyond u256 — so the old num_wires-based width dispatch
+    // 300/301 — beyond u256 — so a num_wires-based width dispatch
     // evaluated it in u256 where shifts >= 256 silently return 0,
     // corrupting the aux accesses and reporting a false "not equal".
     // Width must follow the circuits' actual max wire.
@@ -581,7 +581,7 @@ fn opt_equiv_rank_key_prefix_cmp_matches_lexicographic() {
 }
 
 // The stack-bitset used_wires fast path (and the len-only variant) must
-// match the historical marking implementation, on either side of the
+// match the reference marking implementation, on either side of the
 // 1024-wire fallback boundary.
 #[test]
 fn opt_equiv_used_wires_matches_marking_reference() {
@@ -626,7 +626,7 @@ fn opt_equiv_used_wires_matches_marking_reference() {
     }
 }
 
-// Scratch-buffer to_polynomial/_capped must reproduce the historical
+// Scratch-buffer to_polynomial/_capped must reproduce the reference
 // allocate-per-gate pipeline exactly, including the capped budget checks.
 fn reference_to_polynomial(
     circuit: &CircuitSeq,
@@ -696,7 +696,7 @@ fn opt_equiv_to_polynomial_scratch_reuse_matches_reference() {
     }
 }
 
-// Merge-based input negation must match the historical per-rest
+// Merge-based input negation must match the reference per-rest
 // binary-search toggles on normalized polynomials.
 #[test]
 fn opt_equiv_substitute_input_negation_matches_toggle_reference() {
@@ -719,15 +719,15 @@ fn opt_equiv_substitute_input_negation_matches_toggle_reference() {
             .collect();
         let poly = polynomial_from_terms(terms);
         let w = rng.usize(0..k);
-        let mut new_poly = poly.clone();
-        let mut old_poly = poly.clone();
-        substitute_input_negation(&mut new_poly, w);
-        reference(&mut old_poly, w);
-        assert_eq!(new_poly, old_poly, "k={k} w={w} poly={poly:?}");
+        let mut actual_poly = poly.clone();
+        let mut reference_poly = poly.clone();
+        substitute_input_negation(&mut actual_poly, w);
+        reference(&mut reference_poly, w);
+        assert_eq!(actual_poly, reference_poly, "k={k} w={w} poly={poly:?}");
         // Involution sanity: substituting the same wire twice restores
         // the input.
-        substitute_input_negation(&mut new_poly, w);
-        assert_eq!(new_poly, poly, "k={k} w={w}");
+        substitute_input_negation(&mut actual_poly, w);
+        assert_eq!(actual_poly, poly, "k={k} w={w}");
     }
 }
 
@@ -771,7 +771,7 @@ fn opt_equiv_canonicalize_polys_single_hashed_matches_plain() {
     assert_eq!(used.len(), 66);
 }
 
-// The cached neg variant must match the historical uncached pipeline
+// The cached neg variant must match the reference uncached pipeline
 // (per-input substitution in caller order) on fresh and hit paths, and an
 // empty negation set must coincide with the plain canonicalization.
 #[test]
@@ -807,8 +807,7 @@ fn opt_equiv_canon_single_neg_cache_matches_uncached_reference() {
                 _ => continue,
             };
             for p in polys.iter_mut() {
-                // Sequential toggle substitution, as the historical code
-                // did.
+                // Reference substitution toggles each remainder in sequence.
                 let bit = 1u64 << mapped;
                 let rests: Vec<Monomial> = p
                     .iter()
@@ -905,11 +904,9 @@ fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
     xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
 }
 
-// Golden canonical-form hashes. The canonical form defines every curated-DB key, so any
-// change to these values means the DB has been silently invalidated. Do not regenerate
-// casually. Regenerated 2026-07-18 after fixing a swapped-argument bug in to_polynomial
-// (the g57 monomial was b*NOT(c); the executor and from_g57 use NOT(b)*c) — this realigns
-// our DB keys with the source/upstream convention.
+// Golden canonical-form hashes guard the key format used by curated databases.
+// Changing these values invalidates those keys, so do not regenerate them casually.
+// The g57 monomial uses NOT(b)*c, matching the executor and from_g57.
 #[test]
 fn canonical_form_golden() {
     const GOLDEN: &[(&str, &str)] = &[
@@ -1026,7 +1023,7 @@ fn substitute_input_negation_flips_that_variable() {
 }
 
 // The three canon4 scan configurations must be interchangeable: the
-// legacy per-level rank rescan (fat entries, groups=None), the tied-group
+// per-level rank rescan (fat entries, groups=None), the tied-group
 // precompute (fat entries, groups=Some), and the compact-entry scan
 // (deg<=16). Same split verdict, same split-group mask, same vr after.
 #[test]
@@ -1063,10 +1060,10 @@ fn opt_equiv_canon4_scan_paths_agree() {
 
         let scratch = || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let (mut le, mut f, mut t, mut s, mut sr) = scratch();
-        let mut vr_legacy = vr0.clone();
-        let res_legacy = scan_class_poly_levels_4(
+        let mut vr_rescan = vr0.clone();
+        let res_rescan = scan_class_poly_levels_4(
             &cp,
-            &mut vr_legacy,
+            &mut vr_rescan,
             n,
             tied_mask,
             &mut le,
@@ -1090,8 +1087,8 @@ fn opt_equiv_canon4_scan_paths_agree() {
             &mut sr,
             groups,
         );
-        assert_eq!(res_legacy, res_groups, "trial={trial} n={n}");
-        assert_eq!(vr_legacy, vr_groups, "trial={trial} n={n}");
+        assert_eq!(res_rescan, res_groups, "trial={trial} n={n}");
+        assert_eq!(vr_rescan, vr_groups, "trial={trial} n={n}");
 
         let compact_ok = cp.iter().all(|&(m, _)| m.count_ones() <= 16);
         if compact_ok {
@@ -1101,8 +1098,8 @@ fn opt_equiv_canon4_scan_paths_agree() {
             let res_c = scan_class_poly_levels_c(
                 &cp, &mut vr_c, n, tied_mask, &mut ec, &mut f, &mut t, &mut s, &mut sr, groups,
             );
-            assert_eq!(res_legacy, res_c, "compact trial={trial} n={n}");
-            assert_eq!(vr_legacy, vr_c, "compact trial={trial} n={n}");
+            assert_eq!(res_rescan, res_c, "compact trial={trial} n={n}");
+            assert_eq!(vr_rescan, vr_c, "compact trial={trial} n={n}");
         }
     }
 }

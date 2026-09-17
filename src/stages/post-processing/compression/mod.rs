@@ -110,7 +110,7 @@ pub fn liveness_prune(gates: Vec<XGate>, live_out: &[bool]) -> (Vec<XGate>, usiz
     (out, dropped)
 }
 
-// Per-gate ancestor set, in the fmix sidecar's word layout. Threaded through
+// Per-gate ancestor set, in the circuit_mixer sidecar's word layout. Threaded through
 // compression so the compressed circuit keeps a meaningful sidecar: gathering
 // is a permutation (sets follow gates), a reduced multi-member group stamps
 // every survivor with the UNION of its members' sets (each emitted cube
@@ -255,5 +255,5 @@ pub fn compress_anc(
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/stages/post-processing/compression/compress_tests.rs"]
+#[path = "../../../../tests/unit/stages/post-processing/compression/compress_tests.rs"]
 mod compress_tests;

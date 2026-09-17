@@ -93,24 +93,29 @@ fn arbitrary_xgate_polynomials_match_evaluation() {
 }
 
 #[test]
-fn g57_canonical_keys_match_legacy_in_both_directions() {
-    let legacy = CircuitSeq {
+fn g57_canonical_keys_match_circuit_sequence_in_both_directions() {
+    let g57_circuit = CircuitSeq {
         gates: vec![[7, 2, 11], [2, 7, 5], [11, 5, 2], [5, 11, 7]],
     };
-    let gates: Vec<XGate> = legacy.gates.iter().copied().map(XGate::from_g57).collect();
+    let gates: Vec<XGate> = g57_circuit
+        .gates
+        .iter()
+        .copied()
+        .map(XGate::from_g57)
+        .collect();
     for reversed in [false, true] {
-        let old = legacy.canonicalize_polys_single(reversed);
-        let new = canonicalize_xgates_single(&gates, reversed, XPolyBudget::default()).unwrap();
-        assert_eq!(new.polys, old.0);
-        assert_eq!(new.order, old.1);
-        assert_eq!(new.used_wires, old.2);
+        let reference = g57_circuit.canonicalize_polys_single(reversed);
+        let actual = canonicalize_xgates_single(&gates, reversed, XPolyBudget::default()).unwrap();
+        assert_eq!(actual.polys, reference.0);
+        assert_eq!(actual.order, reference.1);
+        assert_eq!(actual.used_wires, reference.2);
     }
 }
 
 #[test]
-fn g57_canonical_keys_match_legacy_randomized() {
+fn g57_canonical_keys_match_circuit_sequence_randomized() {
     // Randomized extension of the hand-written case above: the XGate
-    // canonicalization path must agree with the legacy g57 path on polys,
+    // canonicalization path must agree with the CircuitSeq g57 path on polys,
     // order and used_wires for arbitrary g57 circuits, both directions —
     // including the x==y degenerate lift (from_g57 -> X gate), which the
     // hand-written case never exercises. Deterministic LCG: reproducible.
@@ -143,20 +148,26 @@ fn g57_canonical_keys_match_legacy_randomized() {
             }
             gates_g57.push([a, x, y]);
         }
-        let legacy = CircuitSeq {
+        let g57_circuit = CircuitSeq {
             gates: gates_g57.clone(),
         };
         let lifted: Vec<XGate> = gates_g57.iter().copied().map(XGate::from_g57).collect();
         for reversed in [false, true] {
-            let old = legacy.canonicalize_polys_single(reversed);
-            let new = canonicalize_xgates_single(&lifted, reversed, XPolyBudget::default())
+            let reference = g57_circuit.canonicalize_polys_single(reversed);
+            let actual = canonicalize_xgates_single(&lifted, reversed, XPolyBudget::default())
                 .unwrap_or_else(|e| {
                     panic!("case {case} rev={reversed}: xgate canon failed: {e:?}")
                 });
-            assert_eq!(new.polys, old.0, "case {case} rev={reversed}: polys");
-            assert_eq!(new.order, old.1, "case {case} rev={reversed}: order");
             assert_eq!(
-                new.used_wires, old.2,
+                actual.polys, reference.0,
+                "case {case} rev={reversed}: polys"
+            );
+            assert_eq!(
+                actual.order, reference.1,
+                "case {case} rev={reversed}: order"
+            );
+            assert_eq!(
+                actual.used_wires, reference.2,
                 "case {case} rev={reversed}: used_wires"
             );
         }
@@ -167,19 +178,27 @@ fn g57_canonical_keys_match_legacy_randomized() {
 fn degenerate_x_lift_drops_the_phantom_wire() {
     // [3,4,4] fires always: from_g57 lifts it to an X gate with EMPTY
     // controls, so wire 4 vanishes from the xgate path's used_wires while
-    // the legacy path still counts it. This divergence is confined to
+    // the CircuitSeq path still counts it. This divergence is confined to
     // degenerate triples, which decode_rocks_entry rejects (ctrl_a ==
     // ctrl_b), so no stored circuit can ever hit it — but it means
     // from_g57 lifting is key-compatible ONLY for storable circuits.
-    let legacy = CircuitSeq {
+    let g57_circuit = CircuitSeq {
         gates: vec![[0, 1, 2], [3, 4, 4]],
     };
-    let lifted: Vec<XGate> = legacy.gates.iter().copied().map(XGate::from_g57).collect();
-    let old = legacy.canonicalize_polys_single(false);
-    let new = canonicalize_xgates_single(&lifted, false, XPolyBudget::default()).unwrap();
-    assert!(old.2.contains(&4), "legacy counts the phantom wire");
+    let lifted: Vec<XGate> = g57_circuit
+        .gates
+        .iter()
+        .copied()
+        .map(XGate::from_g57)
+        .collect();
+    let reference = g57_circuit.canonicalize_polys_single(false);
+    let actual = canonicalize_xgates_single(&lifted, false, XPolyBudget::default()).unwrap();
     assert!(
-        !new.used_wires.contains(&4),
+        reference.2.contains(&4),
+        "CircuitSeq counts the phantom wire"
+    );
+    assert!(
+        !actual.used_wires.contains(&4),
         "lift drops the phantom wire (X gate has no controls)"
     );
 }

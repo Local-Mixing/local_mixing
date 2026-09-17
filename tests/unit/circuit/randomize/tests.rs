@@ -27,9 +27,9 @@ fn commuting_shuffle_preserves_truth_table_and_sidecar_order() {
             let mut sorted_order = order.clone();
             sorted_order.sort_unstable();
             assert_eq!(sorted_order, (0..source.len() as u32).collect::<Vec<_>>());
-            for (gate, &old_index) in shuffled.iter().zip(&order) {
+            for (gate, &source_index) in shuffled.iter().zip(&order) {
                 assert_eq!(
-                    gate, &source[old_index as usize],
+                    gate, &source[source_index as usize],
                     "sidecar must follow its gate"
                 );
             }

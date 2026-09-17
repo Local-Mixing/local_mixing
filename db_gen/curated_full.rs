@@ -198,5 +198,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "../tests/db_gen/curated_full/tests.rs"]
+#[path = "../tests/unit/db_gen/curated_full/tests.rs"]
 mod tests;

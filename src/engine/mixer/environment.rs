@@ -1,4 +1,4 @@
-//! Process-wide mixer controls used by the GSS stage executables.
+//! Process-wide mixer controls used by the TDP stage executables.
 //! Each control is cached independently when first read. Explicit runtime
 //! options bypass these settings; engine code does not depend on CLI modules.
 pub(crate) fn tg_slide_on() -> bool {
@@ -19,7 +19,7 @@ pub(crate) fn reference_db() -> Option<&'static crate::database::frozen::FrozenD
         std::sync::OnceLock::new();
     REF.get_or_init(|| {
         let dir = std::env::var("FROZEN_REF_DIR").ok()?;
-        println!("[fmix] class-attribution reference store: {dir}");
+        println!("[circuit_mixer] class-attribution reference store: {dir}");
         Some(crate::database::frozen::FrozenDb::open(&dir, None))
     })
     .as_ref()
@@ -28,7 +28,7 @@ pub(crate) fn reference_db() -> Option<&'static crate::database::frozen::FrozenD
 pub(crate) fn stop_at_phase() -> Option<u32> {
     static STOP_AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *STOP_AT.get_or_init(|| {
-        std::env::var("FMIX_STOP_AT_PHASE")
+        std::env::var("MIXER_STOP_AT_PHASE")
             .ok()
             .and_then(|v| v.parse().ok())
     })

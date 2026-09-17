@@ -34,7 +34,7 @@ fn engine_reproduces_hidden_swap_identity() {
 
 #[test]
 fn engine_solutions_verify_and_match_census() {
-    // Cross-check against the exhaustive Python census (2026-07-29):
+    // Cross-check against the exhaustive Python census:
     // over ALL ordered pairs (h1, h2) of distinct 3-wire g57s on {a,b,c},
     // h1 . h2 . S_ab is solvable, and the length-4 count is 12 of 30
     // (fixed-op 2-prefix coverage 12/36 minus the 6 identical pairs).

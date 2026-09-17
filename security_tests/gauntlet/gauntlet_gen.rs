@@ -13,16 +13,20 @@
 //!
 //! Gadget arms:
 //!   none  — G = C verbatim (positive control: every attack must fire)
-//!   bv5   — quadratic-masking LGI compute (current production preset:
+//!   embedded-masking — embedded-masking LGI compute (current production preset:
 //!           K=2, max_open=3, quad-fire, auto burst rerand) with ENCODED I/O:
 //!           the data wires enter and leave the trace under pre-opened masks
 //!           (the encode/decode LGI gates are applied out of band, never
 //!           traced) and the band starts RANDOM (`--aux random` required; no
 //!           input-seeded band -- at n=8 that would leave 256 contexts and a
-//!           seed gate's flip is a raw function of the input). `--bv5-band`
+//!           seed gate's flip is a raw function of the input). `--mask-band`
 //!           band wires (0 = auto = max(32, n)).
-//!   bv5bal — the same with BALANCED masks (one CNOT from a fresh band wire per
+//!   embedded-masking-balanced — the same with BALANCED masks (one CNOT from a fresh band wire per
 //!           LGI, so every mask term is unbiased).
+//!   embedded-masking-shuffled — balanced masking with preprocessing shuffling
+//!           (eight segments by default). Data roles return home unless
+//!           --shuffling-carry-layout is set; carried output roles are decoded
+//!           through final_layout, while every compute transfer remains traced.
 //!   file  — load a pre-gadgetized circuit from --g-in (mpmct1); this is how
 //!           the Python-built nonlinear193/nonlinear291 gadgets enter the SAME
 //!           trace/audit pipeline. The checked builder sidecar is validated
@@ -31,7 +35,7 @@
 //! Mixing (`--mix MOVES`): after gadgetization, run the engine Mixer (their
 //! local-mixing walk: crossings, unsubsume/copy splits, conjugation twists,
 //! thermostat at the input size) in-process, then trace the MIXED circuit.
-//! With mixing on, this is the same pipeline as gen_*_gadget -> fmix, with a
+//! With mixing on, this is the same pipeline as gen_*_gadget -> circuit_mixer, with a
 //! generic gadgetization front-end.
 //!
 //! Input policy: source wires 0..n get fresh random bits per sample; the rest
@@ -42,23 +46,29 @@ use local_mixing::circuit::Circuit;
 use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
 use local_mixing::engine::mixer::{MixParams, MixStop, Mixer};
-use local_mixing::stages::preprocessing::quadratic_masking::{
-    QuadraticMaskingParams, preprocess_quadratic_masking,
+use local_mixing::stages::preprocessing::embedded_masking::{
+    EmbeddedMaskingParams, preprocess_embedded_masking,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 
 #[derive(Parser)]
 struct Args {
-    /// none | bv5 | bv5bal | file
+    /// none | embedded-masking | embedded-masking-balanced | embedded-masking-shuffled | file
     #[arg(long)]
     gadget: String,
-    /// band wires for the bv5 arms (0 = auto = max(32, n))
+    /// band wires for the embedded-masking arms (0 = auto = max(32, n))
     #[arg(long, default_value_t = 0)]
-    bv5_band: usize,
-    /// open-mask cap per wire for the bv5 arms (0 = production preset, 3)
+    mask_band: usize,
+    /// open-mask cap per wire for the embedded-masking arms (0 = production preset, 3)
     #[arg(long, default_value_t = 0)]
-    bv5_max_open: usize,
+    mask_max_open: usize,
+    /// Transfer segments for embedded-masking-shuffled (at least 8)
+    #[arg(long, default_value_t = 8)]
+    shuffling_segments: usize,
+    /// Keep shuffled data roles at the output and decode through final_layout
+    #[arg(long, default_value_t = false)]
+    shuffling_carry_layout: bool,
     /// source chain, mpmct1
     #[arg(long)]
     c_in: String,
@@ -220,11 +230,17 @@ fn main() {
 
     // ---------------- gadgetize ----------------
     let mut file_header: Option<(usize, usize)> = None;
-    // bv5 arms: the off-trace encode (pre) and decode (post) LGI gates
-    let mut bv5_io: Option<(Vec<XGate>, Vec<XGate>)> = None;
-    let mut bv5_max_open = 0usize;
-    let mut bv5_scratch = 0usize; // clean scratch wires at the end of the range
-    if matches!(args.gadget.as_str(), "bv5" | "bv5bal") && args.aux != "random" {
+    // embedded-masking arms: the off-trace encode (pre) and decode (post) LGI gates
+    let mut mask_io: Option<(Vec<XGate>, Vec<XGate>)> = None;
+    let mut mask_final_layout: Vec<u16> = Vec::new();
+    let mut mask_shuffling_stats = None;
+    let mut mask_max_open = 0usize;
+    let mut mask_scratch = 0usize; // clean scratch wires at the end of the range
+    if matches!(
+        args.gadget.as_str(),
+        "embedded-masking" | "embedded-masking-balanced" | "embedded-masking-shuffled"
+    ) && args.aux != "random"
+    {
         eprintln!(
             "--gadget {} needs --aux random: the band must start uniform (a zero band \
              makes every pre-opened mask a constant and the encoding trivial)",
@@ -232,33 +248,48 @@ fn main() {
         );
         std::process::exit(2);
     }
+    assert!(
+        args.gadget == "embedded-masking-shuffled"
+            || (!args.shuffling_carry_layout && args.shuffling_segments == 8),
+        "--shuffling-carry-layout and nondefault --shuffling-segments require --gadget embedded-masking-shuffled"
+    );
     let gcirc = match args.gadget.as_str() {
         "none" => Circuit {
             gates: source.clone(),
             num_wires: args.n,
         },
-        "bv5" | "bv5bal" => {
-            let r = if args.bv5_band == 0 {
+        "embedded-masking" | "embedded-masking-balanced" | "embedded-masking-shuffled" => {
+            let r = if args.mask_band == 0 {
                 args.n.max(32)
             } else {
-                args.bv5_band
+                args.mask_band
             };
-            let base = QuadraticMaskingParams::production(args.gadget_seed);
-            let p = QuadraticMaskingParams {
+            let base = EmbeddedMaskingParams::production(args.gadget_seed);
+            let p = EmbeddedMaskingParams {
                 r,
-                balanced: args.gadget == "bv5bal",
+                balanced: args.gadget != "embedded-masking",
+                shuffling_segments: if args.gadget == "embedded-masking-shuffled" {
+                    assert!(
+                        args.shuffling_segments >= 8,
+                        "--shuffling-segments must be at least 8"
+                    );
+                    args.shuffling_segments
+                } else {
+                    0
+                },
+                shuffling_return_home: !args.shuffling_carry_layout,
                 encoded_io: true,
-                max_open: if args.bv5_max_open > 0 {
-                    args.bv5_max_open
+                max_open: if args.mask_max_open > 0 {
+                    args.mask_max_open
                 } else {
                     base.max_open
                 },
                 ..base
             };
-            bv5_max_open = p.max_open;
-            let o = preprocess_quadratic_masking(&source, args.n, &p);
+            mask_max_open = p.max_open;
+            let o = preprocess_embedded_masking(&source, args.n, &p);
             println!(
-                "[{}] quadratic-masking K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
+                "[{}] embedded-masking K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
                 args.gadget,
                 p.k,
                 p.max_open,
@@ -269,8 +300,10 @@ fn main() {
                 o.post_gates.len(),
                 o.gates.len()
             );
-            bv5_scratch = o.scratch_wires;
-            bv5_io = Some((o.pre_gates, o.post_gates));
+            mask_scratch = o.scratch_wires;
+            mask_shuffling_stats = Some(o.shuffling_stats);
+            mask_final_layout = o.final_layout;
+            mask_io = Some((o.pre_gates, o.post_gates));
             Circuit {
                 gates: o.gates,
                 num_wires: o.num_wires,
@@ -539,9 +572,9 @@ fn main() {
                 }
             })
             .collect();
-        // bv5 arms need no clean wires: the fire borrows dirty band wires and
+        // embedded-masking arms need no clean wires: the fire borrows dirty band wires and
         // restores them, so nothing here has to start at a known value.
-        debug_assert_eq!(bv5_scratch, 0);
+        debug_assert_eq!(mask_scratch, 0);
     }
     // x columns: for file mode the holders were split off `state` above;
     // re-derive from x_holders against the PRE-split init copy.
@@ -560,9 +593,9 @@ fn main() {
     } else {
         (0..args.n).map(|w| state[w].clone()).collect()
     };
-    // Encoded I/O (bv5 arms): encode the plaintext input OFF-trace -- the
+    // Encoded I/O (embedded-masking arms): encode the plaintext input OFF-trace -- the
     // recorded initial state is the masked one, so no raw input is a feature.
-    if let Some((pre, _)) = &bv5_io {
+    if let Some((pre, _)) = &mask_io {
         let _ = simulate(pre, &mut state, samples);
     }
     let init = state.clone();
@@ -588,11 +621,11 @@ fn main() {
         // A target is TRIVIAL when it equals a raw input wire of C: a, b, cold
         // are the value of some wire at gate i, which is init[wire] iff that
         // wire was never written before gate i.
-        let triv = if args.gadget == "file" || bv5_io.is_some() {
+        let triv = if args.gadget == "file" || mask_io.is_some() {
             // File-mode raw x holders were removed from `state` and therefore
             // are not adversarial trace features. A physical share at the same
             // small numeric index is not a trivial disclosure. Likewise the
-            // bv5 arms' encoded inputs: no initial wire equals a raw input.
+            // embedded-masking arms' encoded inputs: no initial wire equals a raw input.
             [-1; 5]
         } else {
             [
@@ -639,13 +672,13 @@ fn main() {
                 behavioral_ok = false;
             }
         }
-    } else if let Some((_, post)) = &bv5_io {
+    } else if let Some((_, post)) = &mask_io {
         // decode OFF-trace: close the still-open masks on a copy of the final
         // state (the band's final values are part of that state)
         let mut dec = state.clone();
         let _ = simulate(post, &mut dec, samples);
         for v in 0..args.n {
-            if dec[v] != cstate[v] {
+            if dec[mask_final_layout[v] as usize] != cstate[v] {
                 behavioral_ok = false;
             }
         }
@@ -683,6 +716,7 @@ fn main() {
     push(&mut meta, "gadget", args.gadget.clone());
     push(&mut meta, "mixed", mixed.to_string());
     push(&mut meta, "mix_moves", args.mix.to_string());
+    push(&mut meta, "mix_seed", args.mix_seed.to_string());
     push(&mut meta, "k", k.to_string());
     push(&mut meta, "n", args.n.to_string());
     push(&mut meta, "seed", args.seed.to_string());
@@ -700,13 +734,58 @@ fn main() {
     if args.gadget == "file" {
         push(&mut meta, "builder_gadget", builder_gadget.clone());
     }
-    if let Some((pre, post)) = &bv5_io {
+    if let Some((pre, post)) = &mask_io {
         push(&mut meta, "encoded_io", "true".to_string());
-        push(&mut meta, "bv5_band", (nw - args.n).to_string());
-        push(&mut meta, "bv5_max_open", bv5_max_open.to_string());
-        push(&mut meta, "bv5_scratch", bv5_scratch.to_string());
-        push(&mut meta, "bv5_pre_gates", pre.len().to_string());
-        push(&mut meta, "bv5_post_gates", post.len().to_string());
+        push(&mut meta, "mask_band", (nw - args.n).to_string());
+        push(&mut meta, "mask_max_open", mask_max_open.to_string());
+        push(&mut meta, "mask_scratch", mask_scratch.to_string());
+        push(&mut meta, "mask_pre_gates", pre.len().to_string());
+        push(&mut meta, "mask_post_gates", post.len().to_string());
+        push(
+            &mut meta,
+            "mask_final_layout",
+            mask_final_layout
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        push(
+            &mut meta,
+            "shuffling_segments",
+            if args.gadget == "embedded-masking-shuffled" {
+                args.shuffling_segments
+            } else {
+                0
+            }
+            .to_string(),
+        );
+        push(
+            &mut meta,
+            "shuffling_return_home",
+            (!args.shuffling_carry_layout).to_string(),
+        );
+        let stats = mask_shuffling_stats.as_ref().unwrap();
+        push(
+            &mut meta,
+            "shuffling_original_gates",
+            stats.original_gates.to_string(),
+        );
+        push(
+            &mut meta,
+            "shuffling_added_gates",
+            stats.added_gates.to_string(),
+        );
+        push(
+            &mut meta,
+            "shuffling_transfers",
+            stats.transfer_count.to_string(),
+        );
+        push(
+            &mut meta,
+            "shuffling_skipped_cuts",
+            stats.skipped_cut_count.to_string(),
+        );
     }
     push(&mut meta, "samples", samples.to_string());
     push(&mut meta, "corr_samples", args.corr_samples.to_string());

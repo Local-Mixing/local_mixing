@@ -1,4 +1,4 @@
-//! Optional Python analysis extension; retains the local_mixing module API.
+//! Optional Python analysis extension exposing the local_mixing module API.
 mod heatmap;
 
 use pyo3::prelude::*;

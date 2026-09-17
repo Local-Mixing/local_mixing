@@ -1,4 +1,4 @@
-//! Piecewise-parallel rounds for GSS database mixing and the split stage.
+//! Piecewise-parallel rounds for TDP database mixing and the split stage.
 //!
 //! One round: cut the whole circuit into `p` contiguous pieces of roughly
 //! equal length, run one `Mixer` per piece IN PARALLEL (all sharing the one
@@ -29,7 +29,7 @@
 use super::*;
 use rayon::prelude::*;
 
-/// Driver configuration (fmix `--pieces` and its `--piece-*` companions).
+/// Driver configuration (circuit_mixer `--pieces` and its `--piece-*` companions).
 #[derive(Clone, Debug)]
 pub struct PieceCfg {
     /// Number of pieces on an unshifted round (shifted rounds run one more).
@@ -1056,7 +1056,7 @@ fn driver_line(w: &Mixer, round: usize, out: &RoundOut, extra: &str) {
     }
     let stops: Vec<String> = stops.iter().map(|(n, c)| format!("{n}x{c}")).collect();
     println!(
-        "[fmix] pieces: round {} pieces={} len=[{}..{}] size {} -> {} moves+={} (total {}) eff+={:.4} stops={} {}",
+        "[circuit_mixer] pieces: round {} pieces={} len=[{}..{}] size {} -> {} moves+={} (total {}) eff+={:.4} stops={} {}",
         round,
         out.pieces,
         out.len_min,
@@ -1076,7 +1076,7 @@ fn driver_line(w: &Mixer, round: usize, out: &RoundOut, extra: &str) {
 /// profile (`prof_n[2] > 0`) runs the Profile policy, `split` runs the split
 /// stage to global g57 exhaustion, otherwise a plain thermostat walk in
 /// fixed-length rounds. `w` ends holding the concatenated circuit and every
-/// whole-circuit statistic, so fmix's post-run tail (report, final float,
+/// whole-circuit statistic, so circuit_mixer's post-run tail (report, final float,
 /// state file, output) needs no change.
 pub fn run_piecewise(w: &mut Mixer, cfg: &PieceCfg) -> MixStop {
     assert!(
@@ -1127,11 +1127,11 @@ pub fn run_piecewise(w: &mut Mixer, cfg: &PieceCfg) -> MixStop {
     let initial_pieces = cfg.pieces_for_len(w.arena.len());
     if let Some(size) = cfg.min_block_size {
         println!(
-            "[fmix] automatic pieces: min_block_size={size} (P=max(1,current_gates/{size}) each round)"
+            "[circuit_mixer] automatic pieces: min_block_size={size} (P=max(1,current_gates/{size}) each round)"
         );
     }
     println!(
-        "[fmix] pieces ON: pieces={} (shifted rounds {}), policy={:?}, threads={}, jitter={}, round_eff={}",
+        "[circuit_mixer] pieces ON: pieces={} (shifted rounds {}), policy={:?}, threads={}, jitter={}, round_eff={}",
         initial_pieces,
         if initial_pieces > 1 {
             initial_pieces + 1

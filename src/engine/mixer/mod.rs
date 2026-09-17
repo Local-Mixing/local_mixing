@@ -49,5 +49,5 @@ pub use transformations::{
 pub(crate) use transformations::{key_of, merge_key};
 
 #[cfg(test)]
-#[path = "../../../tests/unit/engine/mixer/mix_tests.rs"]
+#[path = "../../../tests/unit/engine/mixer/mod.rs"]
 mod mix_tests;

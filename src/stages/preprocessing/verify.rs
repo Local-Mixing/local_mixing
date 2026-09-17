@@ -33,7 +33,7 @@ pub fn verify_payload(
     // UPPER half of the sandwich state on the honest slice: the closing
     // guard fires against the junked band and perturbs the low (forward-
     // junk) half by design. The payload contract is unchanged — C(x) lives
-    // on the upper half (see verify_zero_slice). Blinded-V5 is now wrapped
+    // on the upper half (see verify_zero_slice). Embedded masking is now wrapped
     // by the same junk guards, so it too verifies the upper half and runs
     // the reverse-honesty check.
     // Which data half carries the forward payload after the closing guard.

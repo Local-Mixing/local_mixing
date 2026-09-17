@@ -183,21 +183,21 @@ or establish that no equivalent circuit exists. In particular, intermediate
 polynomials can grow before later gates cancel them, and a touched-wire span
 can be larger than the function's final support.
 
-The [GSS driver](../src/gss/runner.rs) currently pins the Rule L budget to
+The [TDP driver](../src/tdp/runner.rs) currently pins the Rule L budget to
 512 and the legacy g57 monomial cap to 200,000. XGate composition uses its
 separate term budgets. Explicit library APIs accept
 `CanonicalizationOptions`, `G57CanonicalizationOptions`, or
 `XGateCanonicalizationOptions`; these calls use their supplied options and
 bypass the legacy process-wide canonicalization caches.
 
-In the GSS compatibility path, repeated dense windows can reuse cached
+In the TDP compatibility path, repeated dense windows can reuse cached
 canonicalizations. The g57 cache stores successful forms, wire orders, and
 hashes. The XGate cache stores successful forms and failures, with its
-composition budgets and degree limit included in the cache key. GSS assigns
+composition budgets and degree limit included in the cache key. TDP assigns
 these caches approximately 256 MiB and 1024 MiB respectively. On exceeding
 their configured capacity, they clear the map. These are separate from the
 frozen database's lookup cache, which remembers database hits and misses.
 
-For the surrounding flow, see the [six GSS steps](gss_pipeline.md). For the
+For the surrounding flow, see the [six TDP steps](tdp_pipeline.md). For the
 longer mathematical discussion and examples, see
-[Local Mixing Documentation](Local_Mixing_Documentation.pdf).
+[Local Mixing Documentation](local_mixing_documentation.md).

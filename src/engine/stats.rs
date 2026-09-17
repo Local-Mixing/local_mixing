@@ -1,5 +1,5 @@
-// Read-only mixing metrics over a gate sequence, shared by the fmix report
-// line and the fmix_stats analyzer. The stationarity signature: a mixed
+// Read-only mixing metrics over a gate sequence, shared by the circuit_mixer report
+// line and the mixer_stats analyzer. The stationarity signature: a mixed
 // circuit's distributional summary converges to a seed-independent plateau
 // while the microstate keeps moving, so these are the quantities to compare
 // across snapshots (plateau) and across replicas (agreement).

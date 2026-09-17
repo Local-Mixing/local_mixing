@@ -121,7 +121,7 @@ impl Mixer {
         });
         self.prof_snapshot();
         eprintln!(
-            "[fmix] profile ON: n={:?} r={:?} s_in={} cadence_eff={} deadband={} dp_max={}",
+            "[circuit_mixer] profile ON: n={:?} r={:?} s_in={} cadence_eff={} deadband={} dp_max={}",
             self.params.prof_n,
             self.params.prof_r,
             s_in,
@@ -270,10 +270,10 @@ impl Mixer {
                 p.integ = 0.0;
                 p.sat = 0;
                 eprintln!(
-                    "[fmix] profile: phase {} -> {} at eff={:.2} size={}",
+                    "[circuit_mixer] profile: phase {} -> {} at eff={:.2} size={}",
                     old_phase, p.phase, p.eff, s as usize
                 );
-                // Exact-point recovery: FMIX_STOP_AT_PHASE=<k> finishes the
+                // Exact-point recovery: MIXER_STOP_AT_PHASE=<k> finishes the
                 // run cleanly the moment the schedule enters phase k. A
                 // deterministic replay (same seed/input/flags) stopped this
                 // way recovers the ORIGINAL run's circuit at the leg boundary
@@ -281,7 +281,7 @@ impl Mixer {
                 // same controller update in both runs.
                 if self.runtime.stop_at_phase() == Some(p.phase as u32) {
                     println!(
-                        "[fmix] FMIX_STOP_AT_PHASE={}: stopping cleanly at the phase boundary (eff={:.2} size={})",
+                        "[circuit_mixer] MIXER_STOP_AT_PHASE={}: stopping cleanly at the phase boundary (eff={:.2} size={})",
                         p.phase, p.eff, s as usize
                     );
                     self.stop_requested = true;
@@ -294,7 +294,7 @@ impl Mixer {
             // in those terms, instead of leaving a silent saturation.
             if p.phase == 3 && p.dhat > p.shat && p.sat == 4 {
                 eprintln!(
-                    "[fmix] profile: COMPRESSION INFEASIBLE — disturbance {:+.4} gates/move (twists et al.) exceeds max COMP removal {:.4}; the lever is pinned at 0 and the circuit still grows. Lower the twist rate or relax R2.",
+                    "[circuit_mixer] profile: COMPRESSION INFEASIBLE — disturbance {:+.4} gates/move (twists et al.) exceeds max COMP removal {:.4}; the lever is pinned at 0 and the circuit still grows. Lower the twist rate or relax R2.",
                     p.dhat, p.shat
                 );
             }
@@ -330,7 +330,7 @@ impl Mixer {
                 p.sat += 1;
                 if p.sat == 5 {
                     eprintln!(
-                        "[fmix] profile: SATURATED (phase {} pmix={:.3} size={} S*={:.0}) — best-effort, continuing pinned",
+                        "[circuit_mixer] profile: SATURATED (phase {} pmix={:.3} size={} S*={:.0}) — best-effort, continuing pinned",
                         p.phase, p.pmix, s as usize, s_star
                     );
                 }
@@ -429,7 +429,7 @@ impl Mixer {
                 // a resumed profile would restart phase 1 from eff=0. Profiles
                 // are whole-run single invocations; warn rather than mis-steer.
                 eprintln!(
-                    "[fmix] WARNING: --profile on a RESUME (moves_done={}) restarts the profile clock at eff=0 — run a profile as a single invocation",
+                    "[circuit_mixer] WARNING: --profile on a RESUME (moves_done={}) restarts the profile clock at eff=0 — run a profile as a single invocation",
                     self.moves_done
                 );
             }
@@ -584,7 +584,7 @@ impl Mixer {
                 self.eff_done += 1.0 / self.arena.len().max(1) as f64;
             }
             // Checked every move (a plain bool - no RNG, no trajectory
-            // effect) so FMIX_STOP_AT_PHASE stops at the transition move
+            // effect) so MIXER_STOP_AT_PHASE stops at the transition move
             // rather than up to report_every moves later. The stop-FLAG
             // file poll stays at report cadence below. An explicit stop takes
             // precedence when a piece also exhausts its round budget here.
@@ -612,7 +612,7 @@ impl Mixer {
                 }
                 if self.canary_fired() {
                     println!(
-                        "[fmix] canary fired at move {}: {:.1}% of the last {} pool-seeded rounds failed at every rung (theta {}), fall-through {} — the pool is material the store cannot spell; stopping",
+                        "[circuit_mixer] canary fired at move {}: {:.1}% of the last {} pool-seeded rounds failed at every rung (theta {}), fall-through {} — the pool is material the store cannot spell; stopping",
                         self.moves_done,
                         100.0 * self.canary_frac(),
                         self.canary.len(),
@@ -624,7 +624,7 @@ impl Mixer {
                 }
                 if self.dose_reached() {
                     println!(
-                        "[fmix] dose reached at move {}: all-gates laggard frac <= {} (circuit generation >= {}), twist coverage {:.1} — stopping",
+                        "[circuit_mixer] dose reached at move {}: all-gates laggard frac <= {} (circuit generation >= {}), twist coverage {:.1} — stopping",
                         self.moves_done,
                         self.params.gen_stop_frac,
                         self.params.gen_target,
@@ -644,7 +644,7 @@ impl Mixer {
             if std::path::Path::new(&f).exists() {
                 let _ = std::fs::remove_file(&f);
                 println!(
-                    "[fmix] stop flag seen at move {}: finishing cleanly",
+                    "[circuit_mixer] stop flag seen at move {}: finishing cleanly",
                     self.moves_done
                 );
                 self.stop_requested = true;
@@ -662,31 +662,31 @@ impl Mixer {
                 match crate::circuit::formats::write_mpmct(&tmp, &gates, self.num_wires) {
                     Ok(()) => {
                         if let Err(e) = std::fs::rename(&tmp, &out) {
-                            eprintln!("[fmix] dump rename failed: {e}");
+                            eprintln!("[circuit_mixer] dump rename failed: {e}");
                         } else {
                             let mut s = String::with_capacity(gates.len() * 8);
                             for o in self.origins_in_order() {
                                 s.push_str(&format!("{o}\n"));
                             }
                             if let Err(e) = std::fs::write(format!("{out}.origins"), s) {
-                                eprintln!("[fmix] dump origins write failed: {e}");
+                                eprintln!("[circuit_mixer] dump origins write failed: {e}");
                             }
                             let mut s = String::with_capacity(gates.len() * 4);
                             for g in self.gens_in_order() {
                                 s.push_str(&format!("{g}\n"));
                             }
                             if let Err(e) = std::fs::write(format!("{out}.gens"), s) {
-                                eprintln!("[fmix] dump gens write failed: {e}");
+                                eprintln!("[circuit_mixer] dump gens write failed: {e}");
                             }
                             println!(
-                                "[fmix] DUMP: wrote {} gates to {} at move {} (verified, continuing)",
+                                "[circuit_mixer] DUMP: wrote {} gates to {} at move {} (verified, continuing)",
                                 gates.len(),
                                 out,
                                 self.moves_done
                             );
                         }
                     }
-                    Err(e) => eprintln!("[fmix] dump write failed: {e}"),
+                    Err(e) => eprintln!("[circuit_mixer] dump write failed: {e}"),
                 }
                 let _ = std::fs::remove_file(&f);
             }
@@ -727,12 +727,12 @@ impl Mixer {
                         Ok(()) => match std::fs::rename(&tmp, &out) {
                             Ok(()) => true,
                             Err(e) => {
-                                eprintln!("[fmix] gen-snap rename failed: {e}");
+                                eprintln!("[circuit_mixer] gen-snap rename failed: {e}");
                                 false
                             }
                         },
                         Err(e) => {
-                            eprintln!("[fmix] gen-snap write failed: {e}");
+                            eprintln!("[circuit_mixer] gen-snap write failed: {e}");
                             false
                         }
                     }
@@ -740,17 +740,17 @@ impl Mixer {
                 Some(p) => match std::fs::copy(p, &out) {
                     Ok(_) => true,
                     Err(e) => {
-                        eprintln!("[fmix] gen-snap copy failed: {e}");
+                        eprintln!("[circuit_mixer] gen-snap copy failed: {e}");
                         false
                     }
                 },
             };
             if ok {
                 if let Err(e) = std::fs::write(format!("{out}.gens"), &gens) {
-                    eprintln!("[fmix] gen-snap gens write failed: {e}");
+                    eprintln!("[circuit_mixer] gen-snap gens write failed: {e}");
                 }
                 println!(
-                    "[fmix] GEN-SNAP: circuit generation {} >= {}: wrote {} gates to {} at move {} (verified, continuing)",
+                    "[circuit_mixer] GEN-SNAP: circuit generation {} >= {}: wrote {} gates to {} at move {} (verified, continuing)",
                     g,
                     m,
                     gates.len(),
@@ -787,7 +787,7 @@ impl Mixer {
                         gens.push_str(&format!("{gg}\n"));
                     }
                     if let Err(e) = std::fs::write(format!("{out}.gens"), &gens) {
-                        eprintln!("[fmix] move-snap gens write failed: {e}");
+                        eprintln!("[circuit_mixer] move-snap gens write failed: {e}");
                     }
                     // A resumable state alongside the circuit. A circuit
                     // snapshot on its own cannot be continued -- directions,
@@ -801,21 +801,21 @@ impl Mixer {
                     match self.save_state(&sptmp) {
                         Ok(()) => {
                             if let Err(e) = std::fs::rename(&sptmp, &sp) {
-                                eprintln!("[fmix] move-snap state rename failed: {e}");
+                                eprintln!("[circuit_mixer] move-snap state rename failed: {e}");
                             }
                         }
-                        Err(e) => eprintln!("[fmix] move-snap state write failed: {e}"),
+                        Err(e) => eprintln!("[circuit_mixer] move-snap state write failed: {e}"),
                     }
                     println!(
-                        "[fmix] MOVE-SNAP: wrote {} gates to {} at move {} (verified, continuing)",
+                        "[circuit_mixer] MOVE-SNAP: wrote {} gates to {} at move {} (verified, continuing)",
                         gates.len(),
                         out,
                         self.moves_done
                     );
                 }
-                Err(e) => eprintln!("[fmix] move-snap rename failed: {e}"),
+                Err(e) => eprintln!("[circuit_mixer] move-snap rename failed: {e}"),
             },
-            Err(e) => eprintln!("[fmix] move-snap write failed: {e}"),
+            Err(e) => eprintln!("[circuit_mixer] move-snap write failed: {e}"),
         }
     }
 

@@ -163,7 +163,7 @@ pub fn run_rocks_to_lmdb(sub: &clap::ArgMatches) {
 }
 
 #[cfg(test)]
-#[path = "../tests/db_gen/commands/tests.rs"]
+#[path = "../tests/unit/db_gen/commands/tests.rs"]
 mod tests;
 
 use clap::{Arg, Command};

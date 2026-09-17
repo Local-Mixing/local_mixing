@@ -1,6 +1,5 @@
-// The pyo3 heatmap surface: every #[pyfunction] registered by the
-// local_mixing python module (see lib.rs). Moved out of lib.rs 2026-08-17;
-// python-facing names and signatures are unchanged.
+// The pyo3 heatmap functions registered by the local_mixing Python module
+// in security_tests/python/mod.rs.
 use crate::circuit::{CircuitSeq, Gate, U1024};
 use numpy::PyArray2;
 use numpy::ndarray::Array2;

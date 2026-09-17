@@ -17,7 +17,7 @@ impl Mixer {
         let mut o = String::with_capacity(self.arena.len() * self.anc_words * 8);
         let _ = writeln!(
             o,
-            "fmix-anc 1 {} m={} words={} gates={}",
+            "mixer-anc 1 {} m={} words={} gates={}",
             if self.anc_sampled { "sampled" } else { "exact" },
             self.anc_m,
             self.anc_words,
@@ -56,9 +56,10 @@ impl Mixer {
         let mut lines = text.lines();
         let hdr = lines.next().ok_or_else(|| bad("empty ancestry sidecar"))?;
         let f: Vec<&str> = hdr.split_whitespace().collect();
-        if f.len() != 6 || f[0] != "fmix-anc" || f[1] != "1" {
+        // Accept the historical header when reading existing ancestry files.
+        if f.len() != 6 || !matches!(f[0], "mixer-anc" | "fmix-anc") || f[1] != "1" {
             return Err(bad(
-                "ancestry sidecar header: want `fmix-anc 1 <mode> m= words= gates=`",
+                "ancestry sidecar header: want `mixer-anc 1 <mode> m= words= gates=`",
             ));
         }
         let sampled = match f[2] {
@@ -423,7 +424,7 @@ impl Mixer {
             }
         };
         format!(
-            "[fmix] ancestry: anc mean={:.1} [{}] | span(input gates) mean={:.0} [{}] | fanout/input mean={:.0} [{}]",
+            "[circuit_mixer] ancestry: anc mean={:.1} [{}] | span(input gates) mean={:.0} [{}] | fanout/input mean={:.0} [{}]",
             mean(&cards),
             Self::log_hist(&cards),
             mean(&spans),
@@ -608,7 +609,7 @@ impl Mixer {
         // ancestry misses every tracer look empty, and at small K most do.
         let hit = carriers as f64 / size as f64;
         format!(
-            "[fmix] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2} | ancspan cov={:.3} ent={:.3} sd={:.3}",
+            "[circuit_mixer] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2} | ancspan cov={:.3} ent={:.3} sd={:.3}",
             k,
             self.anc_m,
             desc,
@@ -745,7 +746,7 @@ impl Mixer {
             }
         }
         format!(
-            "[fmix] gen-anc: r={r:.3} (n={:.0} real-gen gates) | {}",
+            "[circuit_mixer] gen-anc: r={r:.3} (n={:.0} real-gen gates) | {}",
             cn,
             parts.join(" | ")
         )
@@ -836,7 +837,7 @@ impl Mixer {
         }
         self.next_litter = ids.iter().copied().max().unwrap_or(0) + 1;
         println!(
-            "[fmix] litters loaded: {} gates, {} litters, largest {}",
+            "[circuit_mixer] litters loaded: {} gates, {} litters, largest {}",
             ids.len(),
             sizes.len(),
             sizes.values().max().copied().unwrap_or(0)

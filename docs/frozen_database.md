@@ -33,9 +33,9 @@ changed:
 | --- | --- |
 | RocksDB | Generate and merge regular circuits; deduplicate curated candidates during construction. |
 | LMDB | Hold sharded regular input for freezing, and read existing identity sources. Bounded curated imports are also supported. |
-| Frozen files | Serve regular and curated replacements during GSS database mixing. |
+| Frozen files | Serve regular and curated replacements during TDP database mixing. |
 
-The ordinary GSS build therefore does not need RocksDB or LMDB. The offline
+The ordinary TDP build therefore does not need RocksDB or LMDB. The offline
 builders are enabled with `--features db-tools`. There is no runtime fallback
 to an old LMDB directory if the frozen files are missing.
 
@@ -87,7 +87,7 @@ establish exhaustive coverage at every length and wire count. Likewise, the
 older curated limit of 20 candidates and 512 bytes per key was a restriction
 of a particular build. It is not a limit of the current reader or the full
 curated builder. The historical corpus sizes and measurements are discussed in
-[Local Mixing Documentation](Local_Mixing_Documentation.pdf).
+[Local Mixing History](local_mixing_history.md).
 
 ## How a frozen lookup works
 
@@ -146,7 +146,7 @@ uncapped curated store can still require substantial memory for one key.
 
 ## From a key to a replacement
 
-During [step 3 of GSS](gss_pipeline.md), we first canonicalize the sampled
+During [step 3 of TDP](tdp_pipeline.md), we first canonicalize the sampled
 window. When curated lookup is enabled for the move, we check its forward key
 in the curated store. The regular lookup is used when the curated stage has
 no candidates, or when the move goes directly to regular. Some mixing policies
@@ -179,7 +179,7 @@ a current store has a low match rate.
 
 ## Using an existing store
 
-Set the directories in the `[database]` section of your GSS recipe:
+Set the directories in the `[database]` section of your TDP recipe:
 
 ```toml
 [database]
@@ -197,14 +197,35 @@ count, but these checks are not a content digest.
 
 The equivalent directory settings for standalone tools are `FROZEN_DB_DIR`
 and `FROZEN_CURATED_DIR`, with `FROZEN_FILTER=1` to enable filtering. See the
-[README](../README.md) for running GSS with a recipe.
+[README](../README.md) for running TDP with a recipe.
+
+The reusable maintenance helpers take an explicit frozen-store directory:
+
+```bash
+bash db_gen/maintenance/build_filters.sh FROZEN_DIR
+bash db_gen/maintenance/check_filters.sh FROZEN_DIR
+```
+
+[`build_filters.sh`](../db_gen/maintenance/build_filters.sh) refuses to overwrite
+existing filters and validates that the new filters contain every retained key.
+[`check_filters.sh`](../db_gen/maintenance/check_filters.sh) checks the file layout;
+an optional second argument, `EXPECTED_SHA256`, also checks the filter digest.
+That layout/digest check does not validate key membership.
+
+For samples exported by `curated_key_structure`,
+[`compare_similarity.sh`](../db_gen/analysis/compare_similarity.sh) compares each
+explicit TSV input's circuits within gate-count buckets:
+
+```bash
+bash db_gen/analysis/compare_similarity.sh first.tsv second.tsv
+```
 
 ## Constructing and freezing a store
 
 Build the offline tools from the repository root:
 
 ```bash
-cargo build --release --features db-tools
+cargo build --release --locked --features db-tools
 target/release/local_mixing_bin db --help
 ```
 
@@ -244,15 +265,144 @@ within and across bands. The bands must already be compacted so their pending
 merge operands have been resolved. This route skips the intermediate LMDB
 export and writes the same frozen format.
 
-For the full curated construction, the composite RocksDB uses
-`[function key][circuit bytes]` as its key. This deduplicates complete
-function/circuit pairs without building one enormous mutable value. The
-identity source below must contain all accepted `id_g0` through `id_g33`
-databases:
+### Generate a curated database
+
+The maintained builder is
+[`build_curated_full`](../db_gen/bin/build_curated_full.rs). It produces a
+**composite RocksDB** whose keys are `[function key][circuit bytes]` and whose
+values are empty. Repeated function/circuit pairs collapse to one record;
+the builder never needs to append all friends into one enormous mutable
+value. Build it and the conversion tools with:
+
+```bash
+cargo build --release --locked --features db-tools \
+  --bin build_curated_full --bin frozen_from_lmdb --bin frozen_filters_build
+target/release/build_curated_full --help
+```
+
+Choose one of the following source routes. `REGULAR_FROZEN`, `FRESH_COMPOSITE`
+and the other uppercase paths are placeholders to replace. Every output
+must be a fresh path. These examples read the input stores and create new
+outputs; they do not rebuild or modify the supplied input database.
+
+**From an existing regular frozen store.** This is the direct route when the
+regular runtime database is what you already have:
 
 ```bash
 env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
-  target/release/build_curated_full from-identities IDENTITY_LMDB FRESH_COMPOSITE
+  target/release/build_curated_full from-frozen-identities \
+  REGULAR_FROZEN FRESH_COMPOSITE
+target/release/build_curated_full audit FRESH_COMPOSITE
+```
+
+The builder scans all 256 shards. Within each equivalence class, pairs of
+different spellings supply identities such as $AB^{-1}=I$. After local
+cancellation, the builder considers rotations, both directions and accepted
+split points; an identity $PQ=I$ yields $P=Q^{-1}$. Candidate functions are
+canonicalized and verified against their keys before insertion. The result
+depends on the supplied regular corpus: this does not enumerate every
+possible reversible identity.
+
+Optional variants use different candidate-selection policies:
+
+```bash
+# Keep splits whose halves have no detected compressible interior window.
+env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
+  target/release/build_curated_full from-frozen-identities \
+  REGULAR_FROZEN FRESH_GOOD_SPLITS_COMPOSITE --good-splits --wires 32
+
+# Deduplicate identity rotations/reversals, and reduce sibling candidates.
+env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
+  target/release/build_curated_full from-frozen-identities-v2 \
+  REGULAR_FROZEN FRESH_V2_COMPOSITE --shards 256
+
+# Add the v2 gluing phase using an already completed composite partner store.
+env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
+  target/release/build_curated_full from-frozen-identities-v2 \
+  REGULAR_FROZEN FRESH_GLUED_COMPOSITE \
+  --glue-partner-composite EXISTING_COMPOSITE \
+  --glue-source-keys 200000 --glue-pairs 16 --glue-min-identity-gates 13
+```
+
+`--good-splits` is false by default. When enabled, its `--wires` option
+(default 32) supplies the wire budget for local database probes. The scan
+uses bounded local searches; “no detected compressible window” is the
+appropriate interpretation. It filters individual splits rather than
+discarding a whole identity because one of its arcs is compressible.
+
+The v2 route additionally retains one candidate per identity, function key
+and gate count, reducing equivalent rotation siblings. It has no
+`--good-splits` option. `--shards` defaults to 256; smaller values are for
+partial smoke builds. A successful completion manifest describes the
+records actually built, and does not establish full-source coverage for a
+partial shard run. Optional gluing samples connections through the supplied
+composite store to construct longer identities; its three numeric defaults
+are shown above. Record these choices alongside your build results because
+v1, v2, filtering and gluing do not promise identical candidate sets.
+
+**From accepted identity LMDB data.** Use this when you have the historical
+accepted-identity corpus itself. The input must expose every named LMDB
+database from `id_g0` through `id_g33`; missing databases are an error:
+
+```bash
+env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
+  target/release/build_curated_full from-identities \
+  IDENTITY_LMDB FRESH_COMPOSITE --batch-identities 4096
+target/release/build_curated_full audit FRESH_COMPOSITE
+```
+
+`--batch-identities` defaults to 4096 and must be positive; it controls the
+processing batch size, not candidate truncation. This route derives split
+candidates from the accepted identities; it does not generate the source
+`id_g*` corpus. Inputs are the historical native G57 identity blobs, not
+arbitrary text circuit files.
+
+**From regular LMDB or an existing legacy curated RocksDB.** These are two
+different operations:
+
+```bash
+# Derive identities from equivalent regular friends in LMDB shards 00..ff.
+env -u CANON_MONOMIAL_CAP -u CANON_RULE_L_BRANCH_CAP \
+  target/release/build_curated_full from-regular-shortcut \
+  REGULAR_LMDB FRESH_COMPOSITE
+
+# Re-encode existing curated key/value lists as composite records.
+target/release/build_curated_full import-legacy-rocks \
+  LEGACY_CURATED_ROCKS FRESH_IMPORTED_COMPOSITE
+target/release/build_curated_full audit FRESH_IMPORTED_COMPOSITE
+```
+
+The regular shortcut uses every source friend rather than the old lossy
+20-candidate/512-byte restrictions, but its coverage still depends on the
+regular LMDB supplied. The import route preserves keys and candidate bytes
+from the known append-value curated RocksDB format and removes exact
+duplicates. It does not recover candidates previously truncated from a
+bounded source, re-prove imported key/function equivalence, or swap control
+bytes. Preserve the source's provenance and decoded control convention.
+
+**Optional structural sieve.** After a composite build you can generate a
+smaller store which favors structural variety:
+
+```bash
+target/release/build_curated_full sieve \
+  EXISTING_COMPOSITE FRESH_SIEVED_COMPOSITE \
+  --shingle 6 --keep-all-below 1000 --cell-floor 1
+target/release/build_curated_full audit FRESH_SIEVED_COMPOSITE
+```
+
+These are the defaults. Keys with at most 1000 candidates pass through;
+larger pools are traversed shortest-first, rejecting shared relabeled
+six-gate subwords in either direction, while retaining a floor per
+`(gate count, wire count)` cell. The floor may keep candidates which share
+a subword. This is deliberate pruning; use the unsieved source if retaining
+every built candidate is the objective.
+
+### Freeze and validate the curated result
+
+Whichever construction you choose, audit its completed composite output,
+then run all three conversion stages against **that same source**:
+
+```bash
 target/release/build_curated_full audit FRESH_COMPOSITE
 target/release/frozen_from_lmdb tables FRESH_COMPOSITE FRESH_CURATED_OUT --curated --composite
 target/release/frozen_from_lmdb write FRESH_COMPOSITE FRESH_CURATED_OUT --curated --composite
@@ -261,9 +411,19 @@ target/release/frozen_filters_build from-frozen FRESH_CURATED_OUT
 ```
 
 Despite its name, `frozen_from_lmdb --composite` reads RocksDB directly. This
-is needed for the uncapped curated construction: some friend lists exceed
-LMDB's limit of $4\text{ GiB}-1$ for one ordinary value. The audit records
-completion and a content digest before the freeze stages accept the source.
+is needed for uncapped curated construction: some friend lists exceed
+LMDB's limit of $4\text{ GiB}-1$ for one ordinary value. A successful builder
+compacts its output and writes a completion manifest with key count,
+candidate count and a content digest. `audit` recomputes those values and
+checks the existing manifest; it does not bless an interrupted partial
+build. The frozen reader for composite sources requires that completion
+metadata. Keep the chosen construction's command, input provenance and audit
+output with the resulting store.
+
+For smaller sources, optional `to-lmdb INPUT_COMPOSITE FRESH_CURATED_LMDB`
+and `validate-lmdb INPUT_COMPOSITE CURATED_LMDB` materialize and compare
+`curated_00..curated_ff` databases before freezing with `--curated` alone.
+Direct `--composite` freezing avoids that intermediate per-value size limit.
 
 The first `tables` command creates its output directory, which must not
 already exist. `write` refuses existing shards, and filter construction
@@ -271,9 +431,25 @@ refuses an existing `filters.bin`. An interrupted output is partial; move it
 aside and use a fresh output path. `validate` compares every decoded frozen
 value with the source bytes. This checks the conversion, but does not by
 itself prove that every source circuit was filed under the correct function.
-The current curated generator verifies candidate keys as it creates them;
-regular merge and export preserve and check record framing without performing
-a complete semantic audit of imported data.
+The current identity-derived curated generator verifies candidate keys as it
+creates them; legacy import, regular merge and export preserve and check
+record framing without performing a complete semantic audit of imported data.
+
+Finally, set the finished directory in your local TDP recipe:
+
+```toml
+[database]
+regular_dir = "/path/to/regular-frozen"
+curated_dir = "/path/to/new-curated-frozen"
+curated_control_order = "native"
+lookup_miss_filter = "auto"
+```
+
+Use `legacy-swapped-controls` only when the imported artifact actually needs
+it. Normal identity-derived current builds use native ordering. Check the
+paths with `cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run`
+before beginning a new run. Construction and validation can be substantial
+offline work; compiling the tools alone does not produce the database.
 
 ## Where this lives in the code
 

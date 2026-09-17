@@ -64,7 +64,7 @@ def plot_heatmap_raw(results, save_path, xlabel, ylabel, vmin=0.0, vmax=1.0):
         color="white",
         bbox=dict(facecolor="black", alpha=0.5, boxstyle="round,pad=0.3"),
     )
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.close()
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, default="./heatmap.png", help="Path to the heatmap generation")
     parser.add_argument("--corner", action="store_true", help="Only compute a 5000-gate corner; supports --incremental")
     parser.add_argument("--corner_pos", choices=["bl", "br", "tl", "tr"], default=None,
-                        help="Which corner for --corner: bl/br/tl/tr (reads full circuits, windows that corner). Omit for the legacy first-5000 corner.")
+                        help="Which corner for --corner: bl/br/tl/tr (reads full circuits, windows that corner). Omit to read only the first 5000 gates of each circuit.")
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")

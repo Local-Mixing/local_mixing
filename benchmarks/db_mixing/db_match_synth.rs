@@ -4,7 +4,7 @@
 //! gate, W-wire pool) sample N random windows, key each by its function and
 //! look it up in the store, tally hit rate and mean equivalent count. This
 //! measures the STRUCTURAL storability of a window shape independent of any
-//! fmix walk; a real circuit's match rate is then (shape census) x (this
+//! circuit_mixer walk; a real circuit's match rate is then (shape census) x (this
 //! grid). Wire-sharing density matters, so the pool size W is an explicit
 //! axis: dense = m+2 wires, sparse = 3m wires.
 //!

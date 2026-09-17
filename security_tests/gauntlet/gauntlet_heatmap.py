@@ -28,7 +28,7 @@ ATTACK_TITLES = {
 GADGET_PERIODS = {
     "nonlinear193": 193,
     "nonlinear291": 291,
-    # Read old bundles without advertising the old internal names.
+    # Bundle metadata also accepts these short mode identifiers.
     "gg": 193,
     "gg2": 291,
 }

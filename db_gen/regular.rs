@@ -20,7 +20,7 @@
 //! and the SQL/duckdb paths — the corrected pipeline does not use them.
 
 #[cfg(test)]
-#[path = "../tests/db_gen/regular_validation_tests.rs"]
+#[path = "../tests/unit/db_gen/regular_validation_tests.rs"]
 mod validation_tests;
 
 use crate::canonicalization::{Polynomial, canonicalize_polys_4, polys_repr_blob};

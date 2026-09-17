@@ -5,7 +5,7 @@
 // Reports ns/gate so numbers are comparable across circuit sizes. The XGate
 // arms deliberately run on circuits that CONTAIN X gates (k=0), CNOTs (k=1),
 // complemented g57s (k=2, comp=1) and wider conjunctions, because that is the
-// gate-width mix a post-fsplit / post-fmix mpmct1 artifact actually has: a
+// gate-width mix a post-fsplit / post-circuit_mixer mpmct1 artifact actually has: a
 // harness that only ever sees g57 measures the wrong loop.
 //
 // Examples:

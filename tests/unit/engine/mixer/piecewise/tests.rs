@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn cut_points_alternate_lattices_and_keep_old_seams_mid_piece() {
+fn cut_points_alternate_lattices_and_keep_existing_seams_mid_piece() {
     let mut rng = StdRng::seed_from_u64(7);
     for &(len, p) in &[(1000usize, 4usize), (997, 3), (5000, 8), (64, 2)] {
         for j in [0.0, 0.125] {
@@ -34,7 +34,7 @@ fn cut_points_alternate_lattices_and_keep_old_seams_mid_piece() {
                 (out, len + extra + 3)
             };
             let (seams1, len1) = grow(&c0, len);
-            // Round 1 (shifted): p cuts, p + 1 pieces, each old seam >=
+            // Round 1 (shifted): p cuts, p + 1 pieces, each existing seam >=
             // (0.5 - j) of its interval away from every new cut.
             let c1 = cut_points(&seams1, len1, p, 1, j, &mut rng);
             assert_eq!(c1.len(), p, "round 1 cuts");

@@ -339,7 +339,7 @@ fn main() {
         for (cj, &_j) in j_idx.iter().enumerate() {
             // Build a GF(2) basis of G_j's regressor columns over TRAIN samples.
             let mut basis: Vec<(usize, Row)> = Vec::new();
-            let mut add_col = |train: Vec<u64>, reg_idx: usize, basis: &mut Vec<(usize, Row)>| {
+            let add_col = |train: Vec<u64>, reg_idx: usize, basis: &mut Vec<(usize, Row)>| {
                 let mut samp = train;
                 let mut coef = vec![0u64; coef_words];
                 coef[reg_idx / 64] |= 1u64 << (reg_idx % 64);

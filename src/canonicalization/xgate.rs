@@ -515,7 +515,7 @@ fn compose_and_canonicalize(
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// Fresh-computation stage timers read by the fmix report line (cache hits do
+// Fresh-computation stage timers read by the circuit_mixer report line (cache hits do
 // not accumulate — they skip both stages).
 pub static POLY_NS: AtomicU64 = AtomicU64::new(0);
 pub static CANON_NS: AtomicU64 = AtomicU64::new(0);

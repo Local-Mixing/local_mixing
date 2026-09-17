@@ -1,4 +1,4 @@
-//! Sliced sandwich construction; Classic is the full GSS layout.
+//! Sliced sandwich construction; Classic is the full TDP layout.
 
 use crate::circuit::Circuit as CnotCircuit;
 use crate::circuit::randomize::random_wire_except;
@@ -411,5 +411,5 @@ fn sliced_sandwich_build(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/stages/sandwich/construct.rs"]
+#[path = "../../../tests/unit/stages/sandwich/construct.rs"]
 mod tests;

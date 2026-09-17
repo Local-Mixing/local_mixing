@@ -1791,5 +1791,5 @@ fn _assert_curated_error_is_thread_safe(error: CuratedError) -> AnyError {
 }
 
 #[cfg(test)]
-#[path = "../../tests/db_gen/bin/build_curated_full/tests.rs"]
+#[path = "../../tests/unit/db_gen/bin/build_curated_full/tests.rs"]
 mod tests;

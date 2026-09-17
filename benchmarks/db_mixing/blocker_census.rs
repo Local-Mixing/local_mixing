@@ -1,6 +1,6 @@
 //! Which gates can the frozen store never reach?
 //!
-//! The match RATE answers "of the windows fmix happened to sample, how many hit
+//! The match RATE answers "of the windows circuit_mixer happened to sample, how many hit
 //! the store" — a property of the sampler as much as of the circuit. The
 //! question that actually matters for mixing is per-GATE: is there any window
 //! containing this gate whose permutation the store holds? If there is, the
@@ -9,7 +9,7 @@
 //!
 //! That framing also disposes of a question that is NOT the right one: whether
 //! a gate's own function is in the store's "vocabulary". The store is queried
-//! by WINDOW, never by single gate (fmix's windows are [2,5]), so a gate whose
+//! by WINDOW, never by single gate (circuit_mixer's windows are [2,5]), so a gate whose
 //! own permutation is absent is perfectly reachable as soon as it and a
 //! neighbour jointly land on something stored. An earlier rationale in this
 //! tree argued that a comp=0 width-2 conjunction is unreachable because it sits
@@ -18,7 +18,7 @@
 //! reason about.
 //!
 //! METHOD. Sweep every contiguous window of size `min..=max`, canonicalise and
-//! look it up through the SAME `db_replace` path fmix uses — not a
+//! look it up through the SAME `db_replace` path circuit_mixer uses — not a
 //! reimplementation, so the key construction and degree guard are identical.
 //! Every gate of every window that matches is marked reachable. Cost is one
 //! lookup per window, about (max-min+1)*N lookups for N gates, and each gate
@@ -26,15 +26,15 @@
 //!
 //! TWO KINDS OF BLOCKER, reported separately:
 //!   store  — no window containing the gate has its permutation in the store.
-//!   policy — `--db-ctrl-cap L` makes fmix EVADE any gate with more than L
+//!   policy — `--db-ctrl-cap L` makes circuit_mixer EVADE any gate with more than L
 //!            controls while building a window, so such gates are excluded
-//!            from re-encoding by fmix's own sampling rule whatever the store
+//!            from re-encoding by circuit_mixer's own sampling rule whatever the store
 //!            holds. Pass `--ctrl-cap 0` to measure the store alone.
 //!
 //! Usage: blocker_census --g <circuit> [--g-format mpmct1] [--min-window 2]
 //!        [--max-window 5] [--ctrl-cap 2] [--db-max-degree 9]
 //!        [--wire-terms 1024] [--total-terms 2048] [--seed 1]
-//! Requires FROZEN_DB_DIR, exactly as fmix does.
+//! Requires FROZEN_DB_DIR, exactly as circuit_mixer does.
 
 use clap::Parser;
 use local_mixing::canonicalization::xgate::XPolyBudget;
@@ -58,7 +58,7 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     max_window: usize,
     /// Gates with more than this many controls are excluded from windows, as
-    /// fmix's --db-ctrl-cap does. 0 = no policy filter (store-only census).
+    /// circuit_mixer's --db-ctrl-cap does. 0 = no policy filter (store-only census).
     #[arg(long, default_value_t = 2)]
     ctrl_cap: usize,
     #[arg(long, default_value_t = 9)]
@@ -126,7 +126,7 @@ fn main() {
         if args.ctrl_cap == 0 {
             "store-only census"
         } else {
-            "fmix's sampling policy applied"
+            "circuit_mixer's sampling policy applied"
         }
     );
 

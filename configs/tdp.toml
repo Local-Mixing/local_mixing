@@ -1,0 +1,77 @@
+# TDP pipeline: the single default recipe and annotated configuration template.
+# Copy to configs/local.toml for your paths/settings; local*.toml is ignored.
+# Every managed setting is shown, including optional settings as comments.
+# Relative paths are resolved from the repository root, not this directory.
+# Check: cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
+# Run:   cargo run --release --locked -- tdp_gen --config configs/local.toml
+# Full explanations and shell-flag mapping: docs/tdp_pipeline.md.
+config_version = 1  # required TOML schema version (distinct from saved recipe v8)
+
+[run]
+# directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
+build_binaries = true  # bool; build the three release stage binaries for fresh runs
+# build_directory = "target"  # string; default CARGO_TARGET_DIR, otherwise target
+stop_after_stage = 6  # integer 2..6; steps 1 and 2 run together
+# rerun_from_stage = 4  # integer 2..6; redo this stage and subsequent reached stages
+# adopt_unverified_run = false  # retired compatibility field; true is rejected
+
+[source]
+wires = 128  # integer 3..4095; logical wires of C, before sandwich/preprocessing
+# gates = 6272  # integer 1..1_000_000_000; default round(n * log2(n)^2)
+# path = "circuits/source.g57"  # string; load nonempty G57 C and infer its gate count
+# With path set, gates (if supplied) must match the file and all wires must fit.
+
+[database]
+# regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
+# curated_dir = "/path/to/curated"  # string; optional, or FROZEN_CURATED_DIR
+curated_control_order = "native"  # "native" or "legacy-swapped-controls" for old stores
+lookup_miss_filter = "auto"  # "auto" (>=60 GiB available RAM), "on", or "off"
+allow_no_database_for_tests = false  # bool; true requires clearing BOTH DB paths/envs
+# Stage 3 normally needs regular_dir; curated is a cascade ahead of regular.
+# Stores need tables.bin plus all 256 shard files. "on" also requires filters.bin.
+
+[preprocessing]
+mode = "embedded-masking"  # "embedded-masking" or "nonlinear291"
+mask_pair_wires = 2  # integer 2..64; paired band component (odd counts round down)
+max_open_masks = 3  # integer 2..64; ordinary open-mask scheduling cap
+min_open_masks = 2  # integer 1..63; covered-interval floor, strictly below max_open_masks
+balanced_masks = true  # bool; add an independent band variable to each mask function
+shuffling_segments = 0  # integer; 0 disables transfers, >=8 requests target-write segments per fire block
+shuffling_return_home = true  # bool; required when enabled to preserve fixed TDP data ports
+# The band must fit: 2*wires > 2*floor(mask_pair_wires/2) + int(balanced_masks).
+# nonlinear291: REMOVE all six mask/shuffling controls above; its distinct layout must
+# fit the physical wire budget. The default 128-wire source is too large for it.
+
+[db_mixing]
+target_size_factor = 2.0  # number >1 and <=16; stage-3 target/incoming gate count
+hold_work_units = 27.0  # number 0..10000; hold after 3 growth work units
+# Defaults yield profile 3,30,30,2,2; each move adds 1/current_gate_count work units.
+
+[parallel]
+# pieces = 4  # integer 1..64; default 1 (serial); enables piecewise stages 3-4
+# target_piece_gates = 100000  # integer 2..1_000_000_000; automatic piece sizing
+# Choose pieces OR target_piece_gates; they are mutually exclusive, even pieces=1.
+# threads = 5  # integer 1..1024; requires pieces>1 or target_piece_gates
+# Default threads: pieces+1 for fixed pieces; available CPU count for auto sizing.
+
+[leakage_repair]
+enabled = false  # bool; sampled gate-wise audit and equivalent DB repair after stage 3
+# seed = 20803  # nonnegative TOML integer; independent diagnostic/repair randomness
+# reference = "circuits/reference.mpmct1"  # string; default is stage-3 input
+# seed/reference require enabled=true. Reference must use matching input/wire
+# coordinates. Report: db_mixing.leakage_repair.txt. Existing stage-3 outputs are
+# skipped; enable this on a fresh run (recorded recipe settings cannot change).
+
+[crossing]
+target_size_factor = 2.0  # number 1..16; stage-5 target/split gate count
+width_penalty_base = 3.0  # number 1..1_000_000; base of the wide-split acceptance penalty
+width_penalty_threshold = 1  # integer 0..1_000_000_000; unpenalized control width
+size_tolerance_divisor = 25  # integer 1..1_000_000_000; temperature=max(64,round(target/divisor))
+# move_attempts = 1000000  # integer 1..1_000_000_000_000; default 6*target
+# This is the additional stage-5 budget; the driver adds moves already in split.state.
+
+[calibration]
+enabled = false  # bool; mark this run as calibration-only and permit an explicit seed file
+# seed_file = "/private/path/seed"  # string; requires enabled=true; never store a seed here
+# File: <=64 bytes, one decimal integer 0..9223372036854775792, private (chmod 600).
+# Omit to use fresh OS randomness (or the protected SEED when continuing a run).
