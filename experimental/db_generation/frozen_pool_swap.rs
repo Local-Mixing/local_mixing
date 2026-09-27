@@ -5,7 +5,7 @@
 //! through the manifest too). Layerable over an already-swapped store.
 //!
 //! Usage: frozen_pool_swap <src_store> <out_store> <m1_pool.sgdb1|-> <mgdb_dir> [max_min=3]
-use local_mixing::db_generation::frozen_build::pool_swap_upto;
+use local_mixing::db_generation::frozen_build::pool_swap_conv;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -14,6 +14,11 @@ fn main() {
         std::process::exit(2);
     }
     let m1 = if a[3] == "-" { None } else { Some(a[3].as_str()) };
-    let max_min = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(3);
-    pool_swap_upto(&a[1], &a[2], m1, &a[4], max_min);
+    let native = a.iter().any(|x| x == "--native");
+    let max_min = a
+        .get(5)
+        .filter(|s| !s.starts_with("--"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    pool_swap_conv(&a[1], &a[2], m1, &a[4], max_min, !native);
 }

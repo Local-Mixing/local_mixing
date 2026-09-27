@@ -1,0 +1,568 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{parskip}
+
+\newcommand{\CNOT}{\textsc{cnot}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\gf}{\mathrm{GF}(2)}
+\newcommand{\pe}{\mathrel{{+}{=}}}    % t += e  means  t <- t XOR e over GF(2)
+\newtheorem{lemma}{Lemma}
+\newtheorem{definition}{Definition}
+
+\title{\textbf{A Nonlinear Share Encoding by Deferred Mask Compensation}\\[2pt]
+\large Design note: the split-RG3 move (RG4), mask towers, and the
+maintenance discipline that removes the degree-1 snapshot leak}
+\author{local\_mixing project}
+\date{July 21, 2026 \\ \small branch \code{ssg-gen-mix-clean} ---
+implemented same day (\code{MaskLedger} in \code{src/replace/gadgets.rs},
+flags on \code{sss --cnot}); masks default OFF until the \S10 grid
+validates}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent The two-share gadget carries every logical value $v$ as an XOR
+pair $v = c_0 \oplus c_1$. This makes $v$ a \emph{degree-1 function of the
+physical wires at every snapshot} of the circuit, and the measured
+consequence is the persistent computational-progress diagonal in the
+\code{hmap\_affine} reconstruction maps: it survives 4M fmix moves with
+alignment intact ($\rho = 1.00$, perm $z \approx 9.9$), mixing only
+shallows it. Nonlinear RGs are provably orthogonal to this leak --- it is
+the \emph{encoding}, not the transitions. This note designs the fix inside
+the existing vocabulary and wire budget: a \emph{deferred-mask encoding} in
+which quadratic mask terms are XORed into one carrier of a pair and
+compensated only later, so that between injection and compensation the
+value reads as $v = c_0 \oplus c_1 \oplus u{\wedge}w$ --- degree 2 in the
+wires, with random support. The move is exactly the existing RG3
+compensated pair-write \emph{split in time} (hence ``split-RG3''; we call
+it RG4). Stacked masks drive the best affine readout to $1/2$ by
+piling-up; mask \emph{towers} (masks whose sources are themselves
+overwritten by registered quadratic writes) push snapshot readout to
+degree 3 and beyond. We give the invariant, the gate-level realizations
+(polymorphic, census-neutral, no bare X), the maintenance discipline, the
+security arithmetic, a cost model, and the verification and measurement
+plan.
+\end{abstract}
+
+\section*{Implementation status (v1, 2026-07-21)}
+
+Implemented in \code{src/replace/gadgets.rs} (\code{MaskLedger},
+\code{WirePoly}, \code{emit\_poly\_add}) on both \code{sss --cnot}
+gadgetizer paths, flags \code{--mask-cov/--mask-k/--mask-depth/--mask-taper}
+(default off). The move is realized as a \emph{split nonlinear RG3 over
+logical source values}: a mask on value $v$ XORs the RG3 randomizer
+$v_{r1} \vee \lnot v_{r2}$ (two \emph{value} sources --- degree~2, the
+quadratic $v_{r1} v_{r2}$ being what makes $v$ degree-2) into one carrier
+at inject and re-applies it at flush. Sourcing on logical \emph{values}
+(rebuilt from their current carriers each emit) makes the mask invariant
+under all RG churn --- RGs preserve logical values --- so the only
+disturbance is a CG that recomputes a source, whose schedule is the input
+gate list's target column, known in advance. \textbf{Lookahead} picks the
+two unmasked values with the most distant next recomputation, so inject and
+flush are widely separated instead of collapsing back into a plain RG3
+(wire-sourcing did collapse: at $n{=}8$ it took 139 injects and peaked at
+0.67 coverage, vs.\ 54 and 1.00 for value-sourcing). When the virtual
+circuit \emph{uses} $v$ as a control, the mask is \textbf{peeked}: un-mask,
+run the vanilla CG on the true value, re-mask --- the mask keeps its
+identity and lifetime (the simple form of the mask-aware CG,
+\S\ref{sec:disc}), at the cost of a one-step exposure of $v$ where the
+original already uses it. The \emph{cascade-free invariant} (now at value
+level: masks sourced only on unmasked values) is retained. Two things stay
+deferred: in-flight towers (\S\ref{sec:towers}, masks stay degree~2) and
+$\text{coverage}{=}1$ (a source pool must stay unmasked;
+\code{--mask-cov}${\sim}0.75$). Correctness: exhaustive
+\code{masked\_gadgetize\_*}, \code{mask\_peek\_bracket\_*}, and
+\code{mask\_inject\_then\_flush\_*} tests plus the driver's pinned
+zero-slice check.
+
+\section{The problem: the snapshot leak}
+
+The degree-bounded reconstruction adversary (\code{hmap\_affine}) fits
+each bit of the original circuit's state after prefix $i$ as a degree-$d$
+$\gf$ function of \emph{all} wires of the gadgetized/mixed circuit after
+prefix $j$. Under the XOR 2-sharing every logical value is
+$v = c_0 \oplus c_1$: a degree-1 function of the snapshot, at every $j$,
+no matter how nonlinear the \emph{transitions} between snapshots are. The
+ridge-measure campaign made the consequence quantitative: a progress
+diagonal with $\rho = 1.00$ and perm $z \approx 9.9$ survives 4M fmix
+moves; mixing only shallows its depth ($0.35 \to 0.27$). The 2026-07-20b
+nonlinear-RG revision explicitly documented this residue: nonlinear RGs
+make \emph{crossing} the body expensive for low-degree predictors, but a
+snapshot \emph{readout} needs to cross nothing. The open-thread list names
+the two real fixes: a nonlinear share encoding, and heavier global
+reordering. This note is the first.
+
+Scope: this design attacks the \emph{snapshot readout} leak only. Gate
+\emph{order} legibility (positional structure) remains the job of the
+commuting shuffle and the mixing phase; the static/syntactic census front
+is a separate instrument. Both are noted where they interact.
+
+\section{Why the pair itself cannot be nonlinear}
+
+\begin{lemma}
+Every balanced function $D : \{0,1\}^2 \to \{0,1\}$ is affine.
+\end{lemma}
+\begin{proof}
+Balanced means $|D^{-1}(1)| = 2$. There are $\binom{4}{2} = 6$ such
+functions: $c_0$, $\bar c_0$, $c_1$, $\bar c_1$, $c_0 \oplus c_1$,
+$\overline{c_0 \oplus c_1}$ --- all affine.
+\end{proof}
+
+A per-pair decode map must be balanced, or the carriers are individually
+biased toward $v$ and leak by correlation alone. So with two carriers per
+value there is \emph{no} nonlinear uniform encoding: nonlinearity must
+come from (i) more carriers per value, (ii) accepted bias, or (iii)
+\emph{cross-pair state}. Option (i) breaks the $\times 2$ wire contract
+(all $2n$ wires are already pair carriers); option (ii) is a leak by
+construction. This design is option (iii): the decode of value $i$
+references wires outside pair $i$, transiently and by registered
+bookkeeping.
+
+\section{The deferred-mask invariant}
+
+\begin{definition}[Masked sharing]
+The gadget state carries, per logical value $i$, its carrier pair
+$(c_{i,0}, c_{i,1})$ \emph{and} a (possibly empty) list of pending mask
+polynomials $\varphi_{i,1}, \dots, \varphi_{i,k}$, each a small
+multilinear polynomial over the \emph{current} contents of a few
+registered source wires. The invariant, restored at every gadget-unit
+boundary (see \S5), is
+\[
+v_i \;=\; c_{i,0} \oplus c_{i,1} \oplus \bigoplus_t \varphi_{i,t}
+(\text{current wires}).
+\]
+\end{definition}
+
+\textbf{RG4 is RG3 split in time.} The existing RG3 writes
+$\varphi = r_1 \vee \bar r_2$ into \emph{both} carriers of one pair,
+back-to-back: the value is untouched at every subsequent snapshot, which
+is why RG3 re-randomizes carriers but cannot mask the value. RG4 emits the
+same two writes \emph{separated by an arbitrary stretch of body}:
+
+\begin{itemize}
+\item \textbf{RG4-inject}: choose value $i$ (coverage census, \S9),
+a carrier of pair $i$, source wires $u, w \notin \{c_{i,0}, c_{i,1}\}$,
+and a realization (\S4) of a polynomial $\varphi$ with quadratic content
+$u w$. Emit it targeting the chosen carrier; register $\varphi$ on value
+$i$.
+\item \textbf{RG4-flush}: emit a realization of the \emph{same} $\varphi$
+targeting \emph{either} carrier of pair $i$'s \emph{current} pair, then
+unregister. (Both carriers XOR into $v_i$, so compensation on the other
+carrier is equally correct; the junk output $J$ differs, which is free.)
+\item \textbf{RG4-extend} (\S6): when a registered write is about to hit a
+source of $\varphi$, optionally rewrite the pending polynomial in terms of
+the post-write wires instead of flushing --- this is what builds towers.
+\end{itemize}
+
+Between inject and flush, $v_i$ is a degree-2 function of the wires whose
+quadratic monomial $u w$ has \emph{random support} among all $2n$ wires.
+
+\textbf{Bookkeeping under RG1/RG2.} Masks are registered by \emph{value
+index}. The RG1/RG2 networks are verified (existing exhaustive tests) to
+transport pair-XOR values for \emph{all} wire contents, and the emitters'
+\code{pairs} updates keep \code{pairs[$i$]} = the carriers currently
+holding value $i$'s (masked) content. So a mask attached to value $i$
+follows it automatically through value-swaps and re-pairings; a flush
+simply targets a carrier of the \emph{current} \code{pairs[$i$]}. Sources,
+by contrast, are registered as \emph{physical wires}: the interception
+discipline (\S5) is defined at wire level and needs no relocation logic.
+
+\section{Gate-level realizations: polymorphic, no bare X, census-neutral}
+
+Vocabulary: g57s, conjunction fragments with one or two controls of any
+polarity, positive and negative \CNOT{}s; never a bare X. The primitive
+``adders'' available for a target $t$ and sources $u, w$, as polynomials
+over $\gf$:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+gate & adds to $t$ & degree & note \\
+\midrule
+$t \pe u$ (\CNOT) & $u$ & 1 & \\
+$t \pe \bar u$ ($\lnot$\CNOT) & $1 \oplus u$ & 1 & folds a constant \\
+$t \pe (u^{\varepsilon} w^{\delta})$ (fragment) & product of literals & 2 & \\
+$t \pe (u \vee \bar w)$ (g57) & $1 \oplus w \oplus u w$ & 2 & the RG3 shape \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Any pending polynomial with monomials in $\{1, u, w, uw\}$ is a $\gf$-sum
+of these. The ledger records $\varphi$ \emph{as a polynomial}; inject and
+flush each draw an \emph{independent} realization. For the pure monomial
+$\varphi = uw$, six of them:
+
+\begin{center}
+\small
+\begin{tabular}{clc}
+\toprule
+\# & realization (order free) & gates \\
+\midrule
+1 & $t \pe (u\,w)$ & 1 \\
+2 & $t \pe (u \vee \bar w)$, \quad $t \pe \bar w$ & 2 \\
+3 & $t \pe (w \vee \bar u)$, \quad $t \pe \bar u$ & 2 \\
+4 & $t \pe (\bar u\, w)$, \quad $t \pe w$ & 2 \\
+5 & $t \pe (u\, \bar w)$, \quad $t \pe u$ & 2 \\
+6 & $t \pe (\bar u\, \bar w)$, $t \pe \bar u$, $t \pe w$ & 3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three design consequences:
+\begin{itemize}
+\item \textbf{No pairing signature.} A na\"ive scheme (flush $=$ the
+identical gate again) hands the static adversary a free un-masking pass:
+scan for equal gates whose pins are un-written between them and cancel.
+With independent draws, inject and flush share no shape, no polarity
+pattern, and possibly not even a target wire (either-carrier flushing),
+and same-shape re-occurrence is common in an ordinary g57-rich body.
+\item \textbf{No bare X.} Constants fold into $\lnot$\CNOT{}s and
+complemented literals, exactly as in the CG menu.
+\item \textbf{Census neutrality and DB-warmth.} The material is
+RG3-like: g57s with sprinkled $\pm$\CNOT{}s and fragments --- the same
+mix the CG menu already emits, and g57-dominant, hence warm for the
+frozen-store phase-A mixing. Realization draws can be biased toward the
+g57-bearing variants (2, 3) to keep the body's g57 fraction high.
+\end{itemize}
+
+Sources may be any wires outside pair $i$ (all wires are carriers of some
+pair; that is fine and is what makes the mask supports random). Preferring
+sources on \emph{distinct} pairs avoids concentrating probe information;
+preferring sources with a distant next write (\S8) makes masks cheap.
+
+\section{The maintenance discipline}\label{sec:disc}
+
+Emission proceeds, as today, in \emph{units}: one CG (menu draw), one RG
+(uniform nonlinear draw), one W/bookend gate, one RG4 event. Each unit has
+a set of \emph{net writes} --- wires whose content differs after the unit
+--- which excludes borrowed-and-restored scratch and the transient
+collapse writes inside CG variants 0--2. (Inside a unit the invariant may
+be transiently false; it is asserted only at unit boundaries. Deferred
+compensation is unaffected: correctness needs source values at flush time
+to equal source values at inject time, and restored excursions in between
+are invisible.)
+
+\textbf{Interception rule.} Before emitting any unit whose net writes
+intersect the source set of a pending $\varphi$ on value $i$: either
+\emph{flush} $\varphi$ first, or --- when the write is itself registered
+with a known added polynomial $\psi$ (an RG3 write, another RG4 inject, a
+linear RG2 \CNOT) and the tower cap allows --- \emph{extend} (\S6).
+Un-registered complex writes (a CG landing $f$ on its target carrier)
+always force a flush of masks \emph{sourced} on that carrier.
+
+\textbf{Writes to masked pairs are free.} A CG targeting value $i$ adds
+$f$ to one carrier; $v_i' = v_i \oplus f$ holds with the same pending
+$\varphi$. RG3 pair-writes and RG1/RG2 relocations are equally transparent
+(\S3). Masks ride through all of it.
+
+\textbf{Reads of masked pairs.} A CG \emph{reading} value $i$ (as $B$ or
+$C$) would compute with $c_0 \oplus c_1 = v_i \oplus \varphi$. Two
+policies:
+
+\begin{itemize}
+\item \textbf{(a) flush-and-reinject} (default): flush all pending masks
+on the operand values, emit the CG, re-inject fresh masks immediately
+after. Simple, strictly small units; coverage has a hole a few gates wide
+at each read.
+\item \textbf{(b) mask-aware CG}: fold the correction into the CG. For a
+single mask $\varphi = \mu$ on $B$ (so $B = c_0^B \oplus c_1^B \oplus
+\mu$) the CG's error is $f_{\text{true}} \oplus f_{\text{computed}} = \mu
+C$. With a collapse-style variant holding $C$ on $c_0$ during its window,
+the degree-3 correction $a^* \pe \mu\,c_0$ is realized in-vocabulary by a
+borrowed-and-restored scratch $h$ (any wire outside the unit, not a
+pending source):
+\[
+h \pe (u\,w); \qquad a^* \pe (h\,c_0); \qquad h \pe (u\,w);
+\qquad a^* \pe (h\,c_0)
+\]
+--- net effect $(h \oplus \mu)C \oplus hC = \mu C$, four fragments. A
+masked $C$ costs the same with $\mu(1 \oplus B)$; both operands masked, or
+multi-term masks: flush down to one term first. Policy (b) keeps coverage
+continuous at $+4$ fragments per masked read.
+\end{itemize}
+
+\textbf{Decode.} All pending masks are flushed before the $W^{-1}$
+curtain. To avoid a syntactic flush burst at the seam, coverage
+\emph{tapers}: in the last $L$ gaps (L $\approx$ the mean mask lifetime,
+\S8) dying masks are not re-injected, so flushes thin out gradually and
+the commuting shuffle disperses the remainder. Symmetrically, coverage
+ramps during the first gaps as the census injects. The two forced I/O
+corners of the heatmap are expected to stay legible; everything between
+should not.
+
+\section{Mask towers: past degree 2}\label{sec:towers}
+
+A single mask makes snapshot readout degree 2. The extension move makes it
+deeper. Suppose $\varphi = u w$ is pending and a registered write $u \pe
+\psi$ arrives (e.g.\ an RG3 half: $\psi = r_1 \vee \bar r_2 = 1 \oplus r_2
+\oplus r_1 r_2$). Extending rewrites the pending polynomial over the
+post-write wires: with $u_{\text{new}} = u \oplus \psi$,
+\[
+\varphi \;=\; u w \;=\; (u_{\text{new}} \oplus \psi)\,w
+\;=\; u_{\text{new}} w \,\oplus\, w \,\oplus\, r_2 w \,\oplus\, r_1 r_2 w .
+\]
+The pending polynomial now contains the cubic monomial $r_1 r_2 w$:
+snapshot readout of $v_i$ is degree 3 until the flush. The flush of a
+cubic monomial is the same scratch pattern as in \S5(b):
+$h \pe (r_1 r_2)$; $t \pe (h w)$; $h \pe (r_1 r_2)$; $t \pe (h w)$ ---
+four fragments, plus one or two gates for the residual quadratic and
+affine terms. Each further registered write to a surviving source deepens
+the tower by one degree and lengthens the eventual flush by one scratch
+network.
+
+Rules that keep towers sound and bounded:
+\begin{itemize}
+\item Only \emph{registered} writes extend (RG3 halves, RG4 injects, RG2's
+affine carrier moves --- anything whose added polynomial the emitter
+knows). CG target writes never extend; they flush masks sourced on the
+target.
+\item \code{--mask-depth} caps tower degree (default 2, i.e.\ allow one
+extension $\to$ snapshot degree 3). Beyond the cap, the interception rule
+falls back to flush.
+\item Extension is \emph{opportunistic}: the scheduler does not
+manufacture writes to sources; it upgrades collisions that happen anyway
+--- RG traffic over $2n$ wires supplies them steadily (\S8).
+\item The flush of a depth-$d$ tower costs $O(d)$ scratch networks
+($\approx 4d$ fragments); the ledger tracks the exact polynomial, so
+correctness is bookkeeping, not search.
+\end{itemize}
+
+Degree ladder: depth 0 (plain pair) $= $ degree-1 readout; depth 1 $=$
+degree 2; depth $d$ $=$ degree $d{+}1$. The full-degree-2 adversary ---
+tractable at $n{=}16$, intractable at production width --- is defeated
+from depth 2 up; this is exactly the validation lever in \S10.
+
+\section{What it buys, quantitatively}\label{sec:buys}
+
+\textbf{Degree-1 readout.} A best affine fit absorbs $\varphi$'s affine
+part and mismatches on its quadratic monomial: error $\Pr[uw = 1] = 1/4$
+per mask (heuristically treating sources as balanced). Stacked masks
+compound by piling-up: $k$ independent terms give combined bias
+$2^{k-1}(1/4)^k = \tfrac12 2^{-k}$, i.e.\ best affine error
+\[
+\renewcommand{\arraystretch}{1.1}
+\begin{array}{c|ccccc}
+k & 1 & 2 & 3 & 4 & 5 \\
+\hline
+\text{error} & 0.250 & 0.375 & 0.4375 & 0.469 & 0.484
+\end{array}
+\]
+against the ideal $0.5$. The measured pre-mix ridge depth is
+$\approx 0.35$: even $k{=}1$ more than halves it; $k{=}3$ puts it near the
+permutation-test noise floor. Coverage scales linearly: a bit unmasked at
+snapshot $j$ contributes its full readability, so the census must keep
+coverage near 1 through the body (\S9).
+
+\textbf{Restricted degree-2.} The feasible quadratic adversary regresses
+over a wire subset of size $m$ (full degree-2 at production width,
+$\binom{2n}{2} \sim 10^5$ regressors, is intractable --- the campaign's
+own finding). A mask term is stripped only if \emph{both} sources land in
+the subset: probability $\approx (m/2n)^2$ per term, $2.4\%$ at $m{=}40$,
+$2n{=}256$ --- and stripping a $k$-stack needs all $k$. Random-support
+masking is, in expectation, as opaque to restricted degree-2 as to
+degree 1.
+
+\textbf{Full degree-2 and up.} Depth-1 masks are readable by an
+unrestricted degree-2 fit (it can include every $uw$). Towers answer:
+depth 2 requires degree 3, and so on. The design makes the depth knob pay
+for exactly as much adversary as one wants to defeat.
+
+\textbf{Honest caveats.} (i) Sources are circuit values, not independent
+uniform bits; the piling-up arithmetic is a heuristic and the measurement
+plan, not the algebra, is the arbiter. (ii) A degree-1 fit may exploit
+\emph{correlations}: if $u \wedge w$ happens to be affinely computable
+from other wires at snapshot $j$ (e.g.\ a wire that currently holds a
+related product), the mask is transparent there; random source draws make
+this rare but the heatmap will show whatever survives. (iii) Mask reads
+give the probing adversary two-carrier information --- already the
+accepted trade of the nonlinear-RG revision. (iv) Snapshot readout of
+\emph{carriers} (not values) stays degree 1 by definition; it is the
+value readout, which is what \code{hmap\_affine} measures against $C$'s
+state, that the masks push up the degree ladder.
+
+\section{Cost model}
+
+Let $\bar w \approx 5$ be the mean net writes per SG gap (CG target $+$ RG
+traffic), and $2n = 256$. A pending mask with two random sources dies
+(source hit) with probability $\approx 2\bar w / 2n \approx 4\%$ per gap:
+mean lifetime $\approx 26$ gaps. With full coverage at $k$ terms per value
+($K = kn$ pending), expected maintenance per gap:
+\[
+\underbrace{k n \cdot \frac{2 \bar w}{2n}}_{\text{deaths}\; \approx\, k
+\bar w}
+\;+\;
+\underbrace{2k}_{\text{CG reads (policy a)}}
+\quad \text{events} \;\times\; \approx 2.5 \text{ gates/event}
+\;\approx\; 17.5k \text{ gates per gap}
+\]
+against today's $\approx 10$ (CG $5.1$ $+$ RG $4.7$): body $\times 2.7$
+at $k{=}1$, na\"ively. Two levers cut it: \emph{lookahead source
+selection} --- the gadgetizer knows the entire future unit stream, so
+injecting from wires with distant next net-write turns most deaths into
+deliberate end-of-life refreshes (floor: the $2k$ read events, $\approx
+{+}50\%$ body at $k{=}1$); and policy (b), which replaces
+flush$+$reinject at reads with $+4$ in-place fragments and never opens a
+coverage hole. Realistic envelope: \textbf{body $\times 1.5$--$2.7$ at
+$k{=}1$, $\times 2.5$--$6$ at $k{=}3$}; the $n{=}16$ benchmark grid
+(\S10) prices the curve exactly, in the same spirit as the
+generation-vs-size benchmark (whose lesson --- the first sweep is the
+whole price --- plausibly recurs here as ``coverage is the whole price,
+depth is cheap'').
+
+\section{Knobs, meters, and machinery reuse}
+
+The phase-A generation work built exactly the control pattern this needs,
+and it transfers verbatim:
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+knob / meter & meaning & analogue \\
+\midrule
+\code{--mask-cov} & target fraction of values masked (implemented default
+0 = off until the \S10 grid validates; production target 1.0) &
+\code{--gen-target} \\
+\code{--mask-k} & target terms per value (default 1) & --- \\
+\code{--mask-depth} & tower degree cap (default 2) & --- \\
+\code{--mask-read-policy} & \code{flush} $|$ \code{aware} & --- \\
+\code{--mask-taper} & gaps of end-taper (default: mean lifetime) & --- \\
+\code{mcov=} & coverage at emission time & \code{cov=} \\
+\code{mk=}, \code{mdeep=} & mean stack size, tower histogram & --- \\
+\code{mpaid=} & mask-gate ledger (gates spent on inject/flush/extend) &
+\code{paid=} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+An unmasked-value census drives injection exactly as the laggard census
+drives DB targeting: rebuilt cheaply per gap, biased draws toward
+uncovered values.
+
+\section{Integration}
+
+\textbf{Commuting shuffle: safe without modification.} Correctness of a
+deferred pair needs only ``inject before any source net-write before
+flush'', and every one of those pairs \emph{collides} in the
+\code{XGate::collides} sense (a source write vs.\ a gate reading that
+source). The shuffle preserves the relative order of colliding pairs, so
+every mask window survives reordering, while the inject/flush gates still
+migrate freely within their windows --- which is precisely the
+dispersion we want.
+
+\textbf{fmix.} Mask gates are ordinary vocabulary; no bookkeeping
+survives into the mixed artifact and none is needed --- fmix moves are
+function-preserving, so the encode/compensate structure may be chewed
+arbitrarily. DB-warmth is preserved by biasing realizations toward g57
+shapes. One interaction to note: fmix's merge/cancel machinery may
+collapse an inject/flush pair it happens to bring adjacent --- function
+is unaffected, and by that point structural mixing has taken over the
+hiding; the polymorphic realizations exist to protect the \emph{unmixed}
+artifact from the same cancellation performed adversarially.
+
+\textbf{Contract.} Every inject is compensated before decode, so the
+emitted circuit computes the identical function: the zero-slice contract
+$A(x,0) = (C(x), J)$, the pinned per-round \code{GadgetLow} check, S1's
+inverse protection, and the feistel/legacy paths are all untouched. Junk
+$J$ differs when flushes target the opposite carrier; $J$ is
+unconstrained.
+
+\textbf{What this does not fix} (tracked elsewhere): gate-order/positional
+legibility (commuting shuffle $+$ mixing), the static gate-statistics
+front (instrument still to be built), and S1's off-slice strength.
+
+\section{Verification and measurement plan}
+
+Unit and property tests:
+\begin{enumerate}
+\item \emph{Inject/flush identity}: for every realization pair and
+polarity draw, inject $+$ flush with untouched sources is a wire-level
+identity (exhaustive over small wire sets, like \code{cg\_menu} tests).
+\item \emph{Tower exactness}: inject, apply a registered RG3/RG4 write to
+a source, extend, flush; assert wire-level identity; repeat to the depth
+cap.
+\item \emph{Masked gadgetize end-to-end}: the pinned zero-slice check on
+masked builds at several $(k, \text{cov}, \text{depth})$ points; plus a
+debug-build invariant checker that simulates random inputs and asserts
+$v_i = c_{i,0} \oplus c_{i,1} \oplus \bigoplus \varphi_{i,t}$ at every
+unit boundary.
+\item \emph{Vocabulary compliance}: no bare X; census stats within the
+CG-menu envelope.
+\end{enumerate}
+
+Measurement (the arbiter), all read with the ridge measure
+(\code{plot\_hmap\_ridge}: depth / $\rho$ / perm $z$ / contrast --- never
+the mean):
+\begin{enumerate}
+\item \textbf{$n{=}16$ pre-mix grid} over $k \in \{1,2,3\}$, cov $\in
+\{0.5, 1\}$, depth $\in \{1,2\}$, policies (a)/(b), vs.\ the current
+recipe. Degree-1 prediction: ridge depth collapses toward the piling-up
+row ($0.35 \to \lesssim 0.1$ at $k{=}1$, noise at $k{=}3$); perm $z$
+loses significance.
+\item \textbf{The tower validation}, the clean isolate: at $n{=}16$,
+\emph{full} degree-2 regression is tractable (32 wires, 528 quadratic
+regressors). Prediction: full degree-2 \emph{restores} the diagonal on
+depth-1 masks (control --- the mechanism is exactly quadratic) and
+\emph{fails} on depth-2 towers (payoff --- readout is now cubic). This
+pins the causal story to the encoding degree with no confounds.
+\item \textbf{Production $n{=}128$}: degree-1 $+$ restricted degree-2
+(\code{--deg2-wires} at the campaign's settings) pre-mix, then through
+the standard two-phase fmix pipeline. Prediction: the pre-mix diagonal is
+gone at both, and --- the headline claim to test --- the post-mix
+$\rho{=}1$ diagonal that survived 4M moves does not re-emerge, because
+there is no degree-1 snapshot readout for mixing to fail to erase.
+\item \textbf{Cost curve}: emitted sizes across the grid, benchmarked
+like the generation-vs-size study.
+\end{enumerate}
+
+\section{Implementation sketch}
+
+In \code{src/replace/gadgets.rs}, on the \code{gadgetize\_cnot} path:
+
+\begin{itemize}
+\item \code{MaskLedger}: \code{by\_value: Vec<Vec<MaskTerm>>},
+\code{by\_source: HashMap<u16, Vec<(value, term)>>}; \code{MaskTerm}
+holds the pending polynomial (list of monomials: support wires $+$
+polarities), the tower depth, and nothing else --- realizations are drawn
+at emission time.
+\item Emission loop: wrap each unit with
+\code{ledger.before\_unit(net\_writes)} (flush/extend interception) and,
+per gap, \code{ledger.top\_up(census, rng)} toward
+\code{--mask-cov}/\code{--mask-k}. CG reads consult
+\code{--mask-read-policy}. \code{ledger.flush\_all()} before the decode
+loop, with the taper handled by \code{top\_up} refusing re-injection in
+the last \code{--mask-taper} gaps.
+\item Net-writes per unit are static per unit kind (CG: target carrier;
+legacy RG1: its four carriers; RG2: two; RG3: two; RG4 events: one);
+borrowed scratch is excluded by construction.
+\item The RG draw distribution gains RG4 events; alternatively RG4
+maintenance runs as its own per-gap step, keeping \code{--rg-frequency}
+semantics untouched --- preferred, since coverage is a target, not a
+rate.
+\item Flag surface on the \code{sss --cnot} driver; meters into the
+existing report line.
+\end{itemize}
+
+Nothing changes in the decode bookends, S1, the CG menu, the RG networks,
+or \code{commuting\_shuffle}.
+
+\section*{Summary}
+
+The diagonal survives mixing because the encoding hands every snapshot to
+the affine adversary. The deferred-mask encoding withdraws that gift with
+the cheapest possible mechanism the vocabulary admits: the RG3 move the
+body already performs, split in time, tracked by a ledger, compensated
+polymorphically, and stackable into towers when degree 2 is not enough.
+It costs body size (measured, knob-controlled), keeps every contract and
+verification of the new-gadgetize recipe, reuses the phase-A
+census/targeting machinery, and comes with a falsifiable prediction
+schedule --- including one experiment ($n{=}16$ full degree-2,
+depth 1 vs.\ 2) that isolates the mechanism exactly.
+
+\end{document}

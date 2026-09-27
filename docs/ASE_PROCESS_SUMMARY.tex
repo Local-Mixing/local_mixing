@@ -1,0 +1,868 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.95in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\graphicspath{{ase_figs/}}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Di}{\lvert D_i\rvert}
+
+\title{Aggregate Short-Excursion (ASE) Processes:\\Theory, Evidence, and the Displacement Distribution}
+\date{Working summary --- assembled 2026-08-23}
+\author{}
+
+\begin{document}
+\maketitle
+\vspace{-2.3em}
+
+\begin{abstract}
+This document collects what we currently understand about the random process that DB-substitution
+mixing induces on the space of reversible circuits: \textbf{(a)} the theory of \emph{Aggregate
+Short-Excursion} (ASE) processes --- what they are, the stationary distribution they appear to
+converge to, and what is known about their mixing time; \textbf{(b)} the evidence that our DB-based
+mixing \emph{is} an ASE process; \textbf{(c)} the measured distribution of the per-position
+displacement $\Di$ for the band-restricted experiments, via two independent instruments (Hamming
+distance and the degree-1 affine predictor); and \textbf{(d)} the conclusions on the \emph{effective}
+$\Di$ for the production pipeline (run\_c/run\_d), whose raw-Hamming prefix analysis was done in an
+adjacent session. All figures/tables are reproduced; every external work is annotated in the
+References.
+\end{abstract}
+
+\section*{Notation}
+Let $C=g_1\cdots g_m$ be the \textbf{original} circuit (word over a fixed set $S$ of small reversible
+gates on $2N$ wires; logical width $N$) and $M=g'_1\cdots g'_{m'}$ the \textbf{mixed} circuit,
+$M\equiv C$. Prefix products $P_i=g_1\cdots g_i$, $Q_j=g'_1\cdots g'_j$. The central observable is the
+\textbf{displacement}
+\[
+  D_i = M_i\circ P_{i'}^{-1},\qquad \Di=\text{minimal \# gates realizing }D_i,
+\]
+with $P_{i'}$ the aligned original prefix (argmin over $i'$ = transverse; or proportional
+$i'/m=i/m'$). Two instruments estimate $\Di$: \textbf{Hamming}
+$H(i,j)=\mathbb{E}_x\,\mathrm{ham}(P_i(x),Q_j(x))$ (bits of $2N$ wires; certified $\Di\ge H$), and
+\textbf{affine} $H_{\mathrm{aff}}(i,j)\in[0,\tfrac12]$ (best degree-1 GF(2) reconstruction error;
+blind to affine displacement, so it reads the \emph{nonlinear} part).
+
+% ================================================================
+\section{Theory of ASE processes}
+
+\subsection{Definition}\label{ss:def}
+An \textbf{Aggregate Short-Excursion} process is a random walk on the \emph{fiber}
+$\Phi_C=\{w:\mathrm{eval}(w)=C\}$ whose move is a \textbf{relator substitution}: replace a short
+subword computing a permutation $\pi$ by a different short word computing the same $\pi$. Two views:
+\begin{itemize}
+\item \textbf{Configuration:} formally a \emph{fiber walk with a finite relator menu} --- the
+non-commutative counterpart of a fiber walk with a Markov basis [DS98]; the precise dictionary,
+including where the analogy is a theorem and where it breaks, is \S\ref{ss:markov}--\S\ref{ss:transport}.
+Each move inserts a relator (a short loop at the identity in the Cayley graph).
+\item \textbf{Trajectory:} through prefix products the mixed word is a path pinned at both ends
+($Q_0=e$, $Q_{m'}=C$); a substitution is a heat-bath redraw of a short interior segment given its two
+pinned endpoints --- a \emph{random-walk bridge}. The full trajectory is a \textbf{concatenation of
+many short returning bridges}: aggregate short excursions.
+\end{itemize}
+The name isolates what separates an ASE process from a free walk: a free walk in nonamenable geometry
+diverges and essentially never returns, whereas every ASE excursion is \emph{forced} to return. (The
+free baseline chain whose bridges these excursions are is the random-gate walk on the permutation
+group [Gow96].)
+
+\subsection{The commutative template: fiber walks with Markov bases, precisely}\label{ss:markov}
+The Markov-basis program of algebraic statistics is the one setting where ``walk on the fiber of a
+conservation law with a fixed finite move menu'' is a developed theory; this section states it at
+theorem level so every transported claim can be audited. (Primary sources re-verified: [DS98, ALP23,
+SS03, DLO06a, DLO06b, Win16, SW18].)
+
+\textbf{Setup and the two walks.} For $A\in\mathbb{Z}^{d\times n}$ the fiber
+$\mathcal{F}_b=\{x\in\mathbb{N}^n: Ax=b\}$ is the lattice-point set of a polytope; statistically the
+support of the conditional law given the sufficient statistic of a log-linear model (the generalized
+hypergeometric, [DS98, Eq.~1.4]). A \emph{move} is $m\in\ker_{\mathbb{Z}}(A)$; the \emph{basic fiber
+walk} proposes $x\pm m$ from a finite menu $\mathcal{M}$ and holds when the proposal goes negative ---
+symmetric proposal $\Rightarrow$ reversible, uniform-stationary on its communicating class
+[DS98, Lem.~2.1]. Already in [DS98, Lem.~2.2]: the \emph{line heat-bath}, resampling the entire ray
+$(x+\mathbb{Z}m)\cap\mathcal{F}_b$ --- DS remark it ``obviously gets random much more rapidly'' but
+proving so is open: the earliest form of the resampling-length lever of \S\ref{ss:mix}.
+
+\textbf{The Fundamental Theorem [DS98, Thm.~3.1].} $\mathcal{M}$ is a \emph{Markov basis} (connects
+every fiber through nonnegative partial sums --- a path \emph{inside} the fiber) iff the binomials
+$\{x^{m^+}-x^{m^-}: m\in\mathcal{M}\}$ \emph{generate the toric ideal} $I_A$. A move \emph{is} a
+binomial; applicability is monomial divisibility; a connecting path is a telescoped ideal-membership
+certificate whose multiplier monomials are the contexts at which moves apply --- exactly the object
+whose non-commutative replacement (conjugators in an identity sequence) has no finite theory
+(\S\ref{ss:transport}). Every $A$ has a finite Markov basis (Hilbert); it is computable by
+elimination; minimal generating sets are unique ``up to minor combinatorial modifications'' [SS03]; the moves in
+\emph{every} Markov basis are the indispensable ones (Takemura--Aoki [TA04]). The theorem certifies
+connectivity of every fiber at once and says \emph{nothing about rates}: the connectivity/mixing
+decoupling is built in from the start.
+
+\textbf{The basis hierarchy: lattice $\subset$ Markov $\subset$ Gr\"obner $\subset$ Graver}
+([ALP23, \S3.3]; [Stu96]):
+\begin{itemize}
+\item \emph{Lattice basis}: spans every fiber difference over $\mathbb{Z}$ but in general
+\textbf{does not connect} --- the combination may be forced through negative territory (minimal
+example: $A=(1\,1\,1)$, basis $\{(1,-2,1),(1,-1,0)\}$ leaves $e_3$ isolated on $\{e_1,e_2,e_3\}$).
+[DS98] flag published analyses whose ``error consists in assuming that a lattice basis connects
+staying positive.'' Spanning-without-connecting is the template for a menu complete in principle but
+disconnecting in the constrained space --- the worry transported to the banded ASE walk.
+\item \emph{Markov basis}: irreducibility of all fibers; no rate, and \textbf{no} robustness to
+added constraints.
+\item \emph{Gr\"obner basis}: additionally gives \textbf{directed monotone paths} to the unique
+$\prec$-minimal normal form (division algorithm); cost-compatible orders make it the IP optimum
+(Conti--Traverso [CT91]). The commutative formalization of oriented rewriting to a canonical form ---
+i.e.\ of the [FL25] proof and of \code{fcompress}; its unoriented randomization is the Markov-basis walk.
+\item \emph{Graver basis} (conformally-minimal kernel vectors; contains all of the above): the
+correct notion for \textbf{constrained} spaces --- bound-respecting Graver moves connect every
+\emph{bounded} fiber ([ALP23, Prop.~3.3]; [Sul21, Thm.~9.4.5]), which a Markov basis does
+\textbf{not} guarantee; simultaneously a universal optimality certificate [Grav75].
+\end{itemize}
+\emph{ASE reading:} the band-restricted walk lives on a bounded fiber; the connectivity-correct menu
+is the \emph{Graver analog} (moves whose intermediates stay legal), of which a curated DB is an
+empirical proxy. ``Complete for the unrestricted fiber, stuck on the banded fiber'' is a
+theorem-level phenomenon commutatively, not an implementation bug.
+
+\textbf{Finiteness within a model, unboundedness across families.} With \emph{one} growing direction
+(higher Lawrence liftings, e.g.\ $p\times q\times r$ tables, $r\to\infty$), a bounded menu of move
+\emph{shapes} serves the whole family (Markov complexity [SS03, Thm.~1]; Graver complexity [HS07]).
+With \emph{two} growing directions the opposite: any prescribed vector appears inside \emph{every}
+Markov basis of $I\times J\times 3$ no-three-way tables for suitable $I,J$ [DLO06a] --- minimal moves
+of unbounded degree and support --- and this family is universal for all rational fiber polytopes
+[DLO06b]. The circuit family grows in two directions ($2N$ and $m$); [FL25]-style completeness (via
+unbounded intermediate resources) is a one-direction-type result, and the commutative default is that
+fixed menus eventually fail on the banded question.
+
+\textbf{Connectivity is not sampling; deficiency $=$ conserved statistics.}
+(1) Even solved cases are diffusive with terrible constants (order diameter$^2$, constants
+$(D/4)^{D/4}$ in the format [DS98, \S2.3]).
+(2) Acceptance statistics do not certify coverage: rejection rates measure local applicability, not
+whether the communicating class is the whole fiber [ALP23]; \emph{our conversion-rate curves (\S3.4)
+inherit the same blind spot}.
+(3) A deficient menu conserves extra statistics in two layers: \emph{lattice deficiency}
+($\mathrm{span}_{\mathbb{Z}}\mathcal{M}\subsetneq\ker_{\mathbb{Z}}A$ --- a linear/torsion invariant,
+detectable by Smith normal form before any sampling) and \emph{boundary deficiency} (full span,
+disconnected fiber graph --- algebraically a saturation gap
+$(I_{\mathcal{M}}:(x_1\cdots x_n)^\infty)=I_A$ [HoSt95], quantified by the relaxation depth $q$
+[ALP23, Prop.~4.2], with no universal bound on $q$ [ALP23, Thm.~4.3]). A deficient walk is not slow
+--- it \emph{exactly samples a smaller model}. The practical discriminator is the \textbf{relaxation
+probe}: temporarily legalize mildly illegal states (ASE analog: widen the band or admit short off-DB
+bridge words) and watch whether frozen statistics move --- runnable \emph{without} a fresh
+equilibrium sample.
+(4) The non-walk alternative: sequential importance sampling of the fiber [CDHL05] --- unbiased, no
+mixing time, but the variance can be \emph{silently} exponential (the estimator looks converged and
+is exponentially wrong [BSSV06]); the warning that must travel with any circuit-side SIS route to the
+missing ``fresh fiber sample.''
+
+\subsection{The transport to the circuit fiber: the dictionary}\label{ss:transport}
+Several claims elsewhere (notably \S\ref{ss:stat}'s uniform measure and \S\ref{ss:mix}'s citations)
+silently assume parts of the commutative package that do \textbf{not} survive. Below: verified
+theorems, code-level facts about \code{fmix} (working tree 2026-08-24), or marked inference.
+
+\textbf{The implemented chain.} One DB move (\code{src/engine/mix.rs:5871--6005, 6204ff};
+\code{src/db\_mixing/db\_replace.rs:911--1025}): (1) draw a position, build a window --- \emph{maximal} when the largest-first descent is armed (the
+default; with \code{--no-db-prefixes} the outgoing length is uniform in $[1,s_{db}]$, single lookup;
+the shipped GSS phase-A profile disables the descent on the MIX channel, \code{prefixes\_mix=false},
+and all band/hold arms ran \code{--no-db-prefixes}); (2) when armed, the
+\emph{first-hit descent} shrinks the window, canonicalizing and looking up each prefix (litter/span/
+degree guards); (3) on a hit, draw \emph{uniformly among mode-eligible candidates} of the canonical
+class --- and \emph{if any curated candidate exists, eligibility is restricted to curated ones}; (4)
+apply unconditionally after verification. No Metropolis--Hastings correction anywhere; ledger and
+size profile are a \emph{feedback controller}, not a stationarity correction.
+
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{4.6cm}p{5.4cm}p{5.6cm}}
+\toprule
+\textbf{commutative (DS) object} & \textbf{ASE object} & \textbf{transport status} \\
+\midrule
+ambient monoid $\mathbb{N}^n$ & free monoid $S^*$ & breaks: no commutativity, no addition \\
+statistic $A$ (abelian range) & $\mathrm{eval}: S^*\to G\approx\mathrm{Alt}(2^{2N})$ & exact as ``fiber of a homomorphism''; range maximally non-abelian \\
+fiber $\mathcal{F}_b$: finite & $\Phi_C$: infinite, graded by length & breaks: grading/slack has no DS analog; band re-finitizes \\
+$\ker_{\mathbb{Z}}(A)$: rank $n-\mathrm{rk}A$ & $N=\ker(F(S)\to G)$: Nielsen--Schreier rank $1+|G|(|S|-1)$ & breaks quantitatively: menu generates $N$ only as a \textbf{normal closure} \\
+Markov basis (finite moves) & the DB menu (finite verified pairs, bounded size) & survives as a finite relator menu \\
+applicability $x\pm m\ge0$ (boundary only) & left half must \emph{literally occur} at the window & survives in form; far more binding \\
+Fundamental Thm; one Gr\"obner certificate & menu \emph{presents} $G$ over $S$; certified for one 5-rule menu [FL25] & statement survives; universal certificate does not (word problem; Novikov--Boone [LS77]) \\
+toric ideal $I_A$; syzygies & identity sequences / Peiffer relations [BH82]; Squier complex [Squ87] & breaks: no binomial theory; these are the replacement objects \\
+Gr\"obner = oriented menu; normal forms & \code{fcompress} & survives; Squier = obstruction theory \\
+lattice basis: connects only via \emph{negative} intermediates & complete menu: connects only via \emph{out-of-band} intermediates & survives as a warning: \textbf{banded connectivity not established} \\
+dilation $\mathcal{F}_{Nb}$ [Win16] & dilation along both $m$ and band & survives as the right asymptotic frame \\
+heat-bath along a full line [SW18] & conditional resampling of an unbounded window & survives as a prediction; the sampler is itself the open hard problem \\
+deficiency $\Rightarrow$ conserved functionals [ALP23] & menu-conserved statistics beyond $\mathrm{eval}$ & survives; red-team reading below \\
+statistics of $b$: constant on the fiber & statistics of $\mathrm{eval}$ (every $x\leftrightarrow y$ affine relation) & survives exactly; RESULT~0 of the red team in DS language \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{What breaks.} \emph{(i) No module structure:} a DS path is a multiset of moves; an ASE
+substitution at position $i$ contributes $w_{<i}rw_{<i}^{-1}$ --- position- and state-dependent
+conjugation with no commutative counterpart. Derivations are van Kampen diagrams; ``fiber diameter''
+transports to the \emph{Dehn function} of the presentation relative to the band (open).
+\emph{(ii) Applicability is word-local and binding:} measured: 2.4--4.1\% of \emph{attempts}
+convert (band arms; no descent), 53.7\% of DB \emph{rounds} splice in early phase A (short
+descent-free MIX windows $\sim$99\% at length 1--2, plus the curated store; COMP descent rounds land
+43.9\%, a COMP round spending up to 12 attempts); Windisch's rejection-free negative
+[Win16, Rem.~3.27] transports as: hit-rate levers change the clock, not the per-conversion transport --- the \S3.4
+block-size finding, \emph{predicted}. \emph{(iii) Banded connectivity open:} [FL25]'s certificate
+routes through a canonical form with no bound on intermediate length, so it does not establish
+connectivity of the length-banded fiber (cf.\ lattice-vs-Markov, and [DLO06a]: no universal
+bounded-window menu). \emph{(iv) The implemented chain is not reversible:} four code-level proposal
+asymmetries (first-hit descent context; length-filter pools $\{\ell-1,\ell,\ell+1\}$ shifting with
+$\ell$; curated restriction as a lexicographic prior; no Hastings correction). Which sources are armed is
+per-configuration (band/hold arms: no descent, absolute \code{FMIX\_DB\_LEN\_BAND} filter --- their
+asymmetry is pool-normalization + curated restriction + history-dependent litter ban + no Hastings;
+stable/default runs add the descent context and shifting pools); non-reversibility holds in every
+configuration. Its invariant law on
+the band is a \textbf{store- and policy-weighted measure of unknown density}, not uniform; the
+expansion leg is explicitly driven (splice census: out 1--3 / in 6--13 is controller policy). A
+Hastings factor $\min\{1, Q(w'\to w)/Q(w\to w')\}$ would restore a known target (computable in
+principle; recorded as a design option). Every theorem in \S\ref{ss:stat} about the uniform measure
+describes the target of a reversible chain; ours is not one.
+
+\textbf{What survives.} \emph{(i) Connectivity, classically framed:} [FL25] is the
+fundamental-theorem object (a finite menu presenting $\ker(\mathrm{eval})$); substitution histories
+are identity sequences [BH82]; Tietze's theorem [LS77] is the analog of ``all Markov bases connect
+through $I_A$'': menu choice immaterial for connectivity, decisive (empirically) for rate.
+\emph{(ii) The deficiency test, and the red team correctly read:} the zero $x\leftrightarrow y$
+affine leak is a statistic of $\mathrm{eval}$ --- constant on the whole fiber, uninformative about
+the menu; the 327 interior cross-cut relations are cut-placement-dependent \emph{state} properties,
+never tested for conservation along orbits --- they neither confirm nor refute deficiency; $D/L
+\approx 3.6$ is an ensemble constant, not an orbit invariant. \textbf{No exact
+non-$\mathrm{eval}$ conservation law has been exhibited}: dynamical slowness remains the standing
+explanation --- the Windisch scenario. \emph{(iii) The abelianization is an honest DS walk:} census
+step-vectors $m_{u,v}=\mathrm{ab}(v)-\mathrm{ab}(u)$ span a menu-lattice $L$ whose conserved
+statistics are exactly $L^\perp$ --- computable by exact RREF over the frozen store ($G\le\mathrm{Alt}$
+kills the sign character; length is deliberately non-conserved). If $L^\perp=0$: the abelian shadow
+carries no conservation law, and every obstruction lives in the non-abelian transport. [Audit not yet
+run --- proposed.] \emph{(iv) Block-Gibbs structure:} a DB conversion is block dynamics with bounded
+blocks --- but heat-bath w.r.t.\ the \emph{store measure} on spellings, not the conditional uniform.
+The dichotomy transports as predictions: bounded blocks $\Rightarrow$ Windisch bottlenecks persist;
+unbounded coherent blocks $\Rightarrow$ expansion [SW18]; unrestricted pair heat-bath $\Rightarrow$
+$\Theta(n\log n)$ [PS17, Smi14]. The ``line'' analog --- conditional uniform sampling of a whole
+segment given its boundary permutation --- is itself the open hard problem: the escape route is real
+but self-referential.
+
+\textbf{fcompress as the oriented menu.} Unoriented random application of the catalogue = the ASE
+mixer; size-oriented greedy application to termination = \code{fcompress}, a string rewriting system
+aimed at normal forms. Squier's theorem [Squ87] is the obstruction theory (finite \emph{convergent}
+systems are strictly stronger than finite complete menus; critical-pair 2-cells = non-abelian
+syzygies). The compression residuals (94.7\% A1 bench; 96.5\% delivered run\_c) are a distance-to-normal-form
+proxy under a non-confluent greedy orientation; the 64.6\% blocked-pair census is a concrete critical-pair
+obstruction; [FL25]'s canonical form existing while compression stalls at $\sim$95\% is the
+confluence gap made quantitative.
+
+\textbf{Predictions table.}
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{3.7cm}p{4.4cm}p{5.1cm}p{2.2cm}}
+\toprule
+\textbf{commutative theorem} & \textbf{ASE prediction} & \textbf{bearing measurement} & \textbf{verdict} \\
+\midrule
+connectivity $\ne$ mixing [DS98]; complete menu [FL25] & irreducibility with no rate implication & ridge survives every arm ($\rho=0.998$--$1.000$, $\sim$180 plates; $7\sigma$/row end-to-end) & consistent \\
+fixed basis + dilation: no rapid mixing; enlargement and rejection-avoidance futile [Win16] & fixed store + growing $m$/band: per-conversion transport saturates; menus/hit rates change the clock only & block-size sweep: whole effect = hit rate ($\times1.7$), per-conversion collapse (\S3.4); 0.28 ridge floor reproduced by independent constructions; $n{=}512/1024$ dilation arms in flight & confirmed on every completed axis \\
+heat-bath lines expand [SW18]; pair heat-bath $n\log n$ [PS17] & the lever is the window-\emph{length} distribution & incoming block $\le16$; $\Di$ saturates at median 64 ($N{=}128$), 0.2\% of slack budget & consistent; positive branch untestable (sampler = the hard problem) \\
+line moves: constant diameter [SW18]; word fibers: polynomial [RR13] & dose $\ll$ diameter $\Rightarrow$ transient & $\Di$ median 64 vs $m{\approx}3{\times}10^4$ (band); pipeline $\sim10^3$ vs $m{\sim}5{\times}10^6$; [OKHH24] & consistent \\
+partial menus $\Rightarrow$ confinement [ALP23] & an exact conserved statistic would explain persistence & no exact non-eval invariant exhibited & deficiency \textbf{not} supported; persistence dynamical; abelianized audit = the cheap open test \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The stationary distribution}\label{ss:stat}
+If the move set connects the (banded) fiber, the walk is ergodic with a unique stationary law.
+\emph{Per \S\ref{ss:transport}.(iv), for the implemented chain that law is a store- and
+policy-weighted measure on the banded fiber, not the uniform measure} (a Hastings-corrected variant
+would target uniform); the rigidity results below describe the \textbf{uniform} measure and are a
+qualitative guide, exact for the corrected chain. The subtle point, forced by the literature: this
+equilibrium measure is itself \textbf{rigid}, not a structureless cloud.
+\begin{itemize}
+\item For the one understood non-commutative word-fiber --- reduced words of the longest element of
+$S_n$ (sorting networks) --- the uniform measure is macroscopically deterministic (sine trajectories,
+sphere concentration) [AHRV07, Dau22]. \textbf{A persistent skeleton can therefore be an equilibrium
+property, not evidence of non-mixing}; to claim the walk is stuck one must compare against a fresh
+uniform fiber sample.
+\item Near-minimal fibers equilibrate to a rigid frame decorated by Brownian-excursion slack [FLT21]
+--- the shape a mixed ASE configuration should take: geodesic skeleton $+$ slack.
+\end{itemize}
+Hence the target is \emph{(a reweighting of) the measure on the length-banded fiber whose typical
+element is a geodesic skeleton plus slack}. A prefix ridge at $\rho=1$ is expected \emph{even at
+equilibrium}; the only equilibrium knob on how far the trajectory sits from the original is the
+\textbf{slack} $s=m'-|C|$.
+
+\subsection{Why the excursions are taut}\label{ss:taut}
+In nonamenable/hyperbolic geometry a walk conditioned on its endpoints stays in a thin corridor of the
+geodesic. Kesten [Kes59]: nonamenability $\Leftrightarrow$ exponential return decay. Local limit theorem
+$p_n(e,e)\sim C R^{-n} n^{-3/2}$ [Gou14, GL13]: loop mass on the shortest loops, universal excursion
+exponent. Deviation inequalities [MS20]: $\Pr[\text{stray}\ge D]\le Ce^{-cD}$. Bridge diffusivity
+[BJ99, BIK07, CM17]: a length-$\ell$ bridge reaches depth only $\sim\sqrt\ell$, range first-order below
+the free walk; even the unconditioned walk tracks the geodesic at $O(\log n)$ width [Sis17]. The renewal/pinning theory aggregates these: contacts form a renewal process, and in the
+localized phase --- where hard-return substitution sits deep --- excursion lengths have exponential
+tails, the max excursion is $O(\log m)$, and the path stays in an $O(1)$ tube forever
+[Fis84, Gia07, denH09, IY01, CGZ06].
+
+\subsection{Mixing time: the fiber-walk rate theory in detail}\label{ss:mix}
+Connectivity is settled ([FL25]; long Hurwitz fibers are a single orbit up to lifting invariants
+[CP-in-FV91, EVW16], so persistence must be \emph{dynamical}, not conservation). The \emph{rate} is
+where the commutative theory has real content. ([Win16] and [SW18] re-verified at full-text level;
+contingency-table results via the survey portion of [CDGJM06].)
+
+\textbf{Two scaling regimes.} Commutative fibers of fixed $A$ have polynomially many points under
+dilation (Ehrhart); $|\Phi_C|=\exp(\Theta(m))$. Hence: \emph{dilation regime} ($b\to Nb$; ``rapid''
+$=$ polylog$(N)$ --- Windisch's home) vs \emph{system-size regime} ($m\to\infty$; ``rapid'' $=$
+poly$(m)$ --- ours). A theorem forbidding polylog mixing under dilation is compatible with diffusive
+poly$(N)$ mixing there, and says nothing directly about the system-size regime.
+
+\textbf{The negative pole [Win16], exactly.} For any fixed Markov basis and any dominated sequence
+(pure dilation $b_i=ib$ is the archetype), the fiber-graph family is \textbf{no expander}; with
+polynomially many points, \textbf{not rapidly mixing}. Quantitatively
+\[
+  h\big(\mathcal{F}_{A,b_i}(\mathcal{M})\big) \;=\; O(1/i),
+\]
+with the witness bottleneck a translated sub-fiber whose move-boundary is Ehrhart-codimension-one ---
+an obstruction living at the \textbf{positivity boundary} (corners), not in the bulk. Companions:
+finite menu enlargement --- up to the \emph{Graver} basis --- has identical asymptotics
+(Rem.~3.24); the \emph{rejection-free} walk on applicable moves is also not rapidly mixing
+(Rem.~3.27, via the loop-removal comparison Prop.~3.26) --- the rigorous twin of ``the whole
+block-size effect is the hit rate'' (\S3.4);
+per-fiber \emph{adapted} menus give an expander family (Cor.~4.3) --- the ASE analog would be a menu
+whose window inventory grows with the instance. \emph{Transfer caveats:} (1) only
+polylog-in-fiber-size mixing is forbidden --- $h = O(1/\mathrm{diam})$ is exactly diffusive behavior,
+so no exponential trapping is proved; (2) the boundary-free version (tables over
+$\mathbb{Z}/q\mathbb{Z}$) has clean diffusive \emph{cutoff} [NN20] --- the obstruction is a corner
+effect, and the ASE analog of the corner is the band and admissibility constraints, a design surface
+we control; (3) nothing commutative rules out (or supports) an additional non-abelian slowdown.
+
+\textbf{The positive pole [SW18], exactly.} With move-\emph{lines} as single steps (heat-bath
+resampling the whole ray), the compressed fiber-graph diameter is bounded by a constant uniformly
+over all fibers of a fixed matrix (Thm.~3.15; unit moves: linear growth), and along dilations of a
+fixed polytope the heat-bath walk has a uniform spectral gap (Cor.~5.11) --- the exact dichotomy
+partner of [Win16]. \emph{Caution:} the proved gap degrades super-exponentially in the augmentation
+length (dimension-like), so ``expander \emph{in fixed dimension}'' is exactly what is proved; in the
+ASE transport ``dimension'' scales like $m/w$, so the rigorous positive pole does \textbf{not}
+license poly$(m)$ mixing from full-window resampling. Growing-dimension positives exist but are
+continuous: Kac's walk $\Theta(n\log n)$ [PS17]; the simplex Gibbs sampler $\Theta(n\log n)$, with a
+boundary [Smi14] --- so no single ingredient (conservation, dimension, boundary) is fatal; the
+negatives need \emph{bounded increments + lattice geometry + growing domain} together. \emph{ASE
+reading:} a DB substitution is a heat-bath draw on one window's fiber \emph{truncated} to the curated
+band --- and the ledger below shows truncation can cost an exponential factor at identical footprint.
+
+\textbf{Case ledger (rigorously known rates).}
+\begin{center}\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{4.6cm}p{2.6cm}p{5.4cm}p{3.0cm}}
+\toprule
+\textbf{model / walk} & \textbf{moves} & \textbf{result} & \textbf{scaling type} \\
+\midrule
+Diaconis--Gangolli $\pm1$ minor walk [DG95] & unit basis & at least poly in table sum $N$ [CDGJM06] & pseudopolynomial floor \\
+same, fixed shape (pure dilation) & unit basis & quadratic in the table sum (D--SC, per [CDGJM06]) & \textbf{diffusive in dilation} \\
+same, $m{=}2$ rows & unit basis & poly(cols, $N$) [Her98] & pseudopolynomial \\
+large margins & unit basis & poly [CGY96] & boundary suppressed \\
+$2\times2$ \textbf{heat-bath}, $m{=}2$ & window resample & poly(cols, $\log N$) [DGh00] & \textbf{exp.\ speedup at same footprint} \\
+$2\times2$ heat-bath, constant $m$ & window resample & rapid [CDGJM06]: flow + [DS93] comparison & positive, fixed rows \\
+large margins, continuous + rounding & (not lattice) & poly [DKM97, Mor02] & leave-the-lattice \\
+DG over $\mathbb{Z}/q\mathbb{Z}$ (\textbf{no boundary}) & unit mod $q$ & cutoff at $\frac{n^2\log n}{4(1-\cos(2\pi/q))}$ [NN20] & clean diffusion, no bottleneck \\
+lozenge tilings, single flip & local flips & $O(L^4\log L)$ tight [Wil04] & diffusive per site \\
+adjacent-transposition shuffle & adjacent swaps & cutoff $\frac{N^3\log N}{2\pi^2}$ single moves [Lac16] & system-size, $\Theta(N^3\log N)$ \\
+pinned DGFF, $n$-box in $\mathbb{Z}^2$ & site resample & cutoff $\frac{2}{\pi^2}n^2\log n$ [GG21] & diffusive zero-mode \\
+Kawasaki lattice gas, side $L$ & conserved exchange & gap $\asymp L^{-2}$ [LY93] & conservative law \\
+matroid bases exchange & single exchange & expansion $\ge1$ [ALOV19]; MLSI $\ge1/r$ [CGM19] & log-concavity does it \\
+Coxeter tournaments & local reversals & rapid [BKMP24] & product-structured \\
+reduced words of $w_0$, braid moves & relator subs & \textbf{open} --- no upper bound; lower bounds only the $\Omega(n^4)$ diameter floor & the non-commutative frontier \\
+\bottomrule
+\end{tabular}
+\end{center}
+Reading: every \textbf{positive} enlarges a move to a full conditional window resample, fixes a
+dimension, removes the boundary, or has log-concavity; every \textbf{negative/slow} has bounded
+increments against a growing domain, between diffusive and boundary-bottlenecked. \textbf{Nothing
+commutative exhibits worse-than-polynomial mixing for a connecting basis on dilated fibers}: the
+rigorous precedent for skeleton persistence is diffusive-type slowdown plus vanishing boundary
+conductance, \emph{not} exponential localization (those precedents are the non-fiber results of
+\S\ref{ss:taut}).
+
+\textbf{Comparison, decomposition, window equivalence.} (i) Path/congestion comparison [DS93]
+transfers gaps between menus (the [CDGJM06] engine). \emph{Bounded-window equivalence}
+[derived here, conditional]: \emph{if} in-window derivations have length $O(w)$ and stay in-band
+(not supplied by [FL25], whose certificate is unbounded), the simulation congestion is $\exp(O(w))$
+and bounded-window menus share a complexity class, with only $w=\Omega(\log m)$ able to change it;
+unconditionally the congestion is $\exp(O(L(w)))$ for the unknown in-window derivation length
+$L(w)$ --- read the threshold as heuristic. (ii) Decomposition [MR02; JSTV04, Thm.~1]: with skeleton statistic
+$\sigma$, $\lambda = \min\{\bar\lambda/3,\ \bar\lambda\lambda_{\min}/(3\gamma+\bar\lambda)\}$. Slow
+direction: the Rayleigh quotient converts measurements into an \emph{empirical gap upper bound}
+(per-move Dirichlet energy of the aligned-offset profile from move logs --- proposed measurement).
+Fast direction: decomposition turns ``the zero-mode is the obstruction'' into a two-part proof
+obligation --- (a) the projection chain mixes (open transport problem), (b) slack equilibrates at
+fixed skeleton (looks tractable). (iii) Spectral independence [ALO20]: the modern local-mixing
+criterion is correlation decay of the stationary measure itself; the ASE influence object is
+window--window covariance at word distance $\ell$ --- the measured slack autocorrelation length
+(500--750 gates, \S3.3) is the first empirical look at exactly this matrix.
+
+\textbf{Generic floors.} Bottleneck: $t_{\mathrm{mix}}\ge 1/(4\Phi^*)$; with $h=O(1/N)$, linear in
+the dilation from conductance alone. Diameter: $t_{\mathrm{mix}}\ge\mathrm{diam}/2$; for reduced
+words of $w_0$ the diameter is \emph{exactly} $\frac{1}{24}n(n-1)(n-2)(3n-5)=\Theta(n^4)$ [RR13]
+(McConville fix) --- an $\Omega(n^4)$ floor. Varopoulos--Carne [CV85]:
+$P^t(x,y)\le 2\sqrt{\pi(y)/\pi(x)}\,e^{-d^2/2t}$, whence $t_{\mathrm{mix}}\ge r^2/(2\ln 8|\Omega|)$
+--- distance grows at most $\sqrt{t\log|\Omega|}$; for $w_0$ words, conditionally
+$\Omega(n^6/\log n)$ [derived here].
+
+\textbf{Synthesis.} (1) Fixed basis + dilation: conductance $O(1/N)$, proven quadratic in solved
+cases, boundary-free cutoff [NN20] --- diffusive, no super-polynomial trapping known. (2) Fixed
+window scale + growing system: $t_{\mathrm{mix}} \asymp$ (update sites) $\times$ (transport
+diameter)$^2$ $\times$ polylog [LY93, GG21, Lac16, Wil04]. (3) \emph{Transported ASE expectation
+[derived here, heuristic]:} skeleton relaxation in $\sim(m/w)^2$polylog sweeps $\approx m^3/w^3$
+substitutions --- \emph{provided} the non-abelian charge transports diffusively and the band creates
+no Windisch corners (both open). At production scale ($m\sim5\times10^6$, $w\sim12$--$16$):
+$\sim10^{16\text{--}17}$ substitutions to the diffusive horizon, versus the $\sim$5--20 conversions
+per position ($\sim10^{6\text{--}7}$ total) applied --- nine to ten orders inside the transient; the observed ``fast decay to a floor,
+then plateau'' (\S2, pt.~4) is exactly the transient of the diffusive picture; the free-analog
+complexity results [OKHH24, BS18, HFKEY22] put full equilibrium further out still. (4) What would
+beat the diffusive floor, in decreasing verified strength: full-coset resampling ([SW18]; exponential
+speedup at identical footprint [DGh00] --- but no dimension-uniform gap); instance-adapted menus
+[Win16, Cor.~4.3]; structural measure properties (log-concavity / spectral independence [ALOV19,
+CGM19, ALO20]) --- unavailable until exhibited for fiber word measures; leaving the lattice
+[DKM97, Mor02] --- no clear ASE analog.
+
+\textbf{Net.} Local window statistics equilibrate fast; the pinned skeleton is a conserved-density
+zero-mode relaxing diffusively at best; each excursion is exponentially confined. Every commutative
+tool transports as an inequality \emph{template}; none of the matching upper bounds transport (they
+lean on abelian Fourier structure, log-concavity, or fixed dimension). The precise mixing time of
+relator-substitution walks with fixed product in a non-abelian group remains, per our survey,
+\textbf{open} (full annotations: \code{docs/PINNED\_WALK\_LITERATURE.md}, 84 works).
+
+% ================================================================
+\section{Evidence that DB-based mixing is an ASE process}
+The DB-substitution mixer is an ASE process by construction, and every signature checks out:
+\begin{enumerate}
+\item \textbf{Fiber walk by construction.} Each move swaps a window for a DB-equivalent; the global
+permutation is invariant (corner cells $H(0,0)=H(m,m')=0$ in every plate). Which \emph{measure} on
+$\Phi_C$ it targets is store/controller design, not detailed balance (\S\ref{ss:transport}).
+\item \textbf{Trajectory = short returning bridges.} The production splice census
+[phasea-splice-census]: outgoing 1--3 gates, incoming 6--13, $53.7\%$ splice rate, $38.6\%$ diagonal.
+\item \textbf{Progress diagonal survives ($\rho\approx1$).} 22 band arms and the pipeline: $\rho=0.998$--%
+$1.000$ in $\sim$180 affine plates; raw-HD ridge $\sim7\sigma$/row end-to-end in run\_c/run\_d --- the
+\S\ref{ss:stat}/\S\ref{ss:taut} prediction, not a failure to move.
+\item \textbf{Ridge decays, front-loads, saturates} (Fig.~G4): fast loss then plateau, contrast flat,
+$\rho$ unbroken --- diffusive zero-mode relaxation [LY93, GG21].
+\item \textbf{Quality per conversion is invariant} (Fig.~G3): decay vs conversions collapses every
+rule and band onto one curve --- the \S\ref{ss:mix} statement.
+\item \textbf{Displacement is transversely localized, compact-tailed} (\S3): tight $\Di$, knife-edge
+valley --- localized-phase/taut-bridge signature.
+\item \textbf{No interior state collision.} Hamming floor $=0$ only at endpoints; interior minima
+\emph{rise} with mixing --- skeleton $+$ bounded slack.
+\end{enumerate}
+The \S\ref{ss:stat} caveat (persistence could be equilibrium rigidity) is consistent with, not against,
+the data: we are transient (point 4, [OKHH24]), so persistence is both equilibrium-compatible and
+incomplete relaxation; separating them needs a fresh fiber sample we cannot draw at $N{=}128$ ---
+though the \emph{relaxation probe} of \S\ref{ss:markov} (widen the band / admit short off-DB bridge
+words, watch whether frozen statistics move) is an intervention-based discriminator that needs no
+fresh sample.
+
+% ================================================================
+\section{The distribution of $\Di$ for the band experiments}
+Two campaigns: the band-restricted runs (\code{docs/BAND\_MIXING\_SUMMARY.md}) and the 2026-08-22
+displacement-calibration experiment. All numbers below were independently recomputed from the raw
+plates by a three-agent adversarial pass (every distribution figure confirmed).
+
+\subsection{Calibrating the instruments (Fig.~G1)}
+Random $D$-gate circuits, $D\in\{12,25,50,100,200,400,800\}$, 50 reps, four ensembles per width
+$N\in\{128,64\}$: \emph{cens} (measured census = the ruler), \emph{aff} (pure NOT/CNOT), \emph{nl}
+(pure $c\ge2$), \emph{seg} (real mixed segments). Two exact laws:
+\begin{itemize}
+\item \textbf{Hamming = Ehrenfest.} All gates are comp=1, 2-control (fire prob $3/4$):
+$H(D)=\tfrac n2(1-e^{-sD/(n/2)})$, $n$ = substrate wire count (raw $n$-wire arms, not the $2N$
+gadget convention), $s=0.751\pm0.010$ ($n{=}128$), $0.769\pm0.015$ ($n{=}64$),
+reduced $\chi^2=0.33$. Inversion $D=-\tfrac{n}{2s}\ln(1-H/\tfrac n2)$.
+\item \textbf{Affine = single exponential, $\kappa=n$ exactly.}
+$0.5-H_{\mathrm{aff}}(D)=0.5\,e^{-D/\kappa}$, $\kappa=128.65\pm1.22$ ($N{=}128$), $64.09\pm0.94$
+($N{=}64$); $\kappa/n=1.005,1.001$; no lag phase. Pure-affine reads exactly $0.0000$ at every length.
+\item $\triangle$ \textbf{seg is not a rescaled random circuit}: multi-rate, suppressed asymptotes (HD
+tail $44/64$ at $N{=}128$), so ``nominal leftover gates'' is model-dependent; the census ruler
+(``effective incompressible gates'') is the well-defined unit.
+\end{itemize}
+
+\subsection{The measured $\Di$ distribution (Fig.~G2, Table~T1)}
+Per mixed position, min over all 1001 original prefixes at stride 1, on the 10M gain-balanced finals
+(steady state) and the 0-move baseline:
+
+\begin{center}\small
+\textbf{Table T1 --- distribution of $\Di$ (effective gates, census ruler)}\\[3pt]
+\begin{tabular}{lrrrrr}
+\toprule
+configuration & p5 & \textbf{median} & p95 & max & affine-ruler median\\
+\midrule
+$N{=}128$, 10M steady state & 52 & \textbf{64} & 78 & 92 & 81\\
+$N{=}128$, 0 moves (baseline) & 10 & \textbf{16} & 24 & 28 & ---\\
+$N{=}64$, 10M steady state & 22 & \textbf{31} & 42 & 50 & 39\\
+$N{=}64$, 0 moves (baseline) & 4 & \textbf{8} & 12 & 15 & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+The two instruments bracket steady-state displacement at \textbf{64--81 effective gates (median) for
+$N{=}128$}, up from 16 at move 0; $31$--$39$ for $N{=}64$.
+
+\subsection{Structure of the distribution (Fig.~G5)}
+\begin{itemize}
+\item \textbf{Tight, compact-tailed:} p95/median $\approx1.2$, max 92 in 242 positions, no heavy tail
+--- maximally-localized hard-constraint pinning.
+\item \textbf{Knife-edge valley:} at stride 1 the per-column minimum is typically a single row deep ---
+slope-1 walls, the taut/tree-like regime; the 10-gate-stride plates were sub-pixel transversely.
+\item \textbf{Stationary profile}, autocorrelation length $\sim500$--750 gates --- slack in long waves,
+far broader than the 12--16-gate blocks.
+\item $\mathbf{D_{\mathrm{aff}}/D_{\mathrm{ham}}=1.26}$--$1.30$, paired, uniformly: displacement is
+nonlinearity-\emph{rich} per bit --- \emph{not} affine-dominated, so no cheap strippable component.
+\item $\Di\propto n$ (64 vs 31, matching $\kappa\propto n$); normalized displacement $\approx0.52$ at
+both widths.
+\end{itemize}
+
+\subsection{The band is a weak lever (Fig.~G6, Table~T2, Fig.~G7)}
+\begin{center}\small
+\textbf{Table T2 --- block-size sweep, size-held, $N{=}128$, 2M attempts}\\[3pt]
+\begin{tabular}{lrrrrrr}
+\toprule
+band & depth @2M & hit rate & conversions & @20K & @30K & @44K\\
+\midrule
+12--14 & 0.3107 & 4.09\% & 81{,}738 & 0.3403 & 0.3298 & 0.3191\\
+12--16 & 0.3132 & 3.46\% & 69{,}182 & 0.3404 & 0.3291 & 0.3206\\
+14--16 & 0.3282 & 2.36\% & 47{,}180 & 0.3415 & 0.3329 & 0.3274\\
+\bottomrule
+\end{tabular}
+\end{center}
+Per \emph{attempt} smaller blocks get further; per \emph{conversion} the three bands are one curve
+(within 0.008 at 44K, large blocks marginally worst). The whole effect is the hit rate ($\times1.7$),
+not conversion quality --- \S\ref{ss:mix} made concrete. Final plates across bands are near-identical
+(Fig.~G7); $\rho=0.999$--$1.000$ in all six arms.
+
+% ================================================================
+\section{Effective $\Di$ for the main pipeline (run\_c / run\_d)}
+The production pipeline differs from the band substrate in three ways: full scale (millions of gates),
+single-carrier GSS encoding on $2N{=}512$ wires, and the structural phases (split/crossing/fcompress)
+on top of DB mixing. The adjacent session (2026-08-23) measured its displacement with the \textbf{raw
+Hamming} instrument on the delivered nocomp runs run\_c/run\_d ($|C'|$: run\_c $693{,}377\to$ phaseA
+$1{,}410{,}438\to$ final $4{,}859{,}911$ gates). Tools: \code{reports/plot\_hmap\_slice.py},
+\code{reports/hmap\_aligned\_profile.py}.
+
+\subsection{Phase A only --- a razor-sharp aligned dip (Fig.~G8--G10, Table~T3)}
+A textbook ASE prefix ridge: sharp diagonal ($\rho\approx0.99$, perm $z\approx24$), 99--100\% of
+interior rows detectable. Halfway-row dip $5.5/5.3$ bits below the 256-bit random-pair baseline (of
+$2N{=}512$ wires), core FWHM 2{,}000--2{,}500 gates ($0.15$--$0.18\%$ of $|C'|$), centered within
+$0.5\%$; per-row mean $|$peak$|$ 4.56/5.65 bits, \textbf{100\% sign-correlated} (all dips). Through the
+Ehrenfest ruler at $n_w{=}512$ wires: a residual deviation $\Delta$ below the 256-bit plateau inverts
+as $D=-\tfrac{n_w}{2s}\ln(\Delta/\tfrac{n_w}{2})$ --- for the halfway dip ($\Delta=5.5$) this is
+$D\approx1.3$k effective gates; the validated reader (\code{reports/hd\_depth\_to\_displacement.py},
+[bandscale-50m]) reads run\_c gss$\to$phaseA at $D/n_w=2.79$, and the certified bound agrees in order
+($\Di\ge H\approx250$ bits $\Rightarrow$ $\ge250$ gates). An earlier revision read the dip through
+the \emph{linear} branch ($\approx7$--$8$ gates); at saturation ($256-5.5=250.5$ bits) that is the
+wrong branch --- near the plateau each displaced gate shrinks the deviation by only
+$\sim s/(n_w/2)\approx0.3\%$, so 5.5 residual bits is what a $\sim$1.3k-gate displacement looks like.
+The qualitative reading survives corrected: by raw HD the aligned pair is only 5.5 bits more
+distinguishable than a random pair --- a sharp, aligned, all-dip diagonal on a saturated background.
+
+\subsection{Full pipeline --- the ridge survives but changes character (Fig.~G8--G10, Table~T3)}
+\begin{itemize}
+\item \textbf{86\% of interior rows still detectable} --- position along the computation is recoverable
+end-to-end (raw-HD ridge $\sim7\sigma$/row).
+\item \textbf{The sign flips row to row}: run\_c 65/35 dip/bump, run\_d 51/49; the halfway row is an
+\emph{anti-correlated bump} ($+3.5/+4.1$ bits, $H>256$).
+$\triangle$ \textbf{Read these plates by $|H-256|$, not $\min H$} --- the naive ridge stat
+($\rho=0.64$, ``no halfway dip'') misses the anti-correlated half. The flips are affine-complement
+re-encodings (split/crossing NOT-absorption).
+\item \textbf{Broader, wandering ridge}: mean $|$peak$|$ 2.9/2.95 bits, core FWHM 9.6--19.2k gates
+($0.2$--$0.4\%$), location wander IQR $\pm40$--60k gates ($\sim\pm1\%$).
+\end{itemize}
+
+\begin{center}\small
+\textbf{Table T3 --- run\_c/run\_d aligned-profile statistics}\\[3pt]
+\begin{tabular}{llrrll}
+\toprule
+stage & rows det. & mean $|$peak$|$ & sign (dip/bump) & RMS-excess FWHM & wander IQR\\
+\midrule
+run\_c, phaseA & 99\% & 4.56 & 100 / 0 & 3.4\% & $\pm5$--7.5k\\
+run\_c, final & 86\% & 2.90 & 65 / 35 & 6.1\% & $\pm45$--60k\\
+run\_d, phaseA & 100\% & 5.65 & 100 / 0 & 3.7\% & $\pm5$k\\
+run\_d, final & 86\% & 2.95 & 51 / 49 & 6.1\% & $\pm42$--51k\\
+\bottomrule
+\end{tabular}
+\end{center}
+(RMS-excess FWHM is the superposed cross-row profile, wider than the single-row core FWHM in the text;
+both are reported --- per-row sharpness vs.\ ensemble spread.)
+
+\subsection{Conclusion on effective $\Di$ for the pipeline}
+\begin{enumerate}
+\item \textbf{Per-position displacement is $\approx1.3$--$1.6$k effective gates: $D/n_w=2.79$
+(phaseA) and $3.09$ (final)} (validated reader \code{reports/hd\_depth\_to\_displacement.py}) ---
+about $6\times$ the band-experiment steady state $D/n_w\approx0.5$ (median 64 at $n_w{=}128$), and
+\emph{off the end of the band curve}: phase A got there on 5.6 conversions/gate (band reference: 19.4)
+but with 19.1M long-range twist relocations the band arms lack --- move type, not dose. The raw-HD
+deviation is only 3--5.5 bits not because displacement is small but because deviation decays
+exponentially in $D$. The HD-only readout cannot resolve the nonlinear component the affine instrument
+exposed ($D_{\mathrm{aff}}/D_{\mathrm{ham}}=1.26$); the affine plate of the pipeline is the missing
+measurement.
+\item \textbf{The structural phases, not more DB mixing, change the ridge's character} --- broadening
+it 3--5$\times$, adding $\pm1\%$ wander, flipping its sign on $\sim$half the rows. This matches
+\S\ref{ss:mix}: DB mixing alone relaxes displacement diffusively toward a small floor.
+\item \textbf{Position remains recoverable end-to-end} (86\%, $\sim7\sigma$): the progress diagonal
+is a conserved zero-mode local mixing shallows but does not erase --- and good local statistics would
+not contradict this ($k$-wise independence can coexist with detectable global structure [DPT26]).
+Displacement is already $\approx3\,n_w$; the ridge survives because deviation decays exponentially in
+$D$, and invisibility at the current 512-sample noise floor needs $D/n_w\approx4.2$ --- another
+$\approx1.3$--$1.5\times$ in $D$ at every cut. The binding resource is the \emph{conversion of slack
+into composing, non-cancelling displacement} --- empirically the long-range twist channel, not DB
+dose --- not slack (ample) or move count (fixed yield per conversion).
+\end{enumerate}
+\textbf{Open measurement.} The most informative next step is an affine (LP) prefix plate of the
+run\_c/run\_d final, read by the nonlinear ruler of \S3.1: it would convert the pipeline's ridge into
+an effective-gate $\Di$ directly comparable to Table~T1 and resolve whether the sign-flip structure
+carries nonlinear displacement or is purely affine bookkeeping.
+
+% ================================================================
+\clearpage
+\section{Figures}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{calibration_curves.png}
+\caption{\textbf{G1.} Calibration: random $D$-gate circuits, four ensembles (mean $\pm$ sd over 50
+reps), HD (top) and affine (bottom) vs $D$, both widths. The Ehrenfest and $\kappa{=}n$ laws; the
+pure-affine axis pinned at 0.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{di_distribution.png}
+\caption{\textbf{G2.} Distribution of $\Di$ across mixed positions: 0 moves vs 10M steady state,
+Hamming (filled) and affine (outline) rulers, both widths.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{di_structure.png}
+\caption{\textbf{G5.} Steady state at 10M: survival function (log $y$; compact tail), spatial profile
+of $\Di$ along the circuit, and the affine-vs-Hamming decomposition (slope $1.26$).}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.86\linewidth]{curves_conv.png}
+\caption{\textbf{G3.} Ridge depth vs \emph{successful conversions}: every rule and width collapses onto
+one curve --- quality per conversion is invariant.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{curves_d10m.png}
+\caption{\textbf{G4.} 10M gain-balanced: ridge depth and contrast vs attempts --- front-loaded decay,
+saturation, $\rho$ unbroken.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{bandsweep_curves.png}
+\caption{\textbf{G6.} Block-size sweep: per attempt (left) smaller blocks win; per conversion (right)
+the three bands trace one curve.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_bs_led_n128.png}
+\caption{\textbf{G7.} Size-held final plates across bands 12--14 / 12--16 / 14--16 ($N{=}128$):
+near-identical.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.82\linewidth]{hd_progression.png}
+\caption{\textbf{G-HD.} Hamming valley-floor progression: interior minima climb steadily; $H{=}0$
+survives only at the two trivial endpoint rows.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.86\linewidth]{run_c_halfway_slice.png}
+\caption{\textbf{G8.} run\_c halfway-row slices $P(j)=\mathbb{E}_x\,\mathrm{HD}(C_{i^*},C'_j)$: phaseA
+sharp aligned dip (left) vs.\ final anti-correlated bump (right).}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.86\linewidth]{run_d_halfway_slice.png}
+\caption{\textbf{G9.} run\_d halfway-row slices: same structure, near 50/50 sign split in the final.}
+\end{figure}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=0.49\linewidth]{run_c_m3000_A_full.png}\hfill
+\includegraphics[width=0.49\linewidth]{run_c_m3000_F_full.png}
+\caption{\textbf{G10.} run\_c full raw-HD prefix heatmaps: phaseA (left, razor diagonal) and final
+(right, surviving but broadened/sign-flipping ridge). Corners $H{=}0$ (equivalence).}
+\end{figure}
+
+\clearpage
+\section{References}
+Annotations state what each work predicts about the ASE process. Full 84-work bibliography:
+\code{docs/PINNED\_WALK\_LITERATURE.md}.
+
+\textbf{Fiber walks / Markov bases.}
+\textbf{[DS98]} Diaconis \& Sturmfels, \emph{Algebraic algorithms for sampling from conditional
+distributions}, Ann.\ Stat.\ 26(1), 1998 --- founding fiber-walk paper; commutative template
+(``insert a relator from a finite basis''); decouples connectivity from mixing.
+\textbf{[Win16]} Windisch, \emph{Rapid mixing and Markov bases}, SIAM J.\ Discrete Math.\ 30(4), 2016
+(arXiv:1505.03018) --- for any fixed Markov basis, dilated fibers are no expander family: edge expansion
+$O(1/i)$ (Thm.~1.1); neither finite enlargement (to Graver, Rem.~3.24) nor rejection-free sampling
+(Rem.~3.27) helps; adapted menus do (Cor.~4.3). Forbids polylog-in-fiber-size mixing only (consistent
+with diffusive); the bottleneck is a positivity-boundary corner effect. Closest rigorous analog of
+skeleton persistence.
+\textbf{[SW18]} Stanley \& Windisch, \emph{Heat-bath random walks with Markov bases}, 2018
+(arXiv:1605.08386) --- line moves give constant fiber diameter uniformly (Thm.~3.15) and an expander
+family along dilations \emph{in fixed dimension} (Cor.~5.11; gap degrades super-exponentially in the
+augmentation length). The lever is window length --- with no dimension-uniform guarantee.
+\textbf{[FL25]} Feng \& Li, \emph{A complete set of transformation rules for reversible circuits}, 2025
+(arXiv:2508.17273) --- the literal Markov basis for $\Phi_C$: five complete local rules $\Rightarrow$
+connected. Says nothing about rate.
+\textbf{[AHRV07]} Angel, Holroyd, Romik \& Vir\'ag, \emph{Random sorting networks}, Adv.\ Math.\
+215(2), 2007 --- uniform measure on a non-commutative word-fiber is macroscopically rigid; a persistent
+skeleton can be equilibrium, not non-mixing.
+\textbf{[Dau22]} Dauvergne, \emph{The Archimedean limit of random sorting networks}, JAMS 2022
+(arXiv:1802.08934) --- proves AHRV rigidity; null model for ``fully mixed.''
+\textbf{[FLT21]} F\'eray, Louf \& Th\'evenin, \emph{fixed-genus factorizations into transpositions},
+2021 (arXiv:2105.03284) --- near-minimal fiber equilibrium = rigid frame $+$ Brownian-excursion slack.
+\textbf{[RR13]} Reiner \& Roichman, \emph{Diameter of graphs of reduced words and galleries}, Trans.\ AMS 365,
+2013 (arXiv:0906.4768) --- reduced-word flip-graph diameter exactly $\frac{1}{24}n(n-1)(n-2)(3n-5)
+= \Theta(n^4)$ in type A (McConville fix): an $\Omega(n^4)$ mixing floor, conditionally
+$\Omega(n^6/\log n)$ via Varopoulos--Carne.
+\textbf{[ALP23]} Almendra-Hern\'andez, De Loera \& Petrovi\'c, \emph{Markov bases: a 25 year update},
+JASA 2024 (arXiv:2306.06270) --- the modern survey: hierarchy containments, Graver connectivity of
+bounded fibers, lattice-basis failures, relaxation theory, partial-move-set limitations (the
+deficiency test).
+\textbf{[SS03]} Santos \& Sturmfels, \emph{Higher Lawrence configurations}, JCTA 103, 2003 --- Markov
+complexity: one growing direction $\Rightarrow$ bounded move shapes suffice.
+\textbf{[TA04]} Takemura \& Aoki, \emph{Some characterizations of minimal Markov basis \dots},
+Ann.\ Inst.\ Statist.\ Math.\ 56(1), 2004 --- minimal-basis structure/uniqueness; indispensable moves
+(those in every Markov basis).
+\textbf{[DLO06a]} De Loera \& Onn, \emph{Markov bases of three-way tables are arbitrarily
+complicated}, J.\ Symb.\ Comput.\ 41, 2006 --- two growing directions $\Rightarrow$ minimal moves of
+unbounded degree/support; fixed menus eventually fail.
+\textbf{[DLO06b]} De Loera \& Onn, \emph{All linear and integer programs are slim 3-way
+transportation programs}, SIAM J.\ Optim.\ 17, 2006 --- universality: the pathology is the general case.
+\textbf{[HS07]} Ho\c{s}ten \& Sullivant, \emph{A finiteness theorem for Markov bases of hierarchical
+models}, JCTA 114, 2007 --- $n$-fold stabilization via Graver complexity.
+\textbf{[Grav75]} Graver, \emph{On the foundations of linear and integer linear programming I},
+Math.\ Prog.\ 9, 1975 --- the Graver basis as universal test set; the correct object for banded fibers.
+\textbf{[CT91]} Conti \& Traverso, \emph{Buchberger algorithm and integer programming}, AAECC-9, 1991
+--- Gr\"obner bases give monotone fiber paths to a normal form (= IP optimum): oriented rewriting,
+commutatively.
+\textbf{[HoSt95]} Ho\c{s}ten \& Sturmfels, \emph{GRIN}, IPCO IV, 1995 --- the saturation identity: the
+algebraic detector of boundary-layer basis deficiency.
+\textbf{[Stu96]} Sturmfels, \emph{Gr\"obner Bases and Convex Polytopes}, AMS, 1996 --- toric ideals,
+universal Gr\"obner/Graver bases, Lawrence liftings.
+\textbf{[Sul21]} Sullivant, \emph{Algebraic Statistics}, AMS GSM 194, 2021 --- Thm.~9.4.5: bounded
+Graver subsets connect every bounded fiber.
+\textbf{[CDHL05]} Chen, Diaconis, Holmes \& Liu, \emph{Sequential Monte Carlo methods for statistical
+analysis of tables}, JASA 100, 2005 --- SIS: the non-walk fiber sampler; template for a circuit-side
+fresh-sample constructor.
+\textbf{[BSSV06]} Bez\'akov\'a, Sinclair, \v{S}tefankovi\v{c} \& Vigoda, \emph{Negative examples for
+sequential importance sampling}, ESA 2006 --- SIS variance can be silently exponential: the mandatory
+warning on that route.
+
+\textbf{Bridges, excursions, tautness on groups.}
+\textbf{[Kes59]} Kesten, \emph{Symmetric random walks on groups}, Trans.\ AMS 92, 1959 ---
+nonamenability $\Leftrightarrow$ exponential return decay; returns are costly.
+\textbf{[Gou14]} Gou\"ezel, \emph{Local limit theorem \dots\ Gromov-hyperbolic groups}, JAMS 27(3), 2014
+(arXiv:1209.3217) --- $p_n(e,e)\sim CR^{-n}n^{-3/2}$; loop mass on shortest loops.
+\textbf{[GL13]} Gou\"ezel \& Lalley, \emph{Random walks on co-compact Fuchsian groups}, Ann.\ ENS 46(1),
+2013 (arXiv:1107.5591) --- Ancona inequalities at $R$ = bridge tautness.
+\textbf{[MS20]} Mathieu \& Sisto, \emph{Deviation inequalities for random walks}, Duke 169(5), 2020
+(arXiv:1411.7865) --- $\Pr[\text{stray}\ge D]\le Ce^{-cD}$; the testable tautness statement.
+\textbf{[BJ99]} Bougerol \& Jeulin, \emph{Brownian bridge on hyperbolic spaces and trees}, PTRF 115,
+1999 --- length-$\ell$ bridge reaches depth only $\sim\sqrt\ell$; closest single result.
+\textbf{[BIK07]} Benjamini, Izkovsky \& Kesten, \emph{On the range of the SRW bridge on groups}, EJP 12,
+2007 (arXiv:math/0605050) --- the only paper literally on group bridges; nonamenable range first-order
+smaller than free.
+\textbf{[CM17]} Chen \& Miermont, \emph{Long Brownian bridges \dots\ converge to Brownian trees}, EJP 22,
+2017 (arXiv:1609.01907) --- long-bridge trace is a $\sqrt n$-tree; the skeleton made literal.
+\textbf{[Sis17]} Sisto, \emph{Tracking rates of random walks}, Israel J.\ Math.\ 220, 2017
+(arXiv:1305.5472) --- even unconditioned walks hug the geodesic at $O(\log n)$ width.
+
+\textbf{Pinning / polymer localization.}
+\textbf{[Fis84]} Fisher, \emph{Walks, walls, wetting, and melting}, J.\ Stat.\ Phys.\ 34, 1984 --- the
+excursion/renewal (``necklace'') picture; why localization is generic.
+\textbf{[Gia07]} Giacomin, \emph{Random Polymer Models}, ICP, 2007 --- localized phase = $O(1)$ tube,
+exponential excursion tails, max $O(\log N)$; hard returns = the $\beta\to\infty$ limit.
+\textbf{[denH09]} den Hollander, \emph{Random Polymers} (Saint-Flour XXXVII), Springer LNM 1974, 2009
+--- map of which perturbations keep a pinned walk localized.
+\textbf{[IY01]} Isozaki \& Yoshida, \emph{Weakly pinned random walk on the wall}, SPA 96(2), 2001 ---
+above threshold the pinned walk IS an ergodic, exponentially mixing, $O(1)$-localized chain.
+\textbf{[CGZ06]} Caravenna, Giacomin \& Zambotti, \emph{Sharp asymptotics for wetting models}, EJP 11,
+2006 (arXiv:math/0511376) --- bridge partition function governed by the contact renewal density.
+
+\textbf{Mixing rates of fiber walks (the commutative case ledger, \S\ref{ss:mix}).}
+\textbf{[DS93]} Diaconis \& Saloff-Coste, \emph{Comparison theorems for reversible Markov chains},
+AAP 3, 1993 --- path/congestion Dirichlet-form comparison; the menu-to-menu transfer engine.
+\textbf{[MR02]} Madras \& Randall, \emph{Markov chain decomposition for convergence rate analysis},
+AAP 12, 2002 --- projection/restriction decomposition; the skeleton-chain $\times$ slack-chains frame.
+\textbf{[JSTV04]} Jerrum, Son, Tetali \& Vigoda, \emph{Elementary bounds on Poincar\'e and
+log-Sobolev constants for decomposable Markov chains}, AAP 14, 2004 --- the sharp decomposition
+constant; makes the skeleton zero-mode the provably unique obstruction once slack mixes.
+\textbf{[CDGJM06]} Cryan, Dyer, Goldberg, Jerrum \& Martin, \emph{Rapidly mixing Markov chains for
+sampling contingency tables with a constant number of rows}, SIAM J.\ Comput.\ 36, 2006 --- the
+big-to-small window transfer worked out; survey behind the case ledger.
+\textbf{[DG95]} Diaconis \& Gangolli, \emph{Rectangular arrays with fixed margins}, IMA 72, 1995 ---
+the $\pm1$ minor walk; pseudopolynomial floor.
+\textbf{[Her98]} Hernek, RSA 13, 1998 --- two-rowed tables, unit moves: poly(cols, sum).
+\textbf{[DGh00]} Dyer \& Greenhill, TCS 246, 2000 --- two-rowed $2\times2$ heat-bath: poly(cols,
+$\log$ sum) --- the exponential window-resample speedup at identical footprint.
+\textbf{[CGY96]} Chung, Graham \& Yau (via [CDGJM06]) --- large margins: polynomial.
+\textbf{[DKM97]} Dyer, Kannan \& Mount, RSA 10, 1997; \textbf{[Mor02]} Morris, RSA 21, 2002 ---
+continuous relaxation + rounding under large margins.
+\textbf{[NN20]} Nestoridi \& Nguyen, AIHP 56, 2020 --- DG walk over $\mathbb{Z}/q\mathbb{Z}$: cutoff
+at $\frac{n^2\log n}{4(1-\cos(2\pi/q))}$ --- pure diffusion once the boundary is removed.
+\textbf{[Wil04]} Wilson, AAP 14, 2004 --- lozenge flips: $O(L^4\log L)$, essentially tight.
+\textbf{[Lac16]} Lacoin, Ann.\ Prob.\ 44, 2016 --- adjacent-transposition cutoff at
+$\frac{N^2\log N}{2\pi^2}$ (continuous time): the sharp 1D local benchmark.
+\textbf{[Smi14]} Smith, AAP 24, 2014 --- simplex Gibbs sampler: $\Theta(n\log n)$, conserved sum,
+with boundary.
+\textbf{[CV85]} Carne; Varopoulos, Bull.\ Sci.\ Math.\ 109, 1985 --- $P^t(x,y)\le
+2\sqrt{\pi(y)/\pi(x)}\,e^{-d^2/2t}$: the generic diffusive floor.
+\textbf{[ALOV19]} Anari, Liu, Oveis Gharan \& Vinzant, STOC 2019 --- matroid basis-exchange expansion
+$\ge1$; \textbf{[CGM19]} Cryan, Guo \& Mousa, FOCS 2019 --- MLSI $\ge1/r$: what log-concavity buys.
+\textbf{[ALO20]} Anari, Liu \& Oveis Gharan, FOCS 2020 --- spectral independence: the
+correlation-decay criterion; frames window--window influence as the missing ASE hypothesis.
+\textbf{[BKMP24]} Buckland, Kolesnik, Mitchell \& Przyby\l{}owski, arXiv:2401.17210 --- Coxeter
+interchange graphs mix rapidly: path coupling with a reweighted metric.
+
+\textbf{Presentations and rewriting (the non-commutative frame, \S\ref{ss:transport}).}
+\textbf{[LS77]} Lyndon \& Schupp, \emph{Combinatorial Group Theory}, Springer, 1977 --- Tietze
+transformations, van Kampen diagrams/Dehn functions, Novikov--Boone undecidability.
+\textbf{[BH82]} Brown \& Huebschmann, \emph{Identities among relations}, LMS 48, CUP, 1982 ---
+identity sequences/Peiffer relations: the replacement for toric syzygies.
+\textbf{[Squ87]} Squier, JPAA 49, 1987 --- finite convergent rewriting $\Rightarrow$ FP$_3$; the
+obstruction theory for oriented menus; fcompress residuals as a confluence gap.
+
+\textbf{Loop soups \& conservative / pinned dynamics.}
+\textbf{[LY93]} Lu \& Yau, \emph{Spectral gap and log-Sobolev \dots\ Kawasaki and Glauber}, CMP 156,
+1993 --- conserved-charge dynamics relax diffusively, gap $\sim L^{-2}$.
+\textbf{[GG21]} Ganguly \& Gheissari, \emph{Cutoff for Glauber dynamics of the lattice free field}, 2021
+(arXiv:2108.07791) --- pinned-surface Glauber (DGFF on an $n$-box in $\mathbb{Z}^2$) has cutoff at
+$\frac{2}{\pi^2}n^2\log n$; slowest observable = lowest Fourier mode of the pinned field = our ridge.
+(1D benchmark: [Lac16].)
+\textbf{[PS17]} Pillai \& Smith, \emph{Kac's walk on the $n$-sphere mixes in $n\log n$}, AAP 27, 2017
+(arXiv:1507.08554) --- unrestricted pairwise heat-bath mixes in $\Theta(n\log n)$ (TV between
+$\frac12 n\log n$ and $200\,n\log n$); persistence comes from the restricted menu. See also [Smi14].
+
+\textbf{Reversible circuits, complexity geometry, incompressibility.}
+\textbf{[HFKEY22]} Haferkamp, Faist, Kothakonda, Eisert \& Yunger Halpern, \emph{Linear growth of
+quantum circuit complexity}, Nat.\ Phys.\ 18, 2022 (arXiv:2106.05305) --- short identity spellings are
+measure-zero (loops thin, excursions taut).
+\textbf{[CHHLMT24]} Chen, Haah, Haferkamp, Liu, Metger \& Tan, \emph{Incompressibility and spectral gaps
+of random circuits}, 2024 (arXiv:2406.07478) --- works on $\mathrm{Alt}(2^n)$; $|C|\approx m$, making
+slack well-defined.
+\textbf{[BS18]} Brown \& Susskind, \emph{The Second Law of Quantum Complexity}, PRD 97, 2018
+(arXiv:1701.01107) --- words as paths, relators as loops; low-complexity region exponentially small.
+\textbf{[OKHH24]} Oszmaniec, Kotowski, Horodecki \& Hunter-Jones, \emph{Saturation and Recurrence of
+Quantum Complexity}, PRX 14, 2024 (arXiv:2205.09734) --- equilibrium only after $\exp(n)$; every
+feasible dose is transient.
+\textbf{[Gow96]} Gowers, \emph{An almost $m$-wise independent random permutation of the cube}, CPC 5(2),
+1996 --- the free baseline chain our excursions bridge.
+\textbf{[DPT26]} Dujmovi\'c, Pelecanos \& Tessaro, \emph{Limited Independence Does Not Imply
+Pseudorandomness}, EUROCRYPT 2026 (ePrint 2025/2282) --- $k$-wise independence can coexist with
+detectable global structure: the theoretical face of skeleton persistence.
+
+\textbf{Hurwitz action / orbit structure.}
+\textbf{[CP-in-FV91]} Conway--Parker theorem, in Fried \& V\"olklein, Math.\ Ann.\ 290, 1991 --- long
+fibers = single orbit up to lifting invariants; orbit-confinement implausible at production lengths.
+\textbf{[EVW16]} Ellenberg, Venkatesh \& Westerland, \emph{Homological stability for Hurwitz spaces},
+Ann.\ Math.\ 183, 2016 (arXiv:0912.0325) --- fiber-mod-moves component structure stabilizes with length.
+
+\textbf{Project-internal.}
+\code{docs/BAND\_MIXING\_SUMMARY.\{md,pdf\}} (\S3 source);
+\code{docs/PINNED\_WALK\_LITERATURE.md} (\S1 source, 84 works);
+memory \code{hd-ridge-nocomp-20260823} (\S4), \code{phasea-splice-census-20260820} (\S2),
+\code{displacement-calibration-20260822} (\S3), \code{fcompress-upgrade-20260822}
+(\S\ref{ss:transport}), \code{sidetrip-construction-negative-20260822} (\S\ref{ss:transport}).
+
+\end{document}

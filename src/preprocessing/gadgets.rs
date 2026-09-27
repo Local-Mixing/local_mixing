@@ -9322,6 +9322,22 @@ fn emit_band_fill_nl_pivots(
     emit_band_fill_nl_pivots_src(n, band, fill_nl, reserve, rng, out)
 }
 
+/// The production band fill (parts 2 and 4 of the 5-part deliverable), exported
+/// so that alternative COMPUTE stages use the same aux-fill as the product-2223
+/// path: only stage 3 should differ between gadgetization modes. Sources from
+/// data wires `0..n_src`; `fill_nl` nonlinear product terms per band wire
+/// (production: 2), `reserve` = private pivots (production: off).
+pub fn emit_production_band_fill(
+    n_src: usize,
+    band: &[u16],
+    fill_nl: usize,
+    reserve: bool,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    emit_band_fill_nl_pivots_src(n_src, band, fill_nl, reserve, rng, out)
+}
+
 /// [`emit_band_fill_nl_pivots`] with data sources restricted to wires below
 /// `src_hi` (see [`emit_band_fill_src`] for why the closing-slice design
 /// sources both fills from the low data half).

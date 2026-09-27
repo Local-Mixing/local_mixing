@@ -1,0 +1,643 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.0in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{underscore}
+
+\title{Ancestry instrumentation for \texttt{fmix}\\
+\large What we built to measure mixing, and everything it has told us}
+\date{30 July 2026}
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent This is a single reference for the ancestry instrumentation added to
+\texttt{fmix} between 28 and 30 July 2026, and for every experiment run with it.
+Part~I describes the measurements: why the previous positional meters failed,
+the exact ancestor-set instrument that replaced them, the \emph{sampled} version
+that removed its size ceiling, the positional-coverage measures, and the joint
+generation~$\times$~ancestry census. Part~II reports the experiments and their
+results, in the order they were run. Numbers here are taken from the run logs
+rather than recalled; where an earlier reading has since been corrected, the
+correction is stated explicitly.
+\end{abstract}
+
+\tableofcontents
+
+\part*{Part I --- The instrumentation}
+\addcontentsline{toc}{section}{Part I --- The instrumentation}
+
+\section{The meters that failed, and why}
+
+\texttt{fmix} carried three positional-mixing meters from the directional-walk
+work: \texttt{odiff} (per-origin-family spread), \texttt{oadj} (adjacent-origin
+autocorrelation) and \texttt{disp} (mean normalised displacement). All three read
+a per-gate \texttt{origin} tag: the index of the input gate a gate descends from.
+
+On the restructured menu they all reported that nothing had moved:
+$\texttt{odiff}=0.0001$, $\texttt{oadj}=1.0000$ after 40M moves and $2.58\times$
+growth. That reading was an artifact. A DB splice spanning \emph{mixed lineage}
+stamps its products \texttt{ORIGIN\_SYNTH}, and all three meters \emph{skip}
+those gates. They were therefore computed over exactly the material mixing had
+failed to touch, and became more selective the better the mixing worked ---
+survivorship bias pointing the wrong way.
+
+\texttt{osyn} was added to make the bias visible: the fraction of gates whose
+origin label has been destroyed. It reaches $50.7\%$ by 1M moves and $1.000$ on
+the small-circuit runs, where the three meters are not merely degraded but
+undefined.
+
+\medskip
+\noindent\textbf{Rule.} Read \texttt{osyn} first. Once it is high,
+\texttt{odiff}/\texttt{oadj}/\texttt{disp} carry no information.
+
+\section{Exact ancestry: sets, not labels}
+
+A set union has no such failure mode --- merging two lineages \emph{adds}
+information where a scalar label must discard it.
+
+Each \emph{litter} (the set of gates one replacement emitted) carries the set of
+original input gates that contributed to it, as a bitset. The rules are:
+
+\begin{itemize}
+\item input gate $i$ is litter $i$, with ancestor set $\{i\}$;
+\item a \textbf{splice} unions its outgoing window's litters into a fresh litter;
+\item a \textbf{merge} unions both parents;
+\item \textbf{born-random} material (twist brackets, insert pairs) has none.
+\end{itemize}
+
+Two choices keep it affordable: singleton sets are not stored (any id below the
+input count with no map entry denotes $\{id\}$, making initialisation $O(1)$
+instead of $O(\text{input}^2)$), and sets are pruned to live litters at each
+report, bounding the map by live litters rather than total splices.
+
+\subsection{The three readouts}
+
+\begin{center}
+\begin{tabular}{llp{7.4cm}}
+\toprule
+meter & per & question \\
+\midrule
+\texttt{anc}    & current gate & how many original gates does this gate descend from? \\
+\texttt{span}   & current gate & how far apart in the input were they (index range)? \\
+\texttt{fanout} & \emph{input} gate & how many current gates carry information about it? \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{fanout} is redundant given \texttt{anc} and size: both sum the same
+incidence relation, so $\overline{\texttt{fanout}} = \overline{\texttt{anc}}
+\times \text{gates}/\text{inputs}$ exactly (verified: predicted 1018 vs reported
+1015). \textbf{\texttt{span} is the one carrying independent information},
+because it describes the \emph{geometry} of the ancestor sets rather than their
+size.
+
+Cost is $|\text{input}|$ bits per live litter, so the exact instrument refuses
+above \textbf{20{,}000 input gates}. That ceiling is what motivated Section~3.
+
+\section{Sampled ancestry: removing the size ceiling}
+
+Instead of the full ancestor set per litter, trace $K$ randomly chosen input
+gates --- \emph{tracers} --- and store a fixed $K$-bit mask per litter. This is
+the \emph{column subsample} of the same incidence relation, so the
+union-on-splice semantics carry over unchanged, while cost drops from
+$|\text{input}|$ bits per litter to a constant. Enabled with
+\texttt{--anc-samples K}.
+
+Three implementation choices matter:
+
+\begin{itemize}
+\item \textbf{Tracer singletons are stored explicitly} ($K$ map entries at
+init), which lets the union routine drop the implicit-singleton rule: an
+untracked input gate then contributes nothing and costs nothing.
+\item \textbf{All-zero masks are not stored.} Fresh litter ids always exceed the
+input count, so a missing entry can never alias a singleton. Most litters carry
+no tracer, so the map stays a small fraction of the circuit.
+\item \textbf{Tracers are drawn from a dedicated RNG}, so the instrument cannot
+perturb the walk. An exact-mode run and a sampled-mode run at the same
+\texttt{--seed} follow the \emph{identical} chain, which is what makes the
+calibration below a measurement rather than a coincidence.
+\end{itemize}
+
+Resume is safe without any state-format change: the tracer set is a pure
+function of (input size, $K$, sample seed), all of which survive a resume, with
+an assertion that catches a resume which changed $K$.
+
+\subsection{Calibration against exact ground truth}
+
+20k circuit, 300k moves, same seed. The identical \texttt{size} across all three
+confirms the trajectory is untouched.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+ & size & mean \texttt{fanout}/input & mean \texttt{anc} \\
+\midrule
+exact                & 218{,}785 & 1850 & 169.2 \\
+sampled $K=256$      & 218{,}785 & 1794 \ ($-3.0\%$) & 164.0 \ ($-3.1\%$) \\
+sampled $K=64$       & 218{,}785 & 2004 \ ($+8.3\%$) & 183.2 \ ($+8.3\%$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Accuracy scales as $1/\sqrt{K}$, as expected. The estimator is
+Horvitz--Thompson: each input has inclusion probability $K/m$, so the sampled sum
+scaled by $m/K$ is unbiased.
+
+\subsection{What sampled mode deliberately does not report}
+
+In sampled mode \texttt{anc=} and \texttt{ancspan=} stay \textbf{zero}. A sampled
+popcount is not \texttt{anc}, and a sampled index range is a biased \texttt{span}
+(a column sample can only underestimate it). Filling those fields with sampled
+values would repeat the field-meaning conflation that the \texttt{g57=}
+vs \texttt{shaped=} split had to undo. Sampled runs report on a separate
+\texttt{tracers:} line.
+
+\section{Positional coverage: \texttt{cov} and \texttt{ent}}
+
+Sampling gives something exact mode never reported: for each traced input gate,
+\emph{where its descendants sit in the current circuit}.
+
+\begin{itemize}
+\item \textbf{\texttt{cov}} --- the current circuit is divided into 64 equal
+contiguous slices by gate position; \texttt{cov} is the fraction of those slices
+containing at least one descendant of the traced gate, averaged over tracers.
+Range $1/64=0.016$ (all in one slice) to $1.0$ (present everywhere).
+\item \textbf{\texttt{ent}} --- normalised entropy of the descendant counts over
+those slices. \texttt{cov} says how far the influence reaches; \texttt{ent} says
+how evenly. \texttt{cov} can be high while nearly all mass sits in one slice.
+\item \textbf{\texttt{reach}} --- $(\max_{pos}-\min_{pos}+1)/\text{size}$. Two
+tight clusters at opposite ends give $\texttt{reach}\approx 1$ but
+$\texttt{cov}\approx 2/64$.
+\end{itemize}
+
+These are the security-facing quantities: they ask directly whether an adversary
+can localise which part of the mixed circuit a given original gate went to.
+Unlike \texttt{span}, they are natively samplable.
+
+\subsection{A caveat that took measurement to pin down}
+
+\texttt{cov} and \texttt{ent} are \textbf{scale-relative}: the 64 buckets are
+always 64 equal fractions of the \emph{current} circuit, so the ruler rescales
+with what it measures. At matched effective work ($p_{mix}=0.10$, eff $=15$):
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+run & size & bucket width & blob extent & \texttt{cov} & $\texttt{cov}\times$size \\
+\midrule
+full 695k    & 1{,}130{,}431 & 17{,}663 & 55{,}391 & 0.049 & 55{,}391 \\
+slice 1 100k &   166{,}368   &  2{,}600 & 36{,}762 & 0.221 & 36{,}762 \\
+slice 2 100k &   166{,}289   &  2{,}598 & 41{,}529 & 0.250 & 41{,}529 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The circuits differ $6.8\times$ in size and \texttt{cov} differs $4.5\times$, but
+$\texttt{cov}\times\text{size}$ --- coverage as an absolute number of gates ---
+agrees within $\sim\!1.4\times$. The predicted \texttt{cov} from blob extent
+divided by bucket width reproduces the observed value to three decimals in all
+three runs.
+
+\medskip
+\noindent\textbf{Consequence.} One input gate's descendants occupy a blob of
+roughly \emph{fixed physical extent}, set by the mixing dynamics rather than by
+circuit length. So: within one circuit size \texttt{cov} is a genuine transport
+measure; across sizes compare $\texttt{cov}\times\text{size}$ instead. The same
+applies to \texttt{ent}, with the extra wrinkle that a coarse ruler \emph{hides}
+sub-bucket structure, systematically depressing \texttt{ent} on larger circuits.
+
+\section{The joint generation $\times$ ancestry census}
+
+\texttt{anc} and \texttt{dgen} had only ever been reported as separate
+marginals, which cannot answer the question that matters: \emph{does re-encoding
+depth buy ancestry?} The \texttt{gen-anc} line reports, per generation band, the
+gate count and mean \texttt{anc} (and mean \texttt{span} in exact mode), plus the
+Pearson $r$ of $(\texttt{dgen}, \texttt{anc})$.
+
+\texttt{GEN\_FRESH} is a \texttt{u32::MAX} sentinel for born-random material, not
+a large depth, so it is excluded from $r$ and reported as its own band. In
+sampled mode the per-gate count is scaled by $m/K$ so bands stay comparable
+across modes.
+
+\section{Two derived quantities used throughout}
+
+\paragraph{Total incidence.} $I = \sum_{\text{gates}} \texttt{anc}_i =
+\overline{\texttt{anc}} \times \text{size}$, the gate\,$\times$\,input incidence
+relation. This is the \textbf{schedule-invariant} transport measure. Per-gate
+\texttt{anc} is $I/\text{size}$, which compression inflates without any
+additional mixing --- a trap that cost us one wrong reading (Section~9).
+
+\paragraph{Effective work.} Cumulative moves-per-gate,
+\[
+  \mathrm{eff} = \int \frac{dm}{\text{size}(m)},
+\]
+computed trapezoidally from the input size at move 0. A move on a small circuit
+does more per-gate work than one on a large circuit, so raw move counts are not
+comparable across schedules or circuit sizes; \texttt{eff} is.
+
+\part*{Part II --- The experiments}
+\addcontentsline{toc}{section}{Part II --- The experiments}
+
+Unless stated otherwise, runs use \texttt{p\_db}$=1.0$ (so the thermostat never
+fires), MIX with $s_{db}=9$, $p_{convex}=1$, $p_{mingen}=0.8$ and COMP with
+$s_{db}=12$, $p_{convex}=0.5$, $p_{mingen}=0$, seed 101.
+
+\section{Window geometry: convex sampling is the transport}
+
+Separating the two window samplers (1M-move inhale, 2M-move exhale) gave the
+single largest effect found in this campaign.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+sampler & final size & \texttt{anc} & \texttt{span} \\
+\midrule
+convex only ($p_{convex}=1$)     & 584{,}320 & \textbf{154.8} & 640 \\
+contiguous only ($p_{convex}=0$) & 456{,}153 & \textbf{12.0}  & 20  \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Contiguous sampling is not slow, it is \emph{flat}: \texttt{anc} moves from 10.0
+to 12.0 over 3M moves. The mechanism is direct --- the float counters read
+$9{,}733{,}299$ floats for convex and \textbf{exactly $0$} for contiguous. With
+$p_{convex}=0$ and $p_{db}=1$ no gate in the circuit ever changes position for
+the entire run; the circuit is rewritten strictly in place.
+
+This also explains the mechanism: \texttt{collect\_convex} \emph{physically
+floats} gates together before replacing them, so material comes \emph{in} from
+far apart and goes \emph{out} in one place. Transport happens on the way in.
+
+\subsection{\texttt{--db-advance} rescues contiguous sampling}
+
+Splice products are inserted as one contiguous block (all three DB modes;
+placement is identical, only candidate selection differs). \texttt{--db-advance}
+gives them the ballistic birth-advance that split pieces get.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+final \texttt{anc} & advance OFF & advance ON \\
+\midrule
+convex     & 155 & 230 \\
+contiguous & \textbf{12} & \textbf{216} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Contiguous goes from $\texttt{anc}=12$ to $216$ ($18\times$) and
+$\texttt{span}=20$ to $580$ ($29\times$) --- nearly to convex parity.
+
+\section{Mode schedules A/B/C (20k circuit, 2M moves)}
+
+Three ways to spend the same MIX/COMP budget: \textbf{A} phased (200k MIX then
+1.8M COMP), \textbf{B} steady $p_{mix}=0.20$, \textbf{C} steady $p_{mix}=0.10$.
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+ & final size & \texttt{anc} & \texttt{span} & \texttt{fanout} & incidence \\
+\midrule
+A phased      &  64{,}333 & 2649 & 3253 &  8521 & 170M \\
+B 20\% MIX    & 121{,}835 & 3165 & 3820 & 19282 & 386M \\
+C 10\% MIX    &  48{,}493 & 7941 & 8626 & 19255 & 385M \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Steady interleave beats a single phased breath.} By total incidence ---
+the schedule-invariant measure --- B $\approx$ C ($\approx$386M) $\gg$ A (170M).
+A short inhale is spent before compression locks it in. B and C reach the
+\emph{same} total but distribute it oppositely: C compresses into 48k gates so
+each reaches 43\% of the input, B holds 122k gates at half that.
+
+This retired an earlier claim that \texttt{span} saturates near 408; that was an
+artifact of MIX-dominated large circuits. Under compression \texttt{span} climbs
+past 8000.
+
+\subsection{The effective-work rescale}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/abc_vs_effwork_20260729.png}
+\end{center}
+
+Plotted against moves-per-gate rather than raw moves, the runs reach very
+different effective work in the same 2M moves ($\approx$25, 33, 56) and the
+transport curves \textbf{nearly collapse}: at 20 moves/gate, \texttt{anc} is
+2.0k / 2.3k / 1.9k and \texttt{span} 2.6k / 3.1k / 2.7k. Most of C's apparent
+lead was that a smaller circuit buys more per-gate work per move.
+
+Residual signal survives the rescale: A leads at \emph{low} work (front-loaded
+MIX), B's \texttt{span} genuinely saturates once its circuit grows large, and
+\texttt{dmin} does \emph{not} collapse --- B holds $\approx$0.11 while
+COMP-heavy A and C decay to $\approx$0.065. Growth keeps the circuit farther
+from the \texttt{fcompress}-minimal form per unit work.
+
+\section{Twists are expensive for ancestry}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/abc_twistrate_20260729.png}
+\end{center}
+
+A/B/C re-run at swap-family twist rates 0, 0.002, 0.01 (final values):
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+run & size & \texttt{anc} & \texttt{span} & \texttt{dmin} & \texttt{polf} \\
+\midrule
+A (no twist) &  64{,}333 & 2649 & 3253 & 0.063 & 0 \\
+A tw 0.002   & 135{,}058 &  187 &  691 & 0.069 & 0.468 \\
+A tw 0.01    & 247{,}382 &   69 &  393 & 0.057 & 0.496 \\
+\midrule
+B (no twist) & 121{,}835 & 3165 & 3820 & 0.097 & 0 \\
+B tw 0.002   & 243{,}674 &  350 & 1012 & 0.087 & 0.405 \\
+B tw 0.01    & 383{,}924 &   80 &  451 & 0.069 & 0.489 \\
+\midrule
+C (no twist) &  48{,}493 & 7941 & 8626 & 0.069 & 0 \\
+C tw 0.002   & 133{,}665 &  425 & 1111 & 0.057 & 0.422 \\
+C tw 0.01    & 262{,}115 &   62 &  369 & 0.040 & 0.487 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each rate step costs roughly an order of magnitude of ancestry, persists on the
+effective-work axis, and \texttt{dmin} drifts \emph{down} rather than up --- the
+brackets are not adding useful spelling diversity. The odometer \texttt{polf} is
+already near its $\tfrac12$ ceiling at $0.002$, so \textbf{0.002 buys almost all
+the polarity scrambling of 0.01 at a fraction of the ancestry cost}.
+
+Mechanism: twist brackets are born-random (zero input ancestry), and a DB window
+that gathers them unions less ancestry, so the DB keeps minting a large
+low-ancestry population. Foreign (non-\texttt{comp}) material does \emph{not}
+breed --- surviving foreign gates number \emph{fewer} than the brackets inserted
+(ratio 0.5--0.9); the merge and COMP machinery removes some.
+
+\subsection{Which does the damage: the CNOT brackets or the polarity flips?}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/bpos_cnot_vs_polarity_20260729.png}
+\end{center}
+
+\texttt{--twist-neg-p 0} gives \emph{pure positive swaps}: the 3-CNOT brackets
+are still inserted but no wire is negated. That isolates the two mechanisms.
+$\texttt{polf}=0.000$ confirms the control flipped no polarities.
+
+\medskip
+\noindent\textbf{Correction.} An earlier reading of this experiment compared
+endpoints and concluded the CNOT brackets dominate ($10.4\times$ against
+$3.8\times$). That comparison was invalid: the no-twist arm had run to eff
+$=32.9$ while the pure-swap arm reached only $17.4$. At \emph{matched} effective
+work the two mechanisms are comparable:
+
+\begin{center}
+\begin{tabular}{lrrrrrr}
+\toprule
+eff & no twist & pure swap & full family & CNOTs cost & flips cost & total \\
+\midrule
+10.0 & 703  & 203 & 39 & $3.47\times$ & $5.20\times$ & $18.1\times$ \\
+14.0 & 1332 & 276 & 66 & $4.83\times$ & $4.17\times$ & $20.2\times$ \\
+16.0 & 1672 & 293 & 79 & $5.70\times$ & $3.72\times$ & $21.2\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So the foreign CNOT brackets \emph{do} block mixing substantially on their own
+($3.5$--$5.7\times$), which was the hypothesis under test --- but the polarity
+flips cost a comparable amount ($3.7$--$5.2\times$), and the split is roughly
+even rather than lopsided. Turning off the negations recovers only part of the
+cost; the brackets are the structural price of any swap-family twist.
+
+\section{Generation versus ancestry}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/genanc_20260730.png}
+\end{center}
+
+Retrace of A/B/C with exact ancestry and the joint census.
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+band & \multicolumn{1}{c}{A} & \multicolumn{1}{c}{B} & \multicolumn{1}{c}{C} \\
+\midrule
+g0      & 1.0  & 1.0  & 1.0 \\
+g17--32 & 887  & ---  & --- \\
+g33--64 & 2580 & 2027 & --- \\
+g65+    & 2613 & 3310 & \textbf{7460} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Depth does buy ancestry}, monotonically. But \textbf{the same nominal
+depth means very different mixing}: at band g65+, A reaches 2613 and C reaches
+7460, a $2.9\times$ spread. A \emph{saturates} --- its last two bands are
+$2580 \to 2613$ ($+1.3\%$) --- while B still climbs $+63\%$ across the same step.
+Generation is not a protocol-independent measure of mixing.
+
+The Pearson $r$ is the weaker instrument and should not be leaned on: it starts
+at 0.47--0.71 and decays to $\approx 0$, with B going to $-0.41$. The band
+populations show why --- by the end, B and C have collapsed almost entirely into
+a single band, leaving no depth variance to correlate against. This is range
+restriction, not a loss of the underlying relationship.
+
+\paragraph{Span versus global generation.} The protocols do not share one curve:
+at $G\approx 50$ the spans are A $\approx$ 3155, B $\approx$ 3500, C $\approx$
+4300, and C ends at $G=105$/span 8107 against A at $G=51$/span 3155. C buys
+$\approx 25\%$ more span per unit of global generation \emph{and} reaches twice
+the generation count.
+
+\section{Production scale: the 695k gadget}
+
+First use of sampled ancestry where exact ancestry is impossible. Input: a fresh
+Gray-code gadgetized 128-bit sliced sandwich, 695{,}075 gates / 512 wires, seed
+730, self-verify passed. Three arms at $p_{mix}=0.20/0.10/0.05$, 20M moves,
+$K=256$ tracers.
+
+\begin{center}
+\begin{tabular}{lrrrrrr}
+\toprule
+arm & $p_{mix}$ & final size & growth & eff & \texttt{anc} & \texttt{dmin} \\
+\midrule
+big20 & 0.20 & 1{,}884{,}758 & $2.71\times$ & 15.0 & 17{,}532 & 0.081 \\
+big10 & 0.10 & 1{,}262{,}860 & $1.82\times$ & 19.8 & 26{,}678 & 0.048 \\
+big05 & 0.05 &   948{,}984   & $1.37\times$ & 23.7 & 35{,}173 & 0.030 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All three were still growing monotonically at 20M moves (peak size = final size
+in every case). Less MIX buys a smaller circuit \emph{and} more ancestry per
+gate --- the same total transport concentrated into fewer gates --- at the cost
+of \texttt{dmin}, which drains from 0.081 to 0.030 as the schedule becomes more
+compression-heavy.
+
+\section{Can slices replace the full circuit?}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/three_slices_20260730.png}
+\end{center}
+
+Three disjoint 100k-gate slices of the same gadget (gates 1--100k, 100--200k,
+200--300k), each at the same three $p_{mix}$ values, with moves chosen so
+moves-per-gate and report count match the 20M full run exactly.
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+metric ($p_{mix}=0.10$) & slice 1 & slice 2 & slice 3 & s3 vs s2 & s2 vs s1 \\
+\midrule
+\texttt{anc}   & 22{,}774 & 29{,}009 & 30{,}035 & $+3.5\%$ & $+27.4\%$ \\
+\texttt{desc}  & 40{,}673 & 51{,}965 & 53{,}695 & $+3.3\%$ & $+27.8\%$ \\
+\texttt{cov}   & 0.298 & 0.363 & 0.378 & $+4.1\%$ & $+21.8\%$ \\
+\texttt{dmin}  & 0.053 & 0.063 & 0.063 & $0.0\%$  & $+18.9\%$ \\
+size           & 178{,}592 & 179{,}136 & 178{,}772 & $-0.2\%$ & $+0.3\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Slice 1 is the outlier.} Slices 2 and 3 agree within 3--6\% on every
+ancestry metric while slice 1 sits 10--54\% below both, consistently and in the
+same direction across all three schedules. The gadget's opening 100k gates
+--- which contain the zero-slice preblock --- genuinely mix worse. Growth is
+identical across all four ($<4\%$), so tracking size alone would have wrongly
+concluded the slices were equivalent; it took the ancestry instrument to see it.
+
+Against the full circuit:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+$p_{mix}$ & BIG vs slice 1 & BIG vs mid-slices (2,3) \\
+\midrule
+0.20 & $+35.3\%$ & $-8.6\%$ \\
+0.10 & $+15.2\%$ & $-10.3\%$ \\
+0.05 & $+14.9\%$ & $+2.1\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The full circuit tracks the \emph{middle} slices to within 2--10\%, as it should
+--- the atypical opening is only $1/7$ of it. \textbf{Practical rule: a
+mid-circuit 100k slice reproduces full-gadget behaviour to within $\sim$10\% at
+$1/7$ the moves, provided the slice does not start at gate 0, and provided two
+mid slices are used to bound the residual variability.}
+
+\subsection{Validity window}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/anc_progression_20260730.png}
+\end{center}
+
+Absolute \texttt{anc} is comparable between slice and full circuit only while
+both are far from saturation. At the end of these runs the slices reach 18--35\%
+of their 100k input while the full circuit is at $\approx$5\% of its 695k input.
+Push much further and a slice will run out of distinct input gates while the
+full circuit keeps going, and the agreement will break down.
+
+\section{Reconstruction heatmaps of the mixed outputs}
+
+Affine (degree 1) and degree-2 predictor maps for the three 20M-move outputs,
+against two references: (a) the original circuit $C$, and (b) the gadgetized
+circuit that \texttt{fmix} was given as input. Read by the ridge measure
+(depth / $\rho$ / perm-$z$ / contrast), never by the mean.
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+map & mean $H$ & depth & $\rho$ & perm $z$ & contrast \\
+\midrule
+(a) vs $C$, degree 1      & 0.494--0.498 & 0.047 & 0.42--0.44 & 7.7 & 0.34--0.46 \\
+(a) vs $C$, degree 2      & 0.490--0.495 & 0.069 & 0.43       & 1.9 & 0.43--0.45 \\
+(b) vs gadget, degree 1   & 0.465--0.470 & 0.311--0.321 & \textbf{1.000} & 10.0 & 2.92--3.22 \\
+(b) vs gadget, degree 2   & 0.465--0.468 & 0.253--0.281 & \textbf{1.000} & 4.6  & 1.54--1.78 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.49\textwidth]{../reports/ancestry_20260728/hmA_d1.png}
+\includegraphics[width=0.49\textwidth]{../reports/ancestry_20260728/hmB_d1.png}
+\end{center}
+
+\paragraph{(a) The logical computation is hidden.} Reading row structure rather
+than $\rho$: the plate is uniformly 0.5 across every interior row. The only live
+cells are the two trivial corners --- the top-left block, where $C$'s first
+prefixes are recoverable because $x$ is still exposed on wires 0--127 at the
+start, and a one-cell sliver at the final output. The apparent ridge at row
+$\approx 0.65$ is the argmin wandering in a dead plate, which is exactly what
+produces $\rho=0.42$; perm-$z$ falls to 1.9 ($p=0.057$) at degree 2. Degree 2
+finds essentially nothing affine did not.
+
+\paragraph{(b) The correspondence to its own input survives intact.} A bright
+unbroken ridge corner to corner, $\rho$ exactly 1.000 in all six maps, alive in
+every interior row. Given the gadget, any prefix of the mixed circuit can be
+aligned to the gadget's matching prefix. This is the security-relevant readout of
+the locality the tracers already measured: the mixing rewrites in place and does
+not relocate material globally, so progress through the circuit stays legible.
+
+The trend runs the way the ancestry data predicts: depth and contrast increase
+monotonically as $p_{mix}$ falls ($2.92 \to 3.03 \to 3.22\sigma$).
+\texttt{big05}, the arm with the \emph{most} ancestry per gate, has the
+\emph{strongest} diagonal. \textbf{Ancestry mixing and positional mixing are
+different axes}; compression packs more lineage into each gate without moving
+anything.
+
+\medskip
+\noindent Degree-2 caveats: the grid is much coarser ($21\times21$ against
+$101\times151$), so depth and contrast are not directly comparable across
+degrees; and products were restricted to wires 0--63 (2529 regressors against
+9216 training samples), which makes degree 2 a \textbf{lower bound} --- products
+among the excluded 448 wires are unseen.
+
+\section{What this adds up to}
+
+\begin{enumerate}
+\item \textbf{Report incidence, not \texttt{anc} alone}, when comparing
+schedules or sizes. \texttt{anc} per gate is $I/\text{size}$, and compression
+inflates it without additional mixing.
+\item \textbf{Convex sampling is the transport mechanism}; contiguous sampling
+moves nothing at all unless \texttt{--db-advance} is on. The historical
+$p_{convex}=0.5$ default was discarding half the transport.
+\item \textbf{Steady MIX/COMP interleave beats a phased breath} at equal budget.
+Whether \emph{cyclic} breathing under a size band beats steady interleave ---
+C-like span at B-like \texttt{dmin} within a bounded footprint --- remains the
+open test.
+\item \textbf{Twists cost roughly an order of magnitude of ancestry per rate
+step}, split roughly evenly between the foreign CNOT brackets and the polarity
+flips. Use the lowest rate that moves \texttt{polf}; 0.002 already nearly
+saturates it.
+\item \textbf{Depth is not a protocol-independent measure of mixing.} The same
+generation band carries $2.9\times$ different ancestry under different schedules.
+\item \textbf{Mid-circuit slices are a valid $7\times$ cheaper proxy} for
+schedule comparison, but the gadget's opening region is not representative.
+\item \textbf{The mixed circuit hides $C$ but not its own input.} Against $C$ the
+reconstruction plate is dead to both affine and degree-2 adversaries; against the
+gadget the diagonal is perfect. Closing that gap requires global relocation of
+material, which is precisely what the positional measures say is not happening.
+\end{enumerate}
+
+\section{Open}
+
+\begin{itemize}
+\item A degree-2 map with the product-wire set straddling encoding blocks rather
+than taking a prefix, to strengthen the (a) statement.
+\item Cyclic breathing under a size band, against steady interleave.
+\item An absolute-scale positional measure (descendant spread in gates) so
+\texttt{cov}/\texttt{ent} become size-comparable without the
+$\texttt{cov}\times\text{size}$ correction.
+\item In flight at the time of writing: a nine-arm battery on slice 2 --- three
+g57-mode twist rates at $p_{mix}=0.05$, and a six-point $p_{mix}$ sweep from
+0.01 to 0.07 --- all to 15 effective moves per gate.
+\end{itemize}
+
+\end{document}

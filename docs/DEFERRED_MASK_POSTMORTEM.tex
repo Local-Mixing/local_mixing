@@ -1,0 +1,209 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\gf}{\mathrm{GF}(2)}
+
+\title{\textbf{Deferred-Mask Nonlinear Gadgetization:\\ What We Tried and Why
+It Failed}}
+\author{local\_mixing project}
+\date{July 21, 2026 \\ \small branch \code{ssg-gen-mix-clean} --- post-mortem
+of the ``split-RG3'' attempt. Full design: \code{docs/NONLINEAR\_SHARE\_ENCODING.*}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent We tried to make the two-share ($\times2$) gadget hide the
+degree-1 computational-progress diagonal by encoding each logical value with
+a \emph{deferred nonlinear mask} --- the RG3 randomizer split in time. The
+construction is correct and demonstrably hides values \emph{between} their
+uses, but on the $n{=}16$ degree-1 reconstruction grid the progress diagonal
+\textbf{survives fully} (rho $=1.00$, ridge depth unchanged), and it is
+independent of both masking coverage and stacking depth. The cause is the
+\emph{peek}: a masked value must be momentarily reconstructed at each gate
+that uses it as a control, and the reconstruction diagonal is precisely the
+locus of those uses. The lesson is that one cannot hide a value at the
+instant it is consumed if it is consumed by reconstructing it; removing the
+diagonal requires computing on the masked operand \emph{without}
+reconstructing it.
+\end{abstract}
+
+\section{The problem it was meant to solve}
+
+The gadget carries every logical value $v$ as an XOR pair $v = c_0 \oplus
+c_1$. That makes $v$ a \textbf{degree-1 function of the physical wires at
+every snapshot}, no matter how nonlinear the transitions between snapshots
+are. The measured consequence is the computational-progress \emph{diagonal}
+in the \code{hmap\_affine} reconstruction maps --- a low-error valley whose
+position advances with the original circuit's prefix --- and it survives
+millions of \code{fmix} mixing moves with alignment intact (rho $= 1.00$).
+Nonlinear re-randomizers (RGs) are provably orthogonal to this: they make
+\emph{crossing} the body expensive for a low-degree adversary, but reading a
+\emph{snapshot} crosses nothing. The leak is in the \textbf{encoding}, not
+the transitions, so the fix has to change the encoding.
+
+\section{The idea: defer the RG3 randomizer in time}
+
+The nonlinear RG3 already XORs a degree-2 randomizer $r_1 \vee \bar r_2$ into
+\emph{both} carriers of a value --- a refresh that leaves the value unchanged
+(the two writes cancel in the XOR), which is exactly why RG3 re-randomizes
+the shares but cannot mask the value.
+
+The move (``RG4'', or ``split-RG3''): emit those two writes \textbf{separated
+in time}. Inject the term into \emph{one} carrier now; compensate on a
+carrier later. Between injection and compensation the value reads as $v
+\oplus (r_1 \vee \bar r_2)$ --- \textbf{degree 2} in the wires, with random
+support. If at every snapshot most values carry such a pending term, the
+whole state is degree-2 rather than degree-1, and the affine adversary that
+draws the diagonal should lose it.
+
+Three refinements made the move workable (details in the design note):
+
+\begin{itemize}
+\item \textbf{Value-sourced.} The randomizer reads two \emph{logical source
+values} $v_{r1} \vee \lnot v_{r2}$, rebuilt from their current carriers at
+each emit. Because RG1/RG2/RG3 preserve logical values, the mask term is
+invariant under the entire RG stream; only a computation gate (CG) that
+\emph{recomputes} a source disturbs it, and that schedule is known in
+advance.
+\item \textbf{Lookahead.} Sources are chosen to be the values whose next
+recomputation is farthest out (finished outputs are ideal), so a mask
+survives from injection to a distant compensation instead of collapsing back
+into a plain RG3.
+\item \textbf{Peek on reads.} When the virtual circuit \emph{uses} $v$ as a
+control, the gate needs the true $v$: the mask is momentarily removed
+(un-mask), the ordinary gate runs on the clean value, and the same term is
+re-applied (re-mask). The mask keeps its identity and lifetime.
+\end{itemize}
+
+The knob $k$ stacks $k$ independent degree-2 terms on a value, intended to
+drive the best affine reconstruction error toward $\tfrac12$ by piling-up
+($k{=}1 \to 0.25$, $k{=}3 \to 0.44$).
+
+\section{What actually worked}
+
+The machinery is correct and does part of what it should:
+
+\begin{itemize}
+\item \textbf{Function-preserving.} Every injection is compensated before
+decode, so the gadget computes the identical function; the pinned zero-slice
+contract check passes on masked builds and the test suite is green
+($161/161$); vocabulary is clean (no bare X gates).
+\item \textbf{It hides values \emph{between} their uses.} On $n{=}16$ the
+masking raises the overall reconstruction error toward hidden --- mean map
+error $H$ rises from $0.432$ (off) to ${\sim}0.449$, and the diagonal's
+contrast against the background drops from $2.38\sigma$ to ${\sim}1.7\sigma$.
+The \textbf{off-diagonal background gets more uniformly hidden.}
+\end{itemize}
+
+So the idea is not incoherent and it is not a bug: it demonstrably masks. The
+question was whether it masks the thing that matters --- the diagonal.
+
+\section{The experiment}
+
+A fixed original circuit $C$ (160 random g57 gates, $n{=}16$) was gadgetized
+with masking \textbf{off} and \textbf{on} across a grid of coverage and
+stacking, then each gadget $G$ was compared to $C$ with \code{hmap\_affine}
+at degree 1 and read with the ridge measure (\code{depth} $=$ per-row
+prominence of the diagonal, \code{rho} $=$ its monotonic alignment,
+\code{perm z} $=$ significance vs.\ a column-shuffle null, \code{contrast} $=$
+diagonal-vs-background separation). The ridge measure --- not the mean --- is
+the agreed way to read these maps.
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+config & mean $H$ & depth & rho & perm $z$ & contrast \\
+\midrule
+\textbf{off}       & 0.432 & 0.348 & 1.00 & 4.50 & 2.38 \\
+cov 0.5,\ \ $k{=}1$ & 0.443 & 0.316 & 1.00 & 4.54 & 1.89 \\
+cov 0.75, $k{=}1$  & 0.449 & 0.316 & 1.00 & 4.49 & 1.64 \\
+cov 1.0,\ \ $k{=}1$ & 0.445 & 0.357 & 1.00 & 4.53 & 1.84 \\
+cov 0.75, $k{=}2$  & 0.441 & 0.344 & 1.00 & 4.53 & 2.05 \\
+cov 0.75, $k{=}3$  & 0.449 & 0.347 & 1.00 & 4.48 & 1.92 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The result: the diagonal survives}
+
+\textbf{The masking does not break the degree-1 diagonal.} \code{rho} stays
+$1.00$ and \code{depth} stays ${\sim}0.32$--$0.36$ in every configuration,
+statistically indistinguishable from the unmasked gadget. The diagonal
+lightens slightly (deep-red ${\sim}0.15$ toward orange ${\sim}0.25$) but
+never dissolves.
+
+Two facts make this a trustworthy negative rather than a tuning artifact:
+
+\begin{itemize}
+\item \textbf{Coverage-independent.} Raising the masked fraction from $0.5$ to
+$1.0$ does not reduce the depth. (Aside: \code{--mask-cov 1.0} only reaches
+${\sim}0.75$ \emph{actual} coverage --- value-sourcing structurally needs an
+unmasked pool to draw sources from --- but since the diagonal does not track
+coverage at all, that limitation is not what carries it.)
+\item \textbf{Stacking-independent.} Going from $k{=}1$ to $k{=}3$ does not
+reduce the depth, even though piling-up predicts $k{=}3$ should push masked
+values to ${\sim}0.44$ error and flatten the diagonal.
+\end{itemize}
+
+The verdict is a clean negative: the deferred value-sourced mask hides the
+background but leaves the progress diagonal fully legible, and no amount of
+\emph{more masking} changes that.
+
+\section{Why it failed: the peek carries the diagonal}
+
+Put the three observations together --- the background is hidden, the diagonal
+survives, and it is immune to both coverage and stacking. That combination
+points at one mechanism.
+
+The reconstruction diagonal \textbf{is the locus of operand-uses}: the point
+in $G$ that aligns with step $i$ of $C$ is the gate that computes step $i$,
+and that gate \textbf{peeks its operands} --- un-masks them so the ordinary
+gate can read their true values. Those exposed operand bits make $C_i$
+affinely recoverable at exactly the aligned $G_j$, regardless of how many
+\emph{other} values are masked (coverage) or how many terms sit on the target
+value (stacking). The diagonal rides on the peeked operands, not on the
+masked targets, so the two knobs that deepen target-masking cannot touch it.
+
+Stated plainly: \textbf{one cannot hide a value at the instant it is consumed
+if it is consumed by reconstructing it.} The peek was the pragmatic shortcut
+that made the CG variant-agnostic and simple; the experiment shows it is
+precisely the wrong trade at the one place --- the use-point --- that the
+diagonal measures.
+
+This closes the loop with an earlier finding: the diagonal is a positional /
+linear-sharing leak, and the \emph{legacy} g57 gadget hides it at degree 2
+not by luck but because it computes on the \textbf{shares} --- every gate
+reads at most one carrier of each value and never reconstructs an operand
+(gate-local non-completeness). That is the whole reason sharing-based gadgets
+compute on shares in the first place. The deferred mask tried to sidestep
+share-native computation with a momentary reconstruction, and the peek is
+where the sidestep breaks.
+
+\section{The lesson and what it points to}
+
+The deferred-mask encoding is sound engineering and it does mask between
+uses; it is not the mechanism that removes the diagonal. Removing the
+diagonal requires computing on a masked operand \textbf{without reconstructing
+it}:
+
+\begin{itemize}
+\item a \textbf{mask-aware CG} that folds the mask correction ($\mu \cdot C$
+for a masked operand) into the gate's algebra, keeping the operand masked
+throughout; or
+\item a \textbf{share-native CG} in the style of the legacy g57 gadget, whose
+gate-local non-completeness is exactly what buys degree-2 hiding.
+\end{itemize}
+
+Either is a larger change than the peek. The value of this attempt is that it
+turned an intuition (``the peek exposure is a minor localized cost'') into a
+measured, falsifiable conclusion: the peek is the wall, and the next
+prototype should keep the operands masked through the gate and re-run this
+same grid --- the diagonal depth should drop if and only if that is done.
+
+\end{document}

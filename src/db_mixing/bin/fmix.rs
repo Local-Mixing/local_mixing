@@ -209,6 +209,18 @@ struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     p_twist: f64,
+    /// Kill-list file: one 0-based gate index (input-file order) per line.
+    /// DB rounds seed their window at a live listed gate with probability
+    /// --p-target; entries retire once the gate is consumed or rewritten.
+    #[arg(long)]
+    target_gates: Option<String>,
+    /// Probability a DB round seeds at a live kill-list gate (0 = off).
+    #[arg(long, default_value_t = 0.0)]
+    p_target: f64,
+    /// Probability a round applies a twist whose window STARTS at a live
+    /// kill-list gate (0 = off) — re-encodes the exposed relation in place.
+    #[arg(long, default_value_t = 0.0)]
+    p_target_twist: f64,
     /// Arm the SPLIT STAGE (docs/FMIX_SPLIT_TWIST.md): split twists — a g57
     /// split plus an absorbed long-range pure-NOT twist plus one cross — are
     /// the ONLY move until the stage exits (g57 exhaustion, or
@@ -307,6 +319,23 @@ struct Args {
     /// mode (COMP: --p-convex-comp). Default 0.4 = contiguous 60% / convex 40%.
     #[arg(long, default_value_t = 0.4)]
     p_convex: f64,
+    /// Probability the window sampler is DEPTH-SEEKING (seed at a gate of
+    /// maximum mixing depth, then keep the best of six convex growths scored
+    /// by far-endpoint depth). Drawn before the convex/contiguous coin, so
+    /// --p-depth 1 makes every window depth-seeking. 0 = off (default).
+    #[arg(long, default_value_t = 0.0)]
+    p_depth: f64,
+    /// Within a depth-seeded round, probability of drawing a UNIFORM random
+    /// gate instead of a maximum-depth one (exploration). Default 0.1.
+    #[arg(long, default_value_t = 0.1)]
+    p_depth_random: f64,
+    /// Probability the window sampler is DEPTH-BALANCING: score by the depth
+    /// GAIN a splice would add (sum of min(D0+j, D1+w-j+1) - depth(g_j)) and
+    /// seed from below the median depth. Raises depth across the circuit
+    /// instead of carving one hyper-deep region. Takes precedence over
+    /// --p-depth when both fire.
+    #[arg(long, default_value_t = 0.0)]
+    p_depth_gain: f64,
     /// A gate with this many controls or more may not sit INSIDE a window.
     #[arg(long, default_value_t = 4)]
     w_window: usize,
@@ -1162,6 +1191,9 @@ fn main() {
             s_db_comp: args.s_db_comp,
             s_db_comp_ctg: args.s_db_comp_ctg,
             p_convex: args.p_convex,
+        p_depth: args.p_depth,
+        p_depth_random: args.p_depth_random,
+        p_depth_gain: args.p_depth_gain,
             p_convex_comp: args.p_convex_comp,
             p_mingen: args.p_mingen,
             p_mingen_comp: args.p_mingen_comp,
@@ -1281,6 +1313,9 @@ fn main() {
         db_min_window: args.db_min_window,
         w_window: args.w_window,
         w_pool: args.w_pool,
+        p_depth: args.p_depth,
+        p_depth_random: args.p_depth_random,
+        p_depth_gain: args.p_depth_gain,
         p_convex: args.p_convex,
         db_convex_p: args.db_convex_p,
         db_verify: !args.no_db_verify,
@@ -1477,6 +1512,23 @@ fn main() {
             println!("[fmix] dump signal armed: touch {f} -> snapshot to {dump_out}");
         }
         mixer.enable_flags(stop, dump, dump_out);
+    }
+
+    if let Some(path) = &args.target_gates {
+        let txt = std::fs::read_to_string(path).expect("read --target-gates file");
+        let mut positions: Vec<usize> = txt
+            .split_whitespace()
+            .map(|t| t.parse().expect("--target-gates: bad gate index"))
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        mixer.set_target_positions(args.p_target, args.p_target_twist, &positions);
+        println!(
+            "[fmix] kill-list armed: {} positions, p_target={} p_target_twist={}",
+            positions.len(),
+            args.p_target,
+            args.p_target_twist
+        );
     }
 
     let t0 = std::time::Instant::now();

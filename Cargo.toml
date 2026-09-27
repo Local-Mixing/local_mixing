@@ -25,6 +25,10 @@ path = "src/preprocessing/bin/gen_sandwich_gadget.rs"
 name = "blinded_v5_gadgetize"
 path = "src/preprocessing/bin/blinded_v5_gadgetize.rs"
 
+[[bin]]
+name = "g57_to_mpmct1"
+path = "src/preprocessing/bin/g57_to_mpmct1.rs"
+
 # Stages 3-5: Phase A, split, and resumed crossing modes share fmix.
 [[bin]]
 name = "fmix"
@@ -102,6 +106,18 @@ required-features = ["legacy-db-tools"]
 name = "build_curated_full"
 path = "src/db_generation/bin/build_curated_full.rs"
 required-features = ["legacy-db-tools"]
+
+[[bin]]
+name = "extract_identities"
+path = "experimental/db_generation/extract_identities.rs"
+
+[[bin]]
+name = "db_unit_synth"
+path = "experimental/db_generation/db_unit_synth.rs"
+
+[[bin]]
+name = "mint_long_identities"
+path = "experimental/db_generation/mint_long_identities.rs"
 
 # --- DB-generation experiments: censuses/probes, not rebuild stages ---
 # MISSING from commit ae160bd5 (path not committed; source only on author machine?)
@@ -275,6 +291,14 @@ name = "hmap_stat"
 path = "red_team_tests/bin/heatmaps/hmap_stat.rs"
 
 [[bin]]
+name = "slice_match"
+path = "red_team_tests/bin/heatmaps/slice_match.rs"
+
+[[bin]]
+name = "slice_affine"
+path = "red_team_tests/bin/heatmaps/slice_affine.rs"
+
+[[bin]]
 name = "hmap_trace_affine"
 path = "red_team_tests/bin/heatmaps/hmap_trace_affine.rs"
 
@@ -299,6 +323,14 @@ name = "source_stats"
 path = "red_team_tests/bin/leakage/source_stats.rs"
 
 [[bin]]
+name = "segment_stats"
+path = "red_team_tests/bin/leakage/segment_stats.rs"
+
+[[bin]]
+name = "collision_blocks"
+path = "red_team_tests/bin/leakage/collision_blocks.rs"
+
+[[bin]]
 name = "fire_corr"
 path = "red_team_tests/bin/leakage/fire_corr.rs"
 
@@ -316,6 +348,14 @@ path = "red_team_tests/bin/fixtures/regen_sandwich_c.rs"
 
 [features]
 default = []
+# The PyO3 heatmap surface (red_team_tests/heatmap.rs), built as the importable
+# `local_mixing` Python module. OFF by default: pyo3's `extension-module` leaves
+# the CPython symbols unresolved for the interpreter to supply at import time,
+# so every ORDINARY binary linking this lib would otherwise abort at startup
+# with `symbol not found in flat namespace '_PyBaseObject_Type'` unless
+# DYLD_INSERT_LIBRARIES preloads libpython. Build the Python module with
+# `cargo build --release --features python-heatmap`.
+python-heatmap = ["dep:pyo3", "dep:numpy"]
 # Offline import/regeneration tools for the historical replacement databases.
 # Runtime lookup does not pull in RocksDB.
 legacy-db-tools = [
@@ -347,8 +387,8 @@ clap = { version = "4.5.46", features = ["derive"] }
 smallvec = "1.15.1"
 ctrlc = "3.2"
 fastrand = "2.3.0"
-pyo3 = { version = "0.27.1", features = ["extension-module"] }
-numpy = "0.27.0"
+pyo3 = { version = "0.27.1", features = ["extension-module"], optional = true }
+numpy = { version = "0.27.0", optional = true }
 lmdb = "0.8.0"
 libc = "0.2.178"
 signal-hook = "0.3.18"
@@ -401,8 +441,20 @@ name = "frozen_find_small"
 path = "experimental/db_generation/frozen_find_small.rs"
 
 [[bin]]
+name = "faskri_gen"
+path = "experimental/preprocessing/faskri_gen.rs"
+
+[[bin]]
+name = "faskri_m_gen"
+path = "experimental/preprocessing/faskri_m_gen.rs"
+
+[[bin]]
 name = "segment_deduce"
 path = "red_team_tests/bin/leakage/segment_deduce.rs"
+
+[[bin]]
+name = "invariant_classify"
+path = "red_team_tests/bin/leakage/invariant_classify.rs"
 
 [[bin]]
 name = "flip_match"

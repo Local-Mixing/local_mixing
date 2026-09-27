@@ -935,7 +935,7 @@ pub fn stage_validate(source: &dyn ShardReader, out_dir: &str) {
 
 /// Decoded [t,p,n] triples -> raw stored bytes (legacy-swapped-controls
 /// layout: stored (t, c1, c2) decodes as (t, c2, c1), so write back (t, n, p)).
-fn circuits_to_value(circuits: &[Vec<[u16; 3]>]) -> Vec<u8> {
+fn circuits_to_value_conv(circuits: &[Vec<[u16; 3]>], swap: bool) -> Vec<u8> {
     let mut v = Vec::new();
     for c in circuits {
         assert!(c.len() * 3 <= 255, "circuit too long for the value format");
@@ -943,8 +943,14 @@ fn circuits_to_value(circuits: &[Vec<[u16; 3]>]) -> Vec<u8> {
         for &[t, p, n] in c {
             assert!(t < 256 && p < 256 && n < 256);
             v.push(t as u8);
-            v.push(n as u8);
-            v.push(p as u8);
+            // legacy-swapped-controls stores (t, c1, c2) decoding as (t, c2, c1)
+            if swap {
+                v.push(n as u8);
+                v.push(p as u8);
+            } else {
+                v.push(p as u8);
+                v.push(n as u8);
+            }
         }
     }
     v
@@ -971,14 +977,20 @@ fn parse_sgdb_file(path: &str) -> Vec<Vec<[u16; 3]>> {
 /// The deterministic reference spelling of a raw value: decode friends under
 /// the swapped convention, take the lexicographically-least among the
 /// minimal-size ones — the SAME rule mgdb_build used for its MANIFEST.
-fn min_reference(v: &[u8]) -> Option<(usize, String)> {
+fn min_reference_conv(v: &[u8], swap: bool) -> Option<(usize, String)> {
     let blobs = parse_value(v)?;
     let mn = blobs.iter().map(|b| b.len() / 3).min()?;
     let mut best: Option<Vec<[u16; 3]>> = None;
     for b in blobs.iter().filter(|b| b.len() / 3 == mn) {
         let dec: Vec<[u16; 3]> = b
             .chunks(3)
-            .map(|c| [c[0] as u16, c[2] as u16, c[1] as u16])
+            .map(|c| {
+                if swap {
+                    [c[0] as u16, c[2] as u16, c[1] as u16]
+                } else {
+                    [c[0] as u16, c[1] as u16, c[2] as u16]
+                }
+            })
             .collect();
         if best.as_ref().is_none_or(|cur| dec < *cur) {
             best = Some(dec);
@@ -1013,6 +1025,21 @@ pub fn pool_swap_upto(
     mgdb_dir: &str,
     max_min: usize,
 ) {
+    pool_swap_conv(src_dir, out_dir, m1_pool, mgdb_dir, max_min, true)
+}
+
+/// As [`pool_swap_upto`], with the source store's value convention explicit:
+/// `swap = true` for legacy-swapped-controls stores, `false` for native ones
+/// (the full curated DB). Governs both how existing values are decoded to
+/// find their minimal spelling and how pool circuits are written back.
+pub fn pool_swap_conv(
+    src_dir: &str,
+    out_dir: &str,
+    m1_pool: Option<&str>,
+    mgdb_dir: &str,
+    max_min: usize,
+    swap: bool,
+) {
     let tables = std::sync::Arc::new(load_tables(&format!("{src_dir}/tables.bin")));
     std::fs::create_dir_all(out_dir).unwrap();
     std::fs::copy(format!("{src_dir}/tables.bin"), format!("{out_dir}/tables.bin")).unwrap();
@@ -1022,7 +1049,7 @@ pub fn pool_swap_upto(
 
     // Pools: minimal-spelling text -> encoded raw value bytes.
     let m1_value =
-        std::sync::Arc::new(m1_pool.map(|p| circuits_to_value(&parse_sgdb_file(p))));
+        std::sync::Arc::new(m1_pool.map(|p| circuits_to_value_conv(&parse_sgdb_file(p), swap)));
     let mut pools: HashMap<String, Vec<u8>> = HashMap::new();
     let manifest = std::fs::read_to_string(format!("{mgdb_dir}/MANIFEST.tsv")).expect("MANIFEST");
     for line in manifest.lines().skip(1) {
@@ -1030,7 +1057,7 @@ pub fn pool_swap_upto(
         assert_eq!(f.len(), 5, "bad manifest line: {line}");
         let file = f[0];
         let minimal = f[4].to_string();
-        let val = circuits_to_value(&parse_sgdb_file(&format!("{mgdb_dir}/{file}")));
+        let val = circuits_to_value_conv(&parse_sgdb_file(&format!("{mgdb_dir}/{file}")), swap);
         assert!(pools.insert(minimal, val).is_none(), "duplicate minimal spelling in manifest");
     }
     let pools = std::sync::Arc::new(pools);
@@ -1103,7 +1130,7 @@ pub fn pool_swap_upto(
             // swap target values
             let mut touched = false;
             for v in vals.iter_mut() {
-                if let Some((mn, minimal)) = min_reference(v) {
+                if let Some((mn, minimal)) = min_reference_conv(v, swap) {
                     if mn == 1 && m1_value.as_ref().is_some() {
                         *v = m1_value.as_ref().as_ref().unwrap().clone();
                         touched = true;

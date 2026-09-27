@@ -47,7 +47,8 @@ use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shu
 use local_mixing::engine::format::write_mpmct;
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band_mode};
 use local_mixing::preprocessing::gadgets::{
-    CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, slice_zero_junk_guard_dims,
+    CnotCircuit, MaskConfig, ProdConfig, SandwichVariant, emit_production_band_fill,
+    slice_zero_junk_guard_dims,
     slice_zero_junk_guard_dims_high,
     gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
@@ -488,13 +489,34 @@ fn main() {
         // on the zero band) and the compute (which only reads the band).
         // BV5_BAL_SEED=0 keeps the AND-of-literals seed with balanced masks (diagnostic)
         let bal_seed = std::env::var("BV5_BAL_SEED").map_or(params.balanced, |v| v != "0");
-        let band_seed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C, bal_seed);
+        // Modules 2 and 4 use the SAME aux-fill as the product-2223 path — only
+        // stage 3 differs between gadgetization modes (RC 2026-09-08). The fill
+        // gives each band wire a private pivot, a handful of further linear
+        // sources and `fill_nl` nonlinear products cascading over earlier band
+        // wires; the old 2-CNOT `x_i ⊕ x_j` seed is available as BV5_LEGACY_SEED=1.
+        let legacy_seed = std::env::var("BV5_LEGACY_SEED").is_ok_and(|v| v != "0");
+        let band_wires: Vec<u16> = ((np as u16)..((np + bv5.r_used) as u16)).collect();
+        let mut band_seed = Vec::new();
+        let mut band_reseed_v = Vec::new();
+        if legacy_seed {
+            band_seed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0x5EED_B00C, bal_seed);
+            band_reseed_v = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0xB00C_5EED, bal_seed);
+        } else {
+            let fill_nl = std::env::var("BV5_FILL_NL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2usize);
+            let mut r2 = StdRng::seed_from_u64(gadget_seed ^ 0x5EED_B00C);
+            emit_production_band_fill(n, &band_wires, fill_nl, false, &mut r2, &mut band_seed);
+            let mut r4 = StdRng::seed_from_u64(gadget_seed ^ 0xB00C_5EED);
+            emit_production_band_fill(n, &band_wires, fill_nl, false, &mut r4, &mut band_reseed_v);
+        }
         // Module 4: the band RE-SEED after the compute. The five parts are always
         // five separate modules: the compute's own rerand bursts are masking
         // hygiene and do NOT discharge stage 4 (see the design doc's "Where it
         // fits in the pipeline"). Not an inverse of module 2 — the band is junk
         // at BOTH ports — so it draws a different seed.
-        let band_reseed = seed_band_mode(np, bv5.r_used, n, gadget_seed ^ 0xB00C_5EED, bal_seed);
+        let band_reseed = band_reseed_v;
         println!(
             "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} quad_fire={} balanced={} | {} atoms, \
              + {} band-seed + {} band-reseed + {} slice-guard gates each side",

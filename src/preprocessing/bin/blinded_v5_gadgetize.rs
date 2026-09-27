@@ -9,6 +9,9 @@
 //!            [min_mask=0(auto=max_open)]
 
 use local_mixing::engine::format::{read_mpmct, write_mpmct};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use local_mixing::preprocessing::gadgets::emit_production_band_fill;
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5, seed_band_mode};
 
 fn main() {
@@ -57,12 +60,31 @@ fn main() {
     let g = gadgetize_blinded_v5(&src, np, &params);
     // Band-seeding module pipelined in front (the compute only reads the band).
     let r_used = if params.r == 0 { np } else { params.r };
-    // Modules 2 and 4: band seed BEFORE the compute and re-seed AFTER it. The
-    // five parts are always five separate modules; the compute's internal rerand
-    // bursts do not discharge stage 4.
-    let mut gates = seed_band_mode(np, r_used, active_wires, seed ^ 0x5EED_B00C, params.balanced);
+    // Modules 2 and 4: band fill BEFORE the compute and re-fill AFTER it, using
+    // the SAME production aux-fill as the product-2223 path — only stage 3 may
+    // differ between gadgetization modes. Five separate modules; the compute's
+    // internal rerand bursts do not discharge stage 4.
+    let band_wires: Vec<u16> = ((np as u16)..((np + r_used) as u16)).collect();
+    let src_hi = if active_wires == 0 { np } else { active_wires };
+    let fill_nl = std::env::var("BV5_FILL_NL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2usize);
+    let legacy_seed = std::env::var("BV5_LEGACY_SEED").is_ok_and(|v| v != "0");
+    let mut gates = Vec::new();
+    if legacy_seed {
+        gates = seed_band_mode(np, r_used, active_wires, seed ^ 0x5EED_B00C, params.balanced);
+    } else {
+        let mut r2 = StdRng::seed_from_u64(seed ^ 0x5EED_B00C);
+        emit_production_band_fill(src_hi, &band_wires, fill_nl, false, &mut r2, &mut gates);
+    }
     gates.extend(g.gates.iter().cloned());
-    gates.extend(seed_band_mode(np, r_used, active_wires, seed ^ 0xB00C_5EED, params.balanced));
+    if legacy_seed {
+        gates.extend(seed_band_mode(np, r_used, active_wires, seed ^ 0xB00C_5EED, params.balanced));
+    } else {
+        let mut r4 = StdRng::seed_from_u64(seed ^ 0xB00C_5EED);
+        emit_production_band_fill(src_hi, &band_wires, fill_nl, false, &mut r4, &mut gates);
+    }
     write_mpmct(out_path, &gates, g.num_wires).expect("write out");
     println!(
         "{out_path}: K={k} R={} rerand={} gates \

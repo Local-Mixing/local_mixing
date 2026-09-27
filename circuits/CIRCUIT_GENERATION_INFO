@@ -798,6 +798,28 @@ Verification:
   Sanitized on delivery: final.mpmct1 only (header + gate lines; 0 stray lines,
   seed-grep clean); no state/.gens/.origins/logs/SEED copied to the Mac.
 ----------------------------------------------------------------
+2026-09-06 circuits/bv5gss128_20260904/{k2_h20,k2_h30,k4_h10}_final.esop1
+  Source: .242 server, ~/tds/{bv5_k2_h20_burst20260904b, bv5_k2_h30_burst20260904b,
+  bv5_k4_burst20260904b}/ (driver scripts/gss_mix.sh via ~/bv5_run.sh; the hold-20,
+  hold-30, and K=4 hold-10 arms of the burst+floor deliverable set).
+  Chain: GSS-MIX 6-stage, n=128, HALF-SIZE sandwich (--mcd 3000, s=896), CLASSIC
+  variant, blinded-V5 LGI compute (max_open=3, min_mask=auto, burst rerand F=8K,
+  co-sampled; commit 09ee9825). expand 2; profile 3,H+3,H+3,2,2.
+  ** FORMAT: esop1 ** (ANF/ESOP-packed cubes) — the fcompress rebuilt on the server
+  2026-09-06 06:07 UTC packs cubes into an ESOP form by default, so these three
+  arms (which finished after that) are esop1, NOT the plain mpmct1 of k2_h10 above.
+  Header `esop1 <wires> <packed-gates>`; body lines are `target ncubes [k w p...]`.
+  Sizes (gadget -> phaseA -> split -> cross -> fcompress gate-level (%) -> esop1 packed):
+    k2_h20 (K=2, hold 20): 564394 -> 1127076 -> 2262071 -> 4103581 -> 2103210 (51.3%) -> 453479
+    k2_h30 (K=2, hold 30): 564674 -> 1115251 -> 2237349 -> 4059098 -> 2056951 (50.7%) -> 466311
+    k4_h10 (K=4, hold 10): 1362010 -> 2707613 -> 5405545 -> 9742972 -> 5458292 (56.0%) -> 928486
+  Wires: 512. Stats (affine deg-1, on the esop1 final): k2_h20 meanH 0.4938 exp 6/92
+  (<0.25) 11/92 (<0.35); k2_h30 0.4943, 9/92; k4_h10 0.4964, 10/92 — all the I/O fringe.
+  Seed: fresh independent CSPRNG draw per arm, SERVER-SIDE ONLY (<run>/SEED).
+  Sanitized on delivery: the esop1 final only (header + numeric cube lines; verified
+  0 stray/comment lines, seed-grep clean incl SEED +0/+2/+3/+5); no
+  state/.gens/.origins/logs/SEED copied to the Mac.
+----------------------------------------------------------------
 2026-09-05 circuits/bv5gss128_bal_k2_2eff_final.mpmct1
   Source: .242 server, ~/tds/bv5_k2_bal2eff_20260905/ (driver scripts/gss_mix.sh via
   ~/balanced_2eff_run.sh, SANDWICH_VARIANT=balanced; phase A halted by the 2-eff

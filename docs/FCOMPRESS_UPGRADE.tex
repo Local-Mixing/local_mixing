@@ -1,0 +1,124 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+\emergencystretch=1.5em
+
+\lstset{basicstyle=\ttfamily\small, breaklines=true, columns=fullflexible,
+  frame=single, framerule=0.2pt, rulecolor=\color{black!30}, xleftmargin=6pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{The \code{fcompress} Upgrade: Rationale and Results}}
+\author{local\_mixing project}
+\date{2026-08-22 \;\textperiodcentered\; commit \code{01392019} on \code{ssg-gen-mix-clean}}
+
+\begin{document}
+\maketitle
+
+\begin{center}\small\emph{Code:} \code{src/postprocessing/\{compress.rs, downhill.rs, bin/fcompress.rs\}}\end{center}
+
+\section{Summary}
+
+\code{fcompress} is the final, deterministic, attacker-computable compression pass over mixed circuits. Because any adversary can run it, its output size is the honest \textbf{effective size} of a released artifact --- so the stronger the pass, the more honest the metric. This upgrade rebuilt the group reducer around a measured bottleneck, integrated conjugation descent as an interleaved pass, and added opt-in contract-aware compression. Results, all verified end-to-end:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+circuit & old pass (gates / lits) & new pass (gates / lits) \\
+\midrule
+A1 bench (607{,}365 g, 256 wires) & 99.0\% / 98.8\% & \textbf{94.7\% / 89.4\%} \\
+run\_c final (4{,}859{,}911 g, 512 wires)$^1$ & 100.0\% (fixed point) & \textbf{96.5\% / 93.2\%} \\
+run\_c under the gadget contract$^2$ & --- (unsupported) & \textbf{96.3\% / 93.1\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent{\small $^1$ Already fcompressed once by the production pipeline: the old operator was fully exhausted on it.\\
+$^2$ \code{--zero-wires 128-511 --live-wires 128-255}, the released GSS artifact's actual promise.}
+
+The pass removes $5\times$ more gates on the bench circuit than before and finds ${\sim}171$K gates in a delivered final the old pass certified as incompressible. \textbf{Effective sizes previously quoted from \code{fcompress} are therefore ${\sim}3$--$5\%$ too high.}
+
+\section{Starting point}
+
+On the 607K-gate bench circuit the old pass retained 99.0\%. Its own statistics located the loss precisely:
+
+\begin{itemize}
+\item \textbf{Gathering}: 70.9\% of gathered groups were singletons (mean 1.93 members) --- but the singletons held only 36.7\% of the gate \emph{mass}. 63.3\% of gates were already reaching the reducer inside multi-member groups.
+\item \textbf{Reduction}: ${\sim}94\%$ of multi-member groups reduced to \emph{themselves} (85{,}628 of 91{,}482 identity reductions at iteration~1).
+\end{itemize}
+
+So the question the upgrade had to answer first: is the 94\% identity rate inherent to what gathering feeds the reducer, or is the reducer weak?
+
+\section{Measurement before design}
+
+Every change below was sized empirically before implementation, on exact Python ports of the production sweep validated bit-for-bit against the Rust counters (groups $= 314{,}179$, multi $= 91{,}482$, catalogue $= 390$, anf\_wins $= 5{,}437$ --- all reproduced exactly).
+
+\textbf{The reducer was the bottleneck, and the specific defect was its output language.} The old ANF stage cancelled cubes into positive monomials, then re-paired them greedily into cubes with \emph{at most one negative literal}. But a cube with $k$ negative literals covers $2^k$ monomials in one gate --- and the gathered material averages 5.0 negations per cube. Measured on all 91{,}482 real gathered groups: \textbf{16{,}307 additional gates (2.68\% of the circuit, $4.4\times$ the old pass's entire effect) were provably recoverable at iteration~1 alone}, of which 15{,}480 came from multi-negation subcube covering. Upgrading greedy pairing to optimal matching \emph{alone} was worth only 633 gates --- pairing quality was never the issue; the cube language was.
+
+Two corroborating findings: exact minimum-ESOP tables (supports $\le 5$) showed the reducer near-optimal on small supports (94.4\% zero gap), so the slack is concentrated where covering operates; and an exact census of all 48{,}801 two-member groups found 1{,}121 pairs that collapse to a single \emph{complemented} cube --- exactly the merges the pairwise catalogue must refuse (they would create a fossil in-place) but that cost nothing inside the reducer, where the group's parity slot absorbs the complement for free. The old code never saw them because the ANF stage was gated to groups of $\ge 3$ members.
+
+\textbf{Gathering-side fixes were measured and rejected.} The closure census showed 64.6\% of broken same-target pairs are separated by a \emph{reader} of the target --- a hard wall for any reordering-based gatherer; even a perfect substitution-based gatherer would cut group count by only 23\% and leave the singleton-dominated shape intact. The intuitive ``partial closure'' fix (evict only the members whose controls were written, keep the rest open) is \emph{negative}: simulation showed it fragments groups ($-3.6\%$ multi-member mass). Affine-layer resynthesis (30\% of gates are width $\le 1$) has a measured ceiling of 0.02\%; windowed truth-table resynthesis is dead because 16-gate windows already touch a median of 49 of 256 wires. These avenues are closed, with numbers.
+
+\textbf{Conjugation descent works, and ordering is the key.} \code{fmix\_downhill} --- the inverse of the mixer's R1 crossing, moving a same-target block across a neighbor by the substitution $b \leftarrow b \oplus \mathrm{fire}(h)$ --- finds almost nothing on raw circuits (138 candidates), because same-target gates are scattered. Run \emph{after} gathering has made runs contiguous it finds 585 candidates and removes 1{,}719 gates in seconds, and alternating the two passes converges geometrically with $+48\%$ total removal over gather/reduce alone. Descent belongs \emph{inside} the compression loop.
+
+\textbf{Semantic don't-cares are small and mostly closed.} Specializing to the released artifact's input contract (384 promised-zero entry wires) plus payload-only liveness yields a sound 0.49\% on delivered finals --- cheap, worth having, now implemented. Beyond that, a sampled reachable-state analysis suggests up to ${\sim}1.56\%$, but it is \emph{unsound}: rare-fire gates survive even 16K-lane training (0.20\% of fresh inputs get a wrong payload), and sound removal would need per-gate UNSAT proofs already shown impractical. Output-side observability don't-cares are structurally near-empty in the XOR-accumulate model (no overwrites).
+
+\section{What changed}
+
+\subsection*{(a) Multi-strategy reducer}
+
+The ANF stage now emits the best of three candidate rewrites, compared on (cubes, then literals):
+
+\begin{enumerate}
+\item \textbf{Exact minimum ESOP} for supports of $\le 4$ wires, from BFS tables over all $2^{2^n}$ truth tables with mixed-polarity cube moves (built lazily once; witness by parent pointers). On run\_c this settles 210K groups optimally at iteration~1.
+\item \textbf{Greedy subcube covering} --- hunt maximal fully-present subcubes (dimension $\ge 2$), each replacing $2^k$ monomials with one $k$-negation cube --- followed by \textbf{maximum} distance-1 matching (Hopcroft--Karp; the pair graph is bipartite by popcount parity) on the residual.
+\item Maximum matching alone (covering can strand monomials the matching wanted).
+\end{enumerate}
+
+Supporting changes: monomial masks widened u32 $\to$ u64 (support cap $24 \to 40$, hard cap 63), expansion budget $2^{17} \to 2^{18}$, and the $\ge 3$-member gate dropped to $\ge 2$ so the complemented-pair collapses land in the parity slot. The per-group verifier (exhaustive $\le 16$-wire support, 512 sampled assignments beyond) covers every new emission path unchanged.
+
+\subsection*{(b) Interleaved conjugation descent}
+
+The downhill core moved from the standalone binary into \code{postprocessing::downhill}, and the compression loop now runs one scan-and-apply pass after each gather/reduce iteration (\code{--no-downhill} opts out; the binary is a thin wrapper over the same code). Iteration continues while (gates, lits) strictly decreases.
+
+An adversarial review of the integration surfaced a real defect worth recording: the descent's acceptance metric priced the ESOP parity bit as a full gate, while the circuit carries it \emph{free} in a comp bit --- so a ``profitable'' swap could be circuit-neutral or even lit-increasing, and the loop could return a regressed iterate. Costs are now measured on the \textbf{emitted form} (parity absorbed into the first cube's comp bit; a bare X only for an otherwise-empty ESOP). Since the reduced ESOP of a raw block never exceeds the block on (gates, lits), every accepted swap is now a genuine circuit-level strict decrease, and monotonicity of the whole loop follows.
+
+\subsection*{(c) Contract-aware compression (opt-in)}
+
+\code{--zero-wires SPEC} specializes to the promised known-zero entry wires by three-valued constant folding: a literal on a known wire either always holds (folded away) or never (the cube is dead --- and a dead cube under \code{comp=1} still applies $t \mathbin{\oplus}= 1$, so the gate degrades to a bare X rather than deleting; this bug was caught by the built-in verifier on the first contract run and is now unit-tested). The global check then samples only the promised subspace, and \code{--live-wires} restricts compared wires as before. Together these give the honest effective-size metric for released gadgets. The production pipeline currently runs \emph{neither} flag at stage~6; switching the reported metric to contract mode is a policy decision left open.
+
+\section{Results in detail}
+
+\textbf{A1 bench} (607{,}365 gates): 575{,}396 gates (94.7\%), 4{,}086{,}273 lits (89.4\%), ${\sim}5$ minutes. Iteration~1 alone reaches ${\approx}96.3\%$, in line with the measurement campaign's 96.52\% single-iteration projection; compounding across ten iterations delivers the rest. For scale: the same pass on unhardened fmix output historically compressed to ${\sim}80\%$, and the old pass's 99.0\% on this circuit was previously read as evidence of near-incompressibility. The honest reading was 94.7\%.
+
+\textbf{run\_c delivered final} (4{,}859{,}911 gates, already old-fcompressed): the old pass removes 327 gates in three iterations (100.0\%); the new pass removes 170{,}721 (96.5\%) --- with 356K ANF wins and 210K exact-table wins at iteration~1 and 10K downhill swaps --- in ${\sim}100$ s. Under the gadget contract the total reaches 177{,}612 gates removed (96.3\%), of which the zero-slice specialization and payload dead-cone contribute ${\approx}0.5\%$, matching the semantic-probe prediction. run\_d replicates (0.478\% vs 0.490\% contract-side effect).
+
+\textbf{Verification.} Four independent layers: per-group reduction checks (exhaustive or 512-assignment sampled), per-span lane checks on every applied downhill swap ($8\times 64$ lanes), the whole-circuit sampled global check against the untouched input (8--64 rounds $\times$ 64 lanes, restricted to the promised subspace under \code{--zero-wires}), and byte-identical outputs across repeated runs. 350 library tests pass, including new tests for the complemented-pair collapse, exact-table wins, zero-specialization (including the \code{comp=1} dead-cube case), downhill ladder collapse, and an ancestry-threading test through the new passes. The reduction algebra itself is exact by construction; all sampling is a defense-in-depth layer on top.
+
+\section{Remaining headroom}
+
+The one measured-and-open lever is \textbf{in-gather cube transport} (the classical analogue of quantum phase folding): letting a group's accumulated ESOP conjugate \emph{through} an affine control-writer instead of closing, sized at up to ${\sim}{+}0.8\%$ per pass before substitution costs --- 52.3\% of write-closures have an affine blocker. It is deferred because transported groups emit in a post-crossing frame, which the current emission ordering cannot express without a frame-ordering DAG. Smaller follow-ups: depth-2 downhill neighbor search (the current scan is depth-1 and still finds candidates at its fixed point), and exact-ESOP tables for support 5 via meet-in-the-middle ($+827$ gates measured over covering on the bench). The closed avenues --- partial closure, affine resynthesis, windowed resynthesis, sampled semantic don't-cares --- are closed with measurements, not opinions, and need not be revisited.
+
+\section{Usage}
+
+\begin{lstlisting}
+# Whole-function honest size (defaults: multi-strategy reducer + downhill):
+fcompress --input mixed.mpmct1 --output mixed.fc.mpmct1
+
+# Honest size under the released GSS contract (dry run reports the metric):
+fcompress --input final.mpmct1 --zero-wires 128-511 --live-wires 128-255
+
+# Old-style behavior for comparisons:
+fcompress --input mixed.mpmct1 --no-downhill --anf-support-cap 24
+\end{lstlisting}
+
+A \code{--zero-wires} output equals the input only on the promised subspace --- treat it as a metric, not a drop-in artifact (the tool warns when writing one).
+
+\end{document}

@@ -1,0 +1,425 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.0in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{underscore}
+
+\title{The curated \texttt{p\_mix} sweep\\
+\large Eight arms, what they show, and where the working size should sit}
+\date{31 July 2026}
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Eight \texttt{fmix} arms on the same 100k-gate circuit, varying only
+\texttt{p\_mix} from 0.05 to 0.40, with the curated DB and \texttt{--db-advance}
+both on. The sweep was run to choose an operating point for long runs. Its main
+results: transport and positional reach are \emph{flat} across a wide band of
+working sizes while \texttt{dmin} rises steeply, giving a clear optimum near
+$k \approx 2$; \texttt{p\_mix} mostly buys \emph{position along a common
+trajectory} rather than a different quality of mixing; \texttt{dmin} is the sole
+exception and has a threshold near $\texttt{p\_mix} \approx 0.10$; and the
+affine reconstruction ridge is unmoved by any of it. A later selection-entropy
+instrument --- the bits injected through \emph{which} gates were spliced ---
+independently confirms the same working size, and shows that fewer than 28\% of
+splices have any choice at all.
+\end{abstract}
+
+\section{What was run}
+
+Eight arms, identical except for \texttt{p\_mix} $\in \{0.05, 0.10, 0.15, 0.20,
+0.25, 0.30, 0.35, 0.40\}$.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+input & \texttt{pre2\_100k.mpmct1} --- gates 100{,}001--200{,}000 of a fresh
+        n=128 Gray gadget \\
+      & (100{,}000 gates, 512 wires; the \emph{second} slice, since the gadget's \\
+      & opening 100k is measurably atypical) \\
+budget & 2{,}000{,}000 moves, reports every 100k \\
+MIX & $s_{db}=9$, $p_{convex}=1.0$, $p_{mingen}=0.8$ \\
+COMP & $s_{db}=12$, $p_{convex}=0.5$, $p_{mingen}=0$ \\
+other & \texttt{p\_db}=1 (thermostat never fires), no twists, canary off, seed 101 \\
+instr. & \texttt{--anc-samples 256} (sampled ancestry; exact is impossible at 100k) \\
+new & \texttt{--curated}, \texttt{--db-advance} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The curated contract}
+
+Two things must hold or the results are silently wrong.
+
+\paragraph{Value convention.} The curated store was built with the
+pre-\texttt{2ed0222a} \emph{swapped-controls} key convention, so it must be
+decoded as such:
+\begin{verbatim}
+FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
+FROZEN_REGULAR_VALUE_CONVENTION=native
+\end{verbatim}
+Without this every curated candidate fails verification --- which was the root
+cause of the long-standing ``430k candidates, none equivalent'' failure.
+Startup must print
+\texttt{value conventions: regular=native, curated=legacy-swapped-controls}.
+The store identity was verified before use: \texttt{shard\_66} $=6{,}350{,}369$~B,
+total $1{,}720{,}215{,}364$~B (the bounded build, not the old 6.49~GB one).
+
+\paragraph{MIX/COMP asymmetry.} This is why higher \texttt{p\_mix} is worth
+sweeping at all:
+\begin{itemize}
+\item \textbf{MIX / expansion} probes the \textbf{curated store first} (forward
+key only), taking a random no-larger candidate, else a random minimal one, and
+falls back to the regular store only on a class miss.
+\item \textbf{COMP / compression is regular-only} --- curated never participates.
+\end{itemize}
+So curated turns the \emph{expansion} channel into a compressing one. Adding MIX
+no longer costs size the way it did without curated.
+
+\texttt{FROZEN\_FILTER} was deliberately left off: it is trajectory-identical
+(filters only accelerate misses) and costs ${\sim}25.5$~GB per process, which is
+impossible across eight arms.
+
+\section{Results}
+
+\subsection{The two budgets disagree}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/curated_pmix_sweep_20260731.png}
+\end{center}
+
+All eight ran exactly 2M moves, so the ``equal compute'' comparison is exact.
+Because higher \texttt{p\_mix} inflates the circuit, the arms reach very
+different \emph{per-gate} work in that budget (17.05 down to 8.02), so the
+work-normalised view is given alongside.
+
+\begin{center}
+\small
+\begin{tabular}{lrrrrrrrr}
+\toprule
+\texttt{p\_mix} & size & $k$ & eff & \texttt{anc} & incid.\ ($10^9$) & \texttt{cov} & \texttt{ent} & \texttt{dmin} \\
+\midrule
+0.05 & 128{,}355 & 1.28 & \textbf{17.05} & 44{,}302 & 5.69 & \textbf{0.519} & \textbf{0.799} & 0.038 \\
+0.10 & 150{,}699 & 1.51 & 14.70 & 38{,}844 & \textbf{5.85} & 0.461 & 0.771 & 0.070 \\
+0.15 & 176{,}429 & 1.76 & 13.01 & 32{,}181 & 5.68 & 0.381 & 0.726 & 0.098 \\
+0.20 & 202{,}674 & 2.03 & 11.71 & 26{,}141 & 5.30 & 0.313 & 0.683 & 0.124 \\
+0.25 & 235{,}577 & 2.36 & 10.61 & 22{,}119 & 5.21 & 0.268 & 0.643 & 0.147 \\
+0.30 & 277{,}404 & 2.77 &  9.57 & 17{,}719 & 4.92 & 0.218 & 0.595 & 0.168 \\
+0.35 & 317{,}813 & 3.18 &  8.76 & 14{,}896 & 4.73 & 0.187 & 0.553 & 0.186 \\
+0.40 & 369{,}987 & 3.70 &  8.02 & 12{,}220 & 4.52 & 0.158 & 0.507 & \textbf{0.202} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At \textbf{matched per-gate work} (eff $=8.02$) the ordering inverts for
+transport: incidence rises monotonically $0.74 \to 4.52$, while \texttt{anc},
+\texttt{cov} and \texttt{ent} peak at \texttt{p\_mix} $0.15$--$0.25$.
+
+The curated share of successful splices is \textbf{flat at 0.434--0.446} across
+the entire sweep. \texttt{p\_mix} does not change how often curated is
+\emph{usable}; only how often expansion is attempted.
+
+\subsection{Progression: \texttt{p\_mix} buys position, not quality}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/curated_progression_20260731.png}
+\end{center}
+
+Panels (b) and (f) are the important ones. Plotted against effective work,
+\texttt{anc} and \emph{absolute} positional reach ($\texttt{cov} \times
+\text{size}$, i.e.\ gates reached rather than the size-relative fraction) very
+nearly \textbf{collapse onto a single curve} regardless of \texttt{p\_mix}. The
+arms differ mainly in \emph{how far along that common curve they get}, not in the
+shape of the curve. Much of the apparent spread in the endpoint tables is
+therefore ``who got further'', not ``who mixed better''.
+
+\paragraph{\texttt{dmin} is the exception, and it has a threshold.}
+Panel (d) does not collapse. The arms sit on separated levels, and the
+\emph{shapes} differ qualitatively:
+\begin{itemize}
+\item \texttt{p\_mix} $=0.05$: \texttt{dmin} \textbf{decays} through the run
+      ($0.053 \to 0.038$);
+\item \texttt{p\_mix} $=0.10$: roughly flat;
+\item \texttt{p\_mix} $\ge 0.15$: \texttt{dmin} \textbf{rises} through the run.
+\end{itemize}
+So there is a threshold near \texttt{p\_mix} $\approx 0.10$ separating
+\emph{spending} spelling diversity from \emph{accumulating} it. This is the only
+measure on which \texttt{p\_mix} changes the behaviour rather than the rate, and
+it is a genuine change from the regular-only runs, where \texttt{dmin} decayed
+toward the \texttt{fcompress}-minimal form at every schedule.
+
+\subsection{The reconstruction ridge does not move}
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/curated_ridge_20260731.png}
+\end{center}
+
+Affine (degree-1) reconstruction plates of each final circuit against the
+slice's own input --- i.e.\ ``can an adversary holding the input align it to the
+mixed circuit''.
+
+\begin{center}
+\small
+\begin{tabular}{lrrrrrrrr}
+\toprule
+\texttt{p\_mix} & 0.05 & 0.10 & 0.15 & 0.20 & 0.25 & 0.30 & 0.35 & 0.40 \\
+\midrule
+depth    & 0.2073 & 0.2070 & 0.2046 & 0.2054 & 0.2030 & 0.2043 & 0.2064 & 0.2000 \\
+contrast & 2.445 & 2.475 & 2.460 & 2.422 & 2.434 & 2.388 & 2.441 & 2.381 \\
+$\rho$   & 1.000 & 1.000 & 1.000 & 1.000 & 1.000 & 1.000 & 1.000 & 1.000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+An $8\times$ range in \texttt{p\_mix} and a $3.7\times$ range in final size move
+depth by 3.5\% with no monotone trend, and $\rho$ is exactly $1.000$ everywhere.
+The only monotone signal is a 3\% drift in mean $H$ ($0.2560 \to 0.2630$) with a
+matching fall in its spread --- the plate flattening very slightly overall,
+without touching the ridge.
+
+Combined with the separate finding that depth is unchanged between eff $16$ and
+eff $50$ on the earlier long runs, the ridge is so far \textbf{invariant to
+everything variable inside DB mixing}: schedule, curated, \texttt{db-advance},
+run length and circuit size.
+
+\subsection{\texttt{dmin}'s rise is numerator-driven}
+
+\begin{center}
+\includegraphics[width=0.92\textwidth]{../reports/ancestry_20260728/dmin_components_20260731.png}
+\end{center}
+
+\texttt{dmin} is a ratio, so a rising ratio could in principle be a shrinking
+sample. It is not. Splitting it at 2M moves:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+ & \texttt{p\_mix}\,0.05 & \texttt{p\_mix}\,0.40 & span \\
+\midrule
+denominator \texttt{dmin\_windows} (store held any equivalent) & 1{,}006{,}347 & 1{,}383{,}431 & $1.37\times$ \\
+numerator \texttt{dmin\_shorter} (a strictly shorter spelling) &    38{,}199 &   279{,}552 & $7.32\times$ \\
+\texttt{dmin} & 0.038 & 0.202 & $5.32\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The denominator moves only $1.37\times$ and moves \emph{upward} --- the direction
+that would suppress the ratio. So the $5.3\times$ rise is genuinely because
+$7.3\times$ more windows admit a shorter spelling. The denominator is also
+informative on its own: it rising with \texttt{p\_mix} means MIX-heavy schedules
+produce material the store can answer more often, consistent with curated
+expansion emitting store-shaped (g57) circuits.
+
+\section{Selection entropy}
+
+A later instrument (\texttt{choice n= multi= mean= bits/splice=}) measures what
+\texttt{dmin} could only proxy. \texttt{match\_count} counts everything the store
+returns, but what actually injects entropy is the \textbf{eligible} set the
+mode's size rule admits, since the winner is drawn uniformly from it. Per
+successful splice the mixer now accumulates how many splices had any choice, the
+fraction with more than one, the mean branching factor, and the summed $\log_2$
+--- \textbf{the bits that entered through \emph{which} gates were spliced, as
+distinct from \emph{where} they were spliced}.
+
+The eight arms were re-run with it; final sizes reproduced the originals exactly,
+so these are the same trajectories with entropy logged throughout.
+
+\begin{center}
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/selection_entropy_20260731.png}
+\end{center}
+
+\begin{center}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+\texttt{p\_mix} & splices & \texttt{multi} & \texttt{mean} & bits/splice & total bits & bits/gate \\
+\midrule
+0.05 &   498{,}682 & 0.079 & 1.38 & 0.173 &  86k & 0.672 \\
+0.10 &   632{,}151 & 0.115 & 1.55 & 0.251 & 159k & 1.053 \\
+0.15 &   724{,}153 & 0.148 & 1.70 & 0.323 & 234k & 1.326 \\
+0.20 &   807{,}330 & 0.176 & 1.84 & 0.384 & 310k & 1.530 \\
+0.25 &   881{,}629 & 0.204 & 1.99 & 0.448 & 395k & 1.677 \\
+0.30 &   947{,}907 & 0.229 & 2.13 & 0.506 & 480k & 1.729 \\
+0.35 & 1{,}008{,}625 & 0.252 & 2.26 & 0.561 & 566k & \textbf{1.780} \\
+0.40 & 1{,}066{,}045 & 0.275 & 2.39 & 0.615 & 656k & 1.772 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Most splices have no choice at all.} Even at \texttt{p\_mix} $=0.40$
+only \textbf{27.5\%} of successful splices had more than one eligible candidate,
+with a mean branching factor of $2.39$; at $0.05$ it is $7.9\%$ and $1.38$. The
+store usually returns a single admissible answer, so the process is considerably
+more deterministic than the splice counts suggest.
+
+\paragraph{Entropy injection is front-loaded.} Panel (d): \texttt{bits/splice}
+\emph{decays} through every run (${\sim}1.0 \to 0.2$ at the low end) as choice
+narrows with approach to local minimality. A long run at fixed \texttt{p\_mix}
+injects progressively less entropy per splice.
+
+\paragraph{It confirms the working size independently.} Entropy \emph{density}
+(bits per gate) saturates --- 94\% of peak by $k=2.4$, 97\% by $2.8$, and it
+\emph{declines} from $k=3.2 \to 3.7$:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+step in $k$ & bits/gate & transport \\
+\midrule
+$1.76 \to 2.03$ & $+15.4\%$ & $-6.7\%$ \\
+$2.03 \to 2.36$ & $+9.6\%$  & $-1.7\%$ \\
+$2.36 \to 2.77$ & $+3.1\%$  & $-5.7\%$ \\
+$3.18 \to 3.70$ & $-0.5\%$  & $-4.5\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At $k \approx 2.4$ the circuit carries \textbf{94\% of peak entropy density at
+89\% of peak transport}, and every further step costs more transport than the
+entropy it returns. This is the same knee the transport/\texttt{dmin} analysis
+gave, from an independent measure.
+
+\paragraph{Caveat: it is not new information about \texttt{p\_mix}.}
+$\mathrm{corr}(\texttt{dmin}, \texttt{bits/splice}) = 0.9987$ across these arms.
+Selection entropy \emph{confirms} that \texttt{dmin} was a good proxy rather than
+adding an independent signal. Its real value is being denominated in \textbf{bits},
+so it can be compared against what state randomization would actually require ---
+something \texttt{dmin} could never support.
+
+\section{Conclusions}
+
+\begin{enumerate}
+\item \textbf{Curated changes the \texttt{dmin} story.} Without it, \texttt{dmin}
+      decayed toward the attacker-computable minimal form under every schedule.
+      With it, any \texttt{p\_mix} $\ge 0.15$ accumulates spelling diversity
+      instead. That is the clearest qualitative gain in the sweep.
+\item \textbf{Most of \texttt{p\_mix}'s apparent effect is effective work.}
+      \texttt{anc} and absolute reach follow one common trajectory; the schedule
+      sets how far along it a given move budget travels. Comparisons must be made
+      at matched per-gate work or they mostly re-measure circuit size.
+\item \textbf{Transport is flat over a wide band of working sizes} (Section~4),
+      so size can be chosen on other grounds within that band.
+\item \textbf{Nothing here moves the ridge.} Structure mixing and state mixing
+      are decoupled in this lever set. This is consistent with state
+      randomization being the harder pull; it is not yet evidence that it is
+      unreachable, but no DB-side lever has moved it at all.
+\item \textbf{Choice is scarce.} Fewer than 28\% of successful splices had any
+      alternative even at the most MIX-heavy setting, and entropy per splice
+      \emph{decays} through every run. Whatever randomness the DB channel
+      supplies, it supplies front-loaded and thinly --- which bears directly on
+      why the ridge does not move.
+\item \textbf{\texttt{cov} must be read in absolute terms across sizes.} Its 64
+      buckets are fractions of the current circuit, so a growing circuit shrinks
+      \texttt{cov} for reasons unrelated to mixing. Compare
+      $\texttt{cov} \times \text{size}$.
+\end{enumerate}
+
+\section{Prediction: the steady-state working size}
+
+\paragraph{The execution profile in question.} Expand to $k$ times the initial
+size, then set \texttt{p\_mix} so the size holds constant and mix there. The
+question is which $k$ to hold at.
+
+\paragraph{Reasoning.} Per fixed compute budget, tabulate what each working size
+costs in transport and buys in spelling diversity. Positional reach is given in
+absolute gates, since \texttt{cov} alone is size-relative.
+
+\begin{center}
+\begin{tabular}{rrrrrr}
+\toprule
+$k$ & size & incidence & abs.\ reach & \texttt{dmin} & vs.\ $k{=}1.28$ \\
+\midrule
+1.28 & 128k &  97\% &  96\% & 0.038 & $1.0\times$ \\
+1.51 & 151k & \textbf{100\%} & \textbf{100\%} & 0.070 & $1.8\times$ \\
+1.76 & 176k &  97\% &  97\% & 0.098 & $2.6\times$ \\
+\textbf{2.03} & \textbf{203k} & \textbf{91\%} & \textbf{91\%} & \textbf{0.124} & $\mathbf{3.3\times}$ \\
+2.36 & 236k &  89\% &  91\% & 0.147 & $3.9\times$ \\
+2.77 & 277k &  84\% &  87\% & 0.168 & $4.4\times$ \\
+3.18 & 318k &  81\% &  86\% & 0.186 & $4.9\times$ \\
+3.70 & 370k &  77\% &  84\% & 0.202 & $5.3\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Transport and absolute reach are \textbf{89--100\% of peak for all $k \le 2.4$},
+while \texttt{dmin} climbs $3.9\times$ over the same range. The marginal view
+locates the knee precisely:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+step in $k$ & incidence & abs.\ reach & \texttt{dmin} \\
+\midrule
+$1.28 \to 1.51$ & $+2.9\%$ & $+4.3\%$ & $+84.2\%$ \\
+$1.51 \to 1.76$ & $-3.0\%$ & $-3.2\%$ & $+40.0\%$ \\
+$1.76 \to 2.03$ & $-6.7\%$ & $-5.6\%$ & $+26.5\%$ \\
+$2.03 \to 2.36$ & $-1.7\%$ & $-0.5\%$ & $+18.5\%$ \\
+\midrule
+$2.36 \to 2.77$ & $-5.7\%$ & $-4.2\%$ & $+14.3\%$ \\
+$2.77 \to 3.18$ & $-3.7\%$ & $-1.7\%$ & $+10.7\%$ \\
+$3.18 \to 3.70$ & $-4.5\%$ & $-1.6\%$ & $+8.6\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every step up to $k=2.4$ returns far more \texttt{dmin} than it costs in
+transport. From $k=2.4$ onward the exchange rate turns: the steps cost $4$--$6\%$
+of transport for $9$--$14\%$ of \texttt{dmin}, and the \texttt{dmin} gains are
+themselves decelerating.
+
+\paragraph{Prediction.}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+working size & $k \approx 2$, usable band $1.8 \le k \le 2.4$ \\
+on the 100k slice & \textbf{200{,}000--235{,}000 gates} \\
+on the 695k gadget & \textbf{1.4--1.7 million gates} \\
+expansion \texttt{p\_mix} & 0.15--0.25 (also the band where \texttt{dmin} trends up) \\
+expected \texttt{dmin} at hold & 0.124--0.147 \\
+transport cost vs.\ optimum & $\le 11\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Three} independent arguments land in the same place, which is the main
+reason for confidence in the band: the transport/\texttt{dmin} exchange rate
+turns at $k \approx 2.4$; \texttt{p\_mix} must be $\ge 0.15$ for \texttt{dmin}
+to trend upward at all --- and \texttt{p\_mix} $0.15$--$0.25$ is exactly what
+produces $k \approx 1.8$--$2.4$; and (Section~3) selection-entropy density
+saturates at 94\% of peak by $k = 2.4$, with every further step costing more
+transport than the entropy it returns.
+
+\section{What is not yet measured}
+
+\begin{itemize}
+\item \textbf{The hold-phase \texttt{p\_mix} is unknown.} Every arm here grew ---
+      even \texttt{p\_mix} $=0.05$ reached $1.28\times$. The size-neutral value
+      with curated is therefore \emph{below} 0.05 and has never been measured.
+      (Without curated it was ${\approx}0.015$--$0.02$, but curated makes
+      expansion far more productive, so that will not transfer.) Three short arms
+      at \texttt{p\_mix} $0.01/0.02/0.03$, resumed from a $k\approx2$ state,
+      would pin it in under an hour.
+\item \textbf{\texttt{dmin} behaviour during the hold is the real unknown.}
+      Everything above measures \texttt{dmin} accumulated \emph{while expanding}.
+      In the regular-only long runs, holding at low \texttt{p\_mix} made
+      \texttt{dmin} decay and flatten (to $0.011$--$0.025$). If curated does the
+      same, the banked $0.124$ erodes and the hold policy matters more than the
+      working size. If curated sustains it --- plausible, since curated expansion
+      injects non-minimal spellings --- then $k \approx 2$ is a genuinely good
+      operating point. This is the single measurement to make before committing
+      to long runs.
+\item \textbf{Everything here is at eff $8$--$17$}, well short of the $50+$ the
+      earlier long runs reached, and \texttt{anc} is at most 44\% of the input.
+      The orderings could still move.
+\item \textbf{Degree-2 plates} were not run on these circuits; the ridge result
+      is degree-1 only.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,474 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.95in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\graphicspath{{segment_correspondence_figs/}}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\HD}{\mathrm{HD}}
+\newcommand{\Ex}{\mathbb{E}_x}
+
+\title{Does a Segment of $C$ Survive Local Mixing as a Segment of $M$?\\
+\large Slice-level correspondence between a circuit and its mixed image}
+\date{2026-08-24}
+\author{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\begin{abstract}
+Local mixing walks a circuit inside its \emph{fiber} --- the set of circuits computing the same
+permutation. The prefix heatmap already tells us that the mixed circuit $M$ retains a legible signal of
+\emph{where along $C$'s computation} each of its intermediate states sits. This report asks the
+stronger, functional question: taking the ridge's own alignment $i \mapsto i'$, does the segment of $M$
+between two aligned landmarks still compute the same function as the corresponding segment of $C$? We
+measure $F(i,m)=\Ex \HD\!\big(C[i..i{+}m](x),\,M[i'..i'_m](x)\big)$ on \code{run\_c\_m3000} of the
+\code{gssmix128\_nocomp\_20260817} campaign ($n=128$ single-carrier, $512$ wires), for $69$ starts $i$
+and $m=100\ldots10{,}000$, at two pipeline stages. \textbf{Result: it does not.} Once the trivial
+``both segments are near-identity'' effect is removed, the ridge-aligned pair sits $0.5$--$1.7$ bits of
+$256$ below what two unrelated maps of the same reach would give after fmix phase A, and
+$\approx\!0.5$ bits --- indistinguishable from a wrong-place control --- after the full pipeline.
+Sliding $M$'s segment up to $100{,}000$ gates off the alignment changes $F$ by well under a bit. A
+GF(2)-affine reconstruction test on the same segment pairs --- which by construction sees through any
+linear re-encoding that Hamming distance is blind to --- agrees: the aligned pair is within $0.009$ of
+the wrong-place control on a $0.5$ scale. $M$ tracks $C$ \emph{positionally} but not
+\emph{functionally}: the mixed circuit reaches the same permutation by a locally unrelated route while
+retaining a weak positional trace of the original's progress.
+\end{abstract}
+
+\section{The question}
+
+Each mixing move replaces a window of gates with a functionally equivalent window, so the walk never
+leaves the fiber. The question is how far it actually travels: does $M$ still contain, somewhere inside
+it, the \emph{same local computations} $C$ performed, merely relocated and re-expressed?
+
+The existing instrument for ``where along $M$ does $C$'s computation sit'' is the prefix heatmap
+$H(i,j)=\Ex \HD(C_i(x),M_j(x))$, with $C_i$ the state after the first $i$ gates of $C$ and both
+circuits run from the \emph{same} input $x$. That plate has a clear diagonal ridge for these artifacts.
+
+That signal concerns \textbf{one shared orbit}: it says the two trajectories launched from the same $x$
+pass near one another. It does not say the two circuits compute the same thing locally. For each start
+$i$ and segment length $m$ we take the ridge's own answer for where $i$ and $i+m$ land in $M$,
+\[
+i' = \arg\min_j \Ex \HD(C_i(x), M_j(x)),
+\qquad
+i'_m = \arg\min_j \Ex \HD(C_{i+m}(x), M_j(x)),
+\]
+and compare the two \emph{segments} they bracket, as maps, on a \textbf{fresh uniform} input:
+\[
+\boxed{\;F(i,m) \;=\; \Ex \HD\!\big(\,C[i..i{+}m](x),\; M[i'..i'_m](x)\,\big).\;}
+\]
+$F=0$ would mean the segment survived verbatim as a function; $F$ at the no-relation level means the
+mixing has fully rewritten the local computation and only the endpoints of the whole circuit agree.
+
+At $i=0$ the two ``segments'' \emph{are} the two prefixes, so $F(0,m)$ is exactly the ridge value at row
+$m$. Everything at $i>0$ asks the genuinely harder question: there the two segments start from
+\emph{different} states, so any agreement must hold as a function on the whole domain, not merely at one
+point of one orbit.
+
+\paragraph{Grid.} $i$ every $10{,}000$ gates of $C$ ($69$ starts); $m=100\ldots10{,}000$ in steps of
+$100$ ($100$ lengths); $4{,}096$ inputs per point, $1{,}024$ for the ridge.
+
+\section{Instrument}
+
+\code{red\_team\_tests/bin/heatmaps/slice\_match.rs} (new). A coarse scan of all of $M$ at
+\code{--coarse-step}, a refinement at \code{--fine-step} (also $M$'s snapshot stride) within
+\code{--fine-halfwidth} of the coarse winner, then the segment measurement. Bit-sliced over $n_b$
+interleaved 64-lane groups. The \code{gss}\,$\to$\,\code{phaseA} job is 12\,s on 160 cores;
+\code{gss}\,$\to$\,\code{final} is 83\,s.
+
+\subsection{Raw $F$ cannot be read on its own}
+For small $m$ both segments are near-identity --- a 100-gate segment of $C$ moves the state by only
+$27$ bits --- so a small $F$ is small for trivial reasons. Three references are measured on the
+\emph{same} inputs:
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+reference & definition & what it isolates \\
+\midrule
+\code{indep} & $d_C + d_M - 2 d_C d_M / n_w$ & two \textbf{unrelated} maps of the same reach: the honest zero \\
+\code{F\_ctrl} & same lengths, half a circuit away & empirical wrong-place ceiling \\
+\code{F\_prop} & $j=\mathrm{round}(i|M|/|C|)$ & correspondence vs.\ a lucky \code{argmin} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every no-relation baseline must be built from the reach of the segment it is compared against ---
+\code{indep} for $F$, \code{indep\_prop} for \code{F\_prop}, \code{indep\_ctrl} for \code{F\_ctrl}. Two
+draft figures in this investigation were wrong because a single \code{indep} was subtracted from all
+three, and the segments have different lengths. That \code{F\_ctrl}$-$\code{indep\_ctrl}$\approx 0$
+(within $0.8$ bits for phase A) is what validates \code{indep} as the zero.
+
+\subsection{The off-ridge sweep}
+A supplementary control slides $M$'s segment by $\delta$ gates away from the alignment, keeping its
+length. A genuine correspondence must show a minimum at $\delta=0$. Because the segment at the aligned
+position turns out to have slightly \emph{smaller reach} than segments elsewhere, the sweep is also
+reported with the reach divided out, which is the part not explained by ``this stretch of $M$ happens to
+move the state less''.
+
+\subsection{Self-test}
+Run with \code{--c X --m X}, the ridge must land exactly on the diagonal, $F\equiv0$, and the sweep must
+read $0$ at $\delta=0$ and $\approx190$ bits elsewhere. It does ($2$ rows of $601$ fail on a degenerate
+test circuit whose first thousands of gates barely move the state; cf.\ §\ref{sec:degen}).
+
+\section{The alignment, and three degeneracies of the literal definition}\label{sec:degen}
+
+These are properties of $\arg\min_j$, not defects of the measurement, but they must be handled before
+averaging.
+
+\paragraph{(a) Near the input, $j=0$ wins.} For the first ${\sim}3{,}800$ gates of $C$ (phase A;
+${\sim}2{,}900$ for the final) the \emph{global} argmin is $j=0$: $C$'s state has not yet decorrelated
+from $x$, so $\HD(C_i(x),x)\approx27\ldots50$ beats the 5-bit ridge dip. $26$--$39$ prefixes of $6{,}901$.
+
+\paragraph{(b) The dip is shallow and broad, so the argmin wanders.}
+\begin{center}\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & phase A & final \\
+\midrule
+ridge dip, interior median & $5.18$ bits & $2.67$ bits \\
+argmin step per 100 gates of $C$ (expected) & $\mathbf{0}$ $(203)$ & $\mathbf{0}$ $(701)$ \\
+steps non-negative & $71\%$ & $66$--$68\%$ \\
+offset vs proportional, median & $-598$ & $-4{,}884$ (dev) / $-12{,}878$ (min) \\
+offset IQR & $-5{,}481 \ldots +5{,}672$ & $-41{,}325 \ldots +37{,}973$ \\
+offset range & $-79\mathrm{k} \ldots +133\mathrm{k}$ & $-2.4\mathrm{M} \ldots +2.6\mathrm{M}$ \\
+cells with $i'_m \le i'$ & $\mathbf{1{,}197/6{,}900}$ & $\mathbf{2{,}498/6{,}900}$ \\
+median $L_m/m$ (circuit ratio) & $2.005$ $(2.034)$ & $10.99$ $(7.009)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+A median step of \emph{zero} means the argmin frequently does not move between adjacent prefixes: it is
+stuck in a noise well at the flat bottom of the dip. Consequently $17\%$ (phase A) to $36\%$ (final) of
+the $(i,m)$ cells have a \emph{non-positive} $M$-segment. Those are dropped from every average below and
+shown white in the $F(i,m)$ plate. \code{F\_prop}, whose segment length is $2.03m$ / $7.01m$ by
+construction, is immune to this and gives the same answer --- so the null is not an artifact of a noisy
+argmin.
+
+\paragraph{(c) The final circuit re-encodes through complements.} Confirming the 2026-08-23 ridge work:
+on the \code{gss}\,$\to$\,\code{final} plate, \textbf{$36\%$ of prefixes have the aligned cell above
+$n_w/2$} --- the aligned state is anti-correlated, a complement re-encoding from split/cross
+NOT-absorption --- so \code{argmin} looks in the wrong direction. \code{slice\_match --align dev}
+selects by $\arg\max_j|\HD-n_w/2|$ instead, catching both signs. The two rules pick the same $j$ on only
+$64\%$ of prefixes. Both are reported; they give the same conclusion.
+
+\section{Results}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{slice_summary.png}
+\caption{Left: fmix phase A. Right: the full pipeline output. \textbf{Top} --- mean $F$ against the
+references. \textbf{Middle} --- $F-\code{indep}$, the excess agreement over ``two unrelated maps of the
+same reach''; this is the signal, and it never leaves a $\pm2$-bit band out of $256$. \textbf{Bottom}
+--- sliding $M$'s segment off the alignment, reach-corrected.}
+\end{figure}
+
+\subsection{fmix phase A (\code{gss} $693{,}377$ gates $\to$ \code{phaseA} $1{,}410{,}438$ gates)}
+Mean over the $69$ starts, in bits ($n_w/2=256$):
+\begin{center}\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+$m$ & 100 & 500 & 1000 & 2500 & 5000 & 10000 \\
+\midrule
+$F$ (ridge-aligned)      & 130.42 & 168.73 & 177.94 & 212.90 & 233.90 & 249.19 \\
+\code{F\_ctrl} (wrong place) & 136.40 & 173.43 & 182.53 & 215.28 & 236.64 & 251.27 \\
+\code{indep} (no relation)   & 131.30 & 169.31 & 178.45 & 213.66 & 235.59 & 250.50 \\
+$d_C$ (C's segment alone)    & 27.05 & 63.73 & 86.86 & 124.90 & 160.05 & 196.56 \\
+$d_M$ (M's segment alone)    & 116.11 & 141.35 & 138.44 & 173.46 & 202.54 & 232.78 \\
+\midrule
+$\mathbf{F-\code{indep}}$ & $\mathbf{-0.88}$ & $\mathbf{-0.58}$ & $\mathbf{-0.51}$ & $\mathbf{-0.76}$ & $\mathbf{-1.69}$ & $\mathbf{-1.31}$ \\
+\code{F\_ctrl}$-$\code{indep\_ctrl} & $+0.12$ & $+0.46$ & $+0.78$ & $-0.18$ & $+0.07$ & $+0.32$ \\
+$F-\code{F\_ctrl}$ & $-5.98$ & $-4.71$ & $-4.59$ & $-2.38$ & $-2.74$ & $-2.06$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The ridge-aligned pair sits $0.5$ to $1.7$ bits of $256$ below the no-relation prediction, consistently
+across every $m$, and $2$--$6$ bits below the wrong-place control. The residual is real but is
+$0.2$--$0.7\%$ of the measurement's scale.
+
+\subsection{The full pipeline (\code{gss} $\to$ \code{final} $4{,}859{,}911$ gates)}
+After split $+$ cross $+$ fcompress, with \code{--align dev}:
+\begin{center}\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+$m$ & 100 & 500 & 1000 & 2500 & 5000 & 10000 \\
+\midrule
+$F$ & 133.56 & 179.04 & 206.60 & 229.36 & 240.40 & 251.89 \\
+\code{F\_ctrl} & 132.64 & 178.50 & 205.46 & 229.30 & 240.19 & 252.38 \\
+\code{indep} & 133.75 & 179.28 & 207.50 & 229.87 & 240.98 & 252.42 \\
+$d_M$ & 118.89 & 154.06 & 182.66 & 203.42 & 216.38 & 240.98 \\
+\midrule
+$\mathbf{F-\code{indep}}$ & $\mathbf{-0.19}$ & $\mathbf{-0.24}$ & $\mathbf{-0.90}$ & $\mathbf{-0.51}$ & $\mathbf{-0.59}$ & $\mathbf{-0.53}$ \\
+$F-\code{F\_ctrl}$ & $+0.92$ & $+0.54$ & $-0.50$ & $-0.61$ & $-0.02$ & $-0.58$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The literal \code{--align min} rule gives $F-\code{indep}$ of $+0.13,\,-0.36,\,-1.11,\,-0.23,\,-0.17,\,
+-0.12$ and $F-\code{F\_ctrl}$ of $+1.90,\,+0.25,\,-0.68,\,-0.46,\,+0.09,\,-0.20$.
+\textbf{The residual phase A still had is gone.} $F$, \code{F\_ctrl} and \code{indep} coincide within
+about a bit at every $m$ under both alignment rules: the ridge alignment no longer buys anything over
+taking a segment from an arbitrary part of the circuit.
+
+\subsection{The off-ridge sweep}
+$F$ at the aligned position minus $F$ far off it, paired per start $i$, reach-corrected:
+\begin{center}\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+$m$ & phase A & final (dev) & final (min) \\
+\midrule
+100    & $-0.15\pm0.21$ ($0.7\sigma$) & $-0.11\pm0.20$ ($0.5\sigma$) & $+0.03\pm0.16$ ($0.2\sigma$) \\
+300    & $-0.36\pm0.26$ ($1.4\sigma$) & $+0.04\pm0.24$ ($0.2\sigma$) & $-0.02\pm0.23$ ($0.1\sigma$) \\
+1000   & $-0.15\pm0.34$ ($0.4\sigma$) & $-0.44\pm0.28$ ($1.6\sigma$) & $-0.69\pm0.30$ ($2.3\sigma$) \\
+3000   & $-0.66\pm0.35$ ($1.9\sigma$) & $-0.46\pm0.33$ ($1.4\sigma$) & $+0.16\pm0.29$ ($0.6\sigma$) \\
+10000  & $-0.86\pm0.21$ ($4.2\sigma$) & $-0.47\pm0.20$ ($2.4\sigma$) & $+0.02\pm0.21$ ($0.1\sigma$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+Sliding $M$'s segment $\pm20{,}000$ gates (phase A) or $\pm100{,}000$ gates (final) off the alignment
+changes $F$ by well under a bit. Before the reach correction there is a visible ${\sim}1$-bit dip at
+$\delta=0$ for phase A; almost all of it is that the segment at the aligned position has slightly
+smaller reach ($d_M$ dips there too), not that it computes anything closer to $C$'s segment.
+
+\section{From Hamming distance to gate distance}
+
+Write $D = M[i'..i'_m]\circ C[i..i{+}m]^{-1}$ for the difference map. Two rigorous, model-free bounds:
+
+\begin{itemize}
+\item \textbf{Lower.} Every \code{XGate} flips at most its own target, so $\HD(y,D(y))\le|D|$ pointwise,
+hence $|D| \ge \Ex \HD = F$.
+\item \textbf{Upper.} Every \code{XGate} is an involution and its controls exclude its target, so $C$'s
+segment run backwards is $C[i..i{+}m]^{-1}$; therefore $|D| \le m + L_m$.
+\end{itemize}
+
+Using the clean proportional alignment ($L=2.03m$ / $7.01m$):
+\begin{center}\small
+\begin{tabular}{@{}lrrrcrrr@{}}
+\toprule
+& \multicolumn{3}{c}{phase A} & & \multicolumn{3}{c}{final} \\
+\cmidrule(lr){2-4}\cmidrule(lr){6-8}
+$m$ & $\ge \HD$ & $\le m{+}L$ & ruler & & $\ge \HD$ & $\le m{+}L$ & ruler \\
+\midrule
+$100$    & $84$  & $303$    & $948$    & & $76$  & $801$    & $700$ \\
+$1{,}000$  & $191$ & $3{,}034$  & $9{,}151$  & & $196$ & $8{,}009$  & $9{,}869$ \\
+$10{,}000$ & $251$ & $30{,}342$ & $41{,}789$ & & $252$ & $80{,}090$ & $43{,}672$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The bracket never closes, and cannot.} A Hamming measurement on $n_w$ wires can certify at most
+$n_w=512$ gates of distance, and $F$ is already at half of that by $m\approx300$. Past that the
+instrument is saturated: it cannot distinguish $|D|=3{,}000$ from $|D|=10^6$.
+
+The ``ruler'' column inverts $C$'s \emph{own} measured reach curve $d_{C,i}(g)$ --- the in-material
+HD-versus-gates relation, extended to $g=300{,}000$ and inverted per start $i$ against that start's own
+curve. It reads $0.5$--$3.7\times$ the rigorous upper bound. Where it exceeds $1$ (all of phase A, and
+the final at small $m$), $D$ is \emph{at least as scrambling per gate} as a fresh circuit of $m+L$ gates
+of this material. Where it falls below $1$ (the final at large $m$), $F$ is within $4$ bits of the $256$
+ceiling and the inversion is ill-conditioned --- the reach curve is flat enough there that one bit of
+$F$ moves the reading by ${\sim}15{,}000$ gates. Either way there is no evidence that $D$ admits any
+circuit smaller than its trivial construction.
+
+For comparison the project's Ehrenfest ruler, $H(g)=(n_w/2)(1-e^{-2\cdot0.75\,g/n_w})$ from the
+2026-08-22 calibration, reads $121$--$1{,}476$ gates over the same range. It is inside the rigorous
+bracket but a large underestimate: it is calibrated on \emph{random} circuits, which mix far faster than
+this material --- $10{,}000$ gates of $C$ reach only $210$ of $256$ bits, where the Ehrenfest law
+predicts saturation. This is the ``seg-ruler is model-dependent'' caveat of that calibration, biting in
+practice.
+
+
+\section{The affine test on segment pairs}
+
+Everything above is a Hamming measurement, which is blind to a change of variables: if local mixing
+preserved a segment up to an invertible linear re-encoding --- $M_{\mathrm{seg}} = A\circ
+C_{\mathrm{seg}}$ for affine $A$ --- then $F$ would read pure noise while the segments were, in the only
+sense that matters, the same computation. \code{red\_team\_tests/bin/heatmaps/slice\_affine.rs} closes
+that gap. Per target bit $t$ of $a=C[i..i{+}m](x)$ it fits
+\[
+a_t \;=\; \langle w,\ (b_0,\dots,b_{n_w-1},1)\rangle \ \ \text{over GF(2)},
+\qquad b = M[i'..i'_m](x),
+\]
+by \code{hmap\_affine}'s method: build a GF(2) basis of $b$'s columns over the training samples, reduce
+the target column into it; inconsistent $\to$ the bit is not an affine function of $b$, score $0.5$;
+consistent $\to$ score the fitted coefficients on held-out samples. $2{,}048$ training and $1{,}024$
+held-out samples against $513$ regressors, so a spurious consistent fit is impossible. The alignment is
+read from the \code{slice\_match} ridge CSV, so this inherits the same \code{--align} rule.
+
+\paragraph{Two positive controls, both passed.}
+\begin{enumerate}
+\item \code{--c X --m X}: the aligned segments are identical, and the fit returns error
+$\mathbf{0.0000}$ with $100\%$ of bits predictive, while the wrong-place control returns exactly
+$\mathbf{0.5000}$ on active wires.
+\item \code{--affine-scramble 5000} post-composes every $M$-segment with a random invertible affine map
+($5{,}000$ CNOT/NOT gates), which drives the Hamming distance of the same pair to $\approx n_w/2$. Every
+number in the output is \textbf{digit-identical} to the unscrambled run. This is the property the test
+exists for; it must hold mathematically --- an invertible affine map of $b$ does not change the affine
+span of $b$'s coordinates --- and the exact match confirms the implementation.
+\end{enumerate}
+
+\paragraph{Result.} Mean reconstruction error over the wires $C$'s segment actually moves ($0.5$ = no
+affine relation, $0$ = perfect):
+\begin{center}\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+$m$ & 100 & 1000 & 10000 \\
+\midrule
+phase A --- ridge & $0.3729$ & $0.4176$ & $0.4399$ \\
+phase A --- wrong place & $0.3721$ & $0.4224$ & $0.4487$ \\
+\textbf{paired ridge $-$ control} & $\mathbf{+0.0008}$ $(0.3\sigma)$ & $\mathbf{-0.0049}$ $(2.4\sigma)$ & $\mathbf{-0.0088}$ $(1.8\sigma)$ \\
+\midrule
+final --- ridge & $0.3758$ & $0.4336$ & $0.4484$ \\
+final --- wrong place & $0.3751$ & $0.4318$ & $0.4528$ \\
+\textbf{paired ridge $-$ control} & $\mathbf{+0.0007}$ $(0.3\sigma)$ & $\mathbf{+0.0018}$ $(1.0\sigma)$ & $\mathbf{-0.0044}$ $(0.8\sigma)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The same picture in the other statistic --- the fraction of active wires reconstructed below $0.10$
+holdout error --- for phase A: $+0.0097\pm0.0040$ at $m{=}1000$ and $+0.0176\pm0.0100$ at $m{=}10{,}000$
+in the ridge's favour; for the final, nothing ($-1.0\sigma$ to $+0.8\sigma$).
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{affine_summary.png}
+\caption{Affine reconstruction of $C$'s segment output from $M$'s, over the wires $C$'s segment moves.
+Top: the three arms; \code{ridge} and \code{ctrl} lie on top of each other. Bottom: the matched
+difference, paired over starts, with standard errors --- within $\pm0.01$ of zero on a $0.5$ scale
+everywhere.}
+\end{figure}
+
+\textbf{The affine instrument agrees with the Hamming one.} Phase A carries a residual of about
+$1$--$2\%$ of the measure's scale --- roughly $1$--$2\%$ more of the active wires reconstruct affinely at
+the aligned position than at a random one, the same sign and the same order as the $2$--$6$ bit Hamming
+gap. The full pipeline carries nothing: the largest deviation across all lengths is $+0.0042$ at
+$m{=}200$ ($2.7\sigma$), and it points the \emph{wrong} way.
+
+\paragraph{Two things to read carefully.}
+\begin{itemize}
+\item \textbf{The absolute error is $0.37$--$0.45$, not $0.5$, in every arm including the wrong-place
+control.} That baseline predictability is a property of the setup, not evidence of correspondence: $a$
+and $b$ are both functions of the same $x$, short segments leave most wires still carrying raw $x$ bits,
+and a wire counts as ``active'' as soon as $C$'s segment moves it on \emph{any} sample --- including
+wires flipped only by a rarely-firing wide conjunction, for which $a_t\approx x_t$ is affinely
+near-perfect. Only the matched ridge-versus-control comparison, which holds the segment length and the
+input fixed, is meaningful.
+\item \textbf{\code{prop} is not a matched control here} and sits $0.02$--$0.04$ higher throughout: its
+segments have a different length from the ridge's, and error grows with length. It is in the figure for
+continuity with §4, not as a comparison.
+\end{itemize}
+
+This closes the affine blind spot, including wire permutations and any CNOT/NOT re-encoding, since those
+are linear. What it does not close is degree $\ge 2$: full degree-2 regression over $512$ wires needs
+${\sim}1.3\cdot10^5$ regressors and more training samples than that, which is intractable --- a
+restricted \code{--deg2-wires} run would give a \emph{lower bound} on degree-2 leakage and is the natural
+next step.
+
+
+\section{Interpretation: how closely does $M$ track $C$ inside the fiber?}
+
+\textbf{Positionally, closely; functionally, not at all.}
+
+\begin{itemize}
+\item The prefix ridge is a genuine signal. Phase A's dip is $5.18$ bits below the off-ridge baseline at
+the median interior prefix, and it survives into the final at $2.67$ bits (with $36\%$ of rows
+sign-flipped). \emph{Where} you are along $C$'s computation remains recoverable from $M$'s intermediate
+state, end to end.
+\item The corresponding \textbf{segments} are not related. With the trivial near-identity effect
+removed, the aligned pair sits $0.5$--$1.7$ bits (phase A) or ${\approx}0.5$ bits (final) out of $256$
+below what two unrelated maps of the same reach would give --- and for the final that is
+indistinguishable from the wrong-place control.
+\item The two facts are consistent because they are different measurements. The ridge compares two
+trajectories launched from the \emph{same} input: the orbits pass near each other. $F$ compares the two
+local maps as \emph{functions} over the whole domain. Passing near one point of one orbit is far weaker,
+and it is all that survives. The identity ``$F(0,m)=$ the ridge value at row $m$'' is the seam between
+them, and the measurement confirms it: at $m=10{,}000$, $F(0,m)=248.89$ against a ridge minimum of
+$248.98$, from independent sample sets.
+\item Phase A alone already does nearly all of this. The residual it leaves ($2$--$6$ bits below the
+wrong-place control) is removed by split $+$ cross $+$ fcompress, leaving nothing measurable.
+\end{itemize}
+
+In fiber terms: the walk does not stay in a neighbourhood of $C$ in which local computations are
+preserved and merely relocated. By the end of phase A, a window of $M$ around the aligned position
+computes something with no measurable relation to the window of $C$ it was aligned to. The mixed circuit
+reaches the same permutation by a locally unrelated route, while retaining a weak positional trace of the
+original's progress.
+
+\section{Reproduction}
+
+Server \code{\textasciitilde/tds/slicematch\_20260824/}; analysis outputs local in
+\code{reports/slicematch\_20260824/}. Seed \code{3611427068563891215} throughout (a calibration seed,
+not a deliverable).
+
+\begin{small}
+\begin{verbatim}
+slice_match --c gss.mpmct1 --m phaseA.mpmct1 \
+  --i-step 10000 --m-min 100 --m-max 10000 --m-step 100 \
+  --coarse-step 500 --fine-step 10 --fine-halfwidth 2000 \
+  --ridge-batches 16 --slice-batches 16 --slice-reps 4 \
+  --delta-max 20000 --delta-step 250 --align min --out run_c_A
+
+slice_match --c gss.mpmct1 --m final.mpmct1 \
+  --coarse-step 2000 --fine-step 25 --fine-halfwidth 5000 \
+  --delta-max 100000 --delta-step 1000 \
+  --align {min|dev} --out run_c_F_{min|dev}
+
+slice_match --c gss.mpmct1 --m phaseA.mpmct1 \
+  --i-step 10000 --m-min 2500 --m-max 300000 --m-step 2500 ... --out run_c_A_reach
+\end{verbatim}
+\end{small}
+
+Readers: \code{reports/plot\_slice\_match.py} (per-arm 6-panel figure $+$ text summary),
+\code{reports/plot\_slice\_summary.py} (the headline figure),
+\code{reports/slice\_gate\_distance.py} (the gate-distance table),
+\code{reports/plot\_slice\_affine.py} (the affine figure). The .242 checkout predates the module
+restructure: build the server copy with \code{circuit::xgate}\,$\to$\,\code{postmix::xgate} and
+\code{engine::format}\,$\to$\,\code{postmix::format}, dropped into \code{\textasciitilde/local\_mixing\_sd/src/bin/}.
+
+\section{Caveats}
+
+\begin{enumerate}
+\item \textbf{One artifact pair.} \code{run\_c} only; \code{run\_d} is on the server and untested.
+\item \textbf{\code{F\_ctrl} is imperfectly matched for the final.} For $m>1000$ the wrong-place control
+reads $1$--$3$ bits \emph{above} its own \code{indep}, probably because the very long ridge-derived
+segment lengths push the shifted control against the end of the circuit. It does not affect the
+conclusion --- $F-\code{indep}$ is the primary statistic and does not use the control --- but it is why
+§4.2 quotes $F-\code{indep}$ first.
+\item \textbf{The gate-distance ruler is an equivalent depth, not a size.} Only the two bracket columns
+are rigorous.
+\item \textbf{The argmin alignment is noisy}, by §3(b). \code{F\_prop} is the noise-free cross-check and
+agrees.
+\item \textbf{Absence of correlation at these $m$ is not absence of structure.} §6 closes the affine
+blind spot (any linear change of variables, including a wire permutation). What remains untested is a
+re-encoding of GF(2) degree $\ge 2$, and a relation confined to a handful of wires that the
+whole-segment average dilutes. The remaining instruments are a restricted-wire degree-2 fit, and
+actually compressing $C_{\mathrm{slice}}^{-1}\circ M_{\mathrm{slice}}$ with \code{fcompress} for a real
+upper bound on $|D|$.
+\end{enumerate}
+
+\appendix
+\section{Per-arm detail plates}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{run_c_A_slices.png}
+\caption{fmix phase A. (a) $F(i,m)$; white cells are the $i'_m\le i'$ degeneracies of §3(b). (b) $F$
+against the references, grey lines the individual starts. (c) excess over the no-relation baseline.
+(d) ridge alignment offset (blue, left axis) and signed prominence (red, right). (e,f) the off-ridge
+sweep, raw and centred; dotted curves in (f) have the segment's reach divided out.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{run_c_F_dev_slices.png}
+\caption{The full pipeline output, \code{--align dev}. Same panels. Note in (d) that the signed
+prominence crosses zero repeatedly --- the complement re-encodings of §3(c) --- and that the alignment
+offset excursions reach $\pm2$M gates.}
+\end{figure}
+
+\end{document}

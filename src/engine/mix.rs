@@ -127,6 +127,27 @@ pub enum DbSample {
     /// Pick a gate g, take it plus its w-1 neighbors in g's own direction,
     /// falling back to the other direction when the circuit end is reached.
     Contiguous,
+    /// DEPTH-BALANCING: score windows by the depth GAIN a splice would
+    /// produce — sum over outgoing gates of `min(D0+j, D1+w-j+1) - depth(g_j)`
+    /// — and seed from BELOW the median depth. Still prefers endpoints deeper
+    /// than the interior (that is when the gain surface sits highest), but it
+    /// self-limits on already-deep blocks (gain collapses to ~w there), so
+    /// depth rises across the circuit instead of carving one hyper-deep
+    /// region and leaving the rest untouched.
+    DepthGain,
+    /// DEPTH-SEEKING: seed at a gate of MAXIMUM mixing depth, then grow convex
+    /// blocks in both directions at w-1, w and w+1 gates (up to six options)
+    /// and keep the one whose far endpoint has the greatest depth. The splice
+    /// rule stamps products from the block's two endpoint depths, so pushing
+    /// BOTH ends deep is what drives depth upward — unlike the generation
+    /// idea, this chases a deep frontier rather than lifting a minimum.
+    MaxDepth,
+    /// KILL-LIST seeding: seed at a live gate registered via
+    /// `set_target_positions` (an externally-measured exposure witness), then
+    /// grow a convex block from it so a replacement re-encodes the value the
+    /// witness carries. Entries invalidate on consumption or in-place rewrite
+    /// (stamp bump), so the pool drains as the list is serviced.
+    Target,
     /// Grow a convex (mutually-gatherable) block: float g1 to its first
     /// non-commuting neighbor, then repeatedly float the whole block — in g1's
     /// direction w.p. p, else the opposite — to the next non-commuting gate and
@@ -698,6 +719,17 @@ pub struct MixParams {
     /// Minimum DB window length (0 = no floor). With the prefix descent off,
     /// restricts drawn windows to db_min_window..=s_db exactly.
     pub db_min_window: usize,
+    /// Probability the window sampler is depth-seeking (DbSample::MaxDepth),
+    /// drawn ahead of the convex/contiguous coin.
+    pub p_depth: f64,
+    /// Within a depth-seeded round, the probability of ignoring depth and
+    /// drawing a UNIFORM random gate instead. Keeps the mode from working one
+    /// narrow frontier forever: the deep set is small, so a little uniform
+    /// exploration both finds convertible material and seeds new frontiers.
+    pub p_depth_random: f64,
+    /// Probability the window sampler is DEPTH-BALANCING (DbSample::DepthGain).
+    /// Drawn before p_depth, so the two are mutually exclusive per round.
+    pub p_depth_gain: f64,
     // p_convex: probability the window sampler is convex rather than contiguous.
     // Replaces the three-valued DbSample: contiguous is 0, convex is 1, and the
     // old `mixed` is 0.5.
@@ -1135,6 +1167,9 @@ impl Default for MixParams {
             p_db: 0.0,
             s_db: 5,
             db_min_window: 0,
+            p_depth: 0.0,
+            p_depth_random: 0.1,
+            p_depth_gain: 0.0,
             p_convex: 0.5,
             db_mode: DbMode::Mix,
             p_mix: -1.0,
@@ -1715,6 +1750,20 @@ pub struct Mixer {
     // pool targeting the same stubborn gate is drawn repeatedly, which would
     // write a characteristic displacement into the circuit.
     db_seed_home: Option<(u32, u32)>,
+    /// Kill-list gates as (arena id, stamp) pairs (see `DbSample::Target`).
+    target_pool: Vec<(u32, u32)>,
+    /// Registered kill-list size, for the drain report.
+    target_total: usize,
+    /// Probability a DB round seeds its window at a live kill-list gate.
+    p_target: f64,
+    /// Probability a round applies a TWIST whose window starts at a live
+    /// kill-list gate (RC: re-encode the exposed relation in place, in the
+    /// spirit of the generation mechanism steering effort to unmixed spots).
+    p_target_twist: f64,
+    /// One-shot forced start for the next twist window (set by the targeted
+    /// twist path, consumed by twist_move / twist_move_g57, cleared after the
+    /// round so it can never leak into an untargeted twist).
+    twist_forced_start: Option<u32>,
     // Set for the duration of one COMP attempt drawn as g57-only.
     db_g57_only: bool,
     // Whether the CURRENT db_attempt drew the pair geometry: arms the
@@ -1745,11 +1794,21 @@ pub struct Mixer {
     band_led: i64,
     // true for the current round when the effective mode came from BandLedger
     band_led_round: bool,
+    // MIXING DEPTH per gate (parallel to `meta`, indexed by node id).
+    // Input gates are 0. A DB splice stamps its products from the outgoing
+    // block's two endpoint depths (see `stamp_splice_depths`); every other
+    // insertion takes 1 + min(immediate neighbours) via `insert_tracked`.
+    // Not serialized: a resume restarts depths at 0, which is honest — the
+    // resumed circuit is the new "input".
+    depths: Vec<u32>,
+    // Depth-seeding relaxation: how many levels below the maximum the seed
+    // stratum currently reaches. Grows on a miss, resets on a hit.
+    depth_relax: u32,
     // DB attempts / successful splices split by window GEOMETRY
     // ([0] = contiguous i.e. sequential, [1] = convex). Plain Mixer fields,
     // deliberately not in MixCounters: adding there breaks the .state format.
-    geo_attempts: [u64; 2],
-    geo_hits: [u64; 2],
+    geo_attempts: [u64; 4],
+    geo_hits: [u64; 4],
     brake_on: bool,
     brake_mark_move: u64,
     brake_mark_size: usize,
@@ -3089,6 +3148,11 @@ impl Mixer {
             db_last_sampler: DbSample::Contiguous,
             db_last_len: 0,
             db_seed_home: None,
+            target_pool: Vec::new(),
+            target_total: 0,
+            p_target: 0.0,
+            p_target_twist: 0.0,
+            twist_forced_start: None,
             db_g57_only: false,
             db_pair_round: false,
             db_mode_cur: db_mode0,
@@ -3099,8 +3163,10 @@ impl Mixer {
             bigpool_hits: 0,
             band_led: 0,
             band_led_round: false,
-            geo_attempts: [0; 2],
-            geo_hits: [0; 2],
+            depths: Vec::new(),
+            depth_relax: 0,
+            geo_attempts: [0; 4],
+            geo_hits: [0; 4],
             brake_on: false,
             brake_mark_move: 0,
             brake_mark_size: 0,
@@ -3180,6 +3246,51 @@ impl Mixer {
         self.meta[i] = m;
     }
 
+    /// Mixing depth of a gate (0 for input gates and anything unstamped).
+    pub fn depth_of(&self, id: u32) -> u32 {
+        self.depths.get(id as usize).copied().unwrap_or(0)
+    }
+
+    fn set_depth(&mut self, id: u32, d: u32) {
+        let i = id as usize;
+        if i >= self.depths.len() {
+            self.depths.resize(i + 1, 0);
+        }
+        self.depths[i] = d;
+    }
+
+    /// Insert a gate and give it the NON-SPLICE depth rule: one deeper than
+    /// the shallower of its two immediate neighbours. DB splice products are
+    /// re-stamped by `stamp_splice_depths` right after they are inserted.
+    fn insert_tracked(&mut self, after: u32, gate: XGate) -> u32 {
+        let id = self.arena.insert_after(after, gate);
+        let l = self.arena.neighbor(id, Dir::L);
+        let r = self.arena.neighbor(id, Dir::R);
+        let d = match (l == NIL, r == NIL) {
+            (true, true) => 0,
+            (true, false) => self.depth_of(r),
+            (false, true) => self.depth_of(l),
+            (false, false) => self.depth_of(l).min(self.depth_of(r)),
+        };
+        self.set_depth(id, d.saturating_add(1));
+        id
+    }
+
+    /// Stamp a DB splice's products: with the outgoing block's endpoint
+    /// depths D0 (first gate) and D1 (last), product j of k (1-indexed) gets
+    /// min(D0 + j, D1 + k - j + 1) — a two-sided distance from the block's
+    /// ends, so a product is only as deep as the shallower boundary it can be
+    /// reached from.
+    fn stamp_splice_depths(&mut self, ids: &[u32], d0: u32, d1: u32) {
+        let k = ids.len() as u32;
+        for (j0, &id) in ids.iter().enumerate() {
+            let j = j0 as u32 + 1;
+            let from_left = d0.saturating_add(j);
+            let from_right = d1.saturating_add(k - j + 1);
+            self.set_depth(id, from_left.min(from_right));
+        }
+    }
+
     pub(crate) fn meta_of(&self, id: u32) -> Meta {
         self.meta.get(id as usize).copied().unwrap_or(Meta {
             origin: ORIGIN_SYNTH,
@@ -3201,6 +3312,17 @@ impl Mixer {
     // born-random material carry no earlier spelling to be returned to, and a
     // ban on them would also refuse the descent's length-1 rung, which is the
     // one rung that always makes progress.
+    /// Report slot for a window geometry: 0 contiguous, 1 convex,
+    /// 2 depth-seeking, 3 depth-balancing.
+    fn geo_slot(s: DbSample) -> usize {
+        match s {
+            DbSample::Convex => 1,
+            DbSample::MaxDepth => 2,
+            DbSample::DepthGain => 3,
+            _ => 0,
+        }
+    }
+
     fn litter_census(&self, ids: &[u32]) -> (usize, bool) {
         if ids.is_empty() {
             return (0, false);
@@ -3949,7 +4071,10 @@ impl Mixer {
     fn active_s_db(&self, geo: DbSample) -> usize {
         let k = self.params.db_knobs(self.db_mode_cur);
         match geo {
-            DbSample::Convex => k.s_db_cvx,
+            // Depth-seeking grows convex blocks, so it takes the convex length.
+            DbSample::Convex | DbSample::MaxDepth | DbSample::DepthGain | DbSample::Target => {
+                k.s_db_cvx
+            }
             DbSample::Contiguous => k.s_db_ctg,
             // A pair window is exactly the seed plus its partner; the length
             // knobs do not apply. Bridge windows are likewise always 2 (and
@@ -4393,12 +4518,23 @@ impl Mixer {
                 self.apply_mode_overlay();
             }
             // Slot 1: one twist, at a FIXED rate the rest of the machinery
-            // balances around.
+            // balances around. A kill-list twist (p_target_twist) preempts the
+            // plain coin and forces the twist window to start at a live listed
+            // gate, so the exposed relation is re-encoded in place.
+            let twist_target = !took_split
+                && self.p_target_twist > 0.0
+                && !self.target_pool.is_empty()
+                && self.rng.random_bool(self.p_target_twist.clamp(0.0, 1.0));
             let took_twist = !took_split
-                && self.params.p_twist > 0.0
-                && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
+                && (twist_target
+                    || (self.params.p_twist > 0.0
+                        && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))))
                 && {
+                    if twist_target {
+                        self.twist_forced_start = self.target_seed_candidates(1).first().copied();
+                    }
                     self.twist_round();
+                    self.twist_forced_start = None;
                     true
                 };
             // Slot 1b: GLOBAL re-randomisation, sitting after the twist and
@@ -4815,8 +4951,8 @@ impl Mixer {
                 self.counters.twist_place_fallback += 1;
             }
         }
-        let (start, len) = match site {
-            Some((at, _)) => (at, len),
+        let (start, len) = match self.twist_forced_start.take().or(site.map(|(at, _)| at)) {
+            Some(at) => (at, len),
             None => {
                 let draw = self.rng.random_range(0..n + len - 1);
                 if draw < len - 1 {
@@ -4964,7 +5100,7 @@ impl Mixer {
         let mut anchor = self.arena.neighbor(start, Dir::L);
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
+            anchor = self.insert_tracked(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
@@ -4983,7 +5119,7 @@ impl Mixer {
         let mut anchor = end;
         for g in &packet_inv {
             self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
+            anchor = self.insert_tracked(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
@@ -5229,9 +5365,13 @@ impl Mixer {
                 .exp()
                 .round() as usize)
                 .clamp(2, cap);
-            // Symmetric truncation, exactly as in twist_move.
+            // Symmetric truncation, exactly as in twist_move. A kill-list
+            // round forces the first attempt's window to start at the listed
+            // gate; retries fall back to the uniform draw.
             let draw = self.rng.random_range(0..n + len - 1);
-            let (start, len) = if draw < len - 1 {
+            let (start, len) = if let Some(at) = self.twist_forced_start.take() {
+                (at, len)
+            } else if draw < len - 1 {
                 (self.arena.head(), draw + 1)
             } else {
                 (self.arena.random_linked(&mut self.rng), len)
@@ -5456,7 +5596,7 @@ impl Mixer {
         let mut anchor = l_anchor;
         for g in &plan.l.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
+            anchor = self.insert_tracked(anchor, g.clone());
             self.index_add(anchor);
             self.set_meta(
                 anchor,
@@ -5474,7 +5614,7 @@ impl Mixer {
         let mut anchor = plan.r.edge;
         for g in &plan.r.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
+            anchor = self.insert_tracked(anchor, g.clone());
             self.index_add(anchor);
             self.set_meta(
                 anchor,
@@ -5653,11 +5793,30 @@ impl Mixer {
         // armed a commuting pair has no admissible same-length spelling, so a
         // COMP pair round could never splice. p_pair == 0 draws no RNG — the
         // stream is bit-identical to the pair-less chain.
-        let geo = if mode != DbMode::Compressing
+        let geo = if self.p_target > 0.0
+            && !self.target_pool.is_empty()
+            && self.rng.random_bool(self.p_target.clamp(0.0, 1.0))
+        {
+            // Kill-list rounds preempt every other geometry: the list is an
+            // explicit user directive and drains as entries go stale, so the
+            // preemption ends by itself. p_target == 0 draws no RNG.
+            DbSample::Target
+        } else if mode != DbMode::Compressing
             && self.params.p_pair > 0.0
             && self.rng.random_bool(self.params.p_pair.clamp(0.0, 1.0))
         {
             DbSample::Pair
+        } else if self.params.p_depth_gain > 0.0
+            && self.rng.random_bool(self.params.p_depth_gain.clamp(0.0, 1.0))
+        {
+            DbSample::DepthGain
+        } else if self.params.p_depth > 0.0
+            && self.rng.random_bool(self.params.p_depth.clamp(0.0, 1.0))
+        {
+            // Depth-seeking: seed at maximum mixing depth. Drawn after the
+            // pair coin and before convex/contiguous; p_depth == 0 draws no
+            // RNG, so the stream is bit-identical to a depth-less chain.
+            DbSample::MaxDepth
         } else if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
             DbSample::Convex
         } else {
@@ -5695,7 +5854,7 @@ impl Mixer {
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
         // can split hits by sampler geometry, esp. under --db-sample mixed.
         self.db_last_sampler = smp;
-        self.geo_attempts[matches!(smp, DbSample::Convex) as usize] += 1;
+        self.geo_attempts[Self::geo_slot(smp)] += 1;
         self.db_last_len = ids.len();
         Self::bump_len(&mut self.counters.len_attempts, ids.len(), 1);
         // Litter fragmentation census over the sampled window (observation only).
@@ -6004,6 +6163,9 @@ impl Mixer {
         let Some(replacement) = res.chosen else {
             self.record_db_attempt(&window, match_count, None);
             self.count_db_miss(mode);
+            if self.db_last_sampler == DbSample::MaxDepth {
+                self.depth_relax = (self.depth_relax + 1).min(64);
+            }
             return false;
         };
         let fwd_key = res_fwd_key;
@@ -6017,7 +6179,10 @@ impl Mixer {
             mode,
         );
         if hit {
-            self.geo_hits[matches!(self.db_last_sampler, DbSample::Convex) as usize] += 1;
+            self.geo_hits[Self::geo_slot(self.db_last_sampler)] += 1;
+            if self.db_last_sampler == DbSample::MaxDepth {
+                self.depth_relax = 0;
+            }
             // True class of a big-pool conversion, via the reference store.
             if curated_pick && match_count > 20 {
                 if let (Some(db), Some(k)) = (reference_db(), fwd_key) {
@@ -6161,6 +6326,12 @@ impl Mixer {
             }
         }
 
+        // MIXING DEPTH: the outgoing block's endpoint depths, read before its
+        // nodes are freed. D0 = first gate, D1 = last (circuit order).
+        let (depth_d0, depth_d1) = match (ids.first(), ids.last()) {
+            (Some(&f), Some(&l)) => (self.depth_of(f), self.depth_of(l)),
+            _ => (0, 0),
+        };
         self.record_db_attempt(window, match_count, Some(&replacement));
 
         // Size accounting (replacement may be shorter, equal, or longer).
@@ -6274,7 +6445,7 @@ impl Mixer {
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);
         for (i, gate) in replacement.into_iter().enumerate() {
-            c = self.arena.insert_after(c, gate);
+            c = self.insert_tracked(c, gate);
             self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
             self.set_meta(
@@ -6290,6 +6461,10 @@ impl Mixer {
             );
             placed.push(c);
         }
+        // MIXING DEPTH: overwrite the neighbour-rule depths insert_tracked
+        // gave the products with the splice rule, which measures each product
+        // from BOTH ends of the block it replaced.
+        self.stamp_splice_depths(&placed, depth_d0, depth_d1);
         // Products ride their assigned direction outward, exactly as split
         // pieces do. Float-only, so the function is preserved by construction;
         // it also scatters the litter, which makes a later window less likely
@@ -6538,6 +6713,15 @@ impl Mixer {
             DbSample::Contiguous => self
                 .collect_contiguous(w)
                 .map(|(ids, d)| (ids, d, DbSample::Contiguous)),
+            DbSample::MaxDepth => self
+                .collect_max_depth(w)
+                .map(|(ids, d)| (ids, d, DbSample::MaxDepth)),
+            DbSample::Target => self
+                .collect_target(w)
+                .map(|(ids, d)| (ids, d, DbSample::Target)),
+            DbSample::DepthGain => self
+                .collect_depth_gain(w)
+                .map(|(ids, d)| (ids, d, DbSample::DepthGain)),
             DbSample::Convex => self
                 .collect_convex(w)
                 .map(|(ids, d)| (ids, d, DbSample::Convex)),
@@ -6763,6 +6947,299 @@ impl Mixer {
                 hi = x;
             } else {
                 lo = x;
+            }
+            count += 1;
+        }
+        let ids = self.span_ids(lo, hi);
+        if ids.is_empty() {
+            return None;
+        }
+        Some((ids, dir1))
+    }
+
+    /// Depth-seeking window (docs: mixing depth).
+    ///
+    /// A product's depth is `min(D0 + j, D1 + k - j + 1)`, which peaks near
+    /// `(D0 + D1 + k + 1)/2` — so it is the pair of endpoint depths that
+    /// matters, and ONE deep end buys almost nothing (D0=90, D1=0, k=16 still
+    /// caps products near 9). Seeding therefore scores candidates by the best
+    /// achievable `min(D0, D1)`, not by their own depth.
+    ///
+    /// Scoring is READ-ONLY: it walks the neighbourhood in circuit order and
+    /// never floats a gate. Exactly ONE real convex growth follows, for the
+    /// winning (seed, direction, length). That discipline is load-bearing —
+    /// an earlier version ran all six growths for real, which left the seed's
+    /// recorded home stale and made `restore_seed` walk it back through gates
+    /// it does not commute with, BREAKING THE CIRCUIT'S FUNCTION (caught by
+    /// the global equality check at move 200000).
+    /// Register kill-list gates by their position in the CURRENT gate order
+    /// (equal to input-file order when called before any moves). `p` is the
+    /// per-round probability of seeding a DB window at a live listed gate.
+    pub fn set_target_positions(&mut self, p: f64, p_twist: f64, positions: &[usize]) {
+        let ids = self.arena.ids_in_order();
+        self.p_target = p;
+        self.p_target_twist = p_twist;
+        self.target_pool = positions
+            .iter()
+            .filter_map(|&i| ids.get(i).map(|&id| (id, self.arena.stamp(id))))
+            .collect();
+        self.target_total = self.target_pool.len();
+    }
+
+    /// Kill-list entries still pointing at their original, untouched gate.
+    pub fn target_live(&self) -> usize {
+        self.target_pool
+            .iter()
+            .filter(|&&(id, st)| self.arena.is_linked(id) && self.arena.stamp(id) == st)
+            .count()
+    }
+
+    /// Live kill-list candidates; stale entries are pruned in place.
+    fn target_seed_candidates(&mut self, k: usize) -> Vec<u32> {
+        let arena = &self.arena;
+        self.target_pool
+            .retain(|&(id, st)| arena.is_linked(id) && arena.stamp(id) == st);
+        let mut pool: Vec<u32> = self.target_pool.iter().map(|&(id, _)| id).collect();
+        pool.retain(|&id| self.window_eligible(id));
+        if pool.len() > k {
+            for i in 0..k {
+                let j = i + self.rng.random_range(0..pool.len() - i);
+                pool.swap(i, j);
+            }
+            pool.truncate(k);
+        }
+        pool
+    }
+
+    /// Window seeded AT a kill-list gate. Direction is a coin so the seed's
+    /// output segment lands in the window interior often enough for a
+    /// replacement to re-encode it instead of preserving it as a boundary
+    /// value.
+    fn collect_target(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        const SEED_SAMPLES: usize = 8;
+        let cands = self.target_seed_candidates(SEED_SAMPLES);
+        if cands.is_empty() {
+            return None;
+        }
+        let g = cands[self.rng.random_range(0..cands.len())];
+        let dir = if self.rng.random_bool(0.5) { Dir::R } else { Dir::L };
+        self.db_seed_home = Some((g, self.arena.neighbor(g, Dir::L)));
+        self.grow_convex_from(g, w, dir)
+    }
+
+    fn collect_max_depth(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        const SEED_SAMPLES: usize = 16;
+        let cands = self.depth_seed_candidates(SEED_SAMPLES);
+        if cands.is_empty() {
+            return None;
+        }
+        let lens = [w.saturating_sub(1).max(1), w, w + 1];
+        // (score, tie-break length, seed, dir, len)
+        let mut best: Option<(u32, usize, u32, Dir, usize)> = None;
+        for &g in &cands {
+            let d_seed = self.depth_of(g);
+            for dir in [Dir::R, Dir::L] {
+                for &len in &lens {
+                    // Read-only walk to the prospective far endpoint.
+                    let mut cur = g;
+                    let mut reached = true;
+                    for _ in 0..len.saturating_sub(1) {
+                        let nx = self.arena.neighbor(cur, dir);
+                        if nx == NIL {
+                            reached = false;
+                            break;
+                        }
+                        cur = nx;
+                    }
+                    if !reached {
+                        continue;
+                    }
+                    // What actually caps the products of this block.
+                    let score = d_seed.min(self.depth_of(cur));
+                    let better = match &best {
+                        None => true,
+                        Some((bs, bl, _, _, _)) => score > *bs || (score == *bs && len > *bl),
+                    };
+                    if better {
+                        best = Some((score, len, g, dir, len));
+                    }
+                }
+            }
+        }
+        let (_, _, seed, dir, len) = best?;
+        self.db_seed_home = Some((seed, self.arena.neighbor(seed, Dir::L)));
+        self.grow_convex_from(seed, len, dir)
+    }
+
+    /// Depth-BALANCING window: pick the block whose splice adds the most
+    /// total depth, `sum_j [min(D0+j, D1+w-j+1) - depth(g_j)]`, evaluated
+    /// READ-ONLY over the neighbourhood (no floats until the single real
+    /// growth at the end — see collect_max_depth for why that matters).
+    ///
+    /// Seeds come from BELOW the median depth, where the headroom is; the
+    /// preference for endpoints deeper than the interior is carried entirely
+    /// by the gain score, which is what keeps the rule from simply mixing
+    /// shallow-into-shallow.
+    fn collect_depth_gain(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        const SEED_SAMPLES: usize = 24;
+        let cands = self.shallow_seed_candidates(SEED_SAMPLES);
+        if cands.is_empty() {
+            return None;
+        }
+        let lens = [w.saturating_sub(1).max(1), w, w + 1];
+        // (gain, len, seed, dir)
+        let mut best: Option<(i64, usize, u32, Dir)> = None;
+        for &g in &cands {
+            for dir in [Dir::R, Dir::L] {
+                for &len in &lens {
+                    // Walk the prospective block read-only, collecting depths
+                    // in CIRCUIT order (so j indexes from the left end).
+                    let mut chain: Vec<u32> = Vec::with_capacity(len);
+                    let mut cur = g;
+                    chain.push(cur);
+                    let mut reached = true;
+                    for _ in 0..len.saturating_sub(1) {
+                        let nx = self.arena.neighbor(cur, dir);
+                        if nx == NIL {
+                            reached = false;
+                            break;
+                        }
+                        cur = nx;
+                        chain.push(cur);
+                    }
+                    if !reached || chain.len() < 2 {
+                        continue;
+                    }
+                    if dir == Dir::L {
+                        chain.reverse();
+                    }
+                    let k = chain.len() as u32;
+                    let d0 = self.depth_of(chain[0]);
+                    let d1 = self.depth_of(chain[chain.len() - 1]);
+                    let mut gain: i64 = 0;
+                    for (idx, &id) in chain.iter().enumerate() {
+                        let j = idx as u32 + 1;
+                        let after = d0.saturating_add(j).min(d1.saturating_add(k - j + 1));
+                        gain += after as i64 - self.depth_of(id) as i64;
+                    }
+                    let better = match &best {
+                        None => true,
+                        Some((bg, bl, _, _)) => gain > *bg || (gain == *bg && len > *bl),
+                    };
+                    if better {
+                        best = Some((gain, len, g, dir));
+                    }
+                }
+            }
+        }
+        let (_, len, seed, dir) = best?;
+        self.db_seed_home = Some((seed, self.arena.neighbor(seed, Dir::L)));
+        self.grow_convex_from(seed, len, dir)
+    }
+
+    /// Candidate seeds for depth BALANCING: gates whose depth is at or below
+    /// the circuit's median — where a splice has headroom to lift material.
+    /// `p_depth_random` still applies as a uniform exploration draw.
+    fn shallow_seed_candidates(&mut self, k: usize) -> Vec<u32> {
+        let ids = self.arena.ids_in_order();
+        let explore = self.rng.random_bool(self.params.p_depth_random.clamp(0.0, 1.0));
+        let mut pool: Vec<u32> = if explore {
+            ids.into_iter().filter(|&id| self.window_eligible(id)).collect()
+        } else {
+            let mut ds: Vec<u32> = ids
+                .iter()
+                .filter(|&&id| self.window_eligible(id))
+                .map(|&id| self.depth_of(id))
+                .collect();
+            if ds.is_empty() {
+                return Vec::new();
+            }
+            ds.sort_unstable();
+            let median = ds[ds.len() / 2];
+            ids.into_iter()
+                .filter(|&id| self.window_eligible(id) && self.depth_of(id) <= median)
+                .collect()
+        };
+        if pool.len() > k {
+            for i in 0..k {
+                let j = i + self.rng.random_range(0..pool.len() - i);
+                pool.swap(i, j);
+            }
+            pool.truncate(k);
+        }
+        pool
+    }
+
+    /// Up to `k` candidate seeds for depth-seeking: a uniform draw from the
+    /// deepest stratum (relaxed by `depth_relax` levels, which widens on a
+    /// miss so the mode cannot deadlock on one unconvertible gate), or — with
+    /// probability `p_depth_random` — a uniform draw over all eligible gates,
+    /// which is what creates SEPARATE deep regions so two of them can later
+    /// bracket one window.
+    fn depth_seed_candidates(&mut self, k: usize) -> Vec<u32> {
+        let ids = self.arena.ids_in_order();
+        let explore = self.rng.random_bool(self.params.p_depth_random.clamp(0.0, 1.0));
+        let mut pool: Vec<u32> = if explore {
+            ids.into_iter().filter(|&id| self.window_eligible(id)).collect()
+        } else {
+            let mut best = 0u32;
+            for &id in &ids {
+                if self.window_eligible(id) {
+                    best = best.max(self.depth_of(id));
+                }
+            }
+            let floor = best.saturating_sub(self.depth_relax);
+            ids.into_iter()
+                .filter(|&id| self.window_eligible(id) && self.depth_of(id) >= floor)
+                .collect()
+        };
+        if pool.len() > k {
+            for i in 0..k {
+                let j = i + self.rng.random_range(0..pool.len() - i);
+                pool.swap(i, j);
+            }
+            pool.truncate(k);
+        }
+        pool
+    }
+
+    /// Convex growth from a GIVEN seed in a fixed direction — the mechanics of
+    /// `collect_convex` with the seed and direction supplied by the caller.
+    fn grow_convex_from(&mut self, g1: u32, w: usize, dir1: Dir) -> Option<(Vec<u32>, Dir)> {
+        self.float_to_collision(g1, dir1);
+        let (mut lo, mut hi) = (g1, g1);
+        let mut count = 1usize;
+        let mut evade_budget = Self::EVADE_BUDGET;
+        while count < w {
+            let (mut g3, mut dir) = self.float_block_to_collider(lo, hi, dir1);
+            if g3 == NIL {
+                let (g3b, dirb) = self.float_block_to_collider(lo, hi, dir1.opposite());
+                if g3b == NIL {
+                    break;
+                }
+                g3 = g3b;
+                dir = dirb;
+            }
+            if !self.window_eligible(g3) {
+                if evade_budget == 0 {
+                    self.counters.db_build_aborts += 1;
+                    return None;
+                }
+                evade_budget -= 1;
+                if self.float_to_collision(g3, dir) > 0 {
+                    continue;
+                }
+                let (g3r, dirr) = self.float_block_to_collider(lo, hi, dir.opposite());
+                if g3r == NIL || !self.window_eligible(g3r) {
+                    return None;
+                }
+                g3 = g3r;
+                dir = dirr;
+            }
+            if dir == Dir::R {
+                hi = g3;
+            } else {
+                lo = g3;
             }
             count += 1;
         }
@@ -7070,17 +7547,15 @@ impl Mixer {
         // them after ok2, so a rolled-back insertion leaves no metering trace.
         for (hid, corrs) in &plan.wake {
             for c in corrs {
-                let id = self.arena.insert_after(*hid, c.clone());
+                let id = self.insert_tracked(*hid, c.clone());
                 stamp(self, id);
                 inserted.push(id);
             }
         }
-        let u2 = self
-            .arena
-            .insert_after(self.arena.neighbor(plan.g2, Dir::L), plan.u.clone());
+        let u2 = self.insert_tracked(self.arena.neighbor(plan.g2, Dir::L), plan.u.clone());
         stamp(self, u2);
         inserted.push(u2);
-        let u1 = self.arena.insert_after(plan.g1, plan.u.clone());
+        let u1 = self.insert_tracked(plan.g1, plan.u.clone());
         stamp(self, u1);
         inserted.push(u1);
         (u1, u2, inserted)
@@ -7306,7 +7781,7 @@ impl Mixer {
         self.arena.free_node(id);
         let mut ids = Vec::with_capacity(gates.len());
         for g in gates {
-            cursor = self.arena.insert_after(cursor, g);
+            cursor = self.insert_tracked(cursor, g);
             self.index_add(cursor);
             ids.push(cursor);
         }
@@ -7694,13 +8169,44 @@ impl Mixer {
         if !ms.is_empty() {
             println!("[fmix] m123class mv={} {}", self.moves_done, ms.join(" "));
         }
-        if self.geo_attempts[0] + self.geo_attempts[1] > 0 {
+        if self.p_target > 0.0 || self.p_target_twist > 0.0 {
+            println!(
+                "[fmix] ktarget mv={} live={}/{}",
+                self.moves_done,
+                self.target_live(),
+                self.target_total
+            );
+        }
+        {
+            // Mixing-depth distribution over the live circuit.
+            let ids = self.arena.ids_in_order();
+            if !ids.is_empty() {
+                let ds: Vec<u32> = ids.iter().map(|&id| self.depth_of(id)).collect();
+                let n = ds.len() as f64;
+                let mean = ds.iter().map(|&d| d as f64).sum::<f64>() / n;
+                let mut sorted = ds.clone();
+                sorted.sort_unstable();
+                let pct = |q: f64| sorted[((n - 1.0) * q) as usize];
+                println!(
+                    "[fmix] depth mv={} max={} p99={} p50={} mean={:.2} zero={:.1}%",
+                    self.moves_done,
+                    sorted[sorted.len() - 1],
+                    pct(0.99),
+                    pct(0.50),
+                    mean,
+                    100.0 * ds.iter().filter(|&&d| d == 0).count() as f64 / n,
+                );
+            }
+        }
+        if self.geo_attempts.iter().sum::<u64>() > 0 {
             let rate = |h: u64, a: u64| if a > 0 { 100.0 * h as f64 / a as f64 } else { 0.0 };
             println!(
-                "[fmix] geo mv={} ctg={}/{} ({:.2}%) cvx={}/{} ({:.2}%)",
+                "[fmix] geo mv={} ctg={}/{} ({:.2}%) cvx={}/{} ({:.2}%) depth={}/{} ({:.2}%) gain={}/{} ({:.2}%)",
                 self.moves_done,
                 self.geo_hits[0], self.geo_attempts[0], rate(self.geo_hits[0], self.geo_attempts[0]),
                 self.geo_hits[1], self.geo_attempts[1], rate(self.geo_hits[1], self.geo_attempts[1]),
+                self.geo_hits[2], self.geo_attempts[2], rate(self.geo_hits[2], self.geo_attempts[2]),
+                self.geo_hits[3], self.geo_attempts[3], rate(self.geo_hits[3], self.geo_attempts[3]),
             );
         }
         // Pair-geometry meters (docs/NONLOCAL_PHASE_A.md), only when armed.
@@ -8035,6 +8541,9 @@ mod mix_tests {
             p_any: 0.1,
             s_db: 5,
             db_min_window: 0,
+            p_depth: 0.0,
+            p_depth_random: 0.1,
+            p_depth_gain: 0.0,
             p_convex: 0.5,
             mix_pay_random: true,
             prof_n: [6.0, 18.0, 34.0],
@@ -8848,6 +9357,9 @@ mod mix_tests {
             db_prefixes: true,
             s_db: 9,
             db_min_window: 0,
+            p_depth: 0.0,
+            p_depth_random: 0.1,
+            p_depth_gain: 0.0,
             db_max_span: 4, // deliberately tight: forces the span-skip path too
             p_twist: 0.0,
             shuffle_rate: 0.0,
@@ -9759,6 +10271,9 @@ mod mix_tests {
             p_db: 0.0, // store-free: exercise the sampler, not the store
             s_db: 9,
             db_min_window: 0,
+            p_depth: 0.0,
+            p_depth_random: 0.1,
+            p_depth_gain: 0.0,
             s_db_ctg: Some(3),
             verify_every: u64::MAX,
             report_every: u64::MAX,
@@ -10065,6 +10580,9 @@ mod mix_tests {
             w_pool: 0,
             s_db: 5,
             db_min_window: 0,
+            p_depth: 0.0,
+            p_depth_random: 0.1,
+            p_depth_gain: 0.0,
             verify_every: 1_000, // global_check catches any functional drift
             report_every: u64::MAX,
             seed: 5,

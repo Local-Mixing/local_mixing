@@ -108,6 +108,13 @@ fn main() {
     let (mut span_lo, mut span_hi) = (7usize, 12usize);
     let (mut out_dir, mut seed) = ("mgdb_out".to_string(), 20260815u64);
     let mut target_lens: Vec<usize> = Vec::new();
+    // Value convention of the SOURCE store: the bounded curated store is
+    // legacy-swapped-controls (default), the full store is native.
+    let mut swap = true;
+    // Manifest of an existing pool build: targets whose minimal spelling is
+    // already covered are skipped, so only newly-appeared permutations are
+    // generated and the two dirs can simply be merged.
+    let mut skip_manifest: Option<String> = None;
     // > 0: exact per-size quotas — every target gets per_size circuits at
     // EVERY length in --target-lens (count is then ignored).
     let mut per_size = 0usize;
@@ -128,11 +135,25 @@ fn main() {
                     .collect()
             }
             "--count-per-size" => per_size = v().parse().expect("bad count-per-size"),
+            "--native" => swap = false,
+            "--skip-existing" => skip_manifest = Some(v()),
             _ => panic!("unknown arg {arg}"),
         }
     }
     std::fs::create_dir_all(&out_dir).expect("create out dir");
     let mut rng = StdRng::seed_from_u64(seed);
+    let covered: std::collections::HashSet<String> = match &skip_manifest {
+        Some(p) => std::fs::read_to_string(p)
+            .unwrap_or_else(|e| panic!("read --skip-existing {p}: {e}"))
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split('\t').nth(4).map(|s| s.to_string()))
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    if !covered.is_empty() {
+        eprintln!("[mgdb] --skip-existing: {} minimal spellings already covered", covered.len());
+    }
 
     // Full scan: collect every target entry (min friend size in lo..=hi), a
     // reservoir of 7-gate-C identity material (the long construction), and —
@@ -159,7 +180,7 @@ fn main() {
         needed_ls.iter().map(|&l| (l, 0u64)).collect();
     for s in 0..256usize {
         scan_shard(&dir, s, &mut |value: &[u8]| {
-            let fr = parse_friends(value, true); // legacy-swapped-controls
+            let fr = parse_friends(value, swap);
             if fr.is_empty() {
                 return;
             }
@@ -224,9 +245,18 @@ fn main() {
     let mut len_hist: std::collections::BTreeMap<usize, u64> = std::collections::BTreeMap::new();
     let mut underfilled = 0u64;
 
+    let mut skipped = 0u64;
     for (idx, fr) in targets.iter().enumerate() {
         let mn = fr.iter().map(|f| f.len()).min().unwrap();
         let reference = fr.iter().filter(|f| f.len() == mn).min_by_key(|f| f.to_vec()).unwrap().clone();
+        if !covered.is_empty() {
+            let txt: Vec<String> =
+                reference.iter().map(|&[t, p, n]| format!("{t},{p},{n}")).collect();
+            if covered.contains(&txt.join(";")) {
+                skipped += 1;
+                continue;
+            }
+        }
         let want_total = if per_size > 0 { per_size * target_lens.len() } else { count };
         let mut quota: std::collections::HashMap<usize, usize> = if per_size > 0 {
             target_lens.iter().map(|&t| (t, per_size)).collect()
@@ -346,6 +376,7 @@ fn main() {
     let lh: Vec<String> = len_hist.iter().map(|(l, c)| format!("{l}g:{c}")).collect();
     println!("[mgdb] length histogram: {}", lh.join(" "));
     println!("[mgdb] underfilled targets (kept < count): {underfilled}");
+    println!("[mgdb] skipped (already covered by --skip-existing): {skipped}");
     println!(
         "[mgdb] wrote {} circuits across {} permutation DBs in {out_dir}; rejects: verify={rej_verify} dup={rej_dup} wide={rej_wide}",
         total_kept,

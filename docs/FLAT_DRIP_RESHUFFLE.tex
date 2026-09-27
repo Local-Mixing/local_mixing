@@ -1,0 +1,595 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+
+\newcommand{\g}{\texttt{g57}}
+\newcommand{\CNOT}{\texttt{CNOT}}
+\newcommand{\NCNOT}{\texttt{NCNOT}}
+\newcommand{\NSW}{\textsc{Nswitch}}
+\newcommand{\CSW}{\textsc{Cswitch4}}
+\newcommand{\F}{\mathbb{F}_2}
+
+\title{Flat Drip Reshuffle:\\ aux-dependent data-wire reshuffling of $k$ disjoint \g's}
+\author{local-mixing project}
+\date{2026--08--29}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We design a circuit computing
+$F(a_1,b_1,c_1,\dots,a_k,b_k,c_k,Z)=\bigl(p_Z(\g(a_1,b_1,c_1),\dots,\g(a_k,b_k,c_k)),\,Z\bigr)$
+over the gate alphabet $\{\g,\CNOT,\NCNOT\}$, such that no $\F$-affine relation holds between
+internal wire segments and the $k$ hidden values $h_i=a_i\oplus(b_i\vee\neg c_i)$, beyond the
+single relation forced by $F$ itself. The construction routes the input \emph{triples} under aux
+control before firing the \g's positionally, using a new 3-gate in-alphabet controlled swap
+(\NSW). Cost: $10k$ gates (bus-granular $p_Z$) or $19k$ gates (wire-granular $p_Z$), $100\%$
+\g/\CNOT. The degree-1 guarantee is proved for all even $k$ and confirmed empirically
+(exhaustive at $k\le4$, sampled at $k=6$, and by the project's native \texttt{segment\_deduce}
+tool at $k=4,8$: $0$ hidden-value segments deducible, $0$ interior equations). At degree~2,
+first-layer pair sums $h_i\oplus h_j$ leak (proved constructively); a same-cost variant
+(``19kB'', three pre-layers) confines that leak to the single mid-cut. $k=1$ is impossible and
+$k=2$ requires one wider gate; $t$-pin gates otherwise buy nothing. The gadget extends to
+merely \emph{commuting} (non-wire-disjoint) gate families without breaking correctness, but the
+security guarantee erodes through fragmentation of the automorphism group of the wire-sharing
+hypergraph: the degree-1 leak lattice grows to one forced subtotal per routing orbit plus the
+functionally forced sums, with rigid gates leaking their hidden value outright
+(\S\ref{sec:commuting}).
+\end{abstract}
+
+\section{Task}
+
+Inputs: $n=3k$ data wires holding triples $T_i=(a_i,b_i,c_i)$, plus $n'$ aux wires $Z$.
+Target functionality:
+\[
+F(a_1,b_1,c_1,\dots,a_k,b_k,c_k,Z)\;=\;\bigl(\,p_Z(\g(a_1,b_1,c_1),\dots,\g(a_k,b_k,c_k)),\;Z\,\bigr),
+\]
+where $\g(a,b,c)=(a\oplus(b\vee\neg c),\,b,\,c)$ and $p_Z$ is a $Z$-dependent permutation of the
+$n$ data wires (the designer chooses the family). The $k$ \emph{hidden values} are
+\[
+h_i \;=\; a_i\oplus(b_i\vee\neg c_i) \;=\; a_i\oplus 1\oplus c_i\oplus b_ic_i \quad\text{(ANF)}.
+\]
+
+\paragraph{Constraints.}
+\begin{itemize}
+\item[(a)] \textbf{Alphabet.} Only \g, \CNOT, \NCNOT. In XGate semantics
+($t \mathrel{\hat=} \mathit{comp}\oplus\bigwedge(w{=}\mathit{pol})$):
+$\CNOT$: $t\mathrel{\oplus{=}}w$; $\NCNOT$: $t\mathrel{\oplus{=}}\neg w$; \g{} is the comp-1
+gate with one positive and one negative control literal, $t\mathrel{\oplus{=}}1\oplus(u\wedge\neg v)
+= t\mathrel{\oplus{=}}(v\vee\neg u)$; either wire may take either role.
+\item[(b)] \textbf{No affine leakage.} No $\F$-affine relation may hold identically over all
+$(x,Z)$ between wire \emph{segments} of the designed circuit and the hidden values: there is no
+set $S$ of segments and nonempty $T\subseteq[k]$ with
+$\bigoplus_{s\in S}s\;\oplus\;\bigoplus_{i\in T}h_i=\mathrm{const}$.
+(A \emph{segment} is the value written by a gate onto its target, as a Boolean function of the
+circuit inputs; initial wire values are also segments.) By Prop.~\ref{prop:forced} the full sum
+$T=[k]$ is forced by $F$ itself, so the achievable optimum is: \emph{nothing but the forced full
+sum}. Degree-2 resistance (the adversary may also use pairwise \emph{products} of segments) is a
+stretch goal.
+\item[(c)] \textbf{Minimal gate count.}
+\end{itemize}
+
+\section{Core idea: route triples first, fire positionally}
+
+Because the $k$ \g's are \emph{identical and wire-disjoint}, a $Z$-controlled permutation of the
+\emph{triples} can precede the nonlinear step: whichever triple is routed to bus position $j$,
+the fixed \g{} gate at position $j$ computes the correct hidden value. Firing therefore needs
+\emph{no guarded multiplexing at all} --- this removes the $2^{\text{arity}\cdot k}$ guarded-copy
+blowup (and the wide, DB-undigestible comp-0 gates) that the general drip gadgetizer pays for
+input-dependent operand access. Routing before firing makes the value-to-wire schedule
+$Z$-dependent, which is what defeats static affine relations.
+
+\section{Primitives}
+
+\subsection{\NSW: a 3-gate in-alphabet controlled swap}
+
+\begin{center}
+\begin{tabular}{ll}
+$G_1$: & $x \mathrel{\oplus{=}} y$ \hfill (\CNOT)\\
+$G_2$: & $y \mathrel{\oplus{=}} 1\oplus(x\wedge\neg z)$ \hfill (\g: target $y$, controls $(x,+),(z,-)$)\\
+$G_3$: & $x \mathrel{\oplus{=}} y$ \hfill (\CNOT)
+\end{tabular}
+\end{center}
+
+Exhaustively verified truth table (inputs $\to$ outputs $(x'',y')$):
+
+\begin{center}
+\begin{tabular}{cccl@{\qquad}cccl}
+\toprule
+$z$&$x$&$y$&out / action & $z$&$x$&$y$&out / action\\
+\midrule
+0&0&0&$(1,1)$ flip both & 1&0&0&$(1,1)$ flip both\\
+0&0&1&$(0,1)$ nothing   & 1&0&1&$(1,0)$ flip both\\
+0&1&0&$(1,0)$ nothing   & 1&1&0&$(0,1)$ flip both\\
+0&1&1&$(0,0)$ flip both & 1&1&1&$(0,0)$ flip both\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two \emph{equivalent} descriptions of the same map:
+\begin{enumerate}
+\item \textbf{Swap + constant complement:} $z=0\to(\neg y,\neg x)$ (swap), $z=1\to(\neg x,\neg y)$
+(hold); i.e.\ a controlled swap with \emph{swap-on-zero} and an \textbf{unconditional complement
+of both outputs}.
+\item \textbf{Conditional double-flip:} both wires flip in place \textbf{iff $z=1\;\vee\;x=y$};
+otherwise nothing happens. (The two views coincide because swapping equal bits is a no-op and
+swapping distinct bits equals complementing both in place.)
+\end{enumerate}
+ANF: $x''=1\oplus x\oplus(1\oplus z)(x\oplus y)$,\quad $y'=1\oplus y\oplus(1\oplus z)(x\oplus y)$.
+
+\begin{remark}[opposite polarity]
+Building $G_2$ as $y\mathrel{\oplus{=}}1\oplus(z\wedge\neg x)$ instead gives: $z=1\to$ clean
+swap, $z=0\to$ flip both in place (equivalently: flip both iff $z=0\vee x\neq y$). That
+variant's complement is \emph{$Z$-dependent} (only the hold branch flips), which destroys the
+structural cancellation below and would require \NCNOT{} corrections; the constant-sign variant
+is the right building block.
+\end{remark}
+
+Since \NSW's complement is $Z$-independent it commutes with the routing, giving:
+\begin{itemize}
+\item \textbf{Even-layer cancellation.} If every data wire passes through exactly one \NSW{} per
+layer (perfect matchings), all wires are complemented after layer 1 and \emph{clean after
+layer 2} (an \NSW{} fed complemented inputs emits clean routed values). No correction gates, and
+no \NCNOT{} anywhere in the even-$k$ construction.
+\item \textbf{Minimality.} Exhaustive search over all $324$ two-gate compositions in the
+alphabet on $3$ wires (any complement pattern, either $z$-polarity): \emph{no 2-gate controlled
+swap exists} (each alphabet gate writes only its target, and a swap must overwrite both data
+wires while cancelling each wire's own initial value). There are exactly $20$ three-gate
+solutions, \emph{none complement-free}: ``complement + even layers'' is optimal, not a
+workaround.
+\end{itemize}
+
+\subsection{\CSW: a 4-gate clean switch}
+
+\[
+x\mathrel{\oplus{=}}y;\quad
+y\mathrel{\oplus{=}}1\oplus(x\wedge\neg z_1);\quad
+y\mathrel{\oplus{=}}1\oplus(x\wedge\neg z_2);\quad
+x\mathrel{\oplus{=}}y .
+\]
+The two \g{} constants cancel: the middle pair contributes
+$y\mathrel{\oplus{=}}(x\oplus y)\cdot(z_1\oplus z_2)$, so the net map is \textbf{swap iff
+$z_1\oplus z_2=1$, identity otherwise --- no complement} (verified exactly). \CSW{} enables odd
+layer counts (odd-$k$ patches, third-layer hardening) where \NSW's parity bookkeeping fails.
+Caveat: its swap selector $z_1\oplus z_2$ is \emph{affine} in $Z$, so it raises no recovery
+degree by itself (only genuinely conjunctive guards would; \S\ref{sec:tpin}).
+
+\section{Constructions}\label{sec:constructions}
+
+Data wires $0..n{-}1$, triple $i$ on wires $(3i,3i{+}1,3i{+}2)$; aux wires after data; aux are
+only ever read, so $Z$ passes through unchanged. All variants assume $k\ge3$
+(\S\ref{sec:smallk} for $k\le2$) and even $k$ (below for odd $k$).
+
+\paragraph{Base layers.}
+\begin{itemize}
+\item \textbf{P1, P2 (bus-granular pre-routing).} Two shifted perfect matchings on the $k$
+buses, $M_1=\{(0,1),(2,3),\dots\}$, $M_2=\{(1,2),(3,4),\dots,(k{-}1,0)\}$; each matched bus pair
+gets \emph{one fresh aux bit} shared by its three rail-\NSW's (a-, b-, c-rails), so triples move
+intact. $M_1\cup M_2$ is a single $k$-cycle --- \emph{connected}, which is what kills
+partial-sum invariants (Thm.~\ref{thm:deg1}). After P2 all values are clean.
+\item \textbf{FIRE.} $k$ native \g{} gates, one per bus:
+a-rail $\mathrel{\oplus{=}}$ (b-rail $\vee$ $\neg$c-rail), controls (c-rail,$+$),(b-rail,$-$),
+on clean operands.
+\item \textbf{W1, W2 (wire-granular post-routing, optional).} Two shifted perfect matchings over
+all $n$ data wires, fresh bit per switch; dissolves the bus/rail structure. Complements cancel
+again.
+\end{itemize}
+
+\paragraph{Variants.}
+\begin{center}
+\footnotesize
+\begin{tabular}{lllllll}
+\toprule
+Variant & Layers & Gates & Composition & Aux & Deg-1 leak & Deg-2 leak (interior)\\
+\midrule
+Minimal & P1 P2 F & $10k$ & $6k$ \CNOT{} $+\,4k$ \g & $k$ & full sum & $M_1$ pairs, cuts $\ge$ mid\\
+Full & P1 P2 F W1 W2 & $19k$ & $12k$ \CNOT{} $+\,7k$ \g & $4k$ & full sum & $M_1$ pairs, cuts $\ge$ mid\\
+\textbf{19kB} & P1 P2 P3 F$^{*}$ W1 & $19k$ & $12k$ \CNOT{} $+\,7k$ \g & $3k=n$ & full sum & mid-cut only\\
+\CSW{} layer & $+$ one clean bus layer & $+6k$ & --- & $+k$ & --- & as 19kB\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+F$^{*}$ in 19kB: after an odd number of bus layers the rails are complemented; firing with the
+\emph{flipped literal assignment} (b-rail,$+$),(c-rail,$-$) --- i.e.\
+$t\mathrel{\oplus{=}}1\oplus(\text{b-rail}\wedge\neg\text{c-rail})$ on the complemented rails ---
+writes exactly $\neg h$ onto the a-rail (with wire values $(\beta,\gamma)=(\neg B,\neg C)$ one
+needs $f(\beta,\gamma)=1\oplus\beta\oplus\beta\gamma=1\oplus(\beta\wedge\neg\gamma)$), and the
+single W1 layer's complement cleans it. 19kB re-spends the same $19k$ budget for three
+pre-layers, needs exactly $n'=n$ fresh aux bits, and has the best achievable degree-2 profile
+(\S\ref{sec:hardening}).
+
+\emph{$L$ extra wire layers ($L$ even):} total $10k+4.5kL$ gates; \CNOT{} $6k+3kL$;
+\g{} $4k+1.5kL$; aux $k+1.5kL$.
+
+\paragraph{Odd $k$.} A ``closing switch'' across the leftover bus is \emph{unsound}: a value's
+complement count equals the number of switches it traverses, which becomes route-($Z$-)dependent
+in partial layers --- verified functional failure. The cheap sound fix is \emph{phantom
+complements}: leave one bus idle per layer and complement its rails in place
+($t\mathrel{\oplus{=}}\neg w;\ t\mathrel{\oplus{=}}w$ = \NCNOT+\CNOT{} pair reading any wire,
+$2$ gates/rail), keeping the per-layer ``every bus complemented once'' invariant. Cost: minimal
+$10k{+}3$, full $19k{+}4$. The per-layer idle bus has routing depth $1$, so its $h$ is
+individually degree-2-recoverable; the premium fix is one closing \CSW{} on the two
+once-dispersed buses after P2 ($+12$ gates, $+2$ bits), restoring the degree-2 profile.
+
+\section{Complexity}
+
+\begin{itemize}
+\item \textbf{Upper bounds:} $10k$ / $19k$ as above ($k$ even), all in-alphabet, $0$ \NCNOT.
+\item \textbf{No 2-gate switch} (exhaustive); every controlled transposition costs $\ge3$ gates.
+\item \textbf{Architectural floor.} Fire must follow $Z$-dependent routing (compute-then-route
+materializes a bare $h_i$ --- an affine leak); pre-fire routing must move triples intact and its
+transposition union graph must connect all $k$ buses (else a proper component sum is a
+$Z$-invariant affine leak), so $\ge k-1$ bus links; each bus link needs all $6$ wires of two
+triples written, giving $\ge6$ gates/link by write counting; plus $k$ fire gates.
+\textbf{Proven floor $7k-6$}; with the (exhaustive) 3-gates-per-rail-switch bound,
+$9(k-1)+k=10k-9$ is the plausible tight floor. The minimal variant is within $9$ gates of it.
+\item The W layers buy $p_Z$ richness (wire anonymity; key space $2^{4k}$ vs $2^{k}$),
+\emph{not} security against (b): they are provably irrelevant to the degree-1 guarantee
+(Thm.~\ref{thm:deg1}) and never help degree 2 (\S\ref{sec:deg2}).
+\end{itemize}
+
+\section{Security analysis}
+
+\subsection{Model}
+
+All segments are Boolean functions of $(x,Z)\in\{0,1\}^n\times\{0,1\}^{n'}$. The degree-$d$
+adversary (the \texttt{segment\_deduce} model) may take any $\F$-combination of
+$\{1\}\cup\{\text{segments}\}$ ($d=1$), plus all pairwise products of segments ($d=2$), and wins
+if the combination equals $\bigoplus_{i\in T}h_i$ identically, for some nonempty $T$. We use
+multilinear normal forms; ``coefficient of $b_ic_i$'' means the coefficient in the
+$x$-multilinear expansion, itself a function of $Z$.
+
+\subsection{The forced leak, and $k=1$}
+
+\begin{proposition}\label{prop:forced}
+For every correct implementation of $F$,
+$\bigoplus_j(\text{data output}_j)\;\oplus\;\bigoplus_i(b_i\oplus c_i)\;=\;\bigoplus_{i\in[k]}h_i$
+identically.
+\end{proposition}
+\begin{proof}
+The data outputs are a permutation of the multiset $\{h_i,b_i,c_i\}$, so their XOR is
+$\bigoplus_i(h_i\oplus b_i\oplus c_i)$; XOR the input segments $b_i,c_i$ off.
+\end{proof}
+
+Hence $T=[k]$ is always available to a degree-1 adversary that sees the boundary; requirement
+(b) can only demand that nothing \emph{else} leaks.
+
+\begin{corollary}[$k=1$ impossible]
+At $k=1$ the forced full sum \emph{is} $h_1$; reject $k=1$ at the interface.
+\end{corollary}
+
+In the constructions the forced sum also appears interiorly as $\bigoplus_j t_j=\bigoplus_i h_i$,
+where $t_j$ are the $k$ fired-target segments (see the proof of Lemma~\ref{lem:structure}).
+
+\subsection{Structure lemma}
+
+\begin{lemma}[canonical form of segments]\label{lem:structure}
+In every variant of \S\ref{sec:constructions}, each segment $s$ can be written
+\[
+s\;=\;\ell_s(x;Z)\;\oplus\;\sum_{i\in[k]}Q_s[i](Z)\cdot b_ic_i ,
+\]
+where $\ell_s$ is $x$-affine (with coefficients functions of $Z$) and $Q_s[i]$ are functions of
+$Z$. Moreover: pre-fire segments and all initial segments have $Q_s=0$; the fired target at bus
+$j$ has $Q_{t_j}[i]=\chi_{ij}(Z_P):=[\sigma_{Z_P}(i)=j]$, where $\sigma_{Z_P}$ is the bus
+permutation realized by the pre-layers.
+\end{lemma}
+\begin{proof}
+By induction along the circuit. Every routing gate is a \CNOT{} (XOR of two wire values --- the
+form is closed under XOR) or a switch-middle \g{} whose control pair is (data wire, aux wire) ---
+multiplying a data value by an aux literal changes neither its $x$-degree nor the claimed form
+(it multiplies $\ell$ and $Q$ by $(1\oplus z)$). Pre-fire, all data values are $x$-affine, so
+$Q=0$. \emph{The only gate in the entire construction whose two controls both read data wires is
+FIRE.} At the fire cut, the rails of bus $j$ hold (up to the known constant complement, which
+only affects $\ell$)
+$A_j=\sum_i\chi_{ij}a_i$, $B_j=\sum_i\chi_{ij}b_i$, $C_j=\sum_i\chi_{ij}c_i$ with the
+\emph{same} coefficients $\chi_{ij}$ --- the triple was routed intact (bus-granular switches
+share one bit across the three rails). The fire writes
+$t_j=A_j\oplus1\oplus C_j\oplus B_jC_j$, and
+\[
+B_jC_j=\sum_{i,i'}\chi_{ij}\chi_{i'j}\,b_ic_{i'}=\sum_i\chi_{ij}\,b_ic_i ,
+\]
+because $\chi_{ij}\chi_{i'j}=0$ as a function of $Z$ for $i\neq i'$ (a permutation cannot send
+two sources to one target). So $Q_{t_j}=(\chi_{1j},\dots,\chi_{kj})$ and, summing over $j$ (each
+source lands exactly once), $\bigoplus_j t_j=\bigoplus_i h_i$. Post-fire gates again only
+combine data with data by XOR or multiply data by aux literals, preserving the form.
+\end{proof}
+
+\subsection{Invariant-subset lemma}
+
+Write the pre-fire bus permutation as $\sigma_Z=\pi_L\circ\cdots\circ\pi_1$, each layer
+$\pi_\ell$ a product of disjoint transpositions, each transposition toggled by its own fresh aux
+bit.
+
+\begin{lemma}\label{lem:invariant}
+Let $J\subseteq[k]$ be such that $\sigma_Z^{-1}(J)$ is the same set for all $Z$. Then $J$ is
+invariant under every transposition of every layer; hence if the union graph
+$M_1\cup\cdots\cup M_L$ is connected, $J\in\{\emptyset,[k]\}$.
+\end{lemma}
+\begin{proof}
+Toggling a top-layer ($\pi_L$) bit $s$ replaces $\sigma$ by $\tau_s\circ\sigma$ (transpositions
+within a layer act on disjoint pairs, so toggling one bit exactly left-multiplies by $\tau_s$);
+constancy of $\sigma^{-1}(J)$ gives $\tau_s(J)=J$ for every $\tau_s\in M_L$. Toggling a
+bottom-layer bit $r$ replaces $\sigma$ by $\sigma\circ\tau_r$, giving
+$\tau_r(\sigma^{-1}(J))=\sigma^{-1}(J)$; specializing to the all-hold assignment ($\sigma=id$,
+under which $\sigma^{-1}(J)=J$) gives $\tau_r(J)=J$ for every $\tau_r\in M_1$. For a middle
+layer $\ell$, toggling bit $s$ yields
+$(\pi_L\cdots\pi_{\ell+1})\,\tau_s\,(\pi_L\cdots\pi_{\ell+1})^{-1}\circ\sigma$; specializing the
+layers above $\ell$ to all-hold reduces this to the top-layer case, giving $\tau_s(J)=J$ for
+$\tau_s\in M_\ell$. A set invariant under a connected family of transpositions is $\emptyset$ or
+$[k]$.
+\end{proof}
+
+\subsection{Degree-1 theorem}
+
+\begin{theorem}[degree-1 exactness]\label{thm:deg1}
+In every variant of \S\ref{sec:constructions} (any even $k$; odd $k$ with the phantom fix; any
+even number of W layers), the affine span of $\{1\}\cup\{\text{all segments, boundary
+included}\}$ contains $\bigoplus_{i\in T}h_i$ for exactly one nonempty $T$, namely $T=[k]$.
+\end{theorem}
+\begin{proof}
+Existence: Prop.~\ref{prop:forced} / Lemma~\ref{lem:structure}. Exclusivity: suppose
+$\bigoplus_{s\in S}s\oplus\bigoplus_{i\in T}h_i=\varepsilon$ identically. Extract the
+coefficient of $b_ic_i$ (Lemma~\ref{lem:structure}):
+$\sum_{s\in S}Q_s[i](Z)=[i\in T]$ for all $Z$ and all $i$. Now specialize \emph{all W-layer bits
+to $0$}. Under $z_W=0$ every W-switch is the fixed affine map $(u,v)\mapsto(\neg v,\neg u)$ with
+middle $u\oplus v$, so every W-region segment restricted to $z_W=0$ is a
+\emph{constant-coefficient} affine combination of fire-cut wire values and pre-fire segments;
+its $Q$-vector is $\sum_j\lambda_j v_j$ with $\lambda_j\in\{0,1\}$ and
+$v_j=(\chi_{1j},\dots,\chi_{kj})$. Pre-fire and initial segments have $Q=0$. Hence the constant
+vector $e_T$ equals $\sum_{j\in J}v_j$ for $J=\{j:\lambda_j=1\}$ as a function of the P-layer
+bits; evaluating componentwise, $[\sigma_{Z_P}(i)\in J]$ must be constant in $Z_P$ for every
+$i$, i.e.\ $\sigma^{-1}(J)$ is a fixed set $U$ with $T=U$. Lemma~\ref{lem:invariant} (the
+pre-layer union graph is a $k$-cycle, resp.\ path+phantoms, resp.\ $M_1\cup M_2\cup M_1$ --- all
+connected) forces $U\in\{\emptyset,[k]\}$, and $T\neq\emptyset$ gives $T=[k]$.
+\end{proof}
+
+\begin{remark}
+The theorem includes the boundary: inputs are $x$-affine ($Q=0$), so giving the adversary the
+input cut changes nothing at degree 1. It also shows the \textbf{W layers and their bits are
+irrelevant to (b)} --- the guarantee lives entirely in the P-layer bits.
+\end{remark}
+
+\subsection{Degree 2: what leaks and what doesn't}\label{sec:deg2}
+
+\begin{proposition}[pair-sum leak: the stretch goal fails for first-layer pairs]\label{prop:pairleak}
+In the 2-pre-layer variants, for every $M_1$ pair $\{p,q\}$, the sum $h_p\oplus h_q$ lies in the
+degree-2 span of segments available at the fire cut (fired targets and aux wires alone).
+Explicitly, let P2 route $p$ via its $M_2$ switch $(p,p')$ with bit $w_1$ and $q$ via $(q,q')$
+with bit $w_2$ (swap-on-zero):
+\[
+h_p\oplus h_q \;=\; t_{p'}\oplus t_{q'}\;\oplus\;w_1\,(t_p\oplus t_{p'})\;\oplus\;w_2\,(t_q\oplus t_{q'}).
+\]
+\end{proposition}
+\begin{proof}
+$\{p,q\}$ is invariant under P1 (its own switch permutes within the pair), so after P1 the two
+values of the pair occupy positions $\{p,q\}$; P2 moves them independently by one transposition
+each, and the displayed mux selects the two landing positions.
+\end{proof}
+At $k=4$ this is the verified identity
+$h_0\oplus h_1=t_2\oplus t_3\oplus t_0z'_1\oplus t_1z'_0\oplus t_2z'_0\oplus t_3z'_1$
+($0$ mismatches on $2\cdot10^5$ samples).
+
+\paragraph{General rule (verified).} At degree 2, the interiorly exposed sets $T$ are exactly
+the \textbf{unions of first-layer matching components}: such $T$ need only one layer peeled (one
+aux literal per product), while any other proper $T$ needs two independent P-literals, i.e.\
+degree-3 monomials. Consequences, all verified empirically (exhaustive $k\le4$, sampled $k=6$):
+\begin{itemize}
+\item \textbf{Individual $h_i$ are never degree-2-recoverable at any interior cut, in any
+variant.}
+\item $M_1$-pair sums are degree-2-recoverable at \emph{every} cut from the mid-cut (post-P1)
+onward, including post-fire --- adding W layers never removes this (post-fire segments persist
+in the segment pool).
+\item The mid-cut exposure is inherent to any matching-first architecture: one product of
+co-located routed rails rebuilds a ``virtual fired value'' one layer in
+($h_p\oplus h_q=(A_p\oplus A_q)\oplus(B_p\oplus B_q)\oplus(B_pC_p\oplus B_qC_q)$ over a P1 pair,
+complements cancelling). It is the interior analogue of the input-boundary caveat below and sits
+behind upstream mixing depth in the intended embedding.
+\end{itemize}
+The negative direction of the general rule (nothing beyond unions of first-layer components) is
+\emph{empirically certified}, not yet proved; a proof in the style of Thm.~\ref{thm:deg1} is an
+open item.
+
+\begin{proposition}[input boundary]\label{prop:inputdeg2}
+With input segments available, every $h_i$ is degree-2 deducible:
+$h_i=a_i\oplus1\oplus c_i\oplus b_ic_i$ and $b_ic_i$ is a pairwise product of two input
+segments. This is the boundary contract, not an interior leak: in the drip embedding the
+gadget's inputs are themselves mid-mix values. (Standalone, cuts within one gate of the input
+are the input cut in all but name; see the windowed runs of \S\ref{sec:verif}.)
+\end{proposition}
+
+\subsection{Degree-2 hardening: three pre-layers}\label{sec:hardening}
+
+\begin{proposition}[verified]
+With three bus layers (19kB, or the $+6k$ \CSW{} layer), every cut $\ge$ post-P2 is degree-2
+clean (only the forced full sum): a union-of-$M_1$-components set is dispersed by \emph{two}
+subsequent layers, so peeling with a single literal per product no longer suffices. Only the
+post-P1 mid-cut retains $M_1$-pair sums (inherent, above). Verified at $k=4$ and $k=6$
+(functional + full span audit).
+\end{proposition}
+
+\subsection{Small $k$}\label{sec:smallk}
+
+\textbf{$k=1$: impossible} (Cor.\ to Prop.~\ref{prop:forced}).
+
+\textbf{$k=2$: in-alphabet degree-2 collapse.} Requirement (b) holds (two distinct-bit switches
+on the one pair; verified), but degree 2 always breaks individuals: any in-alphabet switch stack
+on a single pair has swap selector $s(Z)$ \emph{affine} in $Z$ (\NSW{} contributes a literal,
+\CSW{} contributes $z\oplus z'$; a nonlinear selector would need an aux$\times$aux product
+multiplying $x\oplus y$, unavailable with read-only aux since the alphabet's only product term
+pairs a data literal with an aux literal). Then $h_0=t_0\oplus s\cdot(t_0\oplus t_1)$ exhibits
+$h_0$ in the degree-2 span. The only escape is a genuinely conjunctive guard: one $t$-pin
+2-controlled switch (swap iff $z_1\wedge z_2$, $11$ gates at $k=2$) restores full degree-2
+cleanliness (verified). Alternatively require $k\ge3$.
+
+\subsection{Aux-bit budget and sharing}\label{sec:sharing}
+
+\textbf{Rule (from Thm.~\ref{thm:deg1}):} the degree-1 guarantee lives \textbf{entirely in the
+P-layer bits --- keep them fresh and never share a P bit into a W switch} (a shared bit opens a
+compensating-route channel that is unauditable through routing). W bits are freely shareable as
+far as (b) is concerned.
+
+\textbf{Sharing criterion (toggle-group generalization of Lemma~\ref{lem:invariant}).} For any
+proposed grouping of P bits, the group generated by the \emph{achievable grouped toggles} must
+have a \textbf{single orbit} on $[k]$. Verified grades at $k=4$: same-layer P sharing keeps (b)
+but widens the degree-2 exposure to all even-weight pair sums; whole-layer sharing ($2$ bits
+total) still satisfies (b) --- the true degree-1 floor is $n'=2$ --- but collapses $p_Z$ to $4$
+permutations; \textbf{one global bit is fatal}: the toggle group $\{id,(0\,2)(1\,3)\}$ has
+orbits $\{0,2\},\{1,3\}$ and $h_0\oplus h_2$, $h_1\oplus h_3$ enter the \emph{affine} span
+(hard-requirement violation, verified). Recommended: 19kB with $n'=n=3k$ fresh; or $n'=4k$
+fresh for the full variant.
+
+\subsection{Extension: merely commuting (non-wire-disjoint) gates}\label{sec:commuting}
+
+The construction can be \textbf{used without breaking correctness even when the $k$ gates are
+not wire-disjoint but merely commute; what erodes is the security guarantee, through
+fragmentation of the automorphism group.}
+
+\paragraph{Structure of commuting families.} Two alphabet gates
+$t\mathrel{\oplus{=}}f(\text{controls})$ commute iff neither one's target is the other's
+control. A commuting flat family therefore splits the wires into a \emph{write set} (targets,
+never read) and a \emph{read set} (controls, never written), with arbitrary sharing among
+controls and possibly coincident targets; wire-disjointness is the special case where the
+sharing hypergraph $H$ is $k$ isolated triples. Commutativity is exactly what makes $F$
+order-free, so \emph{correctness} of route-then-fire generalizes verbatim --- provided the
+pre-routing respects $H$ (shared wires land shared, same roles and polarities), i.e.\ the
+routing family is restricted to $\mathrm{Aut}(H)$.
+
+\paragraph{Where the analysis leaned on disjointness.} In exactly two places: (i) it made the
+routing group all of $S_k$ (any matching schedule is hypergraph-respecting), and (ii) it made
+the $k$ quadratic monomials $b_ic_i$ linearly independent. ``Merely commuting'' breaks both;
+nothing in the analysis ever used commutativity beyond order-freeness. The proof
+\emph{machinery} (Lemmas \ref{lem:structure} and \ref{lem:invariant}, the $z_W{:=}0$
+projection) survives and yields:
+
+\paragraph{Generalized degree-1 statement.} For a commuting family implemented by
+hypergraph-respecting route-then-fire, the degree-1 leak lattice is exactly the span generated
+by:
+\begin{enumerate}
+\item \emph{Functionally forced sums:} $\bigoplus_{i\in T}h_i$ is input-affine --- forced for
+\emph{any} implementation --- iff every unordered control pair $\{b,c\}$ occurs an \emph{even}
+number of times among the gates of $T$. (Same pair, same roles: $h_i\oplus h_j=a_i\oplus a_j$;
+swapped roles: $(b\vee\neg c)\oplus(c\vee\neg b)=b\oplus c$, so
+$h_i\oplus h_j=a_i\oplus a_j\oplus b\oplus c$.)
+\item \emph{Orbit subtotals:} $\bigoplus_{i\in T}h_i$ for every $T$ that is a union of
+\textbf{toggle-group orbits}; the toggle group is a subgroup of $\mathrm{Aut}(H)$, so its
+orbits refine the $\mathrm{Aut}(H)$-orbits.
+\end{enumerate}
+Disjointness is precisely the case where (1) is trivial and (2) collapses to ``connected
+$\Rightarrow$ full sum only''.
+
+\begin{corollary}[rigid gates]
+A gate fixed by every automorphism is a singleton orbit: its $h$ fires on a statically known
+wire --- the bare-$h$ affine leak, a local $k=1$, unfixable by post-routing (a materialized
+segment cannot be unmade). This is the generic form of the multi-orbit failure mode of
+\S\ref{sec:sharing} (the one-global-bit counterexample).
+\end{corollary}
+
+\paragraph{Shared targets.} If two gates share a target, the individual $h_i$ never
+materializes (only the accumulated $a\oplus f_i\oplus f_j$ does) and even the ideal circuit's
+intermediate segment is order-dependent; hidden values must be redefined (per-target final
+values, or per-gate increments $f_i$).
+
+\paragraph{Degree 2.} The disjoint-case degree-2 results were \emph{co-location} arguments (a
+virtual fired value could only be assembled where a routed b-rail sat next to its c-rail). A
+shared control that stays pinned is in the clear at every cut and hands the adversary one factor
+of every product for free, so those bounds no longer apply as a principle. The exposed
+$T$-lattice plausibly remains ``unions of first-layer components'' (other subtotals still force
+a route-peeling literal into the same monomial, i.e.\ degree 3), but this must be re-audited
+per sharing pattern.
+
+\paragraph{Repair: privatize and fuse (reduction to the disjoint case).} Copy each shared
+control onto a scratch wire ($s\mathrel{\oplus{=}}b$, one \CNOT; the copy is an input-affine
+segment, permitted by (b)); fuse same-target gates into one wider \emph{multi-fire bus} (one
+target rail $+\,2m$ control rails); route the now-disjoint, variable-width buses within their
+isomorphism classes --- the verified analysis then applies class by class. Costs: ${\sim}2$
+gates per privatized attachment plus $3$ gates per extra rail per routing layer; restoring the
+scratch wires requires the copy's bus to run a \emph{mirrored} (shared-bit) schedule relative to
+the original's, which is the ``same-layer sharing'' grade of \S\ref{sec:sharing} (degree-1
+intact, degree-2 margins widened). Unavoidable residue of this architecture: buses of different
+widths can never be switched with each other, so the achievable optimum is \textbf{one forced
+subtotal per isomorphism class}, versus one global sum in the disjoint case.
+
+\subsection{$t$-pin gates ($t>2$): verdict --- not worth it}\label{sec:tpin}
+
+The affine requirement is guard-degree-independent (Lemma~\ref{lem:invariant} needs only
+independently togglable transpositions and a connected union graph --- a single layer of $k{-}1$
+chained Fredkins passes (b), verified), and connectivity pins routing at $\ge k-1$ switches with
+a 3-gate \CNOT{} sandwich each regardless of guard width, so $t$-pins save nothing on (b). The
+$k{-}1$ chain ($10k-9$ gates) also has a verified degree-2 individual break at its tail bus, and
+fixing it restores the two-matching cost. After fragmentation (Toffoli $\to$ \CNOT+\g{}
++ complement debt; 3-control $\to$ ${\sim}4$ Toffolis) and the DB-digestibility penalty
+(\g-form ${\sim}99\%$ vs mpmct ${\sim}2.8\%$ match), any savings invert. The two genuine
+$t$-pin wins: the $k=2$ rescue (\S\ref{sec:smallk}), and AND-guards (swap iff $z_1\wedge z_2$)
+if degree-2 cleanliness at \emph{every} interior cut (including mid) is ever a hard requirement.
+
+\section{Empirical verification}\label{sec:verif}
+
+\paragraph{Methodology.} Independent Python harness (bit-packed $\F$ span membership with
+fresh-sample re-verification, the \texttt{segment\_deduce} model): functional equivalence
+against a token-routing reference ($k=2$ exhaustive over all inputs; $k=4,6$ sampled); degree-1
+audit over all $2^k-1$ subset sums; degree-2 audit over all pairwise products, windowed by cut.
+\textbf{Positive controls both fire} (compute-then-route exposes every $h_i$ bare at degree 1;
+P1-only exposes exactly the $M_1$ pair sums), validating the negatives. Key numbers ($k=4$,
+$16384$ samples): interior degree-2 members are exactly $\{h_0\oplus h_1,\,h_2\oplus
+h_3,\,\text{full sum}\}$; segments born after P2: only the full sum.
+
+\paragraph{Native tool.} \texttt{segment\_deduce} (source = ideal flat circuit whose post-write
+segments are the $h_i$; pred = the emitted gadget; \texttt{--blk} = all wires):
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+Run & $h$-segments deducible & Interior-only equations\\
+\midrule
+$k=4$, degree 1, full window & \textbf{0 / 4} & 0\\
+$k=8$, degree 1, full window & \textbf{0 / 8} & 0\\
+$k=4$, degree 2, full window & 4/4 --- all via the shared INPUT cut & 0\\
+$k=4$, degree 2, cuts $\ge$ post-P2 & \textbf{0 / 4} (and $0$ raw data inputs recoverable) & ---\\
+$k=4$, degree 2, P1..P2 window & 0 / 4 & ---\\
+$k=4$, degree 2, cuts at gates 1..75 & 4/4 via the cut at gate 1 (input cut in all but name) & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+(Pair sums are invisible to \texttt{segment\_deduce} --- it tests source segments individually
+--- which is why the span-audit harness is the tool of record for
+Prop.~\ref{prop:pairleak}.)
+
+\paragraph{Artifacts} (session scratchpad): \texttt{drip\_flat\_proto.py} (builder + auditor);
+\texttt{verify\_drip.py}, \texttt{verify\_deg2.py}, \texttt{verify\_premium.py},
+\texttt{verify\_union3.py}, \texttt{redteam.py} (panel scripts);
+\texttt{gadget\_k4.mpmct1}, \texttt{gadget\_k8.mpmct1} + matched \texttt{ideal\_k4.mpmct1},
+\texttt{ideal\_k8.mpmct1};
+\texttt{MANIFEST.txt}; \texttt{audit\_report.json}.
+
+\section{Recommendations and open items}
+
+\begin{itemize}
+\item \textbf{Use 19kB} (P1 P2 P3 + flipped FIRE + W1): same cost as the 4-layer candidate,
+$n'=n$ exactly, wire-granular output, best achievable degree-2 profile. Use the \textbf{$10k$
+minimal} when bus-granular $p_Z$ suffices mid-pipeline. Reject $k=1$; treat $k=2$ specially
+($t$-pin or merge).
+\item \textbf{Embedding notes:} first-layer switch middles are affine in the gadget's inputs
+(allowed by (b), visible to segment tools) --- fold P1 into the upstream refresh, or braid
+foreign gates into the \CNOT{} sandwiches (legal iff nothing writes the switch operands in
+between); sample a fresh instance (fresh bits/matching phases) per embedding.
+\item \textbf{Open:} proof of the degree-2 general rule's negative direction (\S\ref{sec:deg2});
+re-proof of the orbit criterion under specific $n'$-reduction sharings (\S\ref{sec:sharing});
+porting the builder into \texttt{src/preprocessing/gadgets.rs} (\NSW{} replaces
+\texttt{emit\_cswap}'s out-of-alphabet Toffoli middle) as the between-firings reshuffle unit of
+the drip discipline.
+\end{itemize}
+
+\end{document}

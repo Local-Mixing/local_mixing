@@ -1,0 +1,488 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.95in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\graphicspath{{band_mixing_figs/}}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Band-Restricted Mixing and the Variability of Prefix Functionality\\
+\large Session summary --- experiments of 2026-08-15\,\ldots\,2026-08-17}
+\date{2026-08-21}
+\author{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\begin{abstract}
+We summarize one investigation: the \emph{aggregate} effect of local mixing whose replacement circuits
+are drawn from a \textbf{restricted band of gate-counts} on the \textbf{variability of the
+functionality of prefixes} of the mixed circuit --- how much the state computed by a prefix of the
+mixed circuit still resembles, and predicts, the state computed by some prefix of the original circuit.
+The instrument is the pair of prefix heatmaps (``plates'') and the ridge measure defined on them; the
+tracked quantity is the \textbf{rate of decay of the ridge as a function of the amount of mixing},
+under six experimental variations of the band and of the outgoing-block selection rule. Headline
+results: the progress diagonal ($\rho$) survives every configuration; ridge-depth decay is
+front-loaded and floors near $0.28$; per \emph{successful conversion} mixing quality is invariant ---
+bands and selection rules only change the conversion \emph{rate}; and block size specifically is a
+throughput lever, not a quality lever.
+\end{abstract}
+
+\section{The measure}
+Let $C$ be the original circuit (a fresh random 1000-gate circuit on $n$ wires) and $G$ the mixed
+circuit. Two plates are computed, both against the \emph{same} original $C$:
+\begin{itemize}
+\item \textbf{Affine (linear-predictor) plate} — \code{hmap\_affine --degree 1}. Cell $H(i,j)$ is the
+$\mathrm{GF}(2)$ reconstruction error of the state of $C$ after its prefix $i$ from the wires of $G$
+after its prefix $j$, over random inputs, using the best affine (degree-1) predictor per output bit.
+$H=0$: the original's intermediate state is linearly recoverable (``leak''); $H=0.5$: hidden. Rows are
+$C$-prefixes every 10 gates (101 rows); columns are ${\sim}150$ $G$-prefixes spread over the whole
+mixed circuit regardless of its size.
+\item \textbf{Hamming plate} — \code{hmap}. Cell is the raw mean Hamming distance (bits) between the
+two prefix states: does any prefix of $G$ pass through a state equal or close to a state of $C$?
+\end{itemize}
+Plates are never read by their mean (it saturates near $0.5$); they are read by the ridge measure of
+\code{reports/plot\_hmap\_ridge.py}:
+
+\begin{center}\small
+\begin{tabular}{lp{11.2cm}}
+\toprule
+statistic & meaning\\
+\midrule
+\textbf{depth} & mean over rows of $R(\text{ridge cell})-\operatorname{median}_j R(i,j)$, $R=0.5-H$:
+how far the leak stands above the row background. The number mixing moves.\\
+\textbf{rho} & Spearman correlation of row index vs.\ ridge location: is the leak still a
+\emph{diagonal}, i.e.\ is $C$'s computational progress still legible in $G$.\\
+\textbf{perm z} & z-score of $\rho$ against a shuffled-row null.\\
+\textbf{contrast} & (off-band mean $H$ $-$ on-band mean $H$)\,/\,pooled $\sigma$: how
+\emph{concentrated} the leak is on the fitted ridge.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All plates shown are the raw $H$ field (no ridge overlay). One reading rule learned mid-session:
+\textbf{depth and contrast answer different questions} --- a plate can keep a needle-sharp ridge
+(high depth) while contrast collapses, if the field becomes bimodal or the ridge is displaced
+(\S\ref{sec:seek} is the case study).
+
+\section{Common substrate: substitute, then mix inside the band}\label{sec:substrate}
+Every experiment starts from the same construction (per width $n\in\{128,64\}$; the substrate has $2n$
+wires, the sliced-sandwich convention):
+\begin{enumerate}
+\item \textbf{Original} $C$: fresh 1000-gate random MPMCT circuit (``rand1000''), fresh random seed,
+kept server-side.
+\item \textbf{Substitution}: every gate of $C$ is replaced by a random circuit for that gate's
+permutation drawn from the \emph{banded curated store}
+(\code{frozen\_curated\_BAND\_g12-16\_w7-12\_M1-M4}: per-permutation pools at gate-counts 12--16 and
+spans 7--12 --- 2{,}000 circuits per size for every M1--M3 permutation, 200 per size for M4), followed
+by a commuting-gate shuffle. This inflates 1000 gates to \textbf{14{,}031} ($n{=}128$) /
+\textbf{14{,}012} ($n{=}64$) gates. Each substituted block is recorded as a \emph{litter}, and the
+mixer runs with the full-litter ban: a window that is exactly one whole substituted block may not be
+re-spelled, so the store cannot hand back the spelling that created it. (In practice the ban almost
+never fires --- a handful of hits per 100K attempts --- because sampled windows almost always straddle
+litter boundaries.)
+\item \textbf{Mixing} (\code{fmix}): pure DB-replacement walk — \code{--p-db 1.0 --p-comp 0 --p-any 0
+--p-twist 0}, \code{--db-advance}, \code{--no-db-prefixes}, 50/50 contiguous/convex outgoing geometry,
+outgoing window lengths uniform in the band (\code{--db-min-window}\,\ldots\,\code{--s-db}), incoming
+lengths restricted to the same band (\code{FMIX\_DB\_LEN\_BAND}), replacements drawn from the banded
+store; the full untruncated curated store is mounted separately (\code{FROZEN\_REF\_DIR}) for M-class
+attribution only. Snapshots every 200K attempts (10M runs: every 1M); functional verification every
+100K moves; every snapshot is plated against the original $C$.
+\end{enumerate}
+
+\textbf{Baseline plates (0 moves).} The substituted circuit before any mixing reads depth $0.409$,
+$\rho=1.000$, contrast $4.64\sigma$ ($n{=}128$) and depth $0.424$, $\rho=1.000$, contrast $4.20\sigma$
+($n{=}64$): substitution alone blurs nothing structurally --- the diagonal is fully intact, only
+pre-widened (each row's valley is ${\sim}14$ columns wide because each original gate is now a
+12--16-gate block). The 4M family (\S\ref{sec:p4m}) used its own independently substituted substrates;
+baselines $0.394/0.401$, same picture.
+
+\textbf{Amount of mixing.} The x-axis of every decay curve is \emph{conversion attempts} (moves);
+where stated, curves are re-plotted against \emph{successful conversions} --- the distinction carries
+one of the main conclusions. A conversion is a successful in-band re-spelling of a sampled window.
+
+\textbf{Preliminary probes (100K--200K attempts).} Before the plate experiments, a ladder of short
+conversion probes calibrated the band configuration on a 3{,}000-gate substituted substrate.
+Conversions per 100K attempts: plain windows 8--11 against the full store 13{,}229 (13.2\%); the
+banded pools-of-10/11 store 4{,}166 (4.2\%); band 12--16 pools at $\times1$ depth 816 (0.8\%), at
+$\times10$ (2{,}000/size) 1{,}393 (1.4\%); with litter tracking + full-litter ban 1{,}535 (1.5\%).
+Class attribution is M3-dominated (a 200K probe on the 1000-gate substrate converted 1{,}459 windows:
+M1 73 / M2 199 / M3 1{,}187); the conversion rate settles at ${\sim}45$--$60$ per 10K moves once early
+churn regenerates windows; and \textbf{convex windows convert ${\approx}4.9\times$ more often than
+contiguous} ($0.53\%$ vs.\ $2.57\%$ measured in the 4M run) --- hence the 50/50 contiguous/convex
+sampling everywhere below. These probes fixed the configuration (band 12--16, $\times10$ pools, litter
+ban, 50/50 geometry) used in all subsequent experiments.
+
+\section{Experiment 1 --- uniform in-band replacement, 4M attempts}\label{sec:p4m}
+\emph{Runs \code{probe4M\_20260816} (growth allowed) and \code{probe4M\_bal\_20260816} (size-ledger),
+$n{=}128$, uniform random outgoing selection, band 12--16, plates every 200K.}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{curves_p4m.png}
+\caption{Uniform in-band replacement, 4M attempts: ridge depth, contrast, and size.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_p4m_grow.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_p4m_bal.png}
+\caption{Affine plates: growth-allowed (top) and size-held (bottom) at 0 / 1M / 2M / 4M attempts.}
+\end{figure}
+
+Decay of ridge depth (growth-allowed): $0.394\to0.331$ in the first 1M attempts, $\to0.314$ at 2M,
+$\to0.299$ at 4M. The size-held arm tracks it ${\sim}0.013$ higher (0.312 at 4M). Contrast barely
+moves ($4.58\sigma\to4.32\sigma$; $4.52\sigma\to4.44\sigma$); $\rho$ never leaves $0.999$--$1.000$.
+The decay is strongly front-loaded: two-thirds of the 4M-move depth loss (66\%; 74\% in the size-held
+arm) happens in the first 1M attempts; the last 2M buy ${\approx}0.015$.
+
+Growth: $14{,}038\to\mathbf{52{,}315}$ gates ($\times3.7$) vs.\ held $14{,}066\to14{,}131$. That the
+ridge trajectories differ by only ${\sim}0.013$ while sizes differ by $\times3.7$ was the first
+indication that growth per se contributes only marginally. Hit rate ${\approx}1.15\%$ in both arms ---
+uniform selection is the least convert-efficient rule tested. The late plates were explicitly
+inspected for structural change: \textbf{no split} --- a single continuous corner-to-corner diagonal
+at every snapshot of both arms (the contrast case is \S\ref{sec:seek}).
+
+\section{Experiment 2 --- depth-seeking selection: the plate splits}\label{sec:seek}
+\emph{Runs \code{depth2M\_n\{128,64\}\_20260816}, arms \code{band} (banded store, 12--16, growth
+allowed) and \code{full} (full native store, band 9--11), 2M attempts. Selection = depth-seeking
+(\code{--p-depth 1.0}): seed at a gate of maximum mixing depth (argmax with a relax-per-miss rule),
+grow convex candidates both ways at $w{-}1/w/w{+}1$, keep the endpoint-deepest option; 10\% random
+seeds. Mixing depth of a spliced-in gate $h_j$: $\min(D_0{+}j,\,D_1{+}k{-}j{+}1)$ from the endpoint
+depths of the outgoing block; other insertions: $1+\min(\text{neighbour depths})$.}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{curves_seek.png}
+\caption{Depth-seeking, 2M: contrast collapses in the banded arms while depth does not decay.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_seek_band_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_seek_band_n64.png}
+\caption{Banded arms ($n{=}128$ top, $n{=}64$ bottom): the plate \textbf{splits} --- a torn-off ridge
+fragment upper-left, a displaced sharper main ridge right, saturated middle.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_seek_full_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_seek_full_n64.png}
+\caption{Full-store arms (band 9--11), $n{=}128$ top / $n{=}64$ bottom: conversion-starved (hit rate
+$0.65$--$0.67\%$), almost unchanged.}
+\end{figure}
+
+The one configuration whose plates change \emph{shape} rather than merely fading:
+\begin{itemize}
+\item \textbf{Banded arms:} ridge depth barely decays --- at $n{=}128$ it ends \emph{above} baseline
+($0.409\to0.417$); at $n{=}64$ it gives up only 7\% ($0.424\to0.393$) --- while contrast collapses
+monotonically ($4.64\sigma\to1.99\sigma$; $4.20\sigma\to1.34\sigma$). The argmax rule is self-reinforcing: the deepest gates win every seeding,
+so one region is re-mixed over and over and inflates with fresh material until it occupies most of the
+mixed circuit. The corresponding original rows ($C$-fraction ${\approx}0.1$--$0.2$) are torn off as a
+small upper-left fragment; the rest of the diagonal is displaced right, compressed, and row-by-row
+\emph{sharper} than before; the plate's middle saturates at $H{\approx}0.5$. Contrast collapses because
+the fitted band straddles a bimodal field --- \textbf{a displaced, sharper ridge, not a dissolved one}
+(an earlier in-session reading of the collapse as lost sharpness was checked against the plates and
+retracted). $\rho$ still reads $0.999$--$1.000$.
+\item \textbf{Full-store arms (9--11):} $0.409\to0.381$; contrast $4.64\sigma\to4.25\sigma$; the hit
+rate is one-sixth of the banded arms', so 2M attempts bought only ${\sim}13$K conversions.
+\end{itemize}
+Growth is extreme and localized: $14{,}031\to50{,}075$ ($n{=}128$) and $14{,}012\to50{,}532$ ($n{=}64$) gates, nearly all inside the one
+hyper-deep region. The per-gate mixing-depth distributions make the concentration explicit: at 2M the
+banded arms reached \textbf{max 1{,}195 / p50 378} ($n{=}128$) and \textbf{max 2{,}754 / p50 781}
+($n{=}64$) --- hundreds of re-encoding layers on one region --- while the conversion-starved
+full-store arms sat at max 470 / \textbf{p50 3} and max 207 / \textbf{p50 3}: depth never accumulated
+across their circuits at all. \textbf{Conclusion:} a depth-greedy rule under a band \emph{relocates
+and reshapes} the leak (destroying the contrast statistic) without reducing its per-row prominence
+anywhere it still exists.
+
+\section{Experiment 3 --- the same rule with size held (band-ledger)}
+\emph{Runs \code{depth2Mled\_n\{128,64\}\_20260816}: as \S\ref{sec:seek} banded arms but
+\code{--db-mode band-ledger} --- the incoming size is drawn skewed against a running ledger, so
+expected size stays fixed while per-replacement size variability is preserved.}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_led_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_led_n64.png}
+\caption{Size-held depth-seek, $n{=}128$ top / $n{=}64$ bottom: no split; a \emph{localized fade} at $C$-fraction ${\approx}0.1$--$0.3$ ($n{=}128$) resp.\ ${\approx}0.4$--$0.5$ ($n{=}64$).}
+\end{figure}
+
+Held at $14{,}092/14{,}075$ gates, the split does not happen --- with no growth the deep region cannot
+inflate, so the plate keeps one diagonal with a localized fade where the rule keeps re-mixing (at
+$C$-fraction ${\approx}0.1$--$0.3$ for $n{=}128$, ${\approx}0.4$--$0.5$ for $n{=}64$). Achieved mixing depth collapses with the growth: max 153/175, \textbf{p50 3/2} --- an order of
+magnitude below the growth-allowed arms' p50 of 378/781, i.e.\ \emph{the growth was doing the depth
+work}. Ridge decay is modest: $0.409\to0.376$ and $0.424\to0.399$; contrast intact
+($4.36\sigma/3.71\sigma$). This separates
+the two effects confounded in \S\ref{sec:seek}: the \textbf{split is growth-borne}, the \textbf{fade is
+depth-borne} --- and the depth-greedy rule buys little fade for its conversions (64K/62K conversions --- more than Exp.~1's 4M-move arms --- for about a third of its
+depth loss).
+
+\section{Experiment 4 --- gain-balanced selection and the 10M saturation}\label{sec:gain}
+\emph{Runs \code{depth2Mgain\_n\{128,64\}\_20260816} (2M) and \code{depth10Mgain\_n\{128,64\}\_20260816}
+(10M), band 12--16, growth allowed. Selection = gain-balanced (\code{--p-depth-gain 1.0}): windows
+scored by the depth gain a splice would produce, $\sum_j[\min(D_0{+}j, D_1{+}w{-}j{+}1)-\mathrm{depth}(g_j)]$,
+seeded from below the median depth --- endpoint-deep-preferring but self-limiting on already-deep
+blocks, so depth rises across the whole circuit.}
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{curves_2m_rules.png}
+\caption{Band 12--16 under the three selection rules, 2M attempts.}
+\end{figure}
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+rule ($n{=}128$, band 12--16) & depth $0\to2$M & contrast $0\to2$M & size @2M & conversions\\
+\midrule
+depth-seek, growth allowed & $0.409\to\mathbf{0.417}$ & $4.64\to\mathbf{1.99}\sigma$ (split) & 50{,}075 & 79{,}038\\
+depth-seek, size-held & $0.409\to0.376$ & $4.64\to4.36\sigma$ & 14{,}092 & 64{,}121\\
+gain-balanced, growth allowed & $0.409\to\mathbf{0.307}$ & $4.64\to4.33\sigma$ & 17{,}003 & 71{,}300\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Gain-balancing is the only rule that degrades the ridge everywhere at once: depth falls 25\% with no
+split, no contrast collapse, and only $\times1.2$ growth. The mixing-depth distribution shows why: at
+2M it is \emph{uniform} --- max 121 / p50 102 / mean 99 with \textbf{0.0\% of gates at depth zero} ---
+every part of the circuit has been re-encoded ${\sim}100$ layers deep, instead of one region at
+${\sim}400$--$800$ and the rest untouched.
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_gain_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_gain_n64.png}
+\caption{Gain-balanced 2M plates, $n{=}128$ top / $n{=}64$ bottom: a single, uniformly fading diagonal.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{curves_d10m.png}
+\caption{Gain-balanced, 10M attempts: saturation.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_d10m_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_d10m_n64.png}
+\caption{10M plates at 0 / 2M / 6M / 10M attempts ($n{=}128$ top, $n{=}64$ bottom).}
+\end{figure}
+
+\textbf{10M continuation: the decay saturates.} $n{=}128$:
+$0.409\to0.322\,(1\text{M})\to0.308\,(2\text{M})\to0.290\,(5\text{M})\to0.282\,(10\text{M})$ --- the
+first million attempts buy $0.087$ of depth, the last five million buy $0.008$. $n{=}64$ lands at
+$0.295$ on the same shape. The tail slope (${\approx}0.003$ per million attempts, shrinking) puts the
+\textbf{ridge-depth floor near ${\approx}0.28$} for this construction. $\rho$: $0.998$--$1.000$ at
+every snapshot. The one statistic still moving monotonically at 10M is $n{=}64$ contrast
+($4.20\sigma\to3.36\sigma$); $n{=}128$ contrast plateaus at ${\approx}4.15\sigma$. The $n{=}64$ plate
+also develops a mild \emph{staircase} in the late snapshots --- locally the ridge column is ambiguous
+over short row runs --- without ever affecting the global monotonicity ($\rho\ge0.998$).
+
+\textbf{Attempts vs.\ conversions.} Re-plotting every run against successful conversions dissolves the
+gain rule's apparent advantage:
+\begin{figure}[h!]\centering
+\includegraphics[width=0.72\linewidth]{curves_conv.png}
+\caption{Per successful conversion the gain rule is \emph{not} more effective; its per-attempt
+advantage was a higher hit rate ($2.3$--$2.7\%$ vs.\ $1.15\%$).}
+\end{figure}
+Per conversion, the uniform arms of \S\ref{sec:p4m} are the most efficient (depth ${\approx}0.30$ in
+${\sim}47$K conversions); the gain arms need ${\sim}80$--$125$K to get there. \textbf{Quality per
+conversion is invariant; rules change only the conversion rate} --- the template for
+\S\ref{sec:sweep}.
+
+\textbf{Hamming-plate progression.} The same story in bits:
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{ham_p4m.png}
+\caption{Hamming plates, uniform 4M ($n{=}128$).}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{ham_d10m_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{ham_d10m_n64.png}
+\caption{Hamming plates, gain-balanced 10M ($n{=}128$ top, $n{=}64$ bottom).}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{hd_progression.png}\\[2pt]
+\includegraphics[width=\linewidth]{hd_conv.png}
+\caption{Hamming progression vs.\ attempts (top) and vs.\ conversions (bottom).}
+\end{figure}
+
+The valley's floor is 0 bits \textbf{only at the two trivial endpoint rows} (empty prefix vs.\ empty
+prefix; full circuit vs.\ full circuit --- the same permutation by construction). \textbf{Zero interior
+rows have an exact state match, at any stage, in any arm.} Interior per-row minima climb steadily:
+$n{=}128$ min/median/max $4.0/11.4/16.6$ bits at 0 moves $\to$ $26.4/31.1/36.3$ at 10M; $n{=}64$:
+$3.0/6.4/9.0\to9.2/15.3/22.8$. (The baseline's small interior minima are a sampling artifact: rows
+sampled every 10 original gates land mid-block inside 12--16-gate substituted blocks.)
+
+\section{Experiment 5 --- the block-size sweep}\label{sec:sweep}
+\emph{Runs \code{bandsweep\_\{lo,hi\}\_n\{128,64\}\_20260817} (growth allowed) and\\
+\code{bandsweepled\_\{lo,mid,hi\}\_n\{128,64\}\_20260817} (size-held), gain-balanced, 2M attempts, same
+substrates as \S\ref{sec:gain} so the band is the only variable. Bands: lo = 12--14, mid = 12--16,
+hi = 14--16.}
+
+\subsection{Growth-allowed arms are confounded: a narrow band is not size-neutral}
+Under \code{--db-mode any}, narrowing the band breaks the walk's size balance: band 12--14 drifts
+$-0.35$ gates per conversion and \textbf{imploded $14{,}031\to1{,}920$ gates} by 2M ($n{=}64$:
+$\to2{,}202$); band 14--16 fell to $4{,}954/4{,}391$; the full band 12--16 \emph{grew} to $17{,}003$.
+A $9\times$ size spread swamps any block-size effect.
+
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_bs_any_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_bs_any_n64.png}
+\caption{Growth-allowed finals at 2M: full band grew; both sub-bands collapsed. ``Which band looks
+best'' is decided by size drift, not by the band.}
+\end{figure}
+
+Operationally: \textbf{any narrow-band run must use \code{band-ledger}}, or it silently becomes a
+compression run. (The collapse is itself a finding: under uniform in-band draws the equilibrium size is
+set by the asymmetry between what the walk removes and what the store supplies, and both sub-bands sit
+on the shrinking side of the full band's equilibrium.)
+
+\subsection{Size-held arms: the clean answer}
+All six ledger arms held $13{,}947$--$14{,}092$ gates. The 2M plates are visually near-identical across
+bands:
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{strip_bs_led_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{strip_bs_led_n64.png}
+\caption{Size-held finals at 2M, three bands ($n{=}128$ top, $n{=}64$ bottom): near-identical plates.}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{bandsweep_curves.png}
+\caption{Block-size sweep: per attempt, smaller blocks win; per conversion, one curve.}
+\end{figure}
+
+Decay per \textbf{attempt} is monotone in the band; per \textbf{conversion} the bands coincide:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+band & depth @2M, $n{=}128$ & depth @2M, $n{=}64$ & hit rate $n{=}128$ & convs $n{=}128$\\
+\midrule
+12--14 & $\mathbf{0.3107}$ & $\mathbf{0.3304}$ & $\mathbf{4.09\%}$ & 81{,}738\\
+12--16 & 0.3132 & 0.3349 & 3.46\% & 69{,}182\\
+14--16 & 0.3282 & 0.3403 & 2.36\% & 47{,}180\\
+\bottomrule
+\end{tabular}
+\qquad
+\begin{tabular}{lccc}
+\toprule
+band ($n{=}128$) & @20K conv & @30K & @44K\\
+\midrule
+12--14 & 0.3403 & 0.3298 & 0.3191\\
+12--16 & 0.3404 & 0.3291 & 0.3206\\
+14--16 & 0.3415 & 0.3329 & 0.3274\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Within $0.0012$ at 20K conversions, within $0.008$ at 44K --- the large-block band marginally
+\emph{worst}, not best. \textbf{The whole effect of block size is the hit rate} ($4.09\%$ vs.\
+$2.36\%$, factor 1.7: smaller outgoing windows are easier to re-spell in-band). $\rho=0.999$--$1.000$
+in all six arms; contrast $4.27$--$4.62\sigma$, band-independent.
+
+The Hamming cross-check agrees --- interior row-min medians at 2M: $n{=}128$: $26.3/26.7/24.6$ bits
+for bands 12--14/12--16/14--16; $n{=}64$: $13.6/13.0/13.1$; floors 0 only at the endpoints, zero
+interior zero-rows everywhere.
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{ham_bs_led_n128.png}\\[2pt]
+\includegraphics[width=\linewidth]{ham_bs_led_n64.png}
+\caption{Hamming plates at 2M, size-held sweep ($n{=}128$ top, $n{=}64$ bottom).}
+\end{figure}
+\begin{figure}[h!]\centering
+\includegraphics[width=\linewidth]{bandsweep_mixdepth.png}
+\caption{Achieved per-gate mixing depth by band: smaller blocks drive depth much higher (p50 106 vs.\
+73 at 2M, size-held, $n{=}128$) --- yet the extra depth buys no extra ridge degradation.}
+\end{figure}
+
+\clearpage
+\section{Master table --- every arm}
+Final-snapshot ridge statistics (all plates vs.\ the original $C$; $d_0$/$d_F$ = ridge depth at
+0/final; hit\% = conversions/attempts):
+
+\begin{center}\scriptsize
+\begin{tabular}{llllrrrrrrrr}
+\toprule
+arm & selection & band & size rule & att. & $d_0$ & $d_F$ & $\rho_F$ & contr.$_F$ & size@$F$ & convs & hit\%\\
+\midrule
+p4m\_grow & uniform & 12--16 & any & 4M & 0.3938 & 0.2992 & 0.999 & 4.32 & 52{,}315 & 47{,}036 & 1.18\\
+p4m\_bal & uniform & 12--16 & ledger & 4M & 0.4005 & 0.3123 & 0.999 & 4.44 & 14{,}131 & 45{,}370 & 1.13\\
+d2m\_seek\_band\_n128 & depth-seek & 12--16 & any & 2M & 0.4090 & 0.4167 & 1.000 & 1.99 & 50{,}075 & 79{,}038 & 3.95\\
+d2m\_seek\_band\_n64 & depth-seek & 12--16 & any & 2M & 0.4237 & 0.3928 & 1.000 & 1.34 & 50{,}532 & 86{,}151 & 4.31\\
+d2m\_seek\_full\_n128 & depth-seek & 9--11 (full) & any & 2M & 0.4090 & 0.3814 & 1.000 & 4.25 & 15{,}360 & 13{,}388 & 0.67\\
+d2m\_seek\_full\_n64 & depth-seek & 9--11 (full) & any & 2M & 0.4237 & 0.3968 & 1.000 & 4.02 & 14{,}046 & 12{,}975 & 0.65\\
+d2m\_led\_n128 & depth-seek & 12--16 & ledger & 2M & 0.4090 & 0.3762 & 1.000 & 4.36 & 14{,}092 & 64{,}121 & 3.21\\
+d2m\_led\_n64 & depth-seek & 12--16 & ledger & 2M & 0.4237 & 0.3994 & 1.000 & 3.71 & 14{,}075 & 61{,}933 & 3.10\\
+d2m\_gain\_n128 & gain-bal. & 12--16 & any & 2M & 0.4090 & 0.3074 & 0.999 & 4.33 & 17{,}003 & 71{,}300 & 3.56\\
+d2m\_gain\_n64 & gain-bal. & 12--16 & any & 2M & 0.4237 & 0.3265 & 1.000 & 4.03 & 15{,}898 & 68{,}010 & 3.40\\
+d10m\_gain\_n128 & gain-bal. & 12--16 & any & 10M & 0.4090 & 0.2821 & 0.999 & 4.15 & 60{,}425 & 271{,}789 & 2.72\\
+d10m\_gain\_n64 & gain-bal. & 12--16 & any & 10M & 0.4237 & 0.2947 & 0.999 & 3.36 & 51{,}333 & 231{,}480 & 2.31\\
+bs\_any\_lo\_n128 & gain-bal. & 12--14 & any & 2M & 0.4090 & 0.3558 & 0.999 & 4.43 & \textbf{1{,}920} & 47{,}631 & 2.38\\
+bs\_any\_lo\_n64 & gain-bal. & 12--14 & any & 2M & 0.4237 & 0.3753 & 1.000 & 4.60 & \textbf{2{,}202} & 44{,}243 & 2.21\\
+bs\_any\_hi\_n128 & gain-bal. & 14--16 & any & 2M & 0.4090 & 0.3315 & 0.999 & 4.46 & 4{,}954 & 40{,}469 & 2.02\\
+bs\_any\_hi\_n64 & gain-bal. & 14--16 & any & 2M & 0.4237 & 0.3566 & 1.000 & 4.63 & 4{,}391 & 38{,}548 & 1.93\\
+bs\_led\_lo\_n128 & gain-bal. & 12--14 & ledger & 2M & 0.4090 & 0.3107 & 0.999 & 4.45 & 13{,}973 & 81{,}738 & 4.09\\
+bs\_led\_lo\_n64 & gain-bal. & 12--14 & ledger & 2M & 0.4237 & 0.3304 & 1.000 & 4.33 & 13{,}947 & 74{,}280 & 3.71\\
+bs\_led\_mid\_n128 & gain-bal. & 12--16 & ledger & 2M & 0.4090 & 0.3132 & 0.999 & 4.44 & 14{,}092 & 69{,}182 & 3.46\\
+bs\_led\_mid\_n64 & gain-bal. & 12--16 & ledger & 2M & 0.4237 & 0.3349 & 1.000 & 4.28 & 14{,}067 & 72{,}581 & 3.63\\
+bs\_led\_hi\_n128 & gain-bal. & 14--16 & ledger & 2M & 0.4090 & 0.3282 & 0.999 & 4.62 & 13{,}969 & 47{,}180 & 2.36\\
+bs\_led\_hi\_n64 & gain-bal. & 14--16 & ledger & 2M & 0.4237 & 0.3403 & 1.000 & 4.27 & 13{,}948 & 44{,}312 & 2.22\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Aggregate conclusions}
+\begin{enumerate}
+\item \textbf{The progress diagonal survives every configuration.} Across 22 arms, 6
+selection/size-rule combinations, 3 bands, 2 widths, and up to 10M attempts: $\rho=0.998$--$1.000$ in
+every one of the 262 plate measurements taken. Band-restricted local re-encoding never breaks the monotone legibility of the
+original circuit's computational progress; it only shallows it. Concealing the diagonal must come from
+elsewhere --- the structural phases (split, crossing), not from more of this kind of mixing.
+\item \textbf{Ridge-depth decay is front-loaded and floors at ${\approx}0.28$.} All fading arms share
+one shape: fast loss in the first ${\sim}1$M attempts ($0.41\to0.32$--$0.33$), then saturation; 10M
+attempts land at $0.282/0.295$ with a shrinking tail slope ${\approx}0.003$/M --- regardless of band,
+selection rule, growth policy, or width.
+\item \textbf{Per successful conversion, mixing quality is invariant.} Bands and rules change the hit
+rate ($0.65\%\ldots4.3\%$) and hence the per-attempt decay --- nothing tested changes the value of a
+conversion. Block size specifically: the three bands at held size are within $0.008$ of one curve per
+conversion (large blocks marginally worst) while their hit rates differ $\times1.7$. \textbf{Block
+size is a throughput lever, not a quality lever.}
+\item \textbf{What the band does control is the size equilibrium.} Under uniform in-band draws the
+full band grows ($+21\%$ at 2M under gain) while either sub-band shrinks --- catastrophically for
+12--14 ($-86\%$). Narrow bands require the band-ledger rule; without it the arm silently becomes a
+compression run.
+\item \textbf{Selection rules reshape; gain-balancing fades.} Depth-greedy selection under growth
+splits the plate --- relocating the leak (displaced, sharper ridge + saturated middle, contrast
+$1.3$--$2.0\sigma$) without reducing its prominence; with size held it only fades one locality.
+Gain-balanced selection is the only rule producing spatially uniform degradation --- and it too obeys
+conclusion 3.
+\item \textbf{No interior state collision, ever.} The Hamming exact-match floor (0 bits) exists only
+at the two trivial endpoints; every interior row's minimum distance rises with mixing (tripling by
+10M). Band-restricted mixing pushes the mixed circuit's trajectory monotonically away from the
+original's interior states while the affine ridge shows their correlation remains.
+\end{enumerate}
+
+\section{Instrumentation notes}
+\begin{itemize}
+\item \code{geo\_slot} had no slot for the \code{DepthGain} sampler, so the \code{geo} report line
+read \code{cvx=0/0 depth=0/0} on runs the gain rule was driving; fixed (4th \code{gain=} slot).
+\item ``Final snapshot'' globs of \code{p.mpmct1.mv*.mpmct1} sort lexicographically
+(\code{mv800000} after \code{mv2000000}); one Hamming pass silently measured 800K as ``2M'' and was
+regenerated. Sort numerically. The same trap left the 10M runs' \code{ham\_final} plate a
+byte-identical duplicate of the \textbf{9M} snapshot; the genuine 10M plate is \code{ham\_10000000}
+(used here).
+\item Depth-seek argmax seeding deadlocks (1 hit/40K) without the relax-one-level-per-miss rule.
+\item Plates must be compared at matched \emph{conversions}, not matched attempts, before attributing
+any quality difference to a configuration.
+\end{itemize}
+
+\section{Artifacts}
+Runs and plates (server, \code{\~{}/tds/}):
+\begin{itemize}\setlength\itemsep{0pt}
+\item \code{probe4M\{,\_bal\}\_20260816}
+\item \code{depth2M\_n\{128,64\}\_20260816/\{band,full\}}
+\item \code{depth2M\{led,gain\}\_n\{128,64\}\_20260816}
+\item \code{depth10Mgain\_n\{128,64\}\_20260816}
+\item \code{bandsweep\_\{lo,hi\}\_n\{128,64\}\_20260817}
+\item \code{bandsweepled\_\{lo,mid,hi\}\_n\{128,64\}\_20260817}
+\end{itemize}
+Each contains \code{subst.mpmct1} (+ \code{.litter}), \code{rand1000.mpmct1}, snapshots, plates, and
+the fmix log. Figures: \code{docs/band\_mixing\_figs/}; ridge measure:
+\code{reports/plot\_hmap\_ridge.py}. Markdown twin of this report: \code{docs/BAND\_MIXING\_SUMMARY.md}.
+
+\end{document}

@@ -1,0 +1,241 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[table]{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\usepackage{parskip}
+
+\newcommand{\xor}{\oplus}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\maj}{\mathrm{maj}}
+
+\title{\bfseries Gadget Leakage Investigation}
+\author{}
+\date{2026-08-25}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+
+\noindent\textbf{Scope.} From the gadgetization tool through a cut-adversary
+analysis of a production deliverable (\code{run\_c}). Covers: (I) the trace leak in
+the single-carrier gadgetizer; (II) the new nonlinear \code{193}/\code{291} gadgets
+and why they resist the linear attack; (III) a gauntlet re-run on the production
+single-carrier path; and (IV) a segment-relation (``cut adversary'') study of
+\code{run\_c}'s phase-A and final outputs, including dense-local-window equation
+recovery and the effect of phase~B. All results are empirical under the stated
+threat models, not proofs; single run (\code{run\_c}), degree-1 relations except
+where noted.
+
+\section{Context: the gadgetizer and the trace leak}
+
+The production path is the \textbf{single-carrier swap-refresh} gadgetizer
+(\code{ProdConfig::production\_single()}). It is \textbf{additive product-sharing}:
+each logical value $v$ lives on one carrier as $\text{carrier} = v \xor M(\text{band})
+\xor \kappa$, and every monomial of the mask $M$ is XORed onto the carrier by a gate.
+Under the gauntlet's \textbf{\code{xtrace}} attack --- a full-trace affine adversary
+observing the initial wires plus \emph{every gate flip} --- the payload is recovered
+exactly,
+\[
+v = \text{carrier}(t) \;\xor\; \Big(\bigoplus_s f_s\Big) \;\xor\; (\text{linear band
+corrections}) \;\xor\; (\kappa\text{-discharge flips}),
+\]
+every term of which is a trace column. This is \textbf{structural and
+$n$-independent}: the mask monomials are \emph{materialized as flips}, so scale does
+not help. The design study named three candidate fixes (withheld/never-materialized
+masks; a nonlinear multi-carrier decode; certified block fusion). The
+\code{193}/\code{291} gadgets are the second lever.
+
+\section{The nonlinear gadgets (\code{193}, \code{291})}
+
+\textbf{Encoding.} Each logical bit is stored in a five-wire block via a
+\emph{nonlinear} (degree-2) decode
+\[
+E(x_0,x_1,x_2,x_3,x_4) = x_0 \xor x_1 \xor \maj(x_2,x_3,x_4), \qquad
+\maj = x_2x_3 \xor x_3x_4 \xor x_2x_4,
+\]
+with \textbf{two shares} per mutable logical wire ($v = E(s_1)\xor E(s_2)$). Cost:
+\textbf{10 physical wires per logical bit} --- a single r57 gate uses \textbf{44
+wires} (\code{193}) or \textbf{71 wires} (\code{291}), $\approx 5\times$ the two-wire
+additive share.
+
+\textbf{How it computes without materializing the secret.} The gate re-shares the
+target onto fresh wires. Correctness reduces to producing an output-majority triple
+whose majority equals the old majority XOR the gate value XOR a pad. This is done
+with a \textbf{secret-controlled majority switch} (\code{SB\_U0} identity /
+\code{SB\_U1} majority-flipping) and a \textbf{masked build $\to$ run $\to$ unbuild}
+sequence. The key discipline: an \textbf{operand product is always ANDed with the
+switch or a blinding mask, never emitted bare}; masks cancel only in the logical
+sum, and chaff terms cancel pairwise, so no single flip equals a secret product.
+\code{193} emits fan-in-$\le 4$; \code{291} is a \emph{mask-first fan-in-2 lowering}
+of the same logical stream ($+27$ shared decomposition ancillas, a persistent CSE
+cache), with identical security by construction.
+
+\textbf{Linear-relations check.} Enumerating the exact GF(2) relations among
+$\{\,\text{const},\ \text{init wires},\ \text{all gate flips}\,\}$ (held-out verified):
+\begin{itemize}
+\item All secrets --- $a$, $b$, $a\!\cdot\!b$, $c_{\text{in}}$, $c_{\text{out}}$ ---
+are \textbf{not} in the affine span, per gate \emph{and} across a 2-gate chain.
+\item The only relations are harmless: ancilla-restoration telescopes, duplicate-flip
+cancellations (chaff / build--unbuild), and copies of the \emph{linear pad} wires.
+Every relation touches only linear components; the nonlinear $\maj$ core (hence every
+secret) never enters a linear relation.
+\end{itemize}
+So \code{193}/\code{291} resist \code{xtrace} at the tested scale --- the opposite of
+the additive path. (Verified on single gates and a 2-gate chain; production scale
+untested.)
+
+\section{Gauntlet on the production single-carrier gadgetizer}
+
+The gauntlet's \code{bandproduct92} arm \emph{is} \code{production\_single()},
+exercised at $n=8$ on a source chain the harness fabricates (so it knows the
+ground-truth targets); it does not ingest production artifacts. Re-run (fresh
+binaries, mixing off):
+
+\begin{center}
+\begin{tabular}{r l l}
+\toprule
+$k$ & \code{xtrace} (single-carrier) & \code{xtrace} (\code{none} control) \\
+\midrule
+1 & 2/2 & 2 \\
+2 & 4/4 & 4 \\
+16 & \textbf{64/64} & 64 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\code{xtrace} is \textbf{fully saturated at $k=16$ --- identical to the
+unprotected control}. Snapshot attacks \emph{do} drop (\code{a1} $64\!\to\!23$,
+\code{xrows} $48\!\to\!16$): swap-refresh protects cuts, not the full trace. This
+reproduces the prior result and confirms the additive-path leak is structural.
+
+\section{\texttt{run\_c} cut-adversary analysis (\texttt{segment\_deduce})}
+
+\textbf{Instrument.} \code{segment\_deduce} drives the \textbf{source} (the sandwich
+containing C) and a \textbf{predictor} (a mixed circuit) on the same input $x$ and
+asks, for each source \emph{segment} (a wire's value between two writes), whether it
+is a low-degree GF(2) function of the predictor's \textbf{wire values at $K$ cuts
+(register snapshots)}. This is the \textbf{cut adversary} --- snapshots only, \emph{no
+gate flips} --- strictly weaker than \code{xtrace}. A ``recovered'' C-segment equals a
+fixed XOR of observed snapshot values.
+
+Source $=$ \code{gss.mpmct1.sandwich.mpmct1} (256 wires, 7{,}920 gates); predictor $=$
+\code{phaseA.mpmct1} (512 wires, 1{,}410{,}438 gates). Segment budget: 8{,}176 total
+($7{,}920$ writes $+ 256$ initial values); region \textbf{C} $= 2{,}680$ (the
+strictly-pre-neck slice; $\text{C}+\text{D}+\text{band} = 6{,}000 = 2\times \code{mcd
+3000}$).
+
+\subsection{Global dense-cut sweep (phase-A)}
+
+\begin{center}
+\begin{tabular}{r l r}
+\toprule
+pred-cuts & region-C recovered & interior-only leaks (all regions) \\
+\midrule
+8   & $7/2680 = 0.3\%$   & 0 \\
+32  & $7/2680 = 0.3\%$   & --- \\
+64  & $28/2680 = 1.0\%$  & 76 \\
+128 & $137/2680 = 5.1\%$ & 754 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Region-C recoverability \textbf{grows with cut resolution}. The 8-cut ``recoveries''
+are all \emph{trivial output-boundary} equalities $C(w) = \code{phaseA}(w{+}128)$ at
+the output cut (the sandwich's own $y{=}x$ neck copy); \textbf{zero genuine interior
+leaks} at 8 cuts. Genuine interior leaks appear at $64+$ cuts: multi-term,
+\textbf{always cross-wire} (never same-wire), spanning 1--36 cuts. Cut spacing: 64
+cuts $\approx 22$k gates/cut, 128 $\approx 11$k.
+
+\subsection{Dense local window (the efficient attack)}
+
+One \textbf{20k-gate window} (phase-A gates $400{,}000$--$420{,}000$, $1.4\%$ of the
+circuit) with \textbf{128 cuts placed inside it} (156 gates/cut --- $\sim\!70\times$
+finer than the global scan):
+\begin{itemize}
+\item \textbf{162 C-values recovered} --- \emph{more than the entire global 128-cut
+scan} (137).
+\item \textbf{Temporally localized:} all recovered C-values are born in source gates
+\textbf{1{,}420--2{,}293}; D/S2/N $=0$ in this window.
+\end{itemize}
+So C's intermediates are \textbf{temporally localized}, dense local cutting is far
+more efficient than global cutting, and the global scan \emph{understated} the leak
+(it was resolution-limited).
+
+\subsection{Anatomy of the 162 equations}
+\begin{itemize}
+\item \textbf{Terms per equation:} median 7, mean 9.7, range 3--64.
+\item \textbf{Spread:} median gate-span $\approx 10{,}080$ (half the window); median
+wire-index range 363 of 512.
+\item \textbf{Coverage:} 101 of C's 128 logical wires; 358 of 512 predictor wires used.
+\item \textbf{Patterns:} (i) \emph{same-wire telescoping} --- one wire read at many
+times, XORed; (ii) \emph{hub wires} recurring across equations (w90 in 30, w410 in 25,
+w32 in 24); (iii) a shared \emph{entry-snapshot} anchor; (iv) genuine \emph{cross-wire}
+structure --- a carrier's history XORed with the band wires that masked it.
+\end{itemize}
+
+\subsection{What is special about the hub wires}
+
+The hubs are \textbf{the most-written wires inside the window} --- w419 (\#4 of 512),
+w90 (\#9), w410 (\#10), w32 (\#13) --- \emph{not} globally special. Mechanism: many
+writes $\Rightarrow$ many distinct values across cuts $\Rightarrow$ a rich
+reconstruction basis; read-heavy but write-light wires are \emph{not} hubs.
+Structurally they split into \textbf{data/carrier wires} (w90, w32, w31)
+\textbf{$+$ band/mask wires} (w410, w511, w302, w419) --- exactly the
+$\text{carrier}\xor\text{mask}$ pair. This is also why dense \emph{local} cutting
+works: in the window these carrier/band wires change value dozens of times.
+
+\subsection{What phase B adds (final vs phase-A)}
+
+Equivalent dense window on \code{final.mpmct1} (post split/cross/fcompress,
+$4{,}859{,}911$ gates), matched resolution (156 gates/cut), comparable C-content
+(source $\sim\!1500$--$2200$):
+
+\begin{center}
+\begin{tabular}{l r r}
+\toprule
+ & phase-A window & final window \\
+\midrule
+C-values recovered      & 162 & 46 \\
+source-content covered  & 873 gates & 655 gates \\
+\textbf{C-leak density} & \textbf{0.186 / src-gate} & \textbf{0.070 / src-gate} \\
+C-wires hit             & 101 / 128 & 45 / 128 \\
+top hub frequency       & w90 in 30 eqns & w53 in 6 eqns \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Phase B adds \textbf{genuine hiding, $\approx 2.7\times$} (density $0.186\to 0.070$,
+beyond the length-dilution confound), and \textbf{de-concentrates} the leak (the hub
+structure collapses; the dominant phase-A hubs w90/w410 vanish, only w355 survives in
+both). It \textbf{does not close} the leak: one final window still recovers
+\textbf{45 of 128 C-wires}.
+
+\section{Takeaways}
+\begin{enumerate}
+\item \textbf{Additive single-carrier is broken against the trace adversary}
+(\code{xtrace} 64/64), structurally and at any scale.
+\item \textbf{Against the weaker cut adversary}, the same construction holds at coarse
+snapshots but \textbf{leaks under dense/local cutting}, growing with resolution. The
+leak is \textbf{temporally localized} and concentrates on the \textbf{actively-written
+carrier/band wires} of each window.
+\item \textbf{Phase B roughly triples the local hiding and breaks up the hub
+structure}, but does not eliminate the cut-leak.
+\item \textbf{The nonlinear \code{193}/\code{291} encoding keeps every secret out of
+the linear span} (per-gate and 2-gate chain) --- it targets the \code{xtrace} leak
+directly, at $\approx 5\times$ the wire cost. Production-scale evaluation is the open
+item.
+\end{enumerate}
+
+\noindent\textbf{Caveats.} One run (\code{run\_c}); degree-1 relations except the
+nonlinear check; single windows (not a full sweep); nonlinear analysis at small
+scale; the cut adversary is \emph{not} the trace adversary.
+
+\noindent\textbf{Tooling.} \code{segment\_deduce} was extended with
+\code{--cut-lo}/\code{--cut-hi} (place cuts in a gate window) and \code{--eq-dump}
+(dump full region-C equations); the original source was backed up.
+
+\end{document}
