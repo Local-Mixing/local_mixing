@@ -1,7 +1,8 @@
 # Security analysis tools
 
 This directory contains reusable circuit experiments: ordinary and affine
-heatmaps, the gadget gauntlet, a SAT preimage workflow, and two demixing probes.
+heatmaps, the gadget gauntlet, a SAT preimage workflow, a birthday/SAT
+collision experiment on random reversible circuits, and two demixing probes.
 Each experiment takes explicit inputs and writes its results to a directory you
 choose. Run the commands below from the repository root. Keep generated results
 under `target/` or outside the checkout.
@@ -11,6 +12,7 @@ under `target/` or outside the checkout.
 | [heatmaps/](heatmaps/) | Prefix distance, affine reconstruction, statistical prediction, cumulative trace analysis, and their renderers. |
 | [gauntlet/](gauntlet/) | Generate gadget comparisons, collect traces, run six attack families, and render witnesses. |
 | [sat_solve/](sat_solve/) | Encode a zero-slice preimage problem as DIMACS, run an external solver, and independently verify its model. |
+| [collision/](collision/) | Build 2λ→λ hashes from random reversible circuits (λ=32 birthday, λ=64 rho; optional SAT). |
 | [demixing/](demixing/) | Output-cone pruning and inverse crossing reductions using only the supplied circuit. |
 | [preprocessing/](preprocessing/) | Standalone embedded-masking generation for controlled experiments. |
 | [gadgetization/](gadgetization/) | Python nonlinear gadget references and template exporters shared with the gauntlet and correctness tests. |
@@ -29,7 +31,8 @@ you want explicitly:
 cargo build --release --features security-tools \
   --bin hmap --bin hmap_affine --bin hmap_stat --bin hmap_trace_affine \
   --bin gauntlet_gen --bin gauntlet_audit \
-  --bin output_cone --bin crossing_downhill
+  --bin output_cone --bin crossing_downhill \
+  --bin gen_collision_circuit --bin birthday_collision --bin rho_collision
 ```
 
 Use Python 3.10 or later. NumPy and Matplotlib are needed for plotting and the
@@ -46,7 +49,9 @@ mkdir -p target/security-demo
 
 The C++ SAT encoder requires a C++17 compiler. SAT solving additionally requires
 an external Kissat executable; it is not bundled. The encoder, decoder, and
-their tests work without Kissat.
+their tests work without Kissat. The collision experiment's birthday finder
+needs no external solver; its optional SAT path accepts any DIMACS solver
+(Kissat, Glucose via `python-sat`, etc.).
 
 ## Ordinary prefix-distance heatmaps
 

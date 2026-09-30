@@ -1,0 +1,16 @@
+{
+  "circuit": "security_tests/collision/fixtures/c192_g1024.g57",
+  "gates": 1024,
+  "width": 192,
+  "pad_bits": 64,
+  "in_bits": 128,
+  "out_bits": 64,
+  "search": "rho_dp_subspace64",
+  "dp_bits": 16,
+  "seed": 1,
+  "samples_evaluated": 36583448192,
+  "x1_hex": "0x000000000000000068032fc8c02245c7",
+  "x2_hex": "0x0000000000000000ba217b6200edaf67",
+  "digest_hex": "0xead05de351770b3b",
+  "elapsed_secs": 693.511008
+}
