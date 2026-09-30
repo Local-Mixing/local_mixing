@@ -129,7 +129,7 @@ solver smoke test.
 ## Cost vs λ comparison
 
 `compare_attack_costs.py` sweeps λ, measures scalar/bit-sliced throughput,
-runs birthday/rho/SAT where practical, and plots **CPU-hours**
+runs birthday/rho/SAT where practical, and plots **CPU-seconds**
 (wall × threads) against λ. Classical models use $\sim 1.25\cdot 2^{\lambda/2}$
 hash evaluations; rho includes an empirical work overhead from measured runs.
 A BHT quantum reference ($\sim 2^{\lambda/3}$ oracle queries) is drawn for scale.
@@ -148,7 +148,7 @@ Trends from that sweep (1024-gate circuits, 4 cores for rho):
 | Attack | Practical up to | Scaling hint |
 | --- | --- | --- |
 | Birthday | measured ≤32; model beyond | $\sim 2^{\lambda/2}$ / scalar Meval/s |
-| Rho/DP | measured ≤40 + λ=64 fixture | same exponent, fewer CPU-hours via lanes + threads |
+| Rho/DP | measured ≤40 + λ=64 fixture | same exponent, fewer CPU-seconds via lanes + threads |
 | SAT (Glucose3) | solved ≤14; timeouts ≥16 | poor beyond small λ on this encoding |
 | BHT (quantum, theoretical) | — | $\sim 2^{\lambda/3}$ if each query ≈ one eval |
 

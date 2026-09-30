@@ -379,7 +379,7 @@
   "meta": {
     "birthday_factor": 1.2533141373155001,
     "gates": 1024,
-    "note": "CPU-hours = wall_seconds \u00d7 threads / 3600",
+    "note": "Plot uses CPU-seconds = wall_seconds \u00d7 threads; JSON keeps cpu_hours too",
     "rho_overhead_median": 5.385720785419342,
     "sat_note": "Glucose3 solves \u03bb\u226414 quickly; \u03bb\u226516 hit multi-minute timeouts (points are lower bounds).",
     "workers": 4

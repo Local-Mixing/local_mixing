@@ -8,7 +8,7 @@ Measures where practical and extrapolates trends:
 * SAT — dual-copy collision CNF + Glucose3
 * BHT (quantum, theoretical) — ~π·2^{λ/3}/2 evaluations as a reference
 
-CPU-hours means total core-time: wall_seconds × threads / 3600.
+CPU-seconds means total core-time: wall_seconds × threads.
 Expected classical work uses ~1.25·2^{λ/2} hash evaluations (birthday bound);
 rho uses the same leading term with an empirical overhead factor from measured
 runs. Gate count is fixed at 1024 to match the checked-in fixtures.
@@ -402,14 +402,15 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         rho_overheads.append(fx["evals"] / expected_evals(64))
     rho_overhead = float(np.median(rho_overheads)) if rho_overheads else 4.0
 
-    birthday_cpu = expected_evals(grid) / (scalar_fit * 1e6) / 3600.0  # 1 thread
+    # Plot in CPU-seconds (wall × threads).
+    birthday_cpu = expected_evals(grid) / (scalar_fit * 1e6)  # 1 thread
     # Rho: aggregate rate ≈ lane_fit * workers (each worker runs a 64-lane walk).
     rho_wall = (rho_overhead * expected_evals(grid)) / (lane_fit * workers * 1e6)
-    rho_cpu = rho_wall * workers / 3600.0
+    rho_cpu = rho_wall * workers
 
-    # SAT model: fit log(cpu_hours) ~ a + b·λ on successful points.
+    # SAT model: fit log(cpu_secs) ~ a + b·λ on successful points.
     sat_pts = [
-        (int(lam), m["cpu_hours"])
+        (int(lam), m["cpu_hours"] * 3600.0)
         for lam, m in results["measured"].get("sat", {}).items()
         if m.get("ok") and m.get("cpu_hours", 0) > 0
     ]
@@ -424,7 +425,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
 
     # BHT quantum collision: ~π/2 · 2^{λ/3} oracle queries; plot as if each
     # query cost equaled one classical scalar eval (order-of-magnitude hint).
-    bht_cpu = (math.pi / 2.0) * (2.0 ** (grid / 3.0)) / (scalar_fit * 1e6) / 3600.0
+    bht_cpu = (math.pi / 2.0) * (2.0 ** (grid / 3.0)) / (scalar_fit * 1e6)
 
     fig, ax = plt.subplots(figsize=(8.2, 5.2))
     ax.semilogy(grid, birthday_cpu, color="#1f77b4", lw=2, label="Birthday (model)")
@@ -452,7 +453,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         if m.get("ok"):
             ax.scatter(
                 [int(lam)],
-                [m["cpu_hours"]],
+                [m["cpu_hours"] * 3600.0],
                 color="#1f77b4",
                 s=40,
                 zorder=5,
@@ -463,7 +464,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         if m.get("ok"):
             ax.scatter(
                 [int(lam)],
-                [m["cpu_hours"]],
+                [m["cpu_hours"] * 3600.0],
                 color="#ff7f0e",
                 s=40,
                 zorder=5,
@@ -473,7 +474,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
     if results.get("fixture_rho64"):
         ax.scatter(
             [64],
-            [results["fixture_rho64"]["cpu_hours"]],
+            [results["fixture_rho64"]["cpu_hours"] * 3600.0],
             color="#ff7f0e",
             s=90,
             marker="*",
@@ -487,7 +488,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         if m.get("ok"):
             ax.scatter(
                 [int(lam)],
-                [m["cpu_hours"]],
+                [m["cpu_hours"] * 3600.0],
                 color="#d62728",
                 s=40,
                 zorder=5,
@@ -497,7 +498,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         elif m.get("phase") == "timeout":
             ax.scatter(
                 [int(lam)],
-                [m["cpu_hours"]],
+                [m["cpu_hours"] * 3600.0],
                 color="#d62728",
                 s=55,
                 marker="x",
@@ -507,12 +508,12 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
             sat_timeout_labeled = True
 
     ax.set_xlabel(r"$\lambda$ (digest bits; circuit width $3\lambda$, 1024 gates)")
-    ax.set_ylabel("CPU-hours (wall × threads)")
+    ax.set_ylabel("CPU-seconds (wall × threads)")
     ax.set_title(r"Collision-finding cost vs $\lambda$ for $H(x)=C(0^\lambda\|x)_\lambda$")
     ax.grid(True, which="both", ls=":", alpha=0.5)
     ax.legend(loc="upper left", fontsize=8)
     ax.set_xlim(8, 80)
-    ax.set_ylim(1e-9, 1e6)
+    ax.set_ylim(1e-5, 1e9)
     fig.tight_layout()
     fig.savefig(out_png, dpi=160)
     fig.savefig(out_pdf)
@@ -550,7 +551,7 @@ def main() -> int:
             "gates": GATES,
             "workers": args.workers,
             "birthday_factor": BIRTHDAY_FACTOR,
-            "note": "CPU-hours = wall_seconds × threads / 3600",
+            "note": "Plot uses CPU-seconds = wall_seconds × threads; JSON keeps cpu_hours too",
         },
         "throughput": {},
         "measured": {"birthday": {}, "rho": {}, "sat": {}},
