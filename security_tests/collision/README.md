@@ -126,6 +126,32 @@ For $\lambda=64$ use `--in-bits 128 --pad 64 --out-bits 64`. On toy sizes
 (`--in-bits 8 --pad 4 --out-bits 4`) the encoder is small enough for a quick
 solver smoke test.
 
+## Cost vs λ comparison
+
+`compare_attack_costs.py` sweeps λ, measures scalar/bit-sliced throughput,
+runs birthday/rho/SAT where practical, and plots **CPU-hours**
+(wall × threads) against λ. Classical models use $\sim 1.25\cdot 2^{\lambda/2}$
+hash evaluations; rho includes an empirical work overhead from measured runs.
+A BHT quantum reference ($\sim 2^{\lambda/3}$ oracle queries) is drawn for scale.
+
+```bash
+python3 security_tests/collision/compare_attack_costs.py \
+  --out-dir target/security-demo/collision/cost_compare
+```
+
+Checked-in summary: `fixtures/cost_compare.png` and `fixtures/cost_compare.json`.
+
+<img alt="Collision cost vs lambda" src="fixtures/cost_compare.png" width="720" />
+
+Trends from that sweep (1024-gate circuits, 4 cores for rho):
+
+| Attack | Practical up to | Scaling hint |
+| --- | --- | --- |
+| Birthday | measured ≤32; model beyond | $\sim 2^{\lambda/2}$ / scalar Meval/s |
+| Rho/DP | measured ≤40 + λ=64 fixture | same exponent, fewer CPU-hours via lanes + threads |
+| SAT (Glucose3) | solved ≤14; timeouts ≥16 | poor beyond small λ on this encoding |
+| BHT (quantum, theoretical) | — | $\sim 2^{\lambda/3}$ if each query ≈ one eval |
+
 ## Tests
 
 ```bash

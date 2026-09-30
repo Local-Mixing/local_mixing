@@ -17,7 +17,7 @@
 //!   rho_collision CIRCUIT.g57
 //!       [--pad 64] [--out-bits 64] [--dp-bits 16]
 //!       [--workers N] [--seed S] [--max-evals N]
-//!       [--out report.json]
+//!       [--out report.json] [--bench-evals N]
 
 use local_mixing::circuit::{CircuitSeq, Gate, lane_state_len};
 use primitive_types::U256;
@@ -47,13 +47,14 @@ struct Args {
     max_evals: u64,
     out: Option<String>,
     self_check: bool,
+    bench_evals: Option<u64>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: rho_collision CIRCUIT.g57 [--pad 64] [--out-bits 64] \
          [--dp-bits 16] [--workers N] [--seed S] [--max-evals N] \
-         [--out report.json] [--self-check]"
+         [--out report.json] [--self-check] [--bench-evals N]"
     );
     process::exit(2);
 }
@@ -90,6 +91,7 @@ fn parse_args() -> Args {
         max_evals: 100_000_000_000,
         out: None,
         self_check: false,
+        bench_evals: None,
     };
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -109,6 +111,12 @@ fn parse_args() -> Args {
             }
             "--out" => args.out = Some(argv.next().unwrap_or_else(|| usage())),
             "--self-check" => args.self_check = true,
+            "--bench-evals" => {
+                args.bench_evals = Some(parse_u64(
+                    &argv.next().unwrap_or_else(|| usage()),
+                    "bench-evals",
+                ))
+            }
             _ => usage(),
         }
     }
@@ -230,11 +238,13 @@ fn main() {
         eprintln!("out-bits must be in 1..=64");
         process::exit(2);
     }
-    if args.dp_bits >= args.out_bits as u32 {
+    if args.bench_evals.is_none() && args.dp_bits >= args.out_bits as u32 {
         eprintln!("dp-bits must be < out-bits");
         process::exit(2);
     }
-    let width = args.pad + 128;
+    // Full 2λ→λ layout: pad=λ, message=2λ, width=3λ. Rho iterates a λ-bit
+    // subspace of the message (high message bits stay zero).
+    let width = args.pad + 2 * args.out_bits;
     let raw = fs::read(&args.circuit).unwrap_or_else(|e| {
         eprintln!("failed to read {}: {e}", args.circuit);
         process::exit(2);
@@ -247,10 +257,42 @@ fn main() {
         .max()
         .map(|w| w as usize + 1)
         .unwrap_or(0);
-    let wire_slots = lane_state_len(width.max(touched));
+    // Lane packing always materializes 64 message-bit words even when the
+    // logical width is smaller, so reserve at least 64 slots.
+    let wire_slots = lane_state_len(width.max(touched).max(64));
 
     if args.self_check {
-        self_check(&circuit.gates, args.out_bits, width.max(touched));
+        self_check(&circuit.gates, args.out_bits, width.max(touched).max(64));
+    }
+
+    if let Some(bench_n) = args.bench_evals {
+        let gates = &circuit.gates;
+        let mut states = [0u64; 64];
+        for (i, s) in states.iter_mut().enumerate() {
+            *s = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        // Warmup
+        for _ in 0..1000 {
+            states = hash_lanes(gates, &states, args.out_bits, wire_slots);
+        }
+        let t0 = Instant::now();
+        let mut done = 0u64;
+        while done < bench_n {
+            states = hash_lanes(gates, &states, args.out_bits, wire_slots);
+            done += 64;
+        }
+        let secs = t0.elapsed().as_secs_f64().max(1e-12);
+        let meval = done as f64 / secs / 1e6;
+        println!(
+            "{{\"mode\":\"bench\",\"evals\":{done},\"seconds\":{secs:.6},\
+             \"meval_per_sec\":{meval:.4},\"workers\":1,\"lanes\":64,\
+             \"out_bits\":{},\"pad\":{},\"width\":{width}}}",
+            args.out_bits, args.pad
+        );
+        eprintln!(
+            "[bench] {done} lane-evals in {secs:.3}s ({meval:.2} Meval/s, 64-wide SIMD walk)"
+        );
+        return;
     }
 
     let dp_mask = if args.dp_bits == 0 {
@@ -261,11 +303,13 @@ fn main() {
     let max_trail = 40u64 << args.dp_bits;
 
     eprintln!(
-        "[rho] circuit={} gates={} layout pad={} message_subspace=64 out={} \
+        "[rho] circuit={} gates={} layout pad={} width={} message_subspace={} out={} \
          dp_bits={} workers={} seed={} max_evals={}",
         args.circuit,
         circuit.gates.len(),
         args.pad,
+        width,
+        args.out_bits.min(64),
         args.out_bits,
         args.dp_bits,
         args.workers,

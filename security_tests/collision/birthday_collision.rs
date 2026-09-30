@@ -1,22 +1,15 @@
-//! Birthday / brute-force collision finder for the 2n→n hash
+//! Birthday / brute-force collision finder for the 2λ→λ hash
 //!
 //!   H(x) = C(0^{pad} ‖ x)_{out}
-//!
-//! built from a reversible G57 circuit C on `pad + in_bits` wires. Defaults
-//! match the 96-wire experiment: `pad=32`, `in_bits=64`, `out_bits=32`.
-//! High `pad` input wires are fixed to zero; the message occupies the low
-//! `in_bits` wires; the digest is the low `out_bits` output wires (wire 0 =
-//! LSB).
 //!
 //! Usage:
 //!   birthday_collision CIRCUIT.g57
 //!       [--pad 32] [--in-bits 64] [--out-bits 32]
 //!       [--samples N] [--seed S] [--out report.json]
-//!
-//! Exit 0 on a verified collision, 1 if the sample budget is exhausted
-//! without one, 2 on usage / I/O errors.
+//!       [--bench-evals N]
 
 use local_mixing::circuit::{CircuitSeq, Gate};
+use primitive_types::U256;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -31,12 +24,14 @@ struct Args {
     samples: u64,
     seed: u64,
     out: Option<String>,
+    bench_evals: Option<u64>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: birthday_collision CIRCUIT.g57 [--pad 32] [--in-bits 64] \
-         [--out-bits 32] [--samples N] [--seed S] [--out report.json]"
+         [--out-bits 32] [--samples N] [--seed S] [--out report.json] \
+         [--bench-evals N]"
     );
     process::exit(2);
 }
@@ -69,6 +64,7 @@ fn parse_args() -> Args {
         samples: 300_000,
         seed: 1,
         out: None,
+        bench_evals: None,
     };
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -84,36 +80,43 @@ fn parse_args() -> Args {
             }
             "--seed" => args.seed = parse_u64(&argv.next().unwrap_or_else(|| usage()), "seed"),
             "--out" => args.out = Some(argv.next().unwrap_or_else(|| usage())),
+            "--bench-evals" => {
+                args.bench_evals = Some(parse_u64(
+                    &argv.next().unwrap_or_else(|| usage()),
+                    "bench-evals",
+                ))
+            }
             _ => usage(),
         }
     }
     args
 }
 
-fn hash(gates: &[[u16; 3]], x: u64, in_bits: usize, out_bits: usize) -> u32 {
-    let in_mask = if in_bits == 64 {
+fn hash(gates: &[[u16; 3]], x: u64, in_bits: usize, out_bits: usize) -> u64 {
+    let in_mask = if in_bits >= 64 {
         u64::MAX
     } else {
         (1u64 << in_bits) - 1
     };
-    let out_mask = if out_bits == 32 {
-        u32::MAX as u128
+    let out_mask = if out_bits >= 64 {
+        u64::MAX
     } else {
-        (1u128 << out_bits) - 1
+        (1u64 << out_bits) - 1
     };
-    let out = Gate::evaluate_index_list_128((x & in_mask) as u128, gates);
-    (out & out_mask) as u32
+    let input = U256::from(x & in_mask);
+    let out = Gate::evaluate_index_list_256(input, gates);
+    out.low_u64() & out_mask
 }
 
 fn main() {
     let args = parse_args();
     let width = args.pad + args.in_bits;
-    if !(1..=64).contains(&args.in_bits) || !(1..=32).contains(&args.out_bits) {
-        eprintln!("require 1..=64 in-bits and 1..=32 out-bits");
+    if !(1..=64).contains(&args.in_bits) || !(1..=64).contains(&args.out_bits) {
+        eprintln!("require 1..=64 in-bits and 1..=64 out-bits");
         process::exit(2);
     }
-    if width > 128 {
-        eprintln!("pad + in-bits must fit in 128 wires for this tool");
+    if width > 256 {
+        eprintln!("pad + in-bits must fit in 256 wires for this tool");
         process::exit(2);
     }
 
@@ -122,26 +125,26 @@ fn main() {
         process::exit(2);
     });
     let circuit = CircuitSeq::from_bytes(&raw);
-    let wires = circuit
-        .gates
-        .iter()
-        .flat_map(|g| g.iter().copied())
-        .max()
-        .map(|w| w as usize + 1)
-        .unwrap_or(0);
-    if wires > width {
-        eprintln!(
-            "warning: circuit touches wire {} but hash layout uses {width} wires",
-            wires - 1
+
+    if let Some(bench_n) = args.bench_evals {
+        let mut x = 1u64;
+        for _ in 0..1000 {
+            x = hash(&circuit.gates, x, args.in_bits, args.out_bits).wrapping_add(1);
+        }
+        let t0 = Instant::now();
+        for i in 0..bench_n {
+            let _ = hash(&circuit.gates, i, args.in_bits, args.out_bits);
+        }
+        let secs = t0.elapsed().as_secs_f64().max(1e-12);
+        let meval = bench_n as f64 / secs / 1e6;
+        println!(
+            "{{\"mode\":\"bench\",\"evals\":{bench_n},\"seconds\":{secs:.6},\
+             \"meval_per_sec\":{meval:.4},\"workers\":1,\"out_bits\":{},\
+             \"in_bits\":{},\"pad\":{},\"width\":{width}}}",
+            args.out_bits, args.in_bits, args.pad
         );
-    }
-    if wires < width {
-        // Random generation with exactly `width` wires still may not touch
-        // every index; require only that generation targeted this width.
-        eprintln!(
-            "[birthday] note: highest touched wire is {} (layout width {width})",
-            wires.saturating_sub(1)
-        );
+        eprintln!("[bench] {bench_n} scalar evals in {secs:.3}s ({meval:.2} Meval/s)");
+        return;
     }
 
     eprintln!(
@@ -158,10 +161,10 @@ fn main() {
     );
 
     fastrand::seed(args.seed);
-    let mut seen: HashMap<u32, u64> = HashMap::with_capacity((args.samples as usize).min(1 << 20));
+    let mut seen: HashMap<u64, u64> = HashMap::with_capacity((args.samples as usize).min(1 << 20));
     let t0 = Instant::now();
     let mut evaluated = 0u64;
-    let mut collision: Option<(u64, u64, u32)> = None;
+    let mut collision: Option<(u64, u64, u64)> = None;
 
     for _ in 0..args.samples {
         let x = if args.in_bits == 64 {
@@ -199,7 +202,7 @@ fn main() {
          \"pad_bits\": {},\n  \"in_bits\": {},\n  \"out_bits\": {},\n  \
          \"seed\": {},\n  \"samples_evaluated\": {},\n  \
          \"x1_hex\": \"0x{:016x}\",\n  \"x2_hex\": \"0x{:016x}\",\n  \
-         \"digest_hex\": \"0x{:08x}\",\n  \"elapsed_secs\": {:.6}\n}}\n",
+         \"digest_hex\": \"0x{:016x}\",\n  \"elapsed_secs\": {:.6}\n}}\n",
         args.circuit.replace('\\', "\\\\").replace('"', "\\\""),
         circuit.gates.len(),
         width,
@@ -216,7 +219,7 @@ fn main() {
     print!("{report}");
     eprintln!(
         "[birthday] collision after {evaluated} samples ({elapsed:.2?}): \
-         H(0x{x1:016x}) = H(0x{x2:016x}) = 0x{h:08x}"
+         H(0x{x1:016x}) = H(0x{x2:016x}) = 0x{h:016x}"
     );
     if let Some(path) = args.out {
         fs::write(&path, &report).unwrap_or_else(|e| {
