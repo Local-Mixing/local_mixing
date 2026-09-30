@@ -12,7 +12,7 @@ under `target/` or outside the checkout.
 | [heatmaps/](heatmaps/) | Prefix distance, affine reconstruction, statistical prediction, cumulative trace analysis, and their renderers. |
 | [gauntlet/](gauntlet/) | Generate gadget comparisons, collect traces, run six attack families, and render witnesses. |
 | [sat_solve/](sat_solve/) | Encode a zero-slice preimage problem as DIMACS, run an external solver, and independently verify its model. |
-| [collision/](collision/) | Build a 64→32 hash from a random reversible circuit and find collisions (birthday primary; optional SAT). |
+| [collision/](collision/) | Build 2n→n hashes from random reversible circuits (n=32 birthday, n=64 rho; optional SAT). |
 | [demixing/](demixing/) | Output-cone pruning and inverse crossing reductions using only the supplied circuit. |
 | [preprocessing/](preprocessing/) | Standalone embedded-masking generation for controlled experiments. |
 | [gadgetization/](gadgetization/) | Python nonlinear gadget references and template exporters shared with the gauntlet and correctness tests. |
@@ -32,7 +32,7 @@ cargo build --release --features security-tools \
   --bin hmap --bin hmap_affine --bin hmap_stat --bin hmap_trace_affine \
   --bin gauntlet_gen --bin gauntlet_audit \
   --bin output_cone --bin crossing_downhill \
-  --bin gen_collision_circuit --bin birthday_collision
+  --bin gen_collision_circuit --bin birthday_collision --bin rho_collision
 ```
 
 Use Python 3.10 or later. NumPy and Matplotlib are needed for plotting and the

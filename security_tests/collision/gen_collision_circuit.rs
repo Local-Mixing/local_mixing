@@ -50,11 +50,18 @@ fn main() {
         process::exit(2);
     });
 
+    // Infer the 2n→n layout from wire count: width = 3n with pad=n, in=2n, out=n.
+    let (pad_bits, in_bits, out_bits) = if n % 3 == 0 {
+        let out = n / 3;
+        (out, 2 * out, out)
+    } else {
+        (32, 64, 32)
+    };
     let meta = format!(
         "{{\n  \"wires\": {n},\n  \"gates\": {m},\n  \"seed\": {seed},\n  \
          \"g57\": \"{g57_path}\",\n  \"mpmct1\": \"{mpmct_path}\",\n  \
-         \"hash_layout\": {{\n    \"pad_bits\": 32,\n    \"in_bits\": 64,\n    \
-         \"out_bits\": 32,\n    \"description\": \"H(x)=C(0^32 || x)_32 with wire 0 = LSB\"\n  }}\n}}\n"
+         \"hash_layout\": {{\n    \"pad_bits\": {pad_bits},\n    \"in_bits\": {in_bits},\n    \
+         \"out_bits\": {out_bits},\n    \"description\": \"H(x)=C(0^{pad_bits} || x)_{out_bits} with wire 0 = LSB\"\n  }}\n}}\n"
     );
     fs::write(&meta_path, meta).unwrap_or_else(|e| {
         eprintln!("write {meta_path}: {e}");

@@ -7,51 +7,65 @@ $$
 H(x) = C(0^{\mathrm{pad}} \Vert x)_{\mathrm{out}}
 $$
 
-Wire 0 is the LSB. The default experiment uses a **96-wire, 1024-gate**
-random G57 circuit with $\mathrm{pad}=32$, $\mathrm{in}=64$, $\mathrm{out}=32$,
-i.e. a 64→32 hash. A collision is a pair $x_1 \neq x_2$ with $H(x_1)=H(x_2)$.
+Wire 0 is the LSB. Width is $3n$ for an $n$-bit digest: $\mathrm{pad}=n$,
+$\mathrm{in}=2n$, $\mathrm{out}=n$. Checked-in fixtures:
 
-## Why birthday beats SAT here
+| Fixture | Wires | Gates | $n$ | Hash |
+| --- | ---: | ---: | ---: | --- |
+| `c96_g1024` | 96 | 1024 | 32 | 64→32 |
+| `c192_g1024` | 192 | 1024 | 64 | 128→64 |
 
-For a 32-bit digest the birthday bound is about $2^{16}$ evaluations. Each
-evaluation of a 1024-gate / 96-wire G57 circuit is cheap, so a hash-table
-search finishes in well under a second. A direct SAT encoding duplicates the
-circuit (two evaluations), adds equality on the digest bits and a
-differ-constraint on the inputs, and yields a formula with a few thousand
-variables — solvable, but unnecessary for finding *any* collision at this
-size.
+A collision is a pair $x_1 \neq x_2$ with $H(x_1)=H(x_2)$.
 
-Prefer SAT when the digest is large enough that $\sim 2^{\mathrm{out}/2}$
-evaluations are impractical, or when you want a constrained
-preimage/collision (e.g. sparse inputs). The encoder below is kept for that
-regime and for cross-checks on toy widths.
+## Attack choice
 
-## Generate the circuit
+| Digest | Method | Why |
+| --- | --- | --- |
+| 32-bit | Hash-table birthday | ~$2^{16}$ evals, tiny memory |
+| 64-bit | Parallel DP rho (van Oorschot–Wiener) | ~$2^{32}$ evals; a full birthday table would need tens of GB |
+| Larger / constrained | SAT (`collision_to_cnf`) | When sampling is impractical or inputs are restricted |
 
-From the repository root:
+Bit-sliced evaluation of the 192-wire circuit runs at roughly 50 Meval/s on a
+4-core host, so a 64-bit collision is minutes, not hours.
+
+## Generate a circuit
 
 ```bash
 cargo build --release --features security-tools \
-  --bin gen_collision_circuit --bin birthday_collision
+  --bin gen_collision_circuit --bin birthday_collision --bin rho_collision
 
 target/release/gen_collision_circuit \
   security_tests/collision/fixtures/c96_g1024 96 1024 20260330
+target/release/gen_collision_circuit \
+  security_tests/collision/fixtures/c192_g1024 192 1024 20260330
 ```
 
-This writes `c96_g1024.g57`, `c96_g1024.mpmct1`, and `c96_g1024.meta.json`.
-The checked-in fixture was generated with seed `20260330`.
+Each call writes `.g57`, `.mpmct1`, and `.meta.json`. Layout is inferred as
+$\mathrm{pad}=\mathrm{out}=N/3$, $\mathrm{in}=2N/3$ when $N$ is divisible by 3.
+Both checked-in fixtures used seed `20260330`.
 
-A recorded birthday witness for that fixture (search seed `1`) is
-`c96_g1024.birthday.json`:
+### n=32 witness (`c96_g1024.birthday.json`)
 
 | | |
 | --- | --- |
 | $x_1$ | `0xf64d34a740cbd971` |
 | $x_2$ | `0x741f0b81c8aaf22a` |
-| $H(x_1)=H(x_2)$ | `0xd4fc8d7a` |
+| digest | `0xd4fc8d7a` |
 | samples | 55 618 (~138 ms) |
 
-## Birthday attack
+### n=64 witness (`c192_g1024.rho.json`)
+
+Search uses a 64-bit message subspace (high 64 message bits zero); that is
+still a valid collision for the full 128→64 hash.
+
+| | |
+| --- | --- |
+| $x_1$ | `0x68032fc8c02245c7` |
+| $x_2$ | `0xba217b6200edaf67` |
+| digest | `0xead05de351770b3b` |
+| evals | ~3.66×10¹⁰ (~11.5 min at ~53 Meval/s) |
+
+## Birthday attack (n=32)
 
 ```bash
 mkdir -p target/security-demo/collision
@@ -62,16 +76,25 @@ target/release/birthday_collision \
   --out target/security-demo/collision/birthday.json
 ```
 
-Re-check a reported pair with the ordinary evaluator (high 32 wires stay 0
-when the 64-bit message is passed as the full state):
+## Rho / distinguished-point attack (n=64)
 
 ```bash
-cargo run --release --locked -- circuit evaluate -n 96 \
-  -s security_tests/collision/fixtures/c96_g1024.g57 \
-  --input 0x<x1>
+target/release/rho_collision \
+  security_tests/collision/fixtures/c192_g1024.g57 \
+  --pad 64 --out-bits 64 --dp-bits 16 --seed 1 \
+  --out target/security-demo/collision/rho64.json
 ```
 
-Compare the low 32 bits (8 hex digits) of the two outputs.
+`--self-check` compares bit-sliced lanes against scalar `u256` evaluation.
+Re-check a pair with:
+
+```bash
+cargo run --release --locked -- circuit evaluate -n 192 \
+  -s security_tests/collision/fixtures/c192_g1024.g57 \
+  --input 0x68032fc8c02245c7
+```
+
+Compare the low 64 bits (16 hex digits) of the two outputs.
 
 ## SAT attack (optional)
 
@@ -96,11 +119,12 @@ python security_tests/collision/decode_collision_model.py \
   --out target/security-demo/collision/sat-verified.json
 ```
 
-On toy sizes (`--in-bits 8 --pad 4 --out-bits 4`) the same encoder is small
-enough for a quick solver smoke test.
+For the 192-wire instance use `--in-bits 128 --pad 64 --out-bits 64`. On toy
+sizes (`--in-bits 8 --pad 4 --out-bits 4`) the encoder is small enough for a
+quick solver smoke test.
 
 ## Tests
 
 ```bash
-python -m unittest security_tests.collision.test_collision -v
+python3 -m unittest security_tests.collision.test_collision -v
 ```

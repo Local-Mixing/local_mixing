@@ -34,6 +34,8 @@ class BirthdayCollisionTests(unittest.TestCase):
                 "gen_collision_circuit",
                 "--bin",
                 "birthday_collision",
+                "--bin",
+                "rho_collision",
             ]
         )
 
@@ -71,6 +73,41 @@ class BirthdayCollisionTests(unittest.TestCase):
             report = json.loads(result.stdout)
             self.assertNotEqual(report["x1_hex"], report["x2_hex"])
             self.assertTrue(report["digest_hex"].startswith("0x"))
+
+    def test_rho_finds_collision_on_small_digest(self) -> None:
+        # Use the checked-in 192-wire / 1024-gate fixture with a truncated
+        # digest so the search finishes quickly; a 64-gate toy circuit does
+        # not mix enough for distinguished-point search to be reliable.
+        fixture = (
+            ROOT
+            / "security_tests"
+            / "collision"
+            / "fixtures"
+            / "c192_g1024.g57"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run(
+                [
+                    str(BIN / "rho_collision"),
+                    str(fixture),
+                    "--pad",
+                    "64",
+                    "--out-bits",
+                    "28",
+                    "--dp-bits",
+                    "10",
+                    "--seed",
+                    "5",
+                    "--max-evals",
+                    "20000000",
+                    "--self-check",
+                    "--out",
+                    str(Path(tmp) / "rho.json"),
+                ]
+            )
+            report = json.loads(result.stdout)
+            self.assertNotEqual(report["x1_hex"], report["x2_hex"])
+            self.assertEqual(report["out_bits"], 28)
 
 
 class CollisionCnfTests(unittest.TestCase):
