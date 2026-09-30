@@ -1,32 +1,33 @@
-# 2n→n collisions on random reversible circuits
+# 2λ→λ collisions on random reversible circuits
 
-Construct a compressing hash from a reversible circuit $C$ on $\mathrm{pad}+\mathrm{in}$
-wires:
+Parameterize by a security length $\lambda$. Build a compressing hash from a
+random reversible circuit $C$ on $3\lambda$ wires:
 
 $$
-H(x) = C(0^{\mathrm{pad}} \Vert x)_{\mathrm{out}}
+H(x) = C(0^{\lambda} \Vert x)_{\lambda},
+\qquad x \in \{0,1\}^{2\lambda}.
 $$
 
-Wire 0 is the LSB. Width is $3n$ for an $n$-bit digest: $\mathrm{pad}=n$,
-$\mathrm{in}=2n$, $\mathrm{out}=n$. Checked-in fixtures:
+So the circuit is always $3\lambda$ bits wide, with $2\lambda$-bit inputs and
+$\lambda$-bit outputs (output half the input size). Wire 0 is the LSB.
 
-| Fixture | Wires | Gates | $n$ | Hash |
+| Fixture | $\lambda$ | Wires ($3\lambda$) | Gates | Hash ($2\lambda\to\lambda$) |
 | --- | ---: | ---: | ---: | --- |
-| `c96_g1024` | 96 | 1024 | 32 | 64→32 |
-| `c192_g1024` | 192 | 1024 | 64 | 128→64 |
+| `c96_g1024` | 32 | 96 | 1024 | 64→32 |
+| `c192_g1024` | 64 | 192 | 1024 | 128→64 |
 
 A collision is a pair $x_1 \neq x_2$ with $H(x_1)=H(x_2)$.
 
 ## Attack choice
 
-| Digest | Method | Why |
-| --- | --- | --- |
-| 32-bit | Hash-table birthday | ~$2^{16}$ evals, tiny memory |
-| 64-bit | Parallel DP rho (van Oorschot–Wiener) | ~$2^{32}$ evals; a full birthday table would need tens of GB |
+| $\lambda$ | Method | Why |
+| ---: | --- | --- |
+| 32 | Hash-table birthday | ~$2^{16}$ evals, tiny memory |
+| 64 | Parallel DP rho (van Oorschot–Wiener) | ~$2^{32}$ evals; a full birthday table would need tens of GB |
 | Larger / constrained | SAT (`collision_to_cnf`) | When sampling is impractical or inputs are restricted |
 
-Bit-sliced evaluation of the 192-wire circuit runs at roughly 50 Meval/s on a
-4-core host, so a 64-bit collision is minutes, not hours.
+Bit-sliced evaluation of the $\lambda=64$ circuit runs at roughly 50 Meval/s on a
+4-core host, so a collision is minutes, not hours.
 
 ## Generate a circuit
 
@@ -40,11 +41,12 @@ target/release/gen_collision_circuit \
   security_tests/collision/fixtures/c192_g1024 192 1024 20260330
 ```
 
-Each call writes `.g57`, `.mpmct1`, and `.meta.json`. Layout is inferred as
-$\mathrm{pad}=\mathrm{out}=N/3$, $\mathrm{in}=2N/3$ when $N$ is divisible by 3.
+Each call writes `.g57`, `.mpmct1`, and `.meta.json`. When the wire count $N$
+is divisible by 3, the layout is inferred as $\lambda=N/3$
+($\mathrm{pad}=\lambda$, $\mathrm{in}=2\lambda$, $\mathrm{out}=\lambda$).
 Both checked-in fixtures used seed `20260330`.
 
-### n=32 witness (`c96_g1024.birthday.json`)
+### λ=32 witness (`c96_g1024.birthday.json`)
 
 | | |
 | --- | --- |
@@ -53,10 +55,11 @@ Both checked-in fixtures used seed `20260330`.
 | digest | `0xd4fc8d7a` |
 | samples | 55 618 (~138 ms) |
 
-### n=64 witness (`c192_g1024.rho.json`)
+### λ=64 witness (`c192_g1024.rho.json`)
 
-Search uses a 64-bit message subspace (high 64 message bits zero); that is
-still a valid collision for the full 128→64 hash.
+Search used a 64-bit message subspace (high 64 of the $2\lambda=128$ message
+bits zero). That is still a valid collision for the full $128\to 64$ hash;
+enlarging the domain does not raise the $\sim 2^{\lambda/2}$ cost.
 
 | | |
 | --- | --- |
@@ -65,7 +68,7 @@ still a valid collision for the full 128→64 hash.
 | digest | `0xead05de351770b3b` |
 | evals | ~3.66×10¹⁰ (~11.5 min at ~53 Meval/s) |
 
-## Birthday attack (n=32)
+## Birthday attack (λ=32)
 
 ```bash
 mkdir -p target/security-demo/collision
@@ -76,7 +79,7 @@ target/release/birthday_collision \
   --out target/security-demo/collision/birthday.json
 ```
 
-## Rho / distinguished-point attack (n=64)
+## Rho / distinguished-point attack (λ=64)
 
 ```bash
 target/release/rho_collision \
@@ -119,9 +122,9 @@ python security_tests/collision/decode_collision_model.py \
   --out target/security-demo/collision/sat-verified.json
 ```
 
-For the 192-wire instance use `--in-bits 128 --pad 64 --out-bits 64`. On toy
-sizes (`--in-bits 8 --pad 4 --out-bits 4`) the encoder is small enough for a
-quick solver smoke test.
+For $\lambda=64$ use `--in-bits 128 --pad 64 --out-bits 64`. On toy sizes
+(`--in-bits 8 --pad 4 --out-bits 4`) the encoder is small enough for a quick
+solver smoke test.
 
 ## Tests
 
