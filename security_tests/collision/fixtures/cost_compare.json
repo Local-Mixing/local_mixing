@@ -153,6 +153,90 @@
         },
         "threads": 1,
         "wall_secs": 0.322387
+      },
+      "36": {
+        "cpu_hours": 0.00021179,
+        "evals": 302643,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c108.g57",
+          "digest_hex": "0x00000005a9353076",
+          "elapsed_secs": 0.762444,
+          "gates": 1024,
+          "in_bits": 64,
+          "out_bits": 36,
+          "pad_bits": 36,
+          "samples_evaluated": 302643,
+          "seed": 1,
+          "width": 100,
+          "x1_hex": "0x636089847f9b7614",
+          "x2_hex": "0x3e153febcb9badf4"
+        },
+        "threads": 1,
+        "wall_secs": 0.762444
+      },
+      "40": {
+        "cpu_hours": 0.0006497311111111112,
+        "evals": 932977,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c120.g57",
+          "digest_hex": "0x0000002d443cfd68",
+          "elapsed_secs": 2.339032,
+          "gates": 1024,
+          "in_bits": 64,
+          "out_bits": 40,
+          "pad_bits": 40,
+          "samples_evaluated": 932977,
+          "seed": 1,
+          "width": 104,
+          "x1_hex": "0xc2526c60a1aa46fb",
+          "x2_hex": "0x3c44a6cc600460da"
+        },
+        "threads": 1,
+        "wall_secs": 2.339032
+      },
+      "44": {
+        "cpu_hours": 0.0060637227777777785,
+        "evals": 9083004,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c132.g57",
+          "digest_hex": "0x000004aa96d0484b",
+          "elapsed_secs": 21.829402,
+          "gates": 1024,
+          "in_bits": 64,
+          "out_bits": 44,
+          "pad_bits": 44,
+          "samples_evaluated": 9083004,
+          "seed": 1,
+          "width": 108,
+          "x1_hex": "0x55a043098455d578",
+          "x2_hex": "0xfa030970fdd381dc"
+        },
+        "threads": 1,
+        "wall_secs": 21.829402
+      },
+      "48": {
+        "cpu_hours": 0.004163282222222222,
+        "evals": 6229157,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c144.g57",
+          "digest_hex": "0x0000c9bcf843244a",
+          "elapsed_secs": 14.987816,
+          "gates": 1024,
+          "in_bits": 64,
+          "out_bits": 48,
+          "pad_bits": 48,
+          "samples_evaluated": 6229157,
+          "seed": 1,
+          "width": 112,
+          "x1_hex": "0x8a723b9f117c5053",
+          "x2_hex": "0xb45875d5e05d7b38"
+        },
+        "threads": 1,
+        "wall_secs": 14.987816
       }
     },
     "rho": {
@@ -271,6 +355,29 @@
         "threads": 4,
         "wall_secs": 0.012461
       },
+      "36": {
+        "cpu_hours": 2.8357777777777777e-05,
+        "evals": 1074496,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c108.g57",
+          "digest_hex": "0x0000000c0eb1c01e",
+          "dp_bits": 12,
+          "elapsed_secs": 0.025522,
+          "gates": 1024,
+          "in_bits": 128,
+          "out_bits": 36,
+          "pad_bits": 36,
+          "samples_evaluated": 1074496,
+          "search": "rho_dp_subspace64",
+          "seed": 1,
+          "width": 108,
+          "x1_hex": "0x00000000000000000000000835405bfa",
+          "x2_hex": "0x00000000000000000000000becbf687f"
+        },
+        "threads": 4,
+        "wall_secs": 0.025522
+      },
       "40": {
         "cpu_hours": 0.0002553822222222222,
         "evals": 9983872,
@@ -293,6 +400,52 @@
         },
         "threads": 4,
         "wall_secs": 0.229844
+      },
+      "44": {
+        "cpu_hours": 0.0008481722222222222,
+        "evals": 34188992,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c132.g57",
+          "digest_hex": "0x00000f1267a32ef4",
+          "dp_bits": 14,
+          "elapsed_secs": 0.763355,
+          "gates": 1024,
+          "in_bits": 128,
+          "out_bits": 44,
+          "pad_bits": 44,
+          "samples_evaluated": 34188992,
+          "search": "rho_dp_subspace64",
+          "seed": 1,
+          "width": 132,
+          "x1_hex": "0x00000000000000000000017ca9c9e6f8",
+          "x2_hex": "0x000000000000000000000f2304bddeab"
+        },
+        "threads": 4,
+        "wall_secs": 0.763355
+      },
+      "48": {
+        "cpu_hours": 0.002608158888888889,
+        "evals": 87306752,
+        "ok": true,
+        "report": {
+          "circuit": "target/security-demo/collision/cost_compare/circuits/c144.g57",
+          "digest_hex": "0x00003fbbb2ab4c49",
+          "dp_bits": 16,
+          "elapsed_secs": 2.347343,
+          "gates": 1024,
+          "in_bits": 128,
+          "out_bits": 48,
+          "pad_bits": 48,
+          "samples_evaluated": 87306752,
+          "search": "rho_dp_subspace64",
+          "seed": 1,
+          "width": 144,
+          "x1_hex": "0x0000000000000000000069f2b38d0bd1",
+          "x2_hex": "0x00000000000000000000bf14e9e2e6df"
+        },
+        "threads": 4,
+        "wall_secs": 2.347343
       }
     },
     "sat": {
@@ -305,6 +458,15 @@
         "threads": 1,
         "wall_secs": 0.08488316199873225
       },
+      "5": {
+        "clauses": 12349,
+        "cpu_hours": 5.5391802777396355e-05,
+        "encode_secs": 0.007278005999978632,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 0.19213248399864824
+      },
       "6": {
         "clauses": 12361,
         "cpu_hours": 8.60620250023203e-06,
@@ -313,6 +475,15 @@
         "sat": true,
         "threads": 1,
         "wall_secs": 0.024098165000395966
+      },
+      "7": {
+        "clauses": 12373,
+        "cpu_hours": 0.0001221765125006237,
+        "encode_secs": 0.006099204001657199,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 0.43373624100058805
       },
       "8": {
         "clauses": 12385,
@@ -323,6 +494,15 @@
         "threads": 1,
         "wall_secs": 0.2567335459989408
       },
+      "9": {
+        "clauses": 12397,
+        "cpu_hours": 5.222576500071025e-05,
+        "encode_secs": 0.007026513001619605,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 0.1809862410009373
+      },
       "10": {
         "clauses": 12409,
         "cpu_hours": 3.9272156111312346e-05,
@@ -331,6 +511,15 @@
         "sat": true,
         "threads": 1,
         "wall_secs": 0.13425874700078566
+      },
+      "11": {
+        "clauses": 12421,
+        "cpu_hours": 0.00017839043111103416,
+        "encode_secs": 0.0068306360008136835,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 0.6353749159989093
       },
       "12": {
         "clauses": 12433,
@@ -341,6 +530,15 @@
         "threads": 1,
         "wall_secs": 2.880703041999368
       },
+      "13": {
+        "clauses": 12445,
+        "cpu_hours": 0.0004595234022225567,
+        "encode_secs": 0.006188049001139007,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 1.648096199000065
+      },
       "14": {
         "clauses": 12457,
         "cpu_hours": 0.0002775678758330792,
@@ -350,29 +548,83 @@
         "threads": 1,
         "wall_secs": 0.9922683119984868
       },
-      "16": {
-        "cpu_hours": 0.03333333333333333,
-        "note": "Glucose3 hard timeout; point is a lower bound",
-        "ok": false,
-        "phase": "timeout",
+      "15": {
+        "clauses": 12469,
+        "cpu_hours": 0.0019015914227778314,
+        "encode_secs": 0.005934826000157045,
+        "ok": true,
+        "sat": true,
         "threads": 1,
-        "wall_secs": 120.0
+        "wall_secs": 6.839794296000036
+      },
+      "16": {
+        "clauses": 12481,
+        "cpu_hours": 0.00028811424888873364,
+        "encode_secs": 0.006151889998363913,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 1.0310594060010771
+      },
+      "17": {
+        "clauses": 12493,
+        "cpu_hours": 0.015133889508888892,
+        "encode_secs": 0.006130013000074541,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 54.47587221899994
+      },
+      "18": {
+        "clauses": 12505,
+        "cpu_hours": 0.001961612917777731,
+        "encode_secs": 0.0062692720002814895,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 7.055537231999551
+      },
+      "19": {
+        "clauses": 12517,
+        "cpu_hours": 0.013579065652777698,
+        "encode_secs": 0.0067442929994285805,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 48.87789205700028
       },
       "20": {
-        "cpu_hours": 0.03333333333333333,
-        "note": "Glucose3 hard timeout; point is a lower bound",
+        "clauses": 12529,
+        "cpu_hours": 0.041529016759722155,
+        "encode_secs": 0.006338557999697514,
+        "ok": true,
+        "sat": true,
+        "threads": 1,
+        "wall_secs": 149.49812177700005
+      },
+      "21": {
+        "cpu_hours": 0.3333333333333333,
+        "note": "hard wall timeout",
         "ok": false,
         "phase": "timeout",
         "threads": 1,
-        "wall_secs": 120.0
+        "wall_secs": 1200.0
+      },
+      "22": {
+        "cpu_hours": 0.3333333333333333,
+        "note": "hard wall timeout",
+        "ok": false,
+        "phase": "timeout",
+        "threads": 1,
+        "wall_secs": 1200.0
       },
       "24": {
-        "cpu_hours": 0.03333333333333333,
-        "note": "Glucose3 hard timeout; point is a lower bound",
+        "cpu_hours": 0.4166666666666667,
+        "note": "hard wall timeout",
         "ok": false,
         "phase": "timeout",
         "threads": 1,
-        "wall_secs": 120.0
+        "wall_secs": 1500.0
       }
     }
   },
@@ -380,8 +632,6 @@
     "birthday_factor": 1.2533141373155001,
     "gates": 1024,
     "note": "Plot uses CPU-seconds = wall_seconds \u00d7 threads; JSON keeps cpu_hours too",
-    "rho_overhead_median": 5.385720785419342,
-    "sat_note": "Glucose3 solves \u03bb\u226414 quickly; \u03bb\u226516 hit multi-minute timeouts (points are lower bounds).",
     "workers": 4
   },
   "model_table": [

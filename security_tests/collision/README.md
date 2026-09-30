@@ -147,10 +147,12 @@ Trends from that sweep (1024-gate circuits, 4 cores for rho):
 
 | Attack | Practical up to | Scaling hint |
 | --- | --- | --- |
-| Birthday | measured ≤32; model beyond | $\sim 2^{\lambda/2}$ / scalar Meval/s |
-| Rho/DP | measured ≤40 + λ=64 fixture | same exponent, fewer CPU-seconds via lanes + threads |
-| SAT (Glucose3) | solved ≤14; timeouts ≥16 | poor beyond small λ on this encoding |
+| Birthday | measured ≤48; model beyond | $\sim 2^{\lambda/2}$ / scalar Meval/s |
+| Rho/DP | measured ≤48 + λ=64 fixture | same exponent, fewer CPU-seconds via lanes + threads |
+| SAT (Glucose3) | solved ≤20 (dense λ); timeouts ≥21 | roughly exponential in λ on this encoding, then impractical |
 | BHT (quantum, theoretical) | — | $\sim 2^{\lambda/3}$ if each query ≈ one eval |
+
+Defaults: birthday/rho every 4 bits through 48; SAT every bit from 4–20 with longer per-λ timeouts; `--resume` merges into an existing JSON.
 
 ## Tests
 

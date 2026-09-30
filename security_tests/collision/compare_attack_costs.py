@@ -139,8 +139,8 @@ def bench_lanes(circuit: Path, lam: int, evals: int = 5_000_000) -> float:
 
 
 def measure_birthday(circuit: Path, lam: int, seed: int = 1) -> dict:
-    # Budget a few birthday-bound multiples.
-    budget = int(min(50_000_000, max(100_000, 20 * (2 ** (lam / 2)))))
+    # Budget several birthday-bound multiples (cap for memory/time).
+    budget = int(min(250_000_000, max(100_000, 40 * (2 ** (lam / 2)))))
     t0 = time.perf_counter()
     r = run(
         [
@@ -148,6 +148,7 @@ def measure_birthday(circuit: Path, lam: int, seed: int = 1) -> dict:
             str(circuit),
             "--pad",
             str(lam),
+            # Subspace OK when 2λ > 64; still a valid H-collision.
             "--in-bits",
             str(min(64, 2 * lam)),
             "--out-bits",
@@ -188,9 +189,11 @@ def measure_rho(circuit: Path, lam: int, workers: int, seed: int = 1) -> dict:
         24: 100_000_000,
         28: 200_000_000,
         32: 500_000_000,
+        36: 1_000_000_000,
         40: 2_000_000_000,
-        48: 8_000_000_000,
-    }.get(lam, 50_000_000)
+        44: 8_000_000_000,
+        48: 30_000_000_000,
+    }.get(lam, max(50_000_000, int(80 * (2 ** (lam / 2)))))
     t0 = time.perf_counter()
     r = run(
         [
@@ -303,52 +306,23 @@ def measure_sat(circuit_mpmct: Path, lam: int, timeout_s: float) -> dict:
 
 
 def measure_sat_with_timeout(circuit_mpmct: Path, lam: int, timeout_s: float) -> dict:
-    """Run SAT in a subprocess so we can hard-timeout."""
-    helper = ROOT / "security_tests" / "collision" / "_sat_once.py"
-    # Inline helper via python -c for portability.
-    code = r"""
-import json, sys, time
-from pathlib import Path
-from pysat.solvers import Glucose3
-circuit, cnf_tool, lam, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
-import subprocess, tempfile, os
-lam=lam
-with tempfile.TemporaryDirectory() as tmp:
-    cnf = Path(tmp)/'c.cnf'
-    t0=time.perf_counter()
-    r=subprocess.run([cnf_tool, circuit, str(cnf), '--in-bits', str(2*lam), '--pad', str(lam), '--out-bits', str(lam)], capture_output=True, text=True)
-    enc=time.perf_counter()-t0
-    if r.returncode!=0:
-        print(json.dumps({'ok':False,'phase':'encode','stderr':r.stderr[-400:]})); sys.exit(0)
-    clauses=[]
-    for line in Path(cnf).read_text().splitlines():
-        if line.startswith('c') or line.startswith('p') or not line.strip():
-            continue
-        lits=[int(x) for x in line.split() if x!='0']
-        if lits: clauses.append(lits)
-    t1=time.perf_counter()
-    # Soft budget: Glucose3 solve; parent kills us on hard timeout.
-    with Glucose3(bootstrap_with=clauses) as g:
-        sat=g.solve()
-    wall=time.perf_counter()-t1
-    print(json.dumps({'ok':bool(sat),'wall_secs':wall,'cpu_hours':(enc+wall)/3600.0,'threads':1,'encode_secs':enc,'clauses':len(clauses),'sat':bool(sat)}))
-"""
+    """Run SAT in a killed subprocess so wall-clock limits are hard."""
+    helper = ROOT / "security_tests" / "collision" / "sat_once.py"
     try:
         r = subprocess.run(
             [
                 "python3",
-                "-c",
-                code,
+                str(helper),
                 str(circuit_mpmct),
                 str(ENCODER),
                 str(lam),
-                str(timeout_s),
             ],
             cwd=ROOT,
             text=True,
             capture_output=True,
-            timeout=timeout_s + 30,
+            timeout=timeout_s,
             check=False,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         return {
@@ -357,6 +331,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "wall_secs": timeout_s,
             "cpu_hours": timeout_s / 3600.0,
             "threads": 1,
+            "note": f"killed after {timeout_s:.0f}s",
         }
     if r.returncode != 0 or not r.stdout.strip():
         return {
@@ -414,14 +389,21 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
         for lam, m in results["measured"].get("sat", {}).items()
         if m.get("ok") and m.get("cpu_hours", 0) > 0
     ]
+    sat_timeouts = [
+        int(lam)
+        for lam, m in results["measured"].get("sat", {}).items()
+        if m.get("phase") == "timeout"
+    ]
     sat_curve = None
     if len(sat_pts) >= 2:
         xs = np.array([p[0] for p in sat_pts], dtype=float)
         ys = np.log(np.array([p[1] for p in sat_pts], dtype=float))
         coef = np.polyfit(xs, ys, 1)
-        # Only draw near the fitted range, dashed beyond.
-        sat_grid = np.arange(int(xs.min()), min(48, int(xs.max()) + 12) + 1)
+        # Draw through measured solves and a short extrapolation.
+        sat_hi = int(xs.max()) + (8 if sat_timeouts else 4)
+        sat_grid = np.arange(int(xs.min()), min(48, sat_hi) + 1)
         sat_curve = (sat_grid, np.exp(np.polyval(coef, sat_grid)))
+    sat_shade_from = min(sat_timeouts) if sat_timeouts else 16
 
     # BHT quantum collision: ~π/2 · 2^{λ/3} oracle queries; plot as if each
     # query cost equaled one classical scalar eval (order-of-magnitude hint).
@@ -446,7 +428,9 @@ def plot(results: dict, out_png: Path, out_pdf: Path) -> None:
             lw=2,
             label="SAT (fit to solved points)",
         )
-    ax.axvspan(16, 80, color="#d62728", alpha=0.06, label="SAT impractical (timeouts)")
+    ax.axvspan(
+        sat_shade_from, 80, color="#d62728", alpha=0.06, label="SAT impractical (timeouts)"
+    )
 
     # Measured markers
     for lam, m in results["measured"].get("birthday", {}).items():
@@ -532,10 +516,30 @@ def main() -> int:
         "--lambdas-throughput",
         default="8,12,16,20,24,28,32,40,48,56,64",
     )
-    ap.add_argument("--lambdas-birthday", default="8,12,16,20,24,28,32")
-    ap.add_argument("--lambdas-rho", default="16,20,24,28,32,40")
-    ap.add_argument("--lambdas-sat", default="4,6,8,10,12,14")
-    ap.add_argument("--sat-timeout", type=float, default=60.0)
+    ap.add_argument(
+        "--lambdas-birthday",
+        default="8,12,16,20,24,28,32,36,40,44,48",
+    )
+    ap.add_argument(
+        "--lambdas-rho",
+        default="16,20,24,28,32,36,40,44,48",
+    )
+    ap.add_argument(
+        "--lambdas-sat",
+        default="4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
+    )
+    ap.add_argument("--sat-timeout", type=float, default=120.0)
+    ap.add_argument(
+        "--sat-timeout-schedule",
+        default="15:180,16:300,17:300,18:600,19:600,20:900",
+        help="Per-λ SAT wall timeouts as λ:secs pairs (override --sat-timeout)",
+    )
+    ap.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Merge into an existing cost_compare.json (skip λ already ok)",
+    )
     args = ap.parse_args()
 
     ensure_tools()
@@ -545,6 +549,18 @@ def main() -> int:
 
     def parse_lams(s: str) -> list[int]:
         return [int(x) for x in s.split(",") if x.strip()]
+
+    def parse_sat_schedule(s: str) -> dict[int, float]:
+        out: dict[int, float] = {}
+        for part in s.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            lam_s, sec_s = part.split(":")
+            out[int(lam_s)] = float(sec_s)
+        return out
+
+    sat_schedule = parse_sat_schedule(args.sat_timeout_schedule)
 
     results: dict = {
         "meta": {
@@ -556,9 +572,28 @@ def main() -> int:
         "throughput": {},
         "measured": {"birthday": {}, "rho": {}, "sat": {}},
     }
+    if args.resume and args.resume.exists():
+        prev = json.loads(args.resume.read_text())
+        results["throughput"] = {int(k): v for k, v in prev.get("throughput", {}).items()}
+        for section in ("birthday", "rho", "sat"):
+            results["measured"][section] = {
+                int(k): v for k, v in prev.get("measured", {}).get(section, {}).items()
+            }
+        if "fixture_rho64" in prev:
+            results["fixture_rho64"] = prev["fixture_rho64"]
+        print(f"[resume] loaded {args.resume}")
+
+    def already_ok(section: str, lam: int) -> bool:
+        m = results["measured"].get(section, {}).get(lam)
+        return bool(m and m.get("ok"))
 
     print("== throughput ==")
     for lam in parse_lams(args.lambdas_throughput):
+        if lam in results["throughput"]:
+            s = results["throughput"][lam]["scalar_meval"]
+            l = results["throughput"][lam]["lane_meval"]
+            print(f"  λ={lam:2d}  (cached) scalar={s:7.2f}  lanes={l:7.2f}")
+            continue
         c = gen_circuit(work, lam)
         s = bench_scalar(c, lam)
         l = bench_lanes(c, lam)
@@ -567,23 +602,37 @@ def main() -> int:
 
     print("== birthday (measured) ==")
     for lam in parse_lams(args.lambdas_birthday):
+        if already_ok("birthday", lam):
+            m = results["measured"]["birthday"][lam]
+            print(
+                f"  λ={lam:2d}  (cached) cpu_secs={m['cpu_hours']*3600:.3e}  "
+                f"evals={m.get('evals', '-')}"
+            )
+            continue
         c = gen_circuit(work, lam)
         m = measure_birthday(c, lam)
         results["measured"]["birthday"][lam] = m
         status = "ok" if m.get("ok") else "fail"
         print(
-            f"  λ={lam:2d}  {status:4s}  cpu_hours={m.get('cpu_hours', float('nan')):.3e}  "
+            f"  λ={lam:2d}  {status:4s}  cpu_secs={m.get('cpu_hours', float('nan'))*3600:.3e}  "
             f"evals={m.get('evals', '-')}"
         )
 
     print("== rho/DP (measured) ==")
     for lam in parse_lams(args.lambdas_rho):
+        if already_ok("rho", lam):
+            m = results["measured"]["rho"][lam]
+            print(
+                f"  λ={lam:2d}  (cached) cpu_secs={m['cpu_hours']*3600:.3e}  "
+                f"evals={m.get('evals', '-')}"
+            )
+            continue
         c = gen_circuit(work, lam)
         m = measure_rho(c, lam, workers=args.workers)
         results["measured"]["rho"][lam] = m
         status = "ok" if m.get("ok") else "fail"
         print(
-            f"  λ={lam:2d}  {status:4s}  cpu_hours={m.get('cpu_hours', float('nan')):.3e}  "
+            f"  λ={lam:2d}  {status:4s}  cpu_secs={m.get('cpu_hours', float('nan'))*3600:.3e}  "
             f"evals={m.get('evals', '-')}"
         )
 
@@ -599,20 +648,29 @@ def main() -> int:
             "cpu_hours": wall * args.workers / 3600.0,
         }
         print(
-            f"  λ=64  fixture  cpu_hours={results['fixture_rho64']['cpu_hours']:.3e}  "
+            f"  λ=64  fixture  cpu_secs={results['fixture_rho64']['cpu_hours']*3600:.3e}  "
             f"evals={results['fixture_rho64']['evals']}"
         )
 
     print("== SAT (measured) ==")
     for lam in parse_lams(args.lambdas_sat):
+        if already_ok("sat", lam):
+            m = results["measured"]["sat"][lam]
+            print(
+                f"  λ={lam:2d}  (cached) cpu_secs={m['cpu_hours']*3600:.3e}  "
+                f"clauses={m.get('clauses', '-')}"
+            )
+            continue
         prefix = work / f"c{3 * lam}"
         gen_circuit(work, lam)
         mpmct = Path(f"{prefix}.mpmct1")
-        m = measure_sat_with_timeout(mpmct, lam, timeout_s=args.sat_timeout)
+        timeout = sat_schedule.get(lam, args.sat_timeout)
+        m = measure_sat_with_timeout(mpmct, lam, timeout_s=timeout)
         results["measured"]["sat"][lam] = m
         status = "ok" if m.get("ok") else m.get("phase", "fail")
         print(
-            f"  λ={lam:2d}  {status:8s}  cpu_hours={m.get('cpu_hours', float('nan')):.3e}  "
+            f"  λ={lam:2d}  {status:8s}  timeout={timeout:.0f}s  "
+            f"cpu_secs={m.get('cpu_hours', float('nan'))*3600:.3e}  "
             f"clauses={m.get('clauses', '-')}"
         )
 
