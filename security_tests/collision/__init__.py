@@ -1,0 +1,1 @@
+"""Collision-finding experiment package."""

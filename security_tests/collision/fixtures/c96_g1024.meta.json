@@ -1,0 +1,13 @@
+{
+  "wires": 96,
+  "gates": 1024,
+  "seed": 20260330,
+  "g57": "security_tests/collision/fixtures/c96_g1024.g57",
+  "mpmct1": "security_tests/collision/fixtures/c96_g1024.mpmct1",
+  "hash_layout": {
+    "pad_bits": 32,
+    "in_bits": 64,
+    "out_bits": 32,
+    "description": "H(x)=C(0^32 || x)_32 with wire 0 = LSB"
+  }
+}

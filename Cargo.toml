@@ -308,6 +308,16 @@ name = "gauntlet_gen"
 path = "security_tests/gauntlet/gauntlet_gen.rs"
 required-features = ["security-tools"]
 
+[[bin]]
+name = "gen_collision_circuit"
+path = "security_tests/collision/gen_collision_circuit.rs"
+required-features = ["security-tools"]
+
+[[bin]]
+name = "birthday_collision"
+path = "security_tests/collision/birthday_collision.rs"
+required-features = ["security-tools"]
+
 # Benchmarks
 
 [[bin]]
