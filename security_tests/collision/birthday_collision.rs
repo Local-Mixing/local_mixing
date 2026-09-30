@@ -158,8 +158,7 @@ fn main() {
     );
 
     fastrand::seed(args.seed);
-    let mut seen: HashMap<u32, u64> =
-        HashMap::with_capacity((args.samples as usize).min(1 << 20));
+    let mut seen: HashMap<u32, u64> = HashMap::with_capacity((args.samples as usize).min(1 << 20));
     let t0 = Instant::now();
     let mut evaluated = 0u64;
     let mut collision: Option<(u64, u64, u32)> = None;
