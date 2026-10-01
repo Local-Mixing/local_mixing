@@ -295,8 +295,8 @@ def already_done(cell: dict, attack: str) -> bool:
         return False
     if m.get("ok"):
         return True
-    # Keep hard timeouts / exhausted budgets as final.
-    if m.get("phase") == "timeout":
+    # Keep hard timeouts / skips / exhausted budgets as final.
+    if m.get("phase") in ("timeout", "skipped"):
         return True
     if m.get("ok") is False and attack == "birthday" and m.get("budget"):
         return True
@@ -322,8 +322,13 @@ def write_table(results: dict, path: Path) -> None:
         "| λ | n | m (gates) | m/(n log₂ n) | birthday | rho/DP | SAT |",
         "| ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
-    for lam in results["meta"]["lambdas"]:
-        for gates in results["schedules"][str(lam)]:
+    schedules = results.get("schedules", {})
+    lambdas = results.get("meta", {}).get("lambdas") or [
+        int(k) for k in schedules.keys()
+    ]
+    for lam in lambdas:
+        sched = schedules.get(str(lam)) or schedules.get(lam) or []
+        for gates in sched:
             cell = results["cells"].get(cell_key(lam, gates), {})
             n = 3 * lam
             dens = gates / (n * math.log2(n))
@@ -343,7 +348,11 @@ def write_table(results: dict, path: Path) -> None:
                 else:
                     phase = m.get("phase") or "fail"
                     cpu = m.get("cpu_seconds") or m.get("wall_secs")
-                    parts.append(f"{phase} {fmt_secs(cpu)}")
+                    note = m.get("note") or ""
+                    if phase == "skipped" and note:
+                        parts.append(f"skipped")
+                    else:
+                        parts.append(f"{phase} {fmt_secs(cpu)}")
             lines.append(
                 f"| {lam} | {n} | {gates} | {dens:.3f} | {parts[0]} | {parts[1]} | {parts[2]} |"
             )
@@ -413,10 +422,12 @@ def main() -> int:
     results["meta"]["lambdas"] = lambdas
     results["meta"]["workers"] = args.workers
     results["meta"]["steps"] = args.steps
+    # Precompute full schedules so partial saves can render the table.
+    for lam in lambdas:
+        results["schedules"][str(lam)] = gate_schedule(lam, args.steps)
 
     for lam in lambdas:
-        sched = gate_schedule(lam, args.steps)
-        results["schedules"][str(lam)] = sched
+        sched = results["schedules"][str(lam)]
         print(f"== λ={lam} n={3*lam} gates={sched} ==")
         for gates in sched:
             key = cell_key(lam, gates)
@@ -448,9 +459,12 @@ def main() -> int:
                     cell["birthday"] = {
                         "ok": False,
                         "phase": "skipped",
-                        "note": f"skipped (λ>={args.skip_birthday_lambda_ge})",
+                        "note": (
+                            f"hash-table birthday impractical at λ>={args.skip_birthday_lambda_ge} "
+                            "(~2^{λ/2} table slots); use rho/DP"
+                        ),
                     }
-                    print("  birthday: skipped")
+                    print("  birthday: skipped (hash-table impractical)")
                 else:
                     print("  birthday: running...")
                     cell["birthday"] = measure_birthday(g57, lam, seed=cell["seed"])
