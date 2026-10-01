@@ -154,6 +154,20 @@ Trends from that sweep (1024-gate circuits, 4 cores for rho):
 
 Defaults: birthday/rho every 4 bits through 48; SAT every bit from 4–20 with longer per-λ timeouts; `--resume` merges into an existing JSON.
 
+## Cost vs gate density
+
+`gate_density_sweep.py` fixes λ ∈ {16,32,64} and varies gate count geometrically
+from $\frac12 n\log_2 n$ to $n^2$ ($n=3\lambda$). Seeded circuits and the results
+table live under `fixtures/gate_density/`.
+
+```bash
+python3 security_tests/collision/plot_gate_density.py \
+  --results security_tests/collision/fixtures/gate_density/gate_density_results.json \
+  --out security_tests/collision/fixtures/gate_density/gate_density.png
+```
+
+<img alt="Collision cost vs gate density" src="fixtures/gate_density/gate_density.png" width="720" />
+
 ## Tests
 
 ```bash
