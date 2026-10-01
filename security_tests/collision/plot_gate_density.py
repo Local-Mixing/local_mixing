@@ -79,26 +79,16 @@ def plot(results: dict, out_png: Path, out_pdf: Path | None = None) -> None:
             # Slight per-attack vertical nudge so nearby labels don't collide.
             dy = {"birthday": 8, "rho": -10, "sat": 8}.get(attack, 0)
 
-            # Draw segment-by-segment so solved stretches stay solid and any
-            # segment touching a timeout is dashed — same markers throughout.
-            for i in range(len(pts) - 1):
-                ls = "-" if ok_flags[i] and ok_flags[i + 1] else "--"
-                ax.plot(
-                    xs[i : i + 2],
-                    ys[i : i + 2],
-                    color=color,
-                    ls=ls,
-                    lw=1.8,
-                    alpha=0.95,
-                    zorder=2,
-                )
+            # One continuous polyline per (attack, λ). Dashed iff any timeout
+            # is on the curve; same bitwidth marker on every point.
             ax.plot(
                 xs,
                 ys,
                 color=color,
                 marker=marker,
                 ms=7,
-                lw=0,
+                lw=1.8,
+                linestyle=("-" if all(ok_flags) else "--"),
                 alpha=0.95,
                 zorder=3,
             )
