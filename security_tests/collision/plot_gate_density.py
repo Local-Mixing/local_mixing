@@ -70,58 +70,67 @@ def plot(results: dict, out_png: Path, out_pdf: Path | None = None) -> None:
     for attack, style in ATTACK_STYLE.items():
         color = style["color"]
         for lam, pts in sorted(series.get(attack, {}).items()):
+            if not pts:
+                continue
             marker = LAMBDA_MARKERS.get(lam, "o")
-            ok_x = [p[0] for p in pts if p[2] == "ok"]
-            ok_y = [p[1] for p in pts if p[2] == "ok"]
-            to_x = [p[0] for p in pts if p[2] != "ok"]
-            to_y = [p[1] for p in pts if p[2] != "ok"]
-
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            ok_flags = [p[2] == "ok" for p in pts]
             # Slight per-attack vertical nudge so nearby labels don't collide.
             dy = {"birthday": 8, "rho": -10, "sat": 8}.get(attack, 0)
-            if ok_x:
+
+            # Draw segment-by-segment so solved stretches stay solid and any
+            # segment touching a timeout is dashed — same markers throughout.
+            for i in range(len(pts) - 1):
+                ls = "-" if ok_flags[i] and ok_flags[i + 1] else "--"
                 ax.plot(
-                    ok_x,
-                    ok_y,
+                    xs[i : i + 2],
+                    ys[i : i + 2],
                     color=color,
-                    marker=marker,
-                    ms=7,
+                    ls=ls,
                     lw=1.8,
                     alpha=0.95,
-                    zorder=3,
+                    zorder=2,
                 )
-                ax.annotate(
-                    f"λ={lam}",
-                    xy=(ok_x[-1], ok_y[-1]),
-                    xytext=(7, dy),
-                    textcoords="offset points",
-                    color=color,
-                    fontsize=9,
-                    fontweight="bold",
-                    va="center",
-                )
+            ax.plot(
+                xs,
+                ys,
+                color=color,
+                marker=marker,
+                ms=7,
+                lw=0,
+                alpha=0.95,
+                zorder=3,
+                markerfacecolor=color,
+                markeredgecolor=color,
+            )
+            # Hollow markers for timeout points (same shape).
+            to_x = [x for x, ok in zip(xs, ok_flags) if not ok]
+            to_y = [y for y, ok in zip(ys, ok_flags) if not ok]
             if to_x:
                 ax.plot(
                     to_x,
                     to_y,
                     color=color,
-                    marker="x",
-                    ms=8,
-                    lw=1.0,
-                    ls="--",
-                    alpha=0.75,
-                    zorder=2,
+                    marker=marker,
+                    ms=7,
+                    lw=0,
+                    markerfacecolor="white",
+                    markeredgecolor=color,
+                    markeredgewidth=1.4,
+                    zorder=4,
                 )
-                if not ok_x:
-                    ax.annotate(
-                        f"λ={lam}",
-                        xy=(to_x[-1], to_y[-1]),
-                        xytext=(7, dy),
-                        textcoords="offset points",
-                        color=color,
-                        fontsize=9,
-                        fontweight="bold",
-                        va="center",
-                    )
+
+            ax.annotate(
+                f"λ={lam}",
+                xy=(xs[-1], ys[-1]),
+                xytext=(7, dy),
+                textcoords="offset points",
+                color=color,
+                fontsize=9,
+                fontweight="bold",
+                va="center",
+            )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -149,13 +158,24 @@ def plot(results: dict, out_png: Path, out_pdf: Path | None = None) -> None:
         )
         for lam in (16, 32, 64)
     ]
-    timeout_handle = Line2D(
-        [0], [0], color="#444444", marker="x", ls="--", ms=8, label="timeout"
-    )
+    style_handles = [
+        Line2D([0], [0], color="#444444", ls="-", lw=1.8, label="solved"),
+        Line2D(
+            [0],
+            [0],
+            color="#444444",
+            ls="--",
+            lw=1.8,
+            marker="o",
+            markerfacecolor="white",
+            markeredgecolor="#444444",
+            label="timeout (dashed)",
+        ),
+    ]
     leg1 = ax.legend(handles=attack_handles, loc="upper left", title="Attack")
     ax.add_artist(leg1)
     ax.legend(
-        handles=marker_handles + [timeout_handle],
+        handles=marker_handles + style_handles,
         loc="lower right",
         title="Bitwidth / status",
     )
