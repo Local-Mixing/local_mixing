@@ -510,15 +510,22 @@ def main() -> int:
         mpmct = Path(cell["circuit"]["mpmct1"])
         seed = int(cell["seed"])
         print(f"  start {key} {attack}", flush=True)
-        if attack == "birthday":
-            out = measure_birthday(g57, lam, seed=seed)
-        elif attack == "rho":
-            out = measure_rho(g57, lam, workers=args.workers, seed=seed)
-        elif attack == "sat":
-            timeout = sat_timeout_for(lam, gates)
-            out = measure_sat(mpmct, lam, timeout_s=timeout)
-        else:
-            out = {"ok": False, "phase": "error", "note": f"unknown attack {attack}"}
+        try:
+            if attack == "birthday":
+                out = measure_birthday(g57, lam, seed=seed)
+            elif attack == "rho":
+                out = measure_rho(g57, lam, workers=args.workers, seed=seed)
+            elif attack == "sat":
+                timeout = sat_timeout_for(lam, gates)
+                out = measure_sat(mpmct, lam, timeout_s=timeout)
+            else:
+                out = {"ok": False, "phase": "error", "note": f"unknown attack {attack}"}
+        except Exception as exc:  # noqa: BLE001 — keep sibling jobs alive
+            out = {
+                "ok": False,
+                "phase": "error",
+                "note": f"{type(exc).__name__}: {exc}",
+            }
         print(
             f"  done  {key} {attack} ok={out.get('ok')} phase={out.get('phase')} "
             f"cpu_s={out.get('cpu_seconds')}",
@@ -549,7 +556,11 @@ def main() -> int:
             for key, attack, lam, gates in rho_jobs
         ]
         for fut in as_completed(futs):
-            key, attack, out = fut.result()
+            try:
+                key, attack, out = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  future error: {type(exc).__name__}: {exc}", flush=True)
+                continue
             with lock:
                 results["cells"][key][attack] = out
                 save(results, out_dir)
