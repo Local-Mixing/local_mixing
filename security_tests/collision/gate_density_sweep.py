@@ -167,21 +167,24 @@ def measure_birthday(circuit: Path, lam: int, seed: int) -> dict:
 
 def rho_wall_timeout(lam: int, gates: int) -> float | None:
     """Optional hard wall limit (seconds). None = no wall limit beyond max-evals."""
-    if lam >= 64:
-        # Under-mixed λ=64 can make the 64-bit subspace search much harder than
-        # the birthday bound while SAT still solves the full-domain CNF quickly.
-        return 3600.0
-    return None
+    if lam < 64:
+        return None
+    # Scale with gates (eval cost ∝ m). Floor 1h so under-mixed unlucky seeds
+    # cannot run forever; cap 8h for the n² end of the schedule.
+    return float(min(8 * 3600, max(3600, 1000.0 * (gates / 1000.0))))
 
 
-def measure_rho(circuit: Path, lam: int, workers: int, seed: int) -> dict:
+def measure_rho(
+    circuit: Path, lam: int, workers: int, seed: int, gates: int | None = None
+) -> dict:
     dp = max(4, min(lam // 3, 18))
     max_evals = {
         16: 50_000_000,
         32: 2_000_000_000,
         64: 200_000_000_000,  # headroom above ~3.6e10 fixture
     }.get(lam, int(100 * (2 ** (lam / 2))))
-    wall_limit = rho_wall_timeout(lam, 0)
+    g = int(gates) if gates is not None else 0
+    wall_limit = rho_wall_timeout(lam, g)
     t0 = time.perf_counter()
     cmd = [
         str(BIN / "rho_collision"),
@@ -545,7 +548,9 @@ def main() -> int:
             if attack == "birthday":
                 out = measure_birthday(g57, lam, seed=seed)
             elif attack == "rho":
-                out = measure_rho(g57, lam, workers=args.workers, seed=seed)
+                out = measure_rho(
+                    g57, lam, workers=args.workers, seed=seed, gates=gates
+                )
             elif attack == "sat":
                 timeout = sat_timeout_for(lam, gates)
                 out = measure_sat(mpmct, lam, timeout_s=timeout)
