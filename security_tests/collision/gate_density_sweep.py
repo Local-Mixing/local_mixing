@@ -165,6 +165,15 @@ def measure_birthday(circuit: Path, lam: int, seed: int) -> dict:
     }
 
 
+def rho_wall_timeout(lam: int, gates: int) -> float | None:
+    """Optional hard wall limit (seconds). None = no wall limit beyond max-evals."""
+    if lam >= 64:
+        # Under-mixed λ=64 can make the 64-bit subspace search much harder than
+        # the birthday bound while SAT still solves the full-domain CNF quickly.
+        return 3600.0
+    return None
+
+
 def measure_rho(circuit: Path, lam: int, workers: int, seed: int) -> dict:
     dp = max(4, min(lam // 3, 18))
     max_evals = {
@@ -172,25 +181,47 @@ def measure_rho(circuit: Path, lam: int, workers: int, seed: int) -> dict:
         32: 2_000_000_000,
         64: 200_000_000_000,  # headroom above ~3.6e10 fixture
     }.get(lam, int(100 * (2 ** (lam / 2))))
+    wall_limit = rho_wall_timeout(lam, 0)
     t0 = time.perf_counter()
-    r = run(
-        [
-            str(BIN / "rho_collision"),
-            str(circuit),
-            "--pad",
-            str(lam),
-            "--out-bits",
-            str(lam),
-            "--dp-bits",
-            str(dp),
-            "--workers",
-            str(workers),
-            "--seed",
-            str(seed),
-            "--max-evals",
-            str(max_evals),
-        ]
-    )
+    cmd = [
+        str(BIN / "rho_collision"),
+        str(circuit),
+        "--pad",
+        str(lam),
+        "--out-bits",
+        str(lam),
+        "--dp-bits",
+        str(dp),
+        "--workers",
+        str(workers),
+        "--seed",
+        str(seed),
+        "--max-evals",
+        str(max_evals),
+    ]
+    try:
+        r = subprocess.run(
+            cmd,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=wall_limit,
+            start_new_session=True,
+        )
+    except subprocess.TimeoutExpired:
+        wall = time.perf_counter() - t0
+        return {
+            "ok": False,
+            "phase": "timeout",
+            "wall_secs": wall,
+            "cpu_seconds": wall * workers,
+            "threads": workers,
+            "max_evals": max_evals,
+            "dp_bits": dp,
+            "timeout_s": wall_limit,
+            "note": f"killed after {wall_limit:.0f}s wall",
+        }
     wall = time.perf_counter() - t0
     if r.returncode != 0:
         return {
