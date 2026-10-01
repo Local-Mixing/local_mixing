@@ -18,7 +18,9 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -392,6 +394,18 @@ def main() -> int:
         default=0,
         help="Skip birthday for λ ≥ this (0 = never skip). Use 64 to defer huge birthday runs.",
     )
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=max(2, min(4, (os.cpu_count() or 4))),
+        help="Max concurrent attack jobs (SAT/birthday). Default≈CPU count capped at 4.",
+    )
+    ap.add_argument(
+        "--rho-jobs",
+        type=int,
+        default=1,
+        help="Max concurrent rho/DP jobs (each already uses --workers threads).",
+    )
     args = ap.parse_args()
 
     ensure_tools()
@@ -404,7 +418,7 @@ def main() -> int:
     results_path = out_dir / "gate_density_results.json"
     if results_path.exists():
         results = json.loads(results_path.read_text())
-        print(f"[resume] loaded {results_path}")
+        print(f"[resume] loaded {results_path}", flush=True)
     else:
         results = {
             "meta": {
@@ -422,13 +436,16 @@ def main() -> int:
     results["meta"]["lambdas"] = lambdas
     results["meta"]["workers"] = args.workers
     results["meta"]["steps"] = args.steps
-    # Precompute full schedules so partial saves can render the table.
+    results["meta"]["jobs"] = args.jobs
+    results["meta"]["rho_jobs"] = args.rho_jobs
     for lam in lambdas:
         results["schedules"][str(lam)] = gate_schedule(lam, args.steps)
 
+    # Phase 1: generate all circuits + apply birthday skips (fast, sequential).
+    print("== generate circuits ==", flush=True)
     for lam in lambdas:
         sched = results["schedules"][str(lam)]
-        print(f"== λ={lam} n={3*lam} gates={sched} ==")
+        print(f"  λ={lam} n={3*lam} gates={sched}", flush=True)
         for gates in sched:
             key = cell_key(lam, gates)
             cell = results["cells"].setdefault(
@@ -441,7 +458,6 @@ def main() -> int:
                     "seed": circuit_seed(lam, gates),
                 },
             )
-            print(f"-- {key} seed={cell['seed']} density={cell['density_n_log_n']:.3f}")
             meta = gen_circuit(circuits_dir, lam, gates)
             cell["circuit"] = {
                 "g57": meta["g57"],
@@ -450,59 +466,100 @@ def main() -> int:
                 "seed": meta["seed"],
                 "fixtures_dir": str(FIXTURES / f"lambda_{lam}"),
             }
-            g57 = Path(meta["g57"])
-            mpmct = Path(meta["mpmct1"])
-            save(results, out_dir)
+            if (
+                "birthday" in attacks
+                and not already_done(cell, "birthday")
+                and args.skip_birthday_lambda_ge
+                and lam >= args.skip_birthday_lambda_ge
+            ):
+                cell["birthday"] = {
+                    "ok": False,
+                    "phase": "skipped",
+                    "note": (
+                        f"hash-table birthday impractical at λ>={args.skip_birthday_lambda_ge} "
+                        "(~2^{λ/2} table slots); use rho/DP"
+                    ),
+                }
+    save(results, out_dir)
 
-            if "birthday" in attacks and not already_done(cell, "birthday"):
-                if args.skip_birthday_lambda_ge and lam >= args.skip_birthday_lambda_ge:
-                    cell["birthday"] = {
-                        "ok": False,
-                        "phase": "skipped",
-                        "note": (
-                            f"hash-table birthday impractical at λ>={args.skip_birthday_lambda_ge} "
-                            "(~2^{λ/2} table slots); use rho/DP"
-                        ),
-                    }
-                    print("  birthday: skipped (hash-table impractical)")
-                else:
-                    print("  birthday: running...")
-                    cell["birthday"] = measure_birthday(g57, lam, seed=cell["seed"])
-                    b = cell["birthday"]
-                    print(
-                        f"  birthday: ok={b.get('ok')} cpu_s={b.get('cpu_seconds')} "
-                        f"evals={b.get('evals')}"
-                    )
-                save(results, out_dir)
+    # Phase 2: run pending attacks in parallel.
+    # Rho is internally multithreaded, so it uses a separate concurrency cap.
+    jobs: list[tuple[str, str, int, int]] = []
+    for lam in lambdas:
+        for gates in results["schedules"][str(lam)]:
+            key = cell_key(lam, gates)
+            cell = results["cells"][key]
+            for attack in attacks:
+                if already_done(cell, attack):
+                    continue
+                jobs.append((key, attack, lam, gates))
 
-            if "rho" in attacks and not already_done(cell, "rho"):
-                print("  rho: running...")
-                cell["rho"] = measure_rho(
-                    g57, lam, workers=args.workers, seed=cell["seed"]
-                )
-                r = cell["rho"]
-                print(
-                    f"  rho: ok={r.get('ok')} cpu_s={r.get('cpu_seconds')} "
-                    f"evals={r.get('evals')}"
-                )
-                save(results, out_dir)
+    print(
+        f"== run {len(jobs)} pending attacks "
+        f"(jobs={args.jobs}, rho_jobs={args.rho_jobs}, rho_workers={args.workers}) ==",
+        flush=True,
+    )
+    for key, attack, lam, gates in jobs:
+        print(f"  queued {key} {attack}", flush=True)
 
-            if "sat" in attacks and not already_done(cell, "sat"):
-                timeout = sat_timeout_for(lam, gates)
-                print(f"  sat: running (timeout={timeout:.0f}s)...")
-                cell["sat"] = measure_sat(mpmct, lam, timeout_s=timeout)
-                s = cell["sat"]
-                print(
-                    f"  sat: ok={s.get('ok')} phase={s.get('phase')} "
-                    f"cpu_s={s.get('cpu_seconds')} clauses={s.get('clauses')}"
-                )
+    lock = threading.Lock()
+
+    def run_one(key: str, attack: str, lam: int, gates: int) -> tuple[str, str, dict]:
+        cell = results["cells"][key]
+        g57 = Path(cell["circuit"]["g57"])
+        mpmct = Path(cell["circuit"]["mpmct1"])
+        seed = int(cell["seed"])
+        print(f"  start {key} {attack}", flush=True)
+        if attack == "birthday":
+            out = measure_birthday(g57, lam, seed=seed)
+        elif attack == "rho":
+            out = measure_rho(g57, lam, workers=args.workers, seed=seed)
+        elif attack == "sat":
+            timeout = sat_timeout_for(lam, gates)
+            out = measure_sat(mpmct, lam, timeout_s=timeout)
+        else:
+            out = {"ok": False, "phase": "error", "note": f"unknown attack {attack}"}
+        print(
+            f"  done  {key} {attack} ok={out.get('ok')} phase={out.get('phase')} "
+            f"cpu_s={out.get('cpu_seconds')}",
+            flush=True,
+        )
+        return key, attack, out
+
+    # Separate pools: SAT/birthday are 1-thread each; rho already uses --workers.
+    light_jobs = [j for j in jobs if j[1] != "rho"]
+    rho_jobs = [j for j in jobs if j[1] == "rho"]
+    # On small machines, don't oversubscribe: leave cores for rho when it runs.
+    light_workers = max(1, args.jobs)
+    if rho_jobs and args.workers >= (os.cpu_count() or 4):
+        # Rho will saturate the box; keep a couple SAT lanes anyway for overlap
+        # on encode/timeout-bound work, but cap so we don't thrash too hard.
+        light_workers = max(1, min(args.jobs, 2))
+
+    with (
+        ThreadPoolExecutor(max_workers=light_workers) as light_ex,
+        ThreadPoolExecutor(max_workers=max(1, args.rho_jobs)) as rho_ex,
+    ):
+        futs = [
+            light_ex.submit(run_one, key, attack, lam, gates)
+            for key, attack, lam, gates in light_jobs
+        ]
+        futs += [
+            rho_ex.submit(run_one, key, attack, lam, gates)
+            for key, attack, lam, gates in rho_jobs
+        ]
+        for fut in as_completed(futs):
+            key, attack, out = fut.result()
+            with lock:
+                results["cells"][key][attack] = out
                 save(results, out_dir)
 
     save(results, out_dir)
-    print("\n== table ==")
-    print((out_dir / "gate_density_table.md").read_text())
+    print("\n== table ==", flush=True)
+    print((out_dir / "gate_density_table.md").read_text(), flush=True)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
