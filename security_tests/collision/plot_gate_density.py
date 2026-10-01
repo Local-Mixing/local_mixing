@@ -101,25 +101,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path | None = None) -> None:
                 lw=0,
                 alpha=0.95,
                 zorder=3,
-                markerfacecolor=color,
-                markeredgecolor=color,
             )
-            # Hollow markers for timeout points (same shape).
-            to_x = [x for x, ok in zip(xs, ok_flags) if not ok]
-            to_y = [y for y, ok in zip(ys, ok_flags) if not ok]
-            if to_x:
-                ax.plot(
-                    to_x,
-                    to_y,
-                    color=color,
-                    marker=marker,
-                    ms=7,
-                    lw=0,
-                    markerfacecolor="white",
-                    markeredgecolor=color,
-                    markeredgewidth=1.4,
-                    zorder=4,
-                )
 
             ax.annotate(
                 f"λ={lam}",
@@ -160,17 +142,7 @@ def plot(results: dict, out_png: Path, out_pdf: Path | None = None) -> None:
     ]
     style_handles = [
         Line2D([0], [0], color="#444444", ls="-", lw=1.8, label="solved"),
-        Line2D(
-            [0],
-            [0],
-            color="#444444",
-            ls="--",
-            lw=1.8,
-            marker="o",
-            markerfacecolor="white",
-            markeredgecolor="#444444",
-            label="timeout (dashed)",
-        ),
+        Line2D([0], [0], color="#444444", ls="--", lw=1.8, label="timeout"),
     ]
     leg1 = ax.legend(handles=attack_handles, loc="upper left", title="Attack")
     ax.add_artist(leg1)
