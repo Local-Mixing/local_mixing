@@ -467,7 +467,9 @@ def main() -> int:
             "cells": {},
         }
 
-    results["meta"]["lambdas"] = lambdas
+    # Merge requested λ into meta (do not drop previously completed λ on resume).
+    prev = results["meta"].get("lambdas") or []
+    results["meta"]["lambdas"] = sorted({int(x) for x in list(prev) + lambdas})
     results["meta"]["workers"] = args.workers
     results["meta"]["steps"] = args.steps
     results["meta"]["jobs"] = args.jobs

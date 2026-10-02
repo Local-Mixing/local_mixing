@@ -72,31 +72,6 @@
           "elapsed_secs": 0.000397
         }
       },
-      "rho": {
-        "ok": true,
-        "wall_secs": 0.000291,
-        "cpu_seconds": 0.001164,
-        "threads": 4,
-        "max_evals": 50000000,
-        "dp_bits": 5,
-        "evals": 2816,
-        "report": {
-          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g134.g57",
-          "gates": 134,
-          "width": 48,
-          "pad_bits": 16,
-          "in_bits": 128,
-          "out_bits": 16,
-          "search": "rho_dp_subspace64",
-          "dp_bits": 5,
-          "seed": 36261135,
-          "samples_evaluated": 2816,
-          "x1_hex": "0x00000000000000000000000000007c06",
-          "x2_hex": "0x00000000000000000000000000007d26",
-          "digest_hex": "0x000000000000ecba",
-          "elapsed_secs": 0.000291
-        }
-      },
       "sat": {
         "ok": true,
         "wall_secs": 0.004352053998445626,
@@ -125,6 +100,31 @@
           "verified": true
         },
         "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000272,
+        "cpu_seconds": 0.001088,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 2176,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g134.g57",
+          "gates": 134,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261135,
+          "samples_evaluated": 2176,
+          "x1_hex": "0x00000000000000000000000000000a70",
+          "x2_hex": "0x00000000000000000000000000000b50",
+          "digest_hex": "0x00000000000082cf",
+          "elapsed_secs": 0.000272
+        }
       }
     },
     "\u03bb16_g273": {
@@ -162,31 +162,6 @@
           "elapsed_secs": 0.00056
         }
       },
-      "rho": {
-        "ok": true,
-        "wall_secs": 0.000412,
-        "cpu_seconds": 0.001648,
-        "threads": 4,
-        "max_evals": 50000000,
-        "dp_bits": 5,
-        "evals": 128,
-        "report": {
-          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g273.g57",
-          "gates": 273,
-          "width": 48,
-          "pad_bits": 16,
-          "in_bits": 128,
-          "out_bits": 16,
-          "search": "rho_dp_subspace64",
-          "dp_bits": 5,
-          "seed": 36261274,
-          "samples_evaluated": 128,
-          "x1_hex": "0x00000000000000000000000000008d2e",
-          "x2_hex": "0x0000000000000000000000000000602f",
-          "digest_hex": "0x000000000000a1c0",
-          "elapsed_secs": 0.000412
-        }
-      },
       "sat": {
         "ok": true,
         "wall_secs": 0.04458562199943117,
@@ -215,6 +190,31 @@
           "verified": true
         },
         "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.00019,
+        "cpu_seconds": 0.00076,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 768,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g273.g57",
+          "gates": 273,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261274,
+          "samples_evaluated": 768,
+          "x1_hex": "0x00000000000000000000000000006f99",
+          "x2_hex": "0x0000000000000000000000000000d717",
+          "digest_hex": "0x0000000000002640",
+          "elapsed_secs": 0.00019
+        }
       }
     },
     "\u03bb16_g556": {
@@ -252,31 +252,6 @@
           "elapsed_secs": 0.000531
         }
       },
-      "rho": {
-        "ok": true,
-        "wall_secs": 0.000162,
-        "cpu_seconds": 0.000648,
-        "threads": 4,
-        "max_evals": 50000000,
-        "dp_bits": 5,
-        "evals": 576,
-        "report": {
-          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g556.g57",
-          "gates": 556,
-          "width": 48,
-          "pad_bits": 16,
-          "in_bits": 128,
-          "out_bits": 16,
-          "search": "rho_dp_subspace64",
-          "dp_bits": 5,
-          "seed": 36261557,
-          "samples_evaluated": 576,
-          "x1_hex": "0x0000000000000000a26efa52b15c1cbd",
-          "x2_hex": "0x00000000000000000000000000002aff",
-          "digest_hex": "0x0000000000008fa0",
-          "elapsed_secs": 0.000162
-        }
-      },
       "sat": {
         "ok": true,
         "wall_secs": 5.947611555999174,
@@ -305,6 +280,31 @@
           "verified": true
         },
         "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000211,
+        "cpu_seconds": 0.000844,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 832,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g556.g57",
+          "gates": 556,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261557,
+          "samples_evaluated": 832,
+          "x1_hex": "0x000000000000000000000000bf53a5f8",
+          "x2_hex": "0x000000000000000000000000615ac2da",
+          "digest_hex": "0x0000000000000648",
+          "elapsed_secs": 0.000211
+        }
       }
     },
     "\u03bb16_g1132": {
@@ -342,31 +342,6 @@
           "elapsed_secs": 0.00284
         }
       },
-      "rho": {
-        "ok": true,
-        "wall_secs": 0.000358,
-        "cpu_seconds": 0.001432,
-        "threads": 4,
-        "max_evals": 50000000,
-        "dp_bits": 5,
-        "evals": 3264,
-        "report": {
-          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g1132.g57",
-          "gates": 1132,
-          "width": 48,
-          "pad_bits": 16,
-          "in_bits": 128,
-          "out_bits": 16,
-          "search": "rho_dp_subspace64",
-          "dp_bits": 5,
-          "seed": 36262133,
-          "samples_evaluated": 3264,
-          "x1_hex": "0x0000000000000000000000000000e531",
-          "x2_hex": "0x00000000000000000000000000008961",
-          "digest_hex": "0x000000000000e79c",
-          "elapsed_secs": 0.000358
-        }
-      },
       "sat": {
         "ok": true,
         "wall_secs": 8.759957097998267,
@@ -395,6 +370,31 @@
           "verified": true
         },
         "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000297,
+        "cpu_seconds": 0.001188,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 3840,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g1132.g57",
+          "gates": 1132,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36262133,
+          "samples_evaluated": 3840,
+          "x1_hex": "0x00000000000000000000000000003e13",
+          "x2_hex": "0x0000000000000000000000000000374c",
+          "digest_hex": "0x0000000000003669",
+          "elapsed_secs": 0.000297
+        }
       }
     },
     "\u03bb16_g2304": {
@@ -432,31 +432,6 @@
           "elapsed_secs": 0.003461
         }
       },
-      "rho": {
-        "ok": true,
-        "wall_secs": 0.00045,
-        "cpu_seconds": 0.0018,
-        "threads": 4,
-        "max_evals": 50000000,
-        "dp_bits": 5,
-        "evals": 3072,
-        "report": {
-          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g2304.g57",
-          "gates": 2304,
-          "width": 48,
-          "pad_bits": 16,
-          "in_bits": 128,
-          "out_bits": 16,
-          "search": "rho_dp_subspace64",
-          "dp_bits": 5,
-          "seed": 36263305,
-          "samples_evaluated": 3072,
-          "x1_hex": "0x0000000000000000000000000000fe78",
-          "x2_hex": "0x000000000000000096180fb06723fff8",
-          "digest_hex": "0x000000000000db40",
-          "elapsed_secs": 0.00045
-        }
-      },
       "sat": {
         "ok": true,
         "wall_secs": 1.4722866410011193,
@@ -485,6 +460,31 @@
           "verified": true
         },
         "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000352,
+        "cpu_seconds": 0.001408,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 2176,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g2304.g57",
+          "gates": 2304,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36263305,
+          "samples_evaluated": 2176,
+          "x1_hex": "0x0000000000000000000000000000b899",
+          "x2_hex": "0x00000000000000000000000000005682",
+          "digest_hex": "0x000000000000ba06",
+          "elapsed_secs": 0.000352
+        }
       }
     },
     "\u03bb32_g316": {
