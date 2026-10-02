@@ -1,0 +1,14 @@
+{
+  "wires": 96,
+  "gates": 734,
+  "seed": 52261735,
+  "lambda": 32,
+  "g57": "target/security-demo/collision/gate_density/circuits/c96_g734.g57",
+  "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g734.mpmct1",
+  "hash_layout": {
+    "pad_bits": 32,
+    "in_bits": 64,
+    "out_bits": 32,
+    "description": "H(x)=C(0^λ || x)_λ for λ=32 (2λ-bit inputs, λ-bit outputs; wire 0 = LSB)"
+  }
+}

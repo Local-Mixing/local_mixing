@@ -1,0 +1,1152 @@
+{
+  "meta": {
+    "base_seed": 20261001,
+    "lambdas": [
+      16,
+      32,
+      64
+    ],
+    "steps": 5,
+    "workers": 4,
+    "gate_range": "geometric from (1/2)\u00b7n\u00b7log2(n) to n\u00b2",
+    "hash": "H(x)=C(0^\u03bb||x)_\u03bb on width n=3\u03bb",
+    "jobs": 1,
+    "rho_jobs": 1
+  },
+  "schedules": {
+    "16": [
+      134,
+      273,
+      556,
+      1132,
+      2304
+    ],
+    "32": [
+      316,
+      734,
+      1707,
+      3966,
+      9216
+    ],
+    "64": [
+      728,
+      1942,
+      5181,
+      13820,
+      36864
+    ]
+  },
+  "cells": {
+    "\u03bb16_g134": {
+      "lambda": 16,
+      "n": 48,
+      "gates": 134,
+      "density_n_log_n": 0.4998541469716571,
+      "seed": 36261135,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c48_g134.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c48_g134.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c48_g134.meta.json",
+        "seed": 36261135,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.000397,
+        "cpu_seconds": 0.000397,
+        "threads": 1,
+        "budget": 200000,
+        "evals": 309,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g134.g57",
+          "gates": 134,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "seed": 36261135,
+          "samples_evaluated": 309,
+          "x1_hex": "0x000000007a9a2ca9",
+          "x2_hex": "0x00000000a15330be",
+          "digest_hex": "0x000000000000a725",
+          "elapsed_secs": 0.000397
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 0.004352053998445626,
+        "cpu_hours": 2.890730554807103e-06,
+        "threads": 1,
+        "encode_secs": 0.006054575998859946,
+        "clauses": 1801,
+        "sat": true,
+        "timeout_s": 140.1,
+        "cpu_seconds": 0.010406629997305572,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g134.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 134,
+          "x1_hex": "0x5b70147a",
+          "x2_hex": "0x5b703579",
+          "search": "sat_glucose3",
+          "digest_hex": "0x2bf7",
+          "full_in1_hex": "0x00005b70147a",
+          "full_in2_hex": "0x00005b703579",
+          "full_out1_hex": "0x30379c532bf7",
+          "full_out2_hex": "0x06663c602bf7",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000272,
+        "cpu_seconds": 0.001088,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 2176,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g134.g57",
+          "gates": 134,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261135,
+          "samples_evaluated": 2176,
+          "x1_hex": "0x00000000000000000000000000000a70",
+          "x2_hex": "0x00000000000000000000000000000b50",
+          "digest_hex": "0x00000000000082cf",
+          "elapsed_secs": 0.000272
+        }
+      }
+    },
+    "\u03bb16_g273": {
+      "lambda": 16,
+      "n": 48,
+      "gates": 273,
+      "density_n_log_n": 1.0183595680840476,
+      "seed": 36261274,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c48_g273.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c48_g273.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c48_g273.meta.json",
+        "seed": 36261274,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.00056,
+        "cpu_seconds": 0.00056,
+        "threads": 1,
+        "budget": 200000,
+        "evals": 343,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g273.g57",
+          "gates": 273,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "seed": 36261274,
+          "samples_evaluated": 343,
+          "x1_hex": "0x000000004caaa92c",
+          "x2_hex": "0x000000009e585bbc",
+          "digest_hex": "0x0000000000008b62",
+          "elapsed_secs": 0.00056
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 0.04458562199943117,
+        "cpu_hours": 1.3807111666513569e-05,
+        "threads": 1,
+        "encode_secs": 0.0051199800000176765,
+        "clauses": 3469,
+        "sat": true,
+        "timeout_s": 160.95,
+        "cpu_seconds": 0.049705601999448845,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g273.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 273,
+          "x1_hex": "0xba2a1977",
+          "x2_hex": "0x1a089d74",
+          "search": "sat_glucose3",
+          "digest_hex": "0x2c10",
+          "full_in1_hex": "0x0000ba2a1977",
+          "full_in2_hex": "0x00001a089d74",
+          "full_out1_hex": "0xc5f5b7252c10",
+          "full_out2_hex": "0x88ec92152c10",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.00019,
+        "cpu_seconds": 0.00076,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 768,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g273.g57",
+          "gates": 273,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261274,
+          "samples_evaluated": 768,
+          "x1_hex": "0x00000000000000000000000000006f99",
+          "x2_hex": "0x0000000000000000000000000000d717",
+          "digest_hex": "0x0000000000002640",
+          "elapsed_secs": 0.00019
+        }
+      }
+    },
+    "\u03bb16_g556": {
+      "lambda": 16,
+      "n": 48,
+      "gates": 556,
+      "density_n_log_n": 2.0740216844495625,
+      "seed": 36261557,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c48_g556.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c48_g556.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c48_g556.meta.json",
+        "seed": 36261557,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.000531,
+        "cpu_seconds": 0.000531,
+        "threads": 1,
+        "budget": 200000,
+        "evals": 227,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g556.g57",
+          "gates": 556,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "seed": 36261557,
+          "samples_evaluated": 227,
+          "x1_hex": "0x00000000b068afb7",
+          "x2_hex": "0x00000000d41a0a1c",
+          "digest_hex": "0x0000000000002001",
+          "elapsed_secs": 0.000531
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 5.947611555999174,
+        "cpu_hours": 0.0016536856433332205,
+        "threads": 1,
+        "encode_secs": 0.005656760000420036,
+        "clauses": 6865,
+        "sat": true,
+        "timeout_s": 203.39999999999998,
+        "cpu_seconds": 5.953268315999594,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g556.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 556,
+          "x1_hex": "0x18ba2970",
+          "x2_hex": "0x03922265",
+          "search": "sat_glucose3",
+          "digest_hex": "0xbd8d",
+          "full_in1_hex": "0x000018ba2970",
+          "full_in2_hex": "0x000003922265",
+          "full_out1_hex": "0x3b57408dbd8d",
+          "full_out2_hex": "0xa94f847abd8d",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000211,
+        "cpu_seconds": 0.000844,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 832,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g556.g57",
+          "gates": 556,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36261557,
+          "samples_evaluated": 832,
+          "x1_hex": "0x000000000000000000000000bf53a5f8",
+          "x2_hex": "0x000000000000000000000000615ac2da",
+          "digest_hex": "0x0000000000000648",
+          "elapsed_secs": 0.000211
+        }
+      }
+    },
+    "\u03bb16_g1132": {
+      "lambda": 16,
+      "n": 48,
+      "gates": 1132,
+      "density_n_log_n": 4.222648465462059,
+      "seed": 36262133,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c48_g1132.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c48_g1132.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c48_g1132.meta.json",
+        "seed": 36262133,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.00284,
+        "cpu_seconds": 0.00284,
+        "threads": 1,
+        "budget": 200000,
+        "evals": 697,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g1132.g57",
+          "gates": 1132,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "seed": 36262133,
+          "samples_evaluated": 697,
+          "x1_hex": "0x00000000745970f1",
+          "x2_hex": "0x0000000075491c8c",
+          "digest_hex": "0x000000000000cf8f",
+          "elapsed_secs": 0.00284
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 8.759957097998267,
+        "cpu_hours": 0.002435742617221371,
+        "threads": 1,
+        "encode_secs": 0.008716323998669395,
+        "clauses": 13777,
+        "sat": true,
+        "timeout_s": 289.79999999999995,
+        "cpu_seconds": 8.768673421996937,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g1132.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 1132,
+          "x1_hex": "0x9db0acf0",
+          "x2_hex": "0x9e3fa925",
+          "search": "sat_glucose3",
+          "digest_hex": "0x34e7",
+          "full_in1_hex": "0x00009db0acf0",
+          "full_in2_hex": "0x00009e3fa925",
+          "full_out1_hex": "0x62e5781534e7",
+          "full_out2_hex": "0x89b1f00734e7",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000297,
+        "cpu_seconds": 0.001188,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 3840,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g1132.g57",
+          "gates": 1132,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36262133,
+          "samples_evaluated": 3840,
+          "x1_hex": "0x00000000000000000000000000003e13",
+          "x2_hex": "0x0000000000000000000000000000374c",
+          "digest_hex": "0x0000000000003669",
+          "elapsed_secs": 0.000297
+        }
+      }
+    },
+    "\u03bb16_g2304": {
+      "lambda": 16,
+      "n": 48,
+      "gates": 2304,
+      "density_n_log_n": 8.594507124049985,
+      "seed": 36263305,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c48_g2304.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c48_g2304.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c48_g2304.meta.json",
+        "seed": 36263305,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.003461,
+        "cpu_seconds": 0.003461,
+        "threads": 1,
+        "budget": 200000,
+        "evals": 480,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g2304.g57",
+          "gates": 2304,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "seed": 36263305,
+          "samples_evaluated": 480,
+          "x1_hex": "0x00000000fac88abe",
+          "x2_hex": "0x00000000c36495bd",
+          "digest_hex": "0x000000000000a4d7",
+          "elapsed_secs": 0.003461
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 1.4722866410011193,
+        "cpu_hours": 0.00041264889472283054,
+        "threads": 1,
+        "encode_secs": 0.013249380001070676,
+        "clauses": 27841,
+        "sat": true,
+        "timeout_s": 465.59999999999997,
+        "cpu_seconds": 1.48553602100219,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g2304.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 2304,
+          "x1_hex": "0xeff0aeac",
+          "x2_hex": "0xe563a52c",
+          "search": "sat_glucose3",
+          "digest_hex": "0x70cd",
+          "full_in1_hex": "0x0000eff0aeac",
+          "full_in2_hex": "0x0000e563a52c",
+          "full_out1_hex": "0x6ac3fc4170cd",
+          "full_out2_hex": "0x418e3b9570cd",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.000352,
+        "cpu_seconds": 0.001408,
+        "threads": 4,
+        "max_evals": 50000000,
+        "dp_bits": 5,
+        "evals": 2176,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c48_g2304.g57",
+          "gates": 2304,
+          "width": 48,
+          "pad_bits": 16,
+          "in_bits": 32,
+          "out_bits": 16,
+          "search": "rho_dp_subspace32",
+          "dp_bits": 5,
+          "seed": 36263305,
+          "samples_evaluated": 2176,
+          "x1_hex": "0x0000000000000000000000000000b899",
+          "x2_hex": "0x00000000000000000000000000005682",
+          "digest_hex": "0x000000000000ba06",
+          "elapsed_secs": 0.000352
+        }
+      }
+    },
+    "\u03bb32_g316": {
+      "lambda": 32,
+      "n": 96,
+      "gates": 316,
+      "density_n_log_n": 0.49987629638075803,
+      "seed": 52261317,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c96_g316.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g316.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c96_g316.meta.json",
+        "seed": 52261317,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.078984,
+        "cpu_seconds": 0.078984,
+        "threads": 1,
+        "budget": 3932160,
+        "evals": 82052,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g316.g57",
+          "gates": 316,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 64,
+          "out_bits": 32,
+          "seed": 52261317,
+          "samples_evaluated": 82052,
+          "x1_hex": "0xb163b07134dc04f1",
+          "x2_hex": "0xc1010b236954afc1",
+          "digest_hex": "0x00000000657b72ad",
+          "elapsed_secs": 0.078984
+        }
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.004103,
+        "cpu_seconds": 0.016412,
+        "threads": 4,
+        "max_evals": 2000000000,
+        "dp_bits": 10,
+        "evals": 217088,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g316.g57",
+          "gates": 316,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 128,
+          "out_bits": 32,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 10,
+          "seed": 52261317,
+          "samples_evaluated": 217088,
+          "x1_hex": "0x0000000000000000000000006139cccc",
+          "x2_hex": "0x00000000000000000000000061394ccc",
+          "digest_hex": "0x000000007c04a380",
+          "elapsed_secs": 0.004103
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 0.005612897999526467,
+        "cpu_hours": 3.1825788887039783e-06,
+        "threads": 1,
+        "encode_secs": 0.005844385999807855,
+        "clauses": 4177,
+        "sat": true,
+        "timeout_s": 105.8,
+        "cpu_seconds": 0.011457283999334322,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32/c96_g316.mpmct1",
+          "in_bits": 64,
+          "pad": 32,
+          "out_bits": 32,
+          "wires": 96,
+          "gates": 316,
+          "x1_hex": "0x9a4a494a77078e71",
+          "x2_hex": "0xba4fc1ca7f26cc72",
+          "search": "sat_glucose3",
+          "digest_hex": "0xc84ae318",
+          "full_in1_hex": "0x000000009a4a494a77078e71",
+          "full_in2_hex": "0x00000000ba4fc1ca7f26cc72",
+          "full_out1_hex": "0x968561a3b349f6abc84ae318",
+          "full_out2_hex": "0x201fb1178dcfee48c84ae318",
+          "verified": true
+        },
+        "witness_redecoded": true
+      }
+    },
+    "\u03bb32_g734": {
+      "lambda": 32,
+      "n": 96,
+      "gates": 734,
+      "density_n_log_n": 1.1611050681755584,
+      "seed": 52261735,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c96_g734.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g734.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c96_g734.meta.json",
+        "seed": 52261735,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.087651,
+        "cpu_seconds": 0.087651,
+        "threads": 1,
+        "budget": 3932160,
+        "evals": 35640,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g734.g57",
+          "gates": 734,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 64,
+          "out_bits": 32,
+          "seed": 52261735,
+          "samples_evaluated": 35640,
+          "x1_hex": "0x12209eaf6dae5797",
+          "x2_hex": "0xceea8e9ece862768",
+          "digest_hex": "0x000000000af9d26e",
+          "elapsed_secs": 0.087651
+        }
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.012572,
+        "cpu_seconds": 0.050288,
+        "threads": 4,
+        "max_evals": 2000000000,
+        "dp_bits": 10,
+        "evals": 722944,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g734.g57",
+          "gates": 734,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 128,
+          "out_bits": 32,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 10,
+          "seed": 52261735,
+          "samples_evaluated": 722944,
+          "x1_hex": "0x000000000000000000000000107e7e79",
+          "x2_hex": "0x000000000000000000000000922db2fb",
+          "digest_hex": "0x00000000e12968b7",
+          "elapsed_secs": 0.012572
+        }
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 0.532061514997622,
+        "cpu_hours": 0.00014944901305575007,
+        "threads": 1,
+        "encode_secs": 0.005954932003078284,
+        "clauses": 9193,
+        "sat": true,
+        "timeout_s": 126.7,
+        "cpu_seconds": 0.5380164470007003,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32/c96_g734.mpmct1",
+          "in_bits": 64,
+          "pad": 32,
+          "out_bits": 32,
+          "wires": 96,
+          "gates": 734,
+          "x1_hex": "0xebf7a0191a22d6fb",
+          "x2_hex": "0x54427c28d9621d71",
+          "search": "sat_glucose3",
+          "digest_hex": "0x734df46e",
+          "full_in1_hex": "0x00000000ebf7a0191a22d6fb",
+          "full_in2_hex": "0x0000000054427c28d9621d71",
+          "full_out1_hex": "0xb578968ec5764e4a734df46e",
+          "full_out2_hex": "0x2fe06faa7e7dbe71734df46e",
+          "verified": true
+        },
+        "witness_redecoded": true
+      }
+    },
+    "\u03bb32_g1707": {
+      "lambda": 32,
+      "n": 96,
+      "gates": 1707,
+      "density_n_log_n": 2.7002811326644114,
+      "seed": 52262708,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c96_g1707.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g1707.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c96_g1707.meta.json",
+        "seed": 52262708,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.153443,
+        "cpu_seconds": 0.153443,
+        "threads": 1,
+        "budget": 3932160,
+        "evals": 35799,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g1707.g57",
+          "gates": 1707,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 64,
+          "out_bits": 32,
+          "seed": 52262708,
+          "samples_evaluated": 35799,
+          "x1_hex": "0x328a9fafaec53ed4",
+          "x2_hex": "0xb3a23f98cca181d7",
+          "digest_hex": "0x00000000ddc15b13",
+          "elapsed_secs": 0.153443
+        }
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.012924,
+        "cpu_seconds": 0.051696,
+        "threads": 4,
+        "max_evals": 2000000000,
+        "dp_bits": 10,
+        "evals": 457664,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g1707.g57",
+          "gates": 1707,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 128,
+          "out_bits": 32,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 10,
+          "seed": 52262708,
+          "samples_evaluated": 457664,
+          "x1_hex": "0x000000000000000000000000865eb6f3",
+          "x2_hex": "0x0000000000000000000000001a8454de",
+          "digest_hex": "0x000000006da76c53",
+          "elapsed_secs": 0.012924
+        }
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 175.35000000000002,
+        "cpu_seconds": 175.35000000000002,
+        "threads": 1,
+        "timeout_s": 175.35000000000002,
+        "note": "killed after 175s"
+      }
+    },
+    "\u03bb32_g3966": {
+      "lambda": 32,
+      "n": 96,
+      "gates": 3966,
+      "density_n_log_n": 6.273763896981286,
+      "seed": 52264967,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c96_g3966.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g3966.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c96_g3966.meta.json",
+        "seed": 52264967,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 0.665895,
+        "cpu_seconds": 0.665895,
+        "threads": 1,
+        "budget": 3932160,
+        "evals": 69446,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g3966.g57",
+          "gates": 3966,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 64,
+          "out_bits": 32,
+          "seed": 52264967,
+          "samples_evaluated": 69446,
+          "x1_hex": "0x055273a75fa9cf92",
+          "x2_hex": "0x5f0b191cfd5a4ab3",
+          "digest_hex": "0x00000000c46c0bd0",
+          "elapsed_secs": 0.665895
+        }
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.021002,
+        "cpu_seconds": 0.084008,
+        "threads": 4,
+        "max_evals": 2000000000,
+        "dp_bits": 10,
+        "evals": 427776,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g3966.g57",
+          "gates": 3966,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 128,
+          "out_bits": 32,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 10,
+          "seed": 52264967,
+          "samples_evaluated": 427776,
+          "x1_hex": "0x000000000000000000000000e5407e20",
+          "x2_hex": "0x0000000000000000000000001e3fa261",
+          "digest_hex": "0x000000000971ae68",
+          "elapsed_secs": 0.021002
+        }
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 288.3,
+        "cpu_seconds": 288.3,
+        "threads": 1,
+        "timeout_s": 288.3,
+        "note": "killed after 288s"
+      }
+    },
+    "\u03bb32_g9216": {
+      "lambda": 32,
+      "n": 96,
+      "gates": 9216,
+      "density_n_log_n": 14.578670719762869,
+      "seed": 52270217,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c96_g9216.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c96_g9216.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c96_g9216.meta.json",
+        "seed": 52270217,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32"
+      },
+      "birthday": {
+        "ok": true,
+        "wall_secs": 3.277665,
+        "cpu_seconds": 3.277665,
+        "threads": 1,
+        "budget": 3932160,
+        "evals": 151927,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g9216.g57",
+          "gates": 9216,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 64,
+          "out_bits": 32,
+          "seed": 52270217,
+          "samples_evaluated": 151927,
+          "x1_hex": "0x13a7100fc89d9c72",
+          "x2_hex": "0x0c5781b54c6b4e5b",
+          "digest_hex": "0x00000000c30be324",
+          "elapsed_secs": 3.277665
+        }
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 0.044409,
+        "cpu_seconds": 0.177636,
+        "threads": 4,
+        "max_evals": 2000000000,
+        "dp_bits": 10,
+        "evals": 332096,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c96_g9216.g57",
+          "gates": 9216,
+          "width": 96,
+          "pad_bits": 32,
+          "in_bits": 128,
+          "out_bits": 32,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 10,
+          "seed": 52270217,
+          "samples_evaluated": 332096,
+          "x1_hex": "0x000000000000000000000000288cd342",
+          "x2_hex": "0x000000000000000000000000a5531bd6",
+          "digest_hex": "0x000000009c3dc35d",
+          "elapsed_secs": 0.044409
+        }
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 550.8,
+        "cpu_seconds": 550.8,
+        "threads": 1,
+        "timeout_s": 550.8,
+        "note": "killed after 551s"
+      }
+    },
+    "\u03bb64_g728": {
+      "lambda": 64,
+      "n": 192,
+      "gates": 728,
+      "density_n_log_n": 0.4998926054421714,
+      "seed": 84261729,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c192_g728.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c192_g728.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c192_g728.meta.json",
+        "seed": 84261729,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64"
+      },
+      "birthday": {
+        "ok": false,
+        "phase": "skipped",
+        "note": "hash-table birthday impractical at \u03bb>=64 (~2^{\u03bb/2} table slots); use rho/DP"
+      },
+      "sat": {
+        "ok": true,
+        "wall_secs": 0.01531896399683319,
+        "cpu_hours": 1.0098195277047732e-05,
+        "threads": 1,
+        "encode_secs": 0.021034539000538643,
+        "clauses": 9505,
+        "sat": true,
+        "timeout_s": 67.28,
+        "cpu_seconds": 0.036353502997371834,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64/c192_g728.mpmct1",
+          "in_bits": 128,
+          "pad": 64,
+          "out_bits": 64,
+          "wires": 192,
+          "gates": 728,
+          "x1_hex": "0x450d9d1ec52e0410ed62773b92bb9a2d",
+          "x2_hex": "0x6525cf5685b6048ebd63773666319226",
+          "search": "sat_glucose3",
+          "digest_hex": "0x4ee298400d13c958",
+          "full_in1_hex": "0x0000000000000000450d9d1ec52e0410ed62773b92bb9a2d",
+          "full_in2_hex": "0x00000000000000006525cf5685b6048ebd63773666319226",
+          "full_out1_hex": "0x5c80c22867bcf54cc8c61a80f5ef90c04ee298400d13c958",
+          "full_out2_hex": "0x486887a160415400282800da11ff901e4ee298400d13c958",
+          "verified": true
+        },
+        "witness_redecoded": true
+      },
+      "rho": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 3600.1142281799985,
+        "cpu_seconds": 7200.228456359997,
+        "threads": 2,
+        "max_evals": 200000000000,
+        "dp_bits": 18,
+        "timeout_s": 3600.0,
+        "note": "killed after 3600s wall"
+      }
+    },
+    "\u03bb64_g1942": {
+      "lambda": 64,
+      "n": 192,
+      "gates": 1942,
+      "density_n_log_n": 1.3335047249570011,
+      "seed": 84262943,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c192_g1942.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c192_g1942.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c192_g1942.meta.json",
+        "seed": 84262943,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64"
+      },
+      "birthday": {
+        "ok": false,
+        "phase": "skipped",
+        "note": "hash-table birthday impractical at \u03bb>=64 (~2^{\u03bb/2} table slots); use rho/DP"
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 79.42,
+        "cpu_seconds": 79.42,
+        "threads": 1,
+        "timeout_s": 79.42,
+        "note": "killed after 79s"
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 929.860266,
+        "cpu_seconds": 1859.720532,
+        "threads": 2,
+        "max_evals": 200000000000,
+        "dp_bits": 18,
+        "evals": 16477866112,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c192_g1942.g57",
+          "gates": 1942,
+          "width": 192,
+          "pad_bits": 64,
+          "in_bits": 128,
+          "out_bits": 64,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 18,
+          "seed": 84262943,
+          "samples_evaluated": 16477866112,
+          "x1_hex": "0x000000000000000059efdc27907d53e4",
+          "x2_hex": "0x0000000000000000650f11624fbab909",
+          "digest_hex": "0x8480b8f59c79f376",
+          "elapsed_secs": 929.860266
+        }
+      }
+    },
+    "\u03bb64_g5181": {
+      "lambda": 64,
+      "n": 192,
+      "gates": 5181,
+      "density_n_log_n": 3.557614819774574,
+      "seed": 84266182,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c192_g5181.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c192_g5181.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c192_g5181.meta.json",
+        "seed": 84266182,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64"
+      },
+      "birthday": {
+        "ok": false,
+        "phase": "skipped",
+        "note": "hash-table birthday impractical at \u03bb>=64 (~2^{\u03bb/2} table slots); use rho/DP"
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 111.81,
+        "cpu_seconds": 111.81,
+        "threads": 1,
+        "timeout_s": 111.81,
+        "note": "killed after 112s"
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 752.9306,
+        "cpu_seconds": 1505.8612,
+        "threads": 2,
+        "max_evals": 200000000000,
+        "dp_bits": 18,
+        "evals": 12606031040,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c192_g5181.g57",
+          "gates": 5181,
+          "width": 192,
+          "pad_bits": 64,
+          "in_bits": 128,
+          "out_bits": 64,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 18,
+          "seed": 84266182,
+          "samples_evaluated": 12606031040,
+          "x1_hex": "0x00000000000000009f80db4a74f6f26a",
+          "x2_hex": "0x0000000000000000ed93f8cc728b5eee",
+          "digest_hex": "0x68c8094894d9e1be",
+          "elapsed_secs": 752.9306
+        }
+      }
+    },
+    "\u03bb64_g13820": {
+      "lambda": 64,
+      "n": 192,
+      "gates": 13820,
+      "density_n_log_n": 9.489719515399463,
+      "seed": 84274821,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c192_g13820.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c192_g13820.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c192_g13820.meta.json",
+        "seed": 84274821,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64"
+      },
+      "birthday": {
+        "ok": false,
+        "phase": "skipped",
+        "note": "hash-table birthday impractical at \u03bb>=64 (~2^{\u03bb/2} table slots); use rho/DP"
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 198.20000000000002,
+        "cpu_seconds": 198.20000000000002,
+        "threads": 1,
+        "timeout_s": 198.20000000000002,
+        "note": "killed after 198s"
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 687.598377,
+        "cpu_seconds": 1375.196754,
+        "threads": 2,
+        "max_evals": 200000000000,
+        "dp_bits": 18,
+        "evals": 6521507392,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c192_g13820.g57",
+          "gates": 13820,
+          "width": 192,
+          "pad_bits": 64,
+          "in_bits": 128,
+          "out_bits": 64,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 18,
+          "seed": 84274821,
+          "samples_evaluated": 6521507392,
+          "x1_hex": "0x00000000000000008c1716edd0d0c10d",
+          "x2_hex": "0x0000000000000000a332b2b4921e2d5d",
+          "digest_hex": "0x692794aabf8db6e8",
+          "elapsed_secs": 687.598377
+        }
+      }
+    },
+    "\u03bb64_g36864": {
+      "lambda": 64,
+      "n": 192,
+      "gates": 36864,
+      "density_n_log_n": 25.313243141511272,
+      "seed": 84297865,
+      "circuit": {
+        "g57": "target/security-demo/collision/gate_density/circuits/c192_g36864.g57",
+        "mpmct1": "target/security-demo/collision/gate_density/circuits/c192_g36864.mpmct1",
+        "meta": "target/security-demo/collision/gate_density/circuits/c192_g36864.meta.json",
+        "seed": 84297865,
+        "fixtures_dir": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64"
+      },
+      "birthday": {
+        "ok": false,
+        "phase": "skipped",
+        "note": "hash-table birthday impractical at \u03bb>=64 (~2^{\u03bb/2} table slots); use rho/DP"
+      },
+      "sat": {
+        "ok": false,
+        "phase": "timeout",
+        "wall_secs": 300.0,
+        "cpu_seconds": 300.0,
+        "threads": 1,
+        "timeout_s": 300.0,
+        "note": "killed after 300s"
+      },
+      "rho": {
+        "ok": true,
+        "wall_secs": 4903.164884,
+        "cpu_seconds": 19612.659536,
+        "threads": 4,
+        "max_evals": 200000000000,
+        "dp_bits": 18,
+        "evals": 41864547392,
+        "report": {
+          "circuit": "target/security-demo/collision/gate_density/circuits/c192_g36864.g57",
+          "gates": 36864,
+          "width": 192,
+          "pad_bits": 64,
+          "in_bits": 128,
+          "out_bits": 64,
+          "search": "rho_dp_subspace64",
+          "dp_bits": 18,
+          "seed": 84297865,
+          "samples_evaluated": 41864547392,
+          "x1_hex": "0x00000000000000001ba68358c53b0ddc",
+          "x2_hex": "0x0000000000000000c5627ab28ac1df1b",
+          "digest_hex": "0x6839d06ea7272001",
+          "elapsed_secs": 4903.164884
+        }
+      }
+    }
+  }
+}

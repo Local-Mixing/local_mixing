@@ -1,0 +1,14 @@
+{
+  "circuit": "security_tests/collision/fixtures/c96_g1024.g57",
+  "gates": 1024,
+  "width": 96,
+  "pad_bits": 32,
+  "in_bits": 64,
+  "out_bits": 32,
+  "seed": 1,
+  "samples_evaluated": 55618,
+  "x1_hex": "0xf64d34a740cbd971",
+  "x2_hex": "0x741f0b81c8aaf22a",
+  "digest_hex": "0xd4fc8d7a",
+  "elapsed_secs": 0.138408
+}
