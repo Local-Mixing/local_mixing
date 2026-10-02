@@ -131,7 +131,23 @@ fn out_mask(out_bits: usize) -> u64 {
     }
 }
 
+/// Message subspace width: min(64, 2λ). Low wires hold the message; pad wires
+/// [2λ, 3λ) stay zero. States must be masked to this width before evaluation.
+fn msg_bits(out_bits: usize) -> usize {
+    (2 * out_bits).min(64)
+}
+
+fn msg_mask(out_bits: usize) -> u64 {
+    let bits = msg_bits(out_bits);
+    if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
 fn hash_scalar(gates: &[[u16; 3]], s: u64, out_bits: usize) -> u64 {
+    let s = s & msg_mask(out_bits);
     let out = Gate::evaluate_index_list_256(U256::from(s), gates);
     out.low_u64() & out_mask(out_bits)
 }
@@ -142,11 +158,14 @@ fn hash_lanes(
     out_bits: usize,
     wire_slots: usize,
 ) -> [u64; 64] {
+    let mbits = msg_bits(out_bits);
+    let mmask = msg_mask(out_bits);
     let mut lane_state = vec![0u64; wire_slots];
-    for bit in 0..64 {
+    // Only pack message bits; pad wires remain zero.
+    for bit in 0..mbits {
         let mut word = 0u64;
         for lane in 0..64 {
-            word |= ((states[lane] >> bit) & 1) << lane;
+            word |= (((states[lane] & mmask) >> bit) & 1) << lane;
         }
         lane_state[bit] = word;
     }
@@ -302,14 +321,18 @@ fn main() {
     };
     let max_trail = 40u64 << args.dp_bits;
 
+    let mbits = msg_bits(args.out_bits);
+    let mmask = msg_mask(args.out_bits);
+    let in_bits = 2 * args.out_bits; // full message width (2λ); search uses mbits ≤ 64
     eprintln!(
-        "[rho] circuit={} gates={} layout pad={} width={} message_subspace={} out={} \
+        "[rho] circuit={} gates={} layout pad={} width={} in_bits={} message_subspace={} out={} \
          dp_bits={} workers={} seed={} max_evals={}",
         args.circuit,
         circuit.gates.len(),
         args.pad,
         width,
-        args.out_bits.min(64),
+        in_bits,
+        mbits,
         args.out_bits,
         args.dp_bits,
         args.workers,
@@ -351,7 +374,8 @@ fn main() {
             let mut starts = [0u64; 64];
             let mut steps = [0u64; 64];
             for i in 0..64 {
-                let s = next_u64();
+                // Keep starts inside the 2λ message subspace so pad wires stay 0.
+                let s = next_u64() & mmask;
                 states[i] = s;
                 starts[i] = s;
                 steps[i] = 0;
@@ -414,12 +438,12 @@ fn main() {
                                 }
                             }
                         }
-                        let s = next_u64();
+                        let s = next_u64() & mmask;
                         states[lane] = s;
                         starts[lane] = s;
                         steps[lane] = 0;
                     } else if steps[lane] >= max_trail {
-                        let s = next_u64();
+                        let s = next_u64() & mmask;
                         states[lane] = s;
                         starts[lane] = s;
                         steps[lane] = 0;
@@ -464,8 +488,8 @@ fn main() {
         Some((x1, x2, digest)) => {
             let report = format!(
                 "{{\n  \"circuit\": \"{}\",\n  \"gates\": {},\n  \"width\": {},\n  \
-                 \"pad_bits\": {},\n  \"in_bits\": 128,\n  \"out_bits\": {},\n  \
-                 \"search\": \"rho_dp_subspace64\",\n  \"dp_bits\": {},\n  \
+                 \"pad_bits\": {},\n  \"in_bits\": {},\n  \"out_bits\": {},\n  \
+                 \"search\": \"rho_dp_subspace{mbits}\",\n  \"dp_bits\": {},\n  \
                  \"seed\": {},\n  \"samples_evaluated\": {},\n  \
                  \"x1_hex\": \"0x{:032x}\",\n  \"x2_hex\": \"0x{:032x}\",\n  \
                  \"digest_hex\": \"0x{:016x}\",\n  \"elapsed_secs\": {:.6}\n}}\n",
@@ -473,6 +497,7 @@ fn main() {
                 gates.len(),
                 width,
                 args.pad,
+                in_bits,
                 args.out_bits,
                 args.dp_bits,
                 args.seed,
