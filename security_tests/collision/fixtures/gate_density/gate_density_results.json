@@ -106,7 +106,25 @@
         "clauses": 1801,
         "sat": true,
         "timeout_s": 140.1,
-        "cpu_seconds": 0.010406629997305572
+        "cpu_seconds": 0.010406629997305572,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g134.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 134,
+          "x1_hex": "0x5b70147a",
+          "x2_hex": "0x5b703579",
+          "search": "sat_glucose3",
+          "digest_hex": "0x2bf7",
+          "full_in1_hex": "0x00005b70147a",
+          "full_in2_hex": "0x00005b703579",
+          "full_out1_hex": "0x30379c532bf7",
+          "full_out2_hex": "0x06663c602bf7",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb16_g273": {
@@ -178,7 +196,25 @@
         "clauses": 3469,
         "sat": true,
         "timeout_s": 160.95,
-        "cpu_seconds": 0.049705601999448845
+        "cpu_seconds": 0.049705601999448845,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g273.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 273,
+          "x1_hex": "0xba2a1977",
+          "x2_hex": "0x1a089d74",
+          "search": "sat_glucose3",
+          "digest_hex": "0x2c10",
+          "full_in1_hex": "0x0000ba2a1977",
+          "full_in2_hex": "0x00001a089d74",
+          "full_out1_hex": "0xc5f5b7252c10",
+          "full_out2_hex": "0x88ec92152c10",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb16_g556": {
@@ -250,7 +286,25 @@
         "clauses": 6865,
         "sat": true,
         "timeout_s": 203.39999999999998,
-        "cpu_seconds": 5.953268315999594
+        "cpu_seconds": 5.953268315999594,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g556.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 556,
+          "x1_hex": "0x18ba2970",
+          "x2_hex": "0x03922265",
+          "search": "sat_glucose3",
+          "digest_hex": "0xbd8d",
+          "full_in1_hex": "0x000018ba2970",
+          "full_in2_hex": "0x000003922265",
+          "full_out1_hex": "0x3b57408dbd8d",
+          "full_out2_hex": "0xa94f847abd8d",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb16_g1132": {
@@ -322,7 +376,25 @@
         "clauses": 13777,
         "sat": true,
         "timeout_s": 289.79999999999995,
-        "cpu_seconds": 8.768673421996937
+        "cpu_seconds": 8.768673421996937,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g1132.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 1132,
+          "x1_hex": "0x9db0acf0",
+          "x2_hex": "0x9e3fa925",
+          "search": "sat_glucose3",
+          "digest_hex": "0x34e7",
+          "full_in1_hex": "0x00009db0acf0",
+          "full_in2_hex": "0x00009e3fa925",
+          "full_out1_hex": "0x62e5781534e7",
+          "full_out2_hex": "0x89b1f00734e7",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb16_g2304": {
@@ -394,7 +466,25 @@
         "clauses": 27841,
         "sat": true,
         "timeout_s": 465.59999999999997,
-        "cpu_seconds": 1.48553602100219
+        "cpu_seconds": 1.48553602100219,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_16/c48_g2304.mpmct1",
+          "in_bits": 32,
+          "pad": 16,
+          "out_bits": 16,
+          "wires": 48,
+          "gates": 2304,
+          "x1_hex": "0xeff0aeac",
+          "x2_hex": "0xe563a52c",
+          "search": "sat_glucose3",
+          "digest_hex": "0x70cd",
+          "full_in1_hex": "0x0000eff0aeac",
+          "full_in2_hex": "0x0000e563a52c",
+          "full_out1_hex": "0x6ac3fc4170cd",
+          "full_out2_hex": "0x418e3b9570cd",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb32_g316": {
@@ -466,7 +556,25 @@
         "clauses": 4177,
         "sat": true,
         "timeout_s": 105.8,
-        "cpu_seconds": 0.011457283999334322
+        "cpu_seconds": 0.011457283999334322,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32/c96_g316.mpmct1",
+          "in_bits": 64,
+          "pad": 32,
+          "out_bits": 32,
+          "wires": 96,
+          "gates": 316,
+          "x1_hex": "0x9a4a494a77078e71",
+          "x2_hex": "0xba4fc1ca7f26cc72",
+          "search": "sat_glucose3",
+          "digest_hex": "0xc84ae318",
+          "full_in1_hex": "0x000000009a4a494a77078e71",
+          "full_in2_hex": "0x00000000ba4fc1ca7f26cc72",
+          "full_out1_hex": "0x968561a3b349f6abc84ae318",
+          "full_out2_hex": "0x201fb1178dcfee48c84ae318",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb32_g734": {
@@ -538,7 +646,25 @@
         "clauses": 9193,
         "sat": true,
         "timeout_s": 126.7,
-        "cpu_seconds": 0.5380164470007003
+        "cpu_seconds": 0.5380164470007003,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_32/c96_g734.mpmct1",
+          "in_bits": 64,
+          "pad": 32,
+          "out_bits": 32,
+          "wires": 96,
+          "gates": 734,
+          "x1_hex": "0xebf7a0191a22d6fb",
+          "x2_hex": "0x54427c28d9621d71",
+          "search": "sat_glucose3",
+          "digest_hex": "0x734df46e",
+          "full_in1_hex": "0x00000000ebf7a0191a22d6fb",
+          "full_in2_hex": "0x0000000054427c28d9621d71",
+          "full_out1_hex": "0xb578968ec5764e4a734df46e",
+          "full_out2_hex": "0x2fe06faa7e7dbe71734df46e",
+          "verified": true
+        },
+        "witness_redecoded": true
       }
     },
     "\u03bb32_g1707": {
@@ -778,7 +904,25 @@
         "clauses": 9505,
         "sat": true,
         "timeout_s": 67.28,
-        "cpu_seconds": 0.036353502997371834
+        "cpu_seconds": 0.036353502997371834,
+        "report": {
+          "circuit": "/workspace/security_tests/collision/fixtures/gate_density/lambda_64/c192_g728.mpmct1",
+          "in_bits": 128,
+          "pad": 64,
+          "out_bits": 64,
+          "wires": 192,
+          "gates": 728,
+          "x1_hex": "0x450d9d1ec52e0410ed62773b92bb9a2d",
+          "x2_hex": "0x6525cf5685b6048ebd63773666319226",
+          "search": "sat_glucose3",
+          "digest_hex": "0x4ee298400d13c958",
+          "full_in1_hex": "0x0000000000000000450d9d1ec52e0410ed62773b92bb9a2d",
+          "full_in2_hex": "0x00000000000000006525cf5685b6048ebd63773666319226",
+          "full_out1_hex": "0x5c80c22867bcf54cc8c61a80f5ef90c04ee298400d13c958",
+          "full_out2_hex": "0x486887a160415400282800da11ff901e4ee298400d13c958",
+          "verified": true
+        },
+        "witness_redecoded": true
       },
       "rho": {
         "ok": false,
