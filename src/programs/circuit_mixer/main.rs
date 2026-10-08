@@ -1,4 +1,4 @@
-//! Executable boundary for the database-mixing, splitting and crossing program.
+//! Executable boundary for the database-mixing and crossing program.
 use clap::CommandFactory;
 
 fn main() {

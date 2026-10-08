@@ -659,7 +659,6 @@ impl Mixer {
             self.counters.litter_full_spliced += 1;
         }
         for &id in ids {
-            self.evict_taps(id);
             self.index_remove(id);
             self.arena.unlink(id);
             self.arena.free_node(id);

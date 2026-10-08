@@ -468,7 +468,6 @@ impl Mixer {
         }
         let cursor = self.arena.neighbor(edge_l, Dir::L);
         for &bid in &block {
-            self.evict_taps(bid);
             self.index_remove(bid);
             self.arena.unlink(bid);
             self.arena.free_node(bid);
@@ -652,12 +651,8 @@ impl Mixer {
             h_id
         };
         let cursor = self.arena.neighbor(left, Dir::L);
-        // Evict-then-unlink per node: h's eviction runs after g's unlink so
-        // its target can never be the dying g (both partners die here).
-        self.evict_taps(g_id);
         self.index_remove(g_id);
         self.arena.unlink(g_id);
-        self.evict_taps(h_id);
         self.index_remove(h_id);
         self.arena.unlink(h_id);
         self.arena.free_node(g_id);
@@ -785,19 +780,8 @@ impl Mixer {
             Dir::L => h_id,
         };
         let mut cursor = self.arena.neighbor(first, Dir::L);
-        // Canary re-anchoring: evict g while it is linked, but evict h only
-        // AFTER g's unlink — with both still linked, h's left neighbor can BE
-        // the dying g (dir R, no CollidingIntact), which would strand h's
-        // taps on a freed slot. After the unlink the neighbor pointers are
-        // repaired, so the eviction target is always a survivor. h keeps its
-        // node (and taps) when the rewrite carries a CollidingIntact.
-        let h_stays = seq.iter().any(|&(_, r)| r == Role::CollidingIntact);
-        self.evict_taps(g_id);
         self.index_remove(g_id);
         self.arena.unlink(g_id);
-        if !h_stays {
-            self.evict_taps(h_id);
-        }
         self.arena.unlink(h_id);
         let emitted: Vec<(XGate, Role)> = match dir {
             Dir::R => seq,

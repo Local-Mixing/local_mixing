@@ -1,4 +1,4 @@
-//! Versioned .state serialization; field order and v1/early-v2 readers are preserved.
+//! Versioned .state serialization; states written under another version are refused.
 use super::*;
 
 impl MixCounters {
@@ -86,15 +86,6 @@ impl MixCounters {
             // .state files stay loadable; append here, never insert.
             self.tg_consumed,
             self.tg_emitted,
-            // Split stage (2026-08-05).
-            self.split_prims,
-            self.split_hsplits,
-            self.split_segs,
-            self.split_joins,
-            self.split_fails,
-            self.split_xmid,
-            self.tap_flips,
-            self.split_span_sum,
             self.cross_pool_shots,
         ];
         vals.iter()
@@ -190,16 +181,7 @@ impl MixCounters {
             // files, so they default to zero rather than failing the resume.
             tg_consumed: next_u64(&mut it).unwrap_or(0),
             tg_emitted: next_u64(&mut it).unwrap_or(0),
-            split_prims: next_u64(&mut it).unwrap_or(0),
-            split_hsplits: next_u64(&mut it).unwrap_or(0),
-            split_segs: next_u64(&mut it).unwrap_or(0),
-            split_joins: next_u64(&mut it).unwrap_or(0),
-            split_fails: next_u64(&mut it).unwrap_or(0),
-            split_xmid: next_u64(&mut it).unwrap_or(0),
-            tap_flips: next_u64(&mut it).unwrap_or(0),
-            split_span_sum: next_u64(&mut it).unwrap_or(0),
             cross_pool_shots: next_u64(&mut it).unwrap_or(0),
-            split_span_hist: [0u64; 20],
             tg_solves: 0,
             tg_solve_ns: 0,
             tg_slides: 0,
@@ -251,10 +233,11 @@ impl MixCounters {
     }
 }
 // v2 (2026-08-05): the split-stage scalar line and the staps (canary) section.
-// v3 (2026-10-08): the curated-store counters left the counters line. Older
-// states are refused; resume them with the archive branch
-// ran/archive/curated-and-postmix.
-pub const STATE_VERSION: u32 = 3;
+// v3 (2026-10-08): the curated-store counters left the counters line.
+// v4 (2026-10-08): the split stage is historic: the split scalar line, the
+// staps section and the eight split counters are gone. Older states are
+// refused; resume them with the archive branch ran/archive/curated-and-postmix.
+pub const STATE_VERSION: u32 = 4;
 
 impl Mixer {
     /// Write everything a resumed run needs and the circuit file does not
@@ -323,21 +306,6 @@ impl Mixer {
         );
         let _ = writeln!(o, "pool_scan_due {}", self.pool_scan_due);
         let _ = writeln!(o, "canary_failures {}", self.canary_failures);
-        // Tri-state phase (0 = never armed, 1 = live, 2 = ended) so a resume
-        // can tell "stage already ran" from "stage never requested", plus the
-        // canary-report latch.
-        let split_phase: u8 = if self.split_on {
-            1
-        } else if self.split_done {
-            2
-        } else {
-            0
-        };
-        let _ = writeln!(
-            o,
-            "split {} {} {}",
-            split_phase, self.split_fail_streak, self.taps_reported as u8
-        );
         let _ = writeln!(o, "anc {} {}", self.anc_words, self.anc_m);
         let _ = writeln!(o, "counters {}", self.counters.to_line());
 
@@ -440,16 +408,6 @@ impl Mixer {
             }
             o.push('\n');
         }
-        // Wire canaries: anchors are serialized as POSITIONS (the checkpoint
-        // renumbers ids), re-anchored by ordinal at load.
-        let _ = writeln!(o, "staps {}", self.taps.len());
-        if !self.taps.is_empty() {
-            let pos: HashMap<u32, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-            for t in &self.taps {
-                let p = pos.get(&t.anchor).copied().unwrap_or(0);
-                let _ = writeln!(o, "{} {} {} {}", t.wire, t.orig_permille, t.flips, p);
-            }
-        }
         std::fs::write(path, o)
     }
 
@@ -474,8 +432,8 @@ impl Mixer {
             .next()
             .and_then(|x| x.parse().ok())
             .ok_or_else(|| bad("bad version"))?;
-        // v1/v2 counters lines carry the retired curated counters, so their
-        // fields cannot be reinterpreted here.
+        // v1-v3 counters lines carry retired curated or split counters, so
+        // their fields cannot be reinterpreted here.
         if v != STATE_VERSION {
             return Err(bad(&format!(
                 "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
@@ -520,22 +478,6 @@ impl Mixer {
         let canary_failures: usize = scalar(&mut lines, "canary_failures")?[0]
             .parse()
             .map_err(|_| bad("cf"))?;
-        let split_state: Option<(u8, u32, bool)> = if v >= 2 {
-            let s = scalar(&mut lines, "split")?;
-            let phase: u8 = s
-                .first()
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| bad("split"))?;
-            let streak = s
-                .get(1)
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| bad("split streak"))?;
-            // Third field absent in the earliest v2 files: default unreported.
-            let reported = s.get(2).and_then(|x| x.parse::<u8>().ok()).unwrap_or(0) != 0;
-            Some((phase, streak, reported))
-        } else {
-            None
-        };
         let anc_hdr = scalar(&mut lines, "anc")?;
         let counters_line = scalar(&mut lines, "counters")?.join(" ");
 
@@ -671,10 +613,8 @@ impl Mixer {
         }
         // Optional trailing section: explicitly serialized tracers (states
         // written since 2026-08-03). Absent in older states, which regenerate
-        // below instead. Read with one line of lookahead, since the v2 staps
-        // section may follow (or replace) it.
-        let mut pending = lines.next();
-        let stored_tracers: Option<Vec<u32>> = match pending {
+        // below instead.
+        let stored_tracers: Option<Vec<u32>> = match lines.next() {
             Some(l) if l.starts_with("anctracers ") => {
                 let mut it = l["anctracers ".len()..].split_whitespace();
                 let k: usize = it
@@ -685,31 +625,10 @@ impl Mixer {
                 if tr.len() != k {
                     return Err(bad("anctracers list length mismatch"));
                 }
-                pending = lines.next();
                 Some(tr)
             }
             _ => None,
         };
-        // v2 canaries: (wire, orig_permille, flips, position at save).
-        let mut staps_raw: Vec<(u16, u16, u64, usize)> = Vec::new();
-        if let Some(l) = pending {
-            if let Some(rest) = l.strip_prefix("staps ") {
-                let k: usize = rest.trim().parse().map_err(|_| bad("staps count"))?;
-                for _ in 0..k {
-                    let tl = lines.next().ok_or_else(|| bad("short staps section"))?;
-                    let f: Vec<&str> = tl.split_whitespace().collect();
-                    if f.len() != 4 {
-                        return Err(bad("staps line shape"));
-                    }
-                    staps_raw.push((
-                        f[0].parse().map_err(|_| bad("stap wire"))?,
-                        f[1].parse().map_err(|_| bad("stap orig"))?,
-                        f[2].parse().map_err(|_| bad("stap flips"))?,
-                        f[3].parse().map_err(|_| bad("stap pos"))?,
-                    ));
-                }
-            }
-        }
 
         // Build the mixer on the SAME id assignment the checkpoint renumbered
         // to: Arena::from_gates hands out 0..n-1 in order, which is what
@@ -762,50 +681,6 @@ impl Mixer {
         mx.canary = canary;
         mx.canary_failures = canary_failures;
         mx.pool = pool;
-        // Split stage, by recorded phase. 1 (live) continues the stage —
-        // which still needs --split on the resume line per the repeat-your-
-        // flags rule (warn loudly if it is missing, that is almost always a
-        // mistake). 2 (ended) never re-arms: --split on the resume just means
-        // "this is a split pipeline", part 2 continues. 0 (never armed) lets
-        // an explicit --split start the stage fresh on the resumed circuit.
-        // v1 states have no phase and take the constructor's arming.
-        if let Some((phase, streak, reported)) = split_state {
-            match phase {
-                1 => {
-                    mx.split_on = mx.params.split;
-                    if !mx.params.split {
-                        eprintln!(
-                            "[circuit_mixer] WARNING: state file has a LIVE split stage but --split was not \
-                             given — the stage stays OFF and part-2 moves run on unsplit material"
-                        );
-                    }
-                }
-                2 => {
-                    mx.split_on = false;
-                    mx.split_done = true;
-                }
-                _ => mx.split_on = mx.params.split,
-            }
-            mx.split_fail_streak = streak;
-            mx.taps_reported = reported;
-        }
-        if !staps_raw.is_empty() {
-            let ids = mx.arena.ids_in_order();
-            for (wire, orig, flips, pos) in staps_raw {
-                let anchor = ids[pos.min(ids.len() - 1)];
-                mx.tap_at
-                    .entry(anchor)
-                    .or_default()
-                    .push(mx.taps.len() as u32);
-                mx.taps.push(Tap {
-                    anchor,
-                    wire,
-                    orig_permille: orig,
-                    flips,
-                });
-            }
-            mx.taps_planted = true;
-        }
         mx.anc = anc;
         mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
         mx.anc_m = anc_hdr[1].parse().unwrap_or(0);

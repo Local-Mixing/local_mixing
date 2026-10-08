@@ -1211,7 +1211,6 @@ impl Mixer {
         r_srcs.sort_unstable();
         r_srcs.dedup();
         for &id in plan.l.ids.iter().chain(plan.r.ids.iter()) {
-            self.evict_taps(id);
             self.index_remove(id);
             self.arena.unlink(id);
         }

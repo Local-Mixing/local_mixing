@@ -21,9 +21,9 @@ pub fn run(matches: clap::ArgMatches) {
     let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches).expect("parse args");
 
     if args.quality.qc {
-        if args.split || args.resume.is_some() {
+        if args.resume.is_some() {
             eprintln!(
-                "[circuit_mixer] QC belongs to DB mixing; run it on the db_mixing circuit before split/resume"
+                "[circuit_mixer] QC belongs to DB mixing; run it on the db_mixing circuit, not on a resume"
             );
             std::process::exit(2);
         }
@@ -194,10 +194,6 @@ pub fn run(matches: clap::ArgMatches) {
         unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
     }
 
-    assert!(
-        !(args.split && !args.profile.is_empty()),
-        "--split and --profile both steer the round; run the split stage as its own invocation"
-    );
     // Parse the size profile and enforce single size authority.
     let profile: Option<([f64; 3], [f64; 2])> = if args.profile.is_empty() {
         None
@@ -456,9 +452,6 @@ pub fn run(matches: clap::ArgMatches) {
         journal_len: args.journal_len,
         // Piecewise-round knobs are set per piece by the driver, never here.
         eff_budget: 0.0,
-        span_norm: 0,
-        rank_base: 0,
-        rank_total: 0,
         undo_frac: args.undo_frac,
         tabu_moves: args.tabu_moves,
         w_cross: args.w_cross,
@@ -533,13 +526,6 @@ pub fn run(matches: clap::ArgMatches) {
         twist_cov_stop: args.twist_cov_stop,
         gen_snap_every: args.gen_snap_every,
         snap_every_moves: args.snap_every_moves,
-        split: args.split,
-        split_stop: args.split_stop,
-        p_split_twist: args.p_split_twist,
-        p_join: args.p_join,
-        split_fail_limit: args.split_fail_limit,
-        split_canaries: args.split_canaries,
-        split_reach_k: args.split_reach_k,
         p_mincross: args.p_mincross,
         cross_pool_k: args.cross_pool_k,
         cross_rescan: args.cross_rescan,
@@ -599,9 +585,6 @@ pub fn run(matches: clap::ArgMatches) {
         }
         if args.gen_snap_every > 0 || args.snap_every_moves > 0 {
             refuse("takes no mid-run snapshots: drop --gen-snap-every/--snap-every-moves");
-        }
-        if args.split && !args.split_stop {
-            refuse("with --split needs --split-stop (the stage boundary ends the run)");
         }
         if !(0.0..0.25).contains(&args.piece_jitter) {
             refuse("needs --piece-jitter in [0, 0.25)");
@@ -766,7 +749,6 @@ pub fn run(matches: clap::ArgMatches) {
             jitter: args.piece_jitter,
             round_eff: args.piece_round_eff,
             threads: args.piece_threads,
-            split_rounds_max: args.split_rounds_max,
             verbose: args.piece_verbose,
             sequential: false,
         };
@@ -776,9 +758,6 @@ pub fn run(matches: clap::ArgMatches) {
     };
     let secs = t0.elapsed().as_secs_f64();
     mixer.report();
-    // Canary dump for runs that stopped BEFORE the stage boundary (budget,
-    // stop flag); a no-op when the boundary already reported them.
-    mixer.split_tap_summary();
     {
         use std::sync::atomic::Ordering;
         let rl = crate::canonicalization::CANON_RULE_L_SKIPS.load(Ordering::Relaxed);
@@ -798,7 +777,6 @@ pub fn run(matches: clap::ArgMatches) {
             MixStop::DoseReached => "dose reached (gen + twist coverage targets met)",
             MixStop::CanaryFired => "canary fired (pool is unspellable by the store)",
             MixStop::ProfileDone => "profile complete (size schedule finished)",
-            MixStop::SplitDone => "split stage complete (stopped at the stage boundary)",
             MixStop::RoundDone => "piece round budget spent",
             MixStop::CircuitEmpty => "circuit empty (no gates remain to mix)",
         },

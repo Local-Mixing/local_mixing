@@ -1,4 +1,4 @@
-//! Piecewise-parallel rounds for TDP database mixing and the split stage.
+//! Piecewise-parallel rounds for TDP database mixing.
 //!
 //! One round: cut the whole circuit into `p` contiguous pieces of roughly
 //! equal length, run one `Mixer` per piece IN PARALLEL (all sharing the one
@@ -10,13 +10,13 @@
 //!
 //! The whole-circuit mixer W keeps the truth: the stage input as `original`,
 //! the counters, the move clock, the event/litter id counters, the profile
-//! controller, the split tri-state and the wire canaries. A piece carries its
+//! controller. A piece carries its
 //! gates with their `Meta` verbatim, mints event and litter ids in a disjoint
 //! band, verifies against its own slice, and is steered from outside: the
 //! controller's lever as a fixed `p_mix`, a proportional share of the size
 //! setpoint as `target_size`/`temp`, and a size-normalised work budget
 //! (`eff_budget`). After the round W folds the pieces back (counters, moves,
-//! ids, tabu, journal, canaries), verifies the whole circuit against the true
+//! ids, tabu, journal), verifies the whole circuit against the true
 //! input, and steps the UNCHANGED profile controller once — so with the round
 //! length equal to the controller cadence the schedule, the phase machine and
 //! the lever updates are the serial ones.
@@ -47,9 +47,6 @@ pub struct PieceCfg {
     /// Threads in the piece pool; 0 = pieces + 1 for fixed counts, or the
     /// available CPU parallelism for automatic counts.
     pub threads: usize,
-    /// Stage 4: rounds after which the stage is declared ended even if g57s
-    /// remain (they are reported, never silently dropped).
-    pub split_rounds_max: usize,
     /// Let pieces print their own report lines (they are silent by default).
     pub verbose: bool,
     /// Run the pieces one after another on the calling thread. Same result
@@ -65,7 +62,6 @@ impl Default for PieceCfg {
             jitter: 0.125,
             round_eff: 0.0,
             threads: 0,
-            split_rounds_max: 6,
             verbose: false,
             sequential: false,
         }
@@ -111,18 +107,8 @@ impl Partition {
 enum Policy {
     /// Stage 3: the layer-2 profile on W, pieces steered per round.
     Profile,
-    /// Stage 4: pieces split to exhaustion, rounds until no g57 is left.
-    Split,
     /// Plain thermostat walk in fixed-length rounds (tests, future stage 5).
     Moves,
-}
-
-/// A wire canary in position form (anchor = ordinal in the piece).
-pub(crate) struct TapRec {
-    pub wire: u16,
-    pub orig_permille: u16,
-    pub flips: u64,
-    pub pos: u32,
 }
 
 /// An undo-journal entry in position form (the state file's representation);
@@ -144,7 +130,6 @@ pub(crate) struct JournalRec {
 pub(crate) struct PieceParts {
     pub gates: Vec<XGate>,
     pub metas: Vec<Meta>,
-    pub taps: Vec<TapRec>,
     pub tabu: Vec<(u64, u64)>,
     pub journal: Vec<JournalRec>,
     // Run bookkeeping.
@@ -157,8 +142,6 @@ pub(crate) struct PieceParts {
     pub litter_base: u64,
     pub next_event: u64,
     pub next_litter: u64,
-    pub split_fail_streak: u32,
-    pub split_end_reason: Option<&'static str>,
     pub stop: Option<MixStop>,
 }
 
@@ -293,15 +276,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
             scatters,
             scatter_steps,
             dropped_neverfire,
-            split_prims,
-            split_hsplits,
-            split_segs,
-            split_joins,
-            split_fails,
-            split_xmid,
-            tap_flips,
-            split_span_sum,
-            split_span_hist,
             cross_pool_shots,
             pair_rounds,
             pair_boxes_empty,
@@ -426,15 +400,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
         self.scatters += scatters;
         self.scatter_steps += scatter_steps;
         self.dropped_neverfire += dropped_neverfire;
-        self.split_prims += split_prims;
-        self.split_hsplits += split_hsplits;
-        self.split_segs += split_segs;
-        self.split_joins += split_joins;
-        self.split_fails += split_fails;
-        self.split_xmid += split_xmid;
-        self.tap_flips += tap_flips;
-        self.split_span_sum += split_span_sum;
-        add_arr(&mut self.split_span_hist, split_span_hist);
         self.cross_pool_shots += cross_pool_shots;
         self.pair_rounds += pair_rounds;
         self.pair_boxes_empty += pair_boxes_empty;
@@ -555,7 +520,6 @@ fn stop_name(s: Option<MixStop>) -> &'static str {
         Some(MixStop::DoseReached) => "dose",
         Some(MixStop::CanaryFired) => "canary",
         Some(MixStop::ProfileDone) => "profile",
-        Some(MixStop::SplitDone) => "split",
         Some(MixStop::RoundDone) => "round",
         Some(MixStop::CircuitEmpty) => "empty",
     }
@@ -573,7 +537,7 @@ impl Mixer {
     }
 
     /// The slice `[a, b)` of this mixer's circuit as piece input: gates and
-    /// Meta verbatim, the canaries anchored inside it, the live undo entries
+    /// Meta verbatim, the live undo entries
     /// lying wholly inside it, and the whole tabu ring.
     fn export_range(
         &self,
@@ -594,17 +558,6 @@ impl Mixer {
                 .filter(|&p| (p as usize) >= a && (p as usize) < b)
                 .map(|p| p - a as u32)
         };
-        let mut taps = Vec::new();
-        for t in &self.taps {
-            if let Some(pos) = inside(t.anchor) {
-                taps.push(TapRec {
-                    wire: t.wire,
-                    orig_permille: t.orig_permille,
-                    flips: t.flips,
-                    pos,
-                });
-            }
-        }
         let mut journal = Vec::new();
         for e in &self.journal {
             let live = e
@@ -647,7 +600,6 @@ impl Mixer {
         PieceParts {
             gates,
             metas,
-            taps,
             tabu: self.tabu.iter().copied().collect(),
             journal,
             counters: MixCounters::default(),
@@ -659,8 +611,6 @@ impl Mixer {
             litter_base: 0,
             next_event: self.next_event,
             next_litter: self.next_litter,
-            split_fail_streak: 0,
-            split_end_reason: None,
             stop: None,
         }
     }
@@ -682,7 +632,7 @@ impl Mixer {
     }
 
     /// This (piece) mixer's whole state as parts for the fold: gates and Meta
-    /// in order, canaries and live undo entries by position, the tabu ring,
+    /// in order, live undo entries by position, the tabu ring,
     /// and the run bookkeeping. Takes the counters.
     pub(crate) fn export_parts(&mut self) -> PieceParts {
         let (ids, pos_of) = self.pos_map();
@@ -693,8 +643,6 @@ impl Mixer {
         p.eff_done = self.eff_done;
         p.next_event = self.next_event;
         p.next_litter = self.next_litter;
-        p.split_fail_streak = self.split_fail_streak;
-        p.split_end_reason = self.split_end_reason;
         p
     }
 
@@ -704,7 +652,6 @@ impl Mixer {
     fn install_parts(
         &mut self,
         metas: Vec<Meta>,
-        taps: Vec<TapRec>,
         journal: Vec<JournalRec>,
         tabu: Vec<(u64, u64)>,
     ) {
@@ -712,21 +659,6 @@ impl Mixer {
             self.set_meta(i as u32, m);
         }
         let ids = self.arena.ids_in_order();
-        self.taps.clear();
-        self.tap_at.clear();
-        for t in taps {
-            let anchor = ids[(t.pos as usize).min(ids.len() - 1)];
-            self.tap_at
-                .entry(anchor)
-                .or_default()
-                .push(self.taps.len() as u32);
-            self.taps.push(Tap {
-                anchor,
-                wire: t.wire,
-                orig_permille: t.orig_permille,
-                flips: t.flips,
-            });
-        }
         let arena = &self.arena;
         let journal: VecDeque<UndoEntry> = journal
             .into_iter()
@@ -771,7 +703,6 @@ impl Mixer {
         let PieceParts {
             gates,
             metas,
-            taps,
             tabu,
             journal,
             ..
@@ -782,19 +713,16 @@ impl Mixer {
         mx.next_event = next_event;
         mx.next_litter = next_litter;
         mx.quiet = quiet;
-        mx.install_parts(metas, taps, journal, tabu);
-        // Canaries belong to W: a piece never plants or reports its own.
-        mx.taps_planted = true;
-        mx.taps_reported = true;
+        mx.install_parts(metas, journal, tabu);
         mx
     }
 
     /// Concatenate the finished pieces back into this (whole-circuit) mixer,
     /// in index order, and fold their bookkeeping: counters summed, the move
     /// clock advanced by the pieces' spend, id counters to the band maxima,
-    /// the tabu ring merged with ages translated onto the new clock, canaries
-    /// and undo entries re-positioned. Everything whole-circuit (the original,
-    /// the RNGs, the profile controller, the split tri-state, the flag paths)
+    /// the tabu ring merged with ages translated onto the new clock, undo
+    /// entries re-positioned. Everything whole-circuit (the original,
+    /// the RNGs, the profile controller, the flag paths)
     /// is carried over. Returns the interior seams of the new concatenation.
     pub(crate) fn rebuild_from_parts(&mut self, parts: Vec<PieceParts>) -> Vec<usize> {
         let tabu_moves = self.params.tabu_moves;
@@ -806,7 +734,6 @@ impl Mixer {
         let total: usize = parts.iter().map(|p| p.gates.len()).sum();
         let mut gates = Vec::with_capacity(total);
         let mut metas = Vec::with_capacity(total);
-        let mut taps = Vec::new();
         let mut journal = Vec::new();
         let mut seams = Vec::with_capacity(parts.len());
         let mut tabu: Vec<(u64, u64)> = self
@@ -818,7 +745,6 @@ impl Mixer {
         let mut counters = std::mem::take(&mut self.counters);
         let mut next_event = self.next_event;
         let mut next_litter = self.next_litter;
-        let mut streak = 0u32;
         let mut off = 0usize;
         for (i, p) in parts.into_iter().enumerate() {
             if i > 0 {
@@ -827,10 +753,6 @@ impl Mixer {
             let len = p.gates.len();
             gates.extend(p.gates);
             metas.extend(p.metas);
-            taps.extend(p.taps.into_iter().map(|t| TapRec {
-                pos: t.pos + off as u32,
-                ..t
-            }));
             journal.extend(p.journal.into_iter().map(|r| JournalRec {
                 pivot: r.pivot + off as u32,
                 after: r.after.iter().map(|&x| x + off as u32).collect(),
@@ -849,7 +771,6 @@ impl Mixer {
             counters += &p.counters;
             next_event = next_event.max(p.next_event);
             next_litter = next_litter.max(p.next_litter);
-            streak = streak.max(p.split_fail_streak);
             off += len;
         }
         debug_assert!(
@@ -867,7 +788,7 @@ impl Mixer {
             Arc::clone(&self.db),
         );
         fresh.runtime = self.runtime.clone();
-        fresh.install_parts(metas, taps, journal, tabu);
+        fresh.install_parts(metas, journal, tabu);
         fresh.original = std::mem::take(&mut self.original);
         fresh.rng = self.rng.clone();
         fresh.metrics_rng = self.metrics_rng.clone();
@@ -882,13 +803,6 @@ impl Mixer {
         fresh.anc_m = self.anc_m;
         fresh.anc_sampled = self.anc_sampled;
         fresh.anc_tracers = std::mem::take(&mut self.anc_tracers);
-        fresh.split_on = self.split_on;
-        fresh.split_done = self.split_done;
-        fresh.split_ended = false;
-        fresh.split_fail_streak = streak;
-        fresh.split_end_reason = self.split_end_reason;
-        fresh.taps_planted = self.taps_planted;
-        fresh.taps_reported = self.taps_reported;
         fresh.stop_flag = self.stop_flag.take();
         fresh.dump_flag = self.dump_flag.take();
         fresh.dump_out = std::mem::take(&mut self.dump_out);
@@ -909,9 +823,7 @@ impl Mixer {
 
 /// What the steering closure knows about a piece before it runs.
 struct PieceSpec {
-    start: usize,
     len: usize,
-    comp: usize,
     total: usize,
 }
 
@@ -923,16 +835,12 @@ struct RoundOut {
     size_after: usize,
     moves: u64,
     eff_inc: f64,
-    progress: u64,
     stops: Vec<Option<MixStop>>,
 }
 
 /// Overrides every piece gets regardless of policy.
 fn common_piece_overrides(pp: &mut MixParams) {
     pp.report_every = u64::MAX;
-    pp.split = false;
-    pp.split_stop = false;
-    pp.split_canaries = 0;
     pp.ancestors = false;
     pp.anc_samples = 0;
     pp.gen_snap_every = 0;
@@ -940,9 +848,6 @@ fn common_piece_overrides(pp: &mut MixParams) {
     pp.prof_n = [0.0; 3];
     pp.prof_r = [0.0; 2];
     pp.eff_budget = 0.0;
-    pp.span_norm = 0;
-    pp.rank_base = 0;
-    pp.rank_total = 0;
 }
 
 /// One round: cut, run the pieces (in parallel), fold back, verify.
@@ -965,19 +870,12 @@ fn run_round(
     let base_e = w.next_event;
     let base_l = w.next_litter;
     let mut jobs = Vec::with_capacity(parts.len());
-    let mut start = 0usize;
     let (mut len_min, mut len_max) = (usize::MAX, 0usize);
     for (i, mut p) in parts.into_iter().enumerate() {
         let len = p.gates.len();
         len_min = len_min.min(len);
         len_max = len_max.max(len);
-        let comp = p.gates.iter().filter(|g| g.comp).count();
-        let spec = PieceSpec {
-            start,
-            len,
-            comp,
-            total: s,
-        };
+        let spec = PieceSpec { len, total: s };
         let mut params = mk(w, &spec);
         params.seed = seed_of(w.params.seed, round, i);
         p.event_base = base_e + ((i as u64) << 32);
@@ -985,7 +883,6 @@ fn run_round(
         p.moves_start = m;
         p.len_start = len;
         jobs.push((p, params));
-        start += len;
     }
     let runtime = w.runtime.clone();
     let run_one = |(part, params): (PieceParts, MixParams)| -> PieceParts {
@@ -1028,10 +925,6 @@ fn run_round(
             .iter()
             .map(|o| (o.len_start as f64 / s.max(1) as f64) * o.eff_done)
             .sum(),
-        progress: outs
-            .iter()
-            .map(|o| o.counters.split_prims + o.counters.split_hsplits + o.counters.split_segs)
-            .sum(),
         stops: outs.iter().map(|o| o.stop).collect(),
     };
     partition.seams = w.rebuild_from_parts(outs);
@@ -1067,8 +960,8 @@ fn driver_line(w: &Mixer, round: usize, out: &RoundOut, extra: &str) {
 
 /// Run the whole-circuit mixer `w` in piecewise-parallel rounds until the
 /// stage's own stop rule fires. The policy follows `w.params`: a layer-2
-/// profile (`prof_n[2] > 0`) runs the Profile policy, `split` runs the split
-/// stage to global g57 exhaustion, otherwise a plain thermostat walk in
+/// profile (`prof_n[2] > 0`) runs the Profile policy, otherwise a plain
+/// thermostat walk in
 /// fixed-length rounds. `w` ends holding the concatenated circuit and every
 /// whole-circuit statistic, so circuit_mixer's post-run tail (report, final float,
 /// state file, output) needs no change.
@@ -1090,12 +983,6 @@ pub fn run_piecewise(w: &mut Mixer, cfg: &PieceCfg) -> MixStop {
     }
     let policy = if w.params.prof_n[2] > 0.0 {
         Policy::Profile
-    } else if w.params.split {
-        assert!(
-            w.params.split_stop,
-            "piecewise split stage requires split_stop (the stage boundary ends the run)"
-        );
-        Policy::Split
     } else {
         Policy::Moves
     };
@@ -1214,66 +1101,6 @@ pub fn run_piecewise(w: &mut Mixer, cfg: &PieceCfg) -> MixStop {
                 }
                 round += 1;
             }
-        }
-        Policy::Split => {
-            if !w.taps_planted {
-                w.plant_taps();
-            }
-            let reason: &'static str;
-            loop {
-                if w.remaining_g57() == 0 {
-                    reason = "g57 pool exhausted";
-                    break;
-                }
-                if round >= cfg.split_rounds_max {
-                    reason = "round cap";
-                    break;
-                }
-                if w.moves_done >= w.params.moves {
-                    w.global_check();
-                    return MixStop::MovesBudget;
-                }
-                let mk = |w: &Mixer, sp: &PieceSpec| -> MixParams {
-                    let frac = sp.len as f64 / sp.total.max(1) as f64;
-                    let mut pp = w.params.clone();
-                    common_piece_overrides(&mut pp);
-                    pp.split = true;
-                    pp.split_stop = true;
-                    pp.span_norm = sp.total;
-                    pp.rank_base = sp.start as u32;
-                    pp.rank_total = sp.total as u32;
-                    let remaining = w.params.moves.saturating_sub(w.moves_done);
-                    let share = (remaining as f64 * frac).floor() as u64;
-                    pp.moves = w.moves_done + ((sp.comp + sp.len) as u64).min(share).max(1);
-                    pp
-                };
-                let out = run_round(w, cfg, pool.as_ref(), &mut drv, &mut partition, round, &mk);
-                let extra = format!("comp={}", w.remaining_g57());
-                driver_line(w, round, &out, &extra);
-                w.report();
-                w.check_flags();
-                if w.stop_requested {
-                    w.global_check();
-                    return MixStop::StopFlag;
-                }
-                round += 1;
-                if out.progress == 0 {
-                    reason = "failure limit";
-                    break;
-                }
-            }
-            // The stage boundary, as run() takes it under split_stop.
-            w.split_on = false;
-            w.split_ended = false;
-            w.split_done = true;
-            w.split_end_reason = Some(reason);
-            w.restamp_ranks();
-            w.announce_split_end(reason);
-            w.moves_done += 1;
-            w.counters.moves = w.moves_done;
-            w.global_check();
-            w.report();
-            MixStop::SplitDone
         }
         Policy::Moves => {
             let d_eff = if cfg.round_eff > 0.0 {

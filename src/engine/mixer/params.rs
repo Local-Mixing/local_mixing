@@ -101,14 +101,6 @@ pub struct MixParams {
     /// of 1/size over the moves made, i.e. the profile controller's eff
     /// unit), returning `MixStop::RoundDone`. 0 = off (serial runs).
     pub eff_budget: f64,
-    /// Piecewise stage 4: normalise the split-span histogram by this size
-    /// instead of the piece's own length (0 = own length), and place the
-    /// piece's ranks in the global frame `[rank_base, rank_base + len)` of a
-    /// `rank_total`-gate circuit for the midpoint-crossing gauge (0 = own
-    /// frame). Statistics only; no move depends on these.
-    pub span_norm: usize,
-    pub rank_base: u32,
-    pub rank_total: u32,
     pub undo_frac: f64,
     // Refractory period: a split event may not be undone (journal) or
     // sibling-merged (catalogue) until this many moves have passed.
@@ -484,32 +476,9 @@ pub struct MixParams {
     // Move-multiple snapshots: at each report point where moves_done is a
     // multiple of this interval, write a verified snapshot to
     // <base>.mv<moves>.mpmct1 (+ .gens sidecar). The progress clock for
-    // regimes where the generation census is not meaningful (e.g. pure-split
-    // phase B, p_db = 0). Choose a multiple of report_every. 0 = off.
+    // regimes where the generation census is not meaningful (e.g. p_db = 0).
+    // Choose a multiple of report_every. 0 = off.
     pub snap_every_moves: u64,
-    // ---- the split stage ----
-    // split: arm the split stage. While it is live the split twist is the ONLY
-    // move running (the round's other slots are withheld); the stage ends on
-    // g57 exhaustion or split_fail_limit consecutive bracket failures, after
-    // which the round runs under the parameters below as usual.
-    pub split: bool,
-    // split_stop: end the RUN at the stage boundary (MixStop::SplitDone)
-    // instead of continuing into part 2 — the trial mode.
-    pub split_stop: bool,
-    // p_split_twist: layer-1 dispatch weight for split twists inside the twist
-    // slot OUTSIDE the split stage (the stage itself forces 1.0).
-    pub p_split_twist: f64,
-    // p_join: probability a split carries the absorbed NOT twist + cross
-    // (step 3 of the move); 1 - p_join of splits end after the split alone.
-    pub p_join: f64,
-    // Consecutive step-4e bracket failures that end the stage (exit B).
-    pub split_fail_limit: u32,
-    // Wire canaries planted at stage start (0 = off): flip monitors riding the
-    // material, reported by ORIGINAL position at stage end.
-    pub split_canaries: usize,
-    // Length bias of the bracket draw: k candidates sampled on the picked
-    // g57's own side, farthest wins. 1 = uniform, larger = longer spans.
-    pub split_reach_k: usize,
     // ---- min-dgen cross-shot bias ----
     // p_mincross: probability a cross shot is drawn from the min-dgen pool
     // (the K least-split lineages) instead of uniformly. The uniform draw is
@@ -578,9 +547,6 @@ impl Default for MixParams {
             merge_reach: 4096,
             journal_len: 1 << 18,
             eff_budget: 0.0,
-            span_norm: 0,
-            rank_base: 0,
-            rank_total: 0,
             // Reinstated after the clock audit (2026-07-13): undo reverses
             // only sterile crossings (stamp-liveness protects anything that
             // fed later moves) and is the size valve for crossing ladders,
@@ -681,13 +647,6 @@ impl Default for MixParams {
             twist_cov_stop: 0.0,
             gen_snap_every: 0,
             snap_every_moves: 0,
-            split: false,
-            split_stop: false,
-            p_split_twist: 0.0,
-            p_join: 0.8,
-            split_fail_limit: 100,
-            split_canaries: 256,
-            split_reach_k: 2,
             p_mincross: 0.0,
             cross_pool_k: 20_000,
             cross_rescan: 10_000,

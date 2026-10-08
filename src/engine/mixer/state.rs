@@ -215,24 +215,6 @@ pub struct MixCounters {
     pub scatters: u64,
     pub scatter_steps: u64,
     pub dropped_neverfire: u64,
-    // ---- split stage ----
-    // Splits of the picked g57 (step 2), of the bracket g57 (4a/4c), and the
-    // forced segment splits (5a); twist successes, step-4e failures, and
-    // successes whose brackets sat in different circuit halves.
-    pub split_prims: u64,
-    pub split_hsplits: u64,
-    pub split_segs: u64,
-    pub split_joins: u64,
-    pub split_fails: u64,
-    pub split_xmid: u64,
-    // Total canary flips (each = a twist span complementing the value carried
-    // at a canary's position on its wire).
-    pub tap_flips: u64,
-    // Sum of twist span lengths (gates strictly between the brackets), and
-    // the span-as-fraction-of-circuit histogram in 5% buckets (a SHAPE, not
-    // carried across resumes, like width_hist).
-    pub split_span_sum: u64,
-    pub split_span_hist: [u64; 20],
     // Cross shots drawn from the min-dgen pool (vs uniform).
     pub cross_pool_shots: u64,
     // ---- pair geometry (session-local) ----
@@ -502,47 +484,6 @@ pub struct Mixer {
     // rung), with a running failure count so the fraction is O(1).
     pub(super) canary: VecDeque<bool>,
     pub(super) canary_failures: usize,
-    // ---- split stage ----
-    // Live stage flag (params.split arms it; exits clear it), the
-    // consecutive-4e-failure streak, and a one-move latch run() reads to stop
-    // at the boundary under split_stop.
-    pub(crate) split_on: bool,
-    pub(crate) split_fail_streak: u32,
-    pub(crate) split_ended: bool,
-    // The stage ran to its boundary at some point in this run's history
-    // (persisted): distinguishes "ended" from "never armed" on resume, and
-    // zeroes the live split-twist dispatch for part 2 of a --split run.
-    pub(crate) split_done: bool,
-    // O(1)-samplable population indexes, maintained by index_add/index_remove:
-    // every comp gate, and per target wire the bracket-eligible gates (comp,
-    // or non-comp with exactly one control). pos vectors map id -> slot in its
-    // list (NIL = absent) for O(1) swap-removal.
-    pub(crate) comp_ids: Vec<u32>,
-    pub(super) comp_pos: Vec<u32>,
-    pub(crate) wt_buckets: Vec<Vec<u32>>,
-    pub(super) wt_pos: Vec<u32>,
-    // Reused by Stage 4's directional bracket draw. It is derived scratch,
-    // deliberately absent from checkpoints; a resumed run starts empty and
-    // fills it in the same bucket order before drawing any RNG.
-    pub(crate) split_candidates: Vec<(u32, u32)>,
-    // Wire canaries: flip monitors riding the material. A tap sits on `wire`
-    // immediately right of `anchor`; taps re-anchor to the live left neighbor
-    // when their anchor dies (evict_taps at every node-death site).
-    pub(crate) taps: Vec<Tap>,
-    // FxHashMap: accessed by key only (never iterated), so the hasher choice
-    // cannot leak into behavior. Probed once per node in every twist span, so
-    // SipHash-1-3 showed up against a map that only ever holds `split_canaries`
-    // entries.
-    pub(crate) tap_at: FxHashMap<u32, Vec<u32>>,
-    pub(crate) taps_planted: bool,
-    pub(crate) taps_reported: bool,
-    // Approximate position ranks (id -> ordinal at last stamp; NIL = unknown),
-    // restamped every RANK_EVERY moves. Heuristic only: half classification,
-    // the midpoint-crossing counter and canary positions read it; correctness
-    // never does.
-    pub(crate) rank: Vec<u32>,
-    pub(crate) rank_n: usize,
-    pub(crate) rank_due: u64,
     // Min-dgen cross-shot pool (p_mincross): the K least-split lineages at
     // the last rebuild, consumed on draw so no single laggard is hammered.
     pub(crate) cross_pool: Vec<u32>,
@@ -551,21 +492,8 @@ pub struct Mixer {
     // Size-normalised work done under MixParams::eff_budget.
     pub(crate) eff_done: f64,
     // A piece mixer prints nothing: the whole-circuit mixer reports once per
-    // round and emits the stage summaries from the folded counters.
+    // round from the folded counters.
     pub(crate) quiet: bool,
-    // The reason the split stage ended (set by end_split_stage), so a quiet
-    // piece can hand it to the driver without printing.
-    pub(crate) split_end_reason: Option<&'static str>,
-}
-
-/// One split-stage wire canary. This is stored with the shared mixer state
-/// because every node-death path must be able to re-anchor it, even when the
-/// mutation originates in db_mixing or the crossing walk.
-pub(crate) struct Tap {
-    pub(crate) anchor: u32,
-    pub(crate) wire: u16,
-    pub(crate) orig_permille: u16,
-    pub(crate) flips: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -586,9 +514,6 @@ pub enum MixStop {
     // at a twist rate whose growth the lever cannot offset, would actively
     // undo the compression leg.
     ProfileDone,
-    // The split stage ended (g57 exhaustion or the failure limit) under
-    // --split-stop: the run stops at the stage boundary (trial mode).
-    SplitDone,
     // Piecewise rounds: the piece spent its size-normalised work budget
     // (MixParams::eff_budget); the driver concatenates and re-cuts.
     RoundDone,
@@ -775,8 +700,7 @@ impl Mixer {
             }
             b
         };
-        let split_on0 = params.split;
-        let mut mx = Mixer {
+        let mx = Mixer {
             runtime: RuntimeControls::Environment,
             arena: Arena::from_gates(gates.clone()),
             params,
@@ -832,29 +756,11 @@ impl Mixer {
             canary_failures: 0,
             pool_scan_due: 0,
             prof: None,
-            split_on: split_on0,
-            split_fail_streak: 0,
-            split_ended: false,
-            split_done: false,
-            comp_ids: Vec::new(),
-            comp_pos: Vec::new(),
-            wt_buckets: Vec::new(),
-            wt_pos: Vec::new(),
-            split_candidates: Vec::new(),
-            taps: Vec::new(),
-            tap_at: FxHashMap::default(),
-            taps_planted: false,
-            taps_reported: false,
-            rank: Vec::new(),
-            rank_n: 0,
-            rank_due: 0,
             cross_pool: Vec::new(),
             cross_pool_due: 0,
             eff_done: 0.0,
             quiet: false,
-            split_end_reason: None,
         };
-        mx.rebuild_side_index();
         // Collision-mask fast path (arena.rs): every wire a run touches stays
         // below num_wires, so num_wires <= 64 * MASK_WORDS (production: 128
         // wires = 2 words) means the mask side-array is authoritative for the

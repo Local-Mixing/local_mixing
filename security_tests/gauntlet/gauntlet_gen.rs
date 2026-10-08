@@ -356,7 +356,6 @@ fn main() {
             MixStop::DoseReached => "dose-reached",
             MixStop::CanaryFired => "canary",
             MixStop::ProfileDone => "profile-done",
-            MixStop::SplitDone => "split-done",
             MixStop::RoundDone => "round-done",
             MixStop::CircuitEmpty => "circuit-empty",
         };

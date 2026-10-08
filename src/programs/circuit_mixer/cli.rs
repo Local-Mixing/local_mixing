@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "circuit_mixer",
-    about = "Run database mixing, splitting, or crossing on a reversible circuit"
+    about = "Run database mixing or crossing on a reversible circuit"
 )]
 pub struct Args {
     #[command(flatten)]
@@ -186,38 +186,6 @@ pub struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     pub(super) p_twist: f64,
-    /// Arm the SPLIT STAGE: split twists — a g57
-    /// split plus an absorbed long-range pure-NOT twist plus one cross — are
-    /// the ONLY move until the stage exits (g57 exhaustion, or
-    /// --split-fail-limit consecutive bracket failures), then the round runs
-    /// under the rest of this command line as usual.
-    #[arg(long, default_value_t = false)]
-    pub(super) split: bool,
-    /// End the RUN at the split-stage boundary (trial mode) instead of
-    /// continuing into part 2.
-    #[arg(long, default_value_t = false)]
-    pub(super) split_stop: bool,
-    /// Probability a split carries the absorbed NOT twist + cross; the rest
-    /// end after the bare split.
-    #[arg(long, default_value_t = 0.8)]
-    pub(super) p_join: f64,
-    /// Consecutive bracket-search failures (step 4e) that end the stage.
-    #[arg(long, default_value_t = 100)]
-    pub(super) split_fail_limit: u32,
-    /// Wire canaries planted at split-stage start (0 = off): per-position flip
-    /// monitors, reported by ORIGINAL position at the stage boundary.
-    #[arg(long, default_value_t = 256)]
-    pub(super) split_canaries: usize,
-    /// Length bias of the bracket draw: k candidates sampled on the picked
-    /// g57's own side (its stored direction), farthest wins. 1 = uniform,
-    /// 2 ~ 2/3 of the available run, 3 ~ 3/4; larger = longer spans.
-    /// 0 = the ORIGINAL other-half-first cascade (A/B comparison arm).
-    #[arg(long, default_value_t = 2)]
-    pub(super) split_reach_k: usize,
-    /// Layer-1 dispatch weight for split twists inside the twist slot OUTSIDE
-    /// the split stage (the stage itself forces 1.0).
-    #[arg(long, default_value_t = 0.0)]
-    pub(super) p_split_twist: f64,
     /// Min-dgen cross-shot bias: probability a cross shot is drawn from the
     /// pool of the K least-split lineages instead of uniformly (the uniform
     /// draw is rich-get-richer; this points expansion at untouched
@@ -555,7 +523,7 @@ pub struct Args {
     pub(super) gen_snap_every: u32,
     /// Verified snapshot at every multiple of this many moves
     /// (<output>.mv<moves>.mpmct1 + .gens sidecar): the progress clock for
-    /// pure-split runs where the generation census is not meaningful. Use a
+    /// runs where the generation census is not meaningful. Use a
     /// multiple of --report-every. 0 = off.
     #[arg(long, default_value_t = 0)]
     pub(super) snap_every_moves: u64,
@@ -596,8 +564,8 @@ pub struct Args {
     /// Piecewise-parallel rounds: cut the circuit
     /// into this many contiguous pieces, mix them in parallel on one shared
     /// store, concatenate, shift the cuts by half a slice, repeat. 1 = the
-    /// serial run unless --parallel-target-piece-gates is selected. Stages 3 and
-    /// 4 only (refused with --resume).
+    /// serial run unless --parallel-target-piece-gates is selected. Stage 3
+    /// only (refused with --resume).
     #[arg(long = "parallel-pieces", alias = "pieces", default_value_t = 1)]
     pub(super) pieces: usize,
     /// Automatic piecewise rounds: nominal piece count is
@@ -630,10 +598,6 @@ pub struct Args {
         default_value_t = 0
     )]
     pub(super) piece_threads: usize,
-    /// --split in piecewise mode: rounds after which the stage is declared ended
-    /// even if g57s remain (reported, never dropped).
-    #[arg(long, default_value_t = 6)]
-    pub(super) split_rounds_max: usize,
     /// Let piece mixers print their own report lines (they are silent by
     /// default; the whole-circuit mixer reports once per round).
     #[arg(long, default_value_t = false)]

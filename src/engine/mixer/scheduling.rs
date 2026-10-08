@@ -349,22 +349,6 @@ impl Mixer {
     // swap 1/4, swap+negate-one 1/2, swap+negate-both 1/4. The legacy
     // w_twist_* weights are retired (accepted-but-ignored on the CLI).
     pub(super) fn twist_round(&mut self) {
-        // Layer-1 dispatch: the split twist first (forced while the stage is
-        // live), then the existing g57/swap-family choice. After a --split
-        // run's boundary the live dispatch is ZERO (docs §3) — part 2 runs no
-        // further split twists even if --p-split-twist was set; the CLI value
-        // is the standalone (no --split) layer-1 mode.
-        let p_st = if self.params.split && self.split_on {
-            1.0
-        } else if self.params.split && self.split_done {
-            0.0
-        } else {
-            self.params.p_split_twist
-        };
-        if p_st > 0.0 && self.rng.random_bool(p_st.clamp(0.0, 1.0)) {
-            self.split_twist_move();
-            return;
-        }
         if self.params.twist_g57 {
             self.twist_move_g57();
         } else {
@@ -448,31 +432,12 @@ impl Mixer {
                 self.rebuild_pool();
                 self.pool_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
-            // The split stage: while live it owns
-            // the whole round — every other slot is withheld, and the stage
-            // boundary optionally ends the run (--split-stop).
-            let took_split = self.params.split && self.split_on && {
-                self.split_twist_move();
-                true
-            };
-            if took_split && self.split_ended {
-                self.split_ended = false;
-                if self.params.split_stop {
-                    self.moves_done += 1;
-                    self.counters.moves = self.moves_done;
-                    self.global_check();
-                    self.report();
-                    return MixStop::SplitDone;
-                }
-            }
             // Slot 0 continued. With a PROFILE active the controller is the
             // one size authority: it owns target_size, keeps the brake
             // inert, and drives the MIX/COMP coin. Otherwise: the size
             // brake, then the p_mix overlay (whose per-round coin, when
             // armed, is the binding choice; the thermostat is untouched).
-            if took_split {
-                // stage round: no slot-0 steering
-            } else if self.prof.is_some() {
+            if self.prof.is_some() {
                 self.prof_tick();
                 if self.prof.as_ref().is_some_and(|p| p.phase == 4) {
                     self.report();
@@ -484,8 +449,7 @@ impl Mixer {
             }
             // Slot 1: one twist, at a FIXED rate the rest of the machinery
             // balances around.
-            let took_twist = !took_split
-                && self.params.p_twist > 0.0
+            let took_twist = self.params.p_twist > 0.0
                 && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
                 && {
                     self.twist_round();
@@ -496,8 +460,7 @@ impl Mixer {
             // DEFAULT probability is exactly 1/|circuit| -- an expected one
             // whole-circuit reshuffle per |circuit| rounds, and O(mean slack)
             // expected work per round however large the circuit gets.
-            let took_shuffle = !took_split
-                && !took_twist
+            let took_shuffle = !took_twist
                 && self.params.shuffle_rate > 0.0
                 && self.arena.len() >= 2
                 && {
@@ -510,8 +473,7 @@ impl Mixer {
                 };
             // Slot 1c: one bridge fusion, at a
             // fixed rate like the twist. p_bridge == 0 draws no RNG.
-            let took_bridge = !took_split
-                && !took_twist
+            let took_bridge = !took_twist
                 && !took_shuffle
                 && self.params.p_bridge > 0.0
                 && self.arena.len() >= 4
@@ -524,8 +486,7 @@ impl Mixer {
             // descent finds nothing is SPENT -- there is no fallthrough -- so
             // the thermostat receives exactly (1 - p_twist)(1 - p_db) of rounds
             // no matter how hard the material is.
-            let took_db = !took_split
-                && !took_twist
+            let took_db = !took_twist
                 && !took_shuffle
                 && !took_bridge
                 && self.params.p_db > 0.0
@@ -544,7 +505,7 @@ impl Mixer {
                     true
                 };
             // Slot 3: the thermostat.
-            if !took_split && !took_twist && !took_shuffle && !took_bridge && !took_db {
+            if !took_twist && !took_shuffle && !took_bridge && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
@@ -778,7 +739,7 @@ impl Mixer {
 
     // Move-multiple snapshots (--snap-every-moves): verified state at fixed
     // move-count multiples — the progress clock when the generation census
-    // is not meaningful (pure-split runs).
+    // is not meaningful (runs without DB moves).
     pub(super) fn check_move_snap(&mut self) {
         let every = self.params.snap_every_moves;
         if every == 0 || self.moves_done % every != 0 {
