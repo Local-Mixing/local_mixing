@@ -91,8 +91,6 @@ pub(crate) struct ResolvedConfig {
     pub(crate) build_target_dir: PathBuf,
     pub(crate) adopt_existing_run: bool,
     pub(crate) frozen_db: SourcedPath,
-    pub(crate) frozen_curated: SourcedPath,
-    pub(crate) curated_value_convention: String,
     pub(crate) preprocessing_mode: PreprocessingMode,
     pub(crate) calibration_only: bool,
     pub(crate) calibration_seed: Option<String>,

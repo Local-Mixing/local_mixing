@@ -5,7 +5,7 @@
 # Check: cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
 # Run:   cargo run --release --locked -- tdp_gen --config configs/local.toml
 # Full explanations and shell-flag mapping: docs/tdp_pipeline.md.
-config_version = 1  # required TOML schema version (distinct from saved recipe v8)
+config_version = 1  # required TOML schema version (distinct from saved recipe v9)
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
@@ -23,11 +23,9 @@ wires = 128  # integer 3..4095; logical wires of C, before sandwich/preprocessin
 
 [database]
 # regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
-# curated_dir = "/path/to/curated"  # string; optional, or FROZEN_CURATED_DIR
-curated_control_order = "native"  # "native" or "legacy-swapped-controls" for old stores
 lookup_miss_filter = "auto"  # "auto" (>=60 GiB available RAM), "on", or "off"
-allow_no_database_for_tests = false  # bool; true requires clearing BOTH DB paths/envs
-# Stage 3 normally needs regular_dir; curated is a cascade ahead of regular.
+allow_no_database_for_tests = false  # bool; true requires clearing the DB path/env
+# Stage 3 needs regular_dir (the regular frozen store, used with --p-db 1.0).
 # Stores need tables.bin plus all 256 shard files. "on" also requires filters.bin.
 
 [preprocessing]

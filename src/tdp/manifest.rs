@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 8;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 9;
 
 pub(crate) fn prepare_recipe_manifest(
     config: &ResolvedConfig,
@@ -182,8 +182,6 @@ pub(crate) fn recipe_manifest(
             "tdp_command_recipe={}\n",
             "n={}\n",
             "frozen_db_dir={}\n",
-            "frozen_curated_dir={}\n",
-            "curated_value_convention={}\n",
             "preprocessing_mode={}\n",
             "production_preset={}\n",
             "post_fragment={}\n",
@@ -203,8 +201,6 @@ pub(crate) fn recipe_manifest(
         config.recipe_version,
         config.n,
         path_or_unset(&config.frozen_db.path),
-        path_or_unset(&config.frozen_curated.path),
-        config.curated_value_convention,
         config.preprocessing_mode.canonical_name(),
         // Reserved fields retain their explicit non-applicable values.
         "not-applicable",
@@ -287,9 +283,9 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=8") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=9") => Ok(CURRENT_RECIPE_VERSION),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v8 run; use a fresh run.directory or the checkout that created this run; the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v9 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

@@ -23,7 +23,8 @@ pub(super) fn filters_enabled() -> bool {
 }
 
 pub(super) fn frozen_directory() -> String {
-    std::env::var("FROZEN_DB_DIR").expect("FROZEN_DB_DIR is required; the runtime is frozen-store only")
+    std::env::var("FROZEN_DB_DIR")
+        .expect("FROZEN_DB_DIR is required; the runtime is frozen-store only")
 }
 
 pub(super) fn lookup_cache_cap_bytes() -> u64 {

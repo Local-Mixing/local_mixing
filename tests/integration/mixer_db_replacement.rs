@@ -231,12 +231,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
             },
         ),
     ] {
-        let mut w = Mixer::new_with_db(
-            input.clone(),
-            n_wires,
-            params.clone(),
-            FrozenDb::open(fd),
-        );
+        let mut w = Mixer::new_with_db(input.clone(), n_wires, params.clone(), FrozenDb::open(fd));
         let stop = run_piecewise(&mut w, &cfg);
         assert!(
             matches!(stop, MixStop::MovesBudget),

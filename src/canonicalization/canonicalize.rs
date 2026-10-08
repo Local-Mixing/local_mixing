@@ -1307,7 +1307,7 @@ pub(super) fn canonicalize_polys_4_using(
 }
 
 #[cfg(test)]
-use super::{keys::*, window::dense_wire_map};
+use super::keys::*;
 #[cfg(test)]
 use crate::circuit::{CircuitSeq, Gate, U1024, cancel_adjacent_duplicates, lane_state_len};
 #[cfg(test)]

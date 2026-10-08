@@ -1518,14 +1518,9 @@ impl Mixer {
             &mut self.rng,
         );
         let ok2 = match r2.chosen {
-            Some(rep) => self.try_db_splice(
-                &[u2, plan.g2],
-                d2,
-                &w2v,
-                rep,
-                r2.match_count,
-                DbMode::Mix,
-            ),
+            Some(rep) => {
+                self.try_db_splice(&[u2, plan.g2], d2, &w2v, rep, r2.match_count, DbMode::Mix)
+            }
             None => false,
         };
         if !ok2 {
@@ -1566,14 +1561,9 @@ impl Mixer {
             &mut self.rng,
         );
         let ok1 = match r1.chosen {
-            Some(rep) => self.try_db_splice(
-                &[plan.g1, u1],
-                d1,
-                &w1v,
-                rep,
-                r1.match_count,
-                DbMode::Mix,
-            ),
+            Some(rep) => {
+                self.try_db_splice(&[plan.g1, u1], d1, &w1v, rep, r1.match_count, DbMode::Mix)
+            }
             None => false,
         };
         if ok1 {

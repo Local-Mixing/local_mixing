@@ -9,7 +9,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export TDP_BIN_DIR="$tmp/bin" TDP_GEN_ALLOW_EMPTY_STORE=1
-unset FROZEN_DB_DIR FROZEN_CURATED_DIR
+unset FROZEN_DB_DIR
 mkdir -p "$TDP_BIN_DIR"
 reject() {
   if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/rejected" "$@" >"$tmp/error" 2>&1; then

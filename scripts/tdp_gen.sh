@@ -93,13 +93,6 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                  [P+1 for fixed pieces; available CPU count in automatic mode]
 env:
   FROZEN_DB_DIR       required for stage 3 (the frozen replacement store)
-  FROZEN_CURATED_DIR  recommended for stage 3 (curated-first cascade).
-                      Standard store: ~/frozen_curated_m1_m11_native (the FULL
-                      untruncated curated DB, NATIVE convention; band stores
-                      are opt-in by explicit path only)
-  FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
-                      only for a historical pre-2ed0222a curated store;
-                      NEVER with the standard native store above
   TDP_GEN_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
   DB_QC=1             optional gate-wise audit and DB repair at the end of stage 3
   DB_QC_REFERENCE     original reference in matching input/wire coordinates
@@ -298,7 +291,7 @@ done < <(compgen -A variable PROD_ || true)
 # Reject before creating the run directory, logs, seed, or stage artifacts.
 for legacy_artifact in gss_command.conf gss.mpmct1; do
   if [ -e "$RUN/$legacy_artifact" ]; then
-    echo "FATAL: $RUN contains legacy GSS artifact $legacy_artifact; tdp_gen requires a fresh run directory or a TDP v8 run; resume this run with the checkout that created it" >&2
+    echo "FATAL: $RUN contains legacy GSS artifact $legacy_artifact; tdp_gen requires a fresh run directory or a TDP v9 run; resume this run with the checkout that created it" >&2
     exit 2
   fi
 done
@@ -446,7 +439,6 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
   if [ -z "${FROZEN_DB_DIR:-}" ] && [ "${TDP_GEN_ALLOW_EMPTY_STORE:-0}" != "1" ]; then
     echo "FATAL: stage 3 needs FROZEN_DB_DIR (or TDP_GEN_ALLOW_EMPTY_STORE=1 for a plumbing test)"; exit 1
   fi
-  [ -z "${FROZEN_CURATED_DIR:-}" ] && note "WARNING: FROZEN_CURATED_DIR unset — curated-first cascade OFF for db_mixing"
   G_IN=$(gates_of "$GADGET")
   read -r PROFILE A_MOVES <<< "$(python3 -I - "$EXPAND" "$HOLD" "$G_IN" <<'EOF'
 import sys
@@ -478,8 +470,7 @@ EOF
     export FROZEN_FILTER=1
     # Warm the filter files while gen/stage-2 artifacts are checked; a cached
     # load is ~13s vs ~107s cold.
-    { cat "$FROZEN_DB_DIR/filters.bin" "${FROZEN_CURATED_DIR:+$FROZEN_CURATED_DIR/filters.bin}" \
-        > /dev/null 2>&1 & } 2>/dev/null
+    { cat "$FROZEN_DB_DIR/filters.bin" > /dev/null 2>&1 & } 2>/dev/null
     note "FROZEN_FILTER=1 (auto: >=60GB available; prewarming filters.bin in background)"
   fi
   export MIXER_STOP_FLAG=$RUN/stage3.stop MIXER_DUMP_FLAG=$RUN/stage3.dump

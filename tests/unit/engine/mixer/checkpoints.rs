@@ -223,7 +223,7 @@ fn state_round_trips_imported_tracers() {
 }
 
 #[test]
-fn checkpoint_versions_without_optional_sections_load_and_continue() {
+fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
     let gates = random_mixed_circuit(29, 8, 20);
     let params = MixParams {
         moves: 40,
@@ -236,38 +236,47 @@ fn checkpoint_versions_without_optional_sections_load_and_continue() {
     let path = std::env::temp_dir().join(format!("tdp_compact_state_{}.state", std::process::id()));
     original.save_state(path.to_str().unwrap()).unwrap();
     let serialized = std::fs::read_to_string(&path).unwrap();
-    assert!(serialized.starts_with("circuit-mixer-state 2\n"));
-    for version in [1, 2] {
-        let mut compact = String::new();
-        for line in serialized.lines() {
-            if line.starts_with("staps ") {
-                break;
-            }
-            if line.starts_with("circuit-mixer-state ") {
-                compact.push_str(&format!("circuit-mixer-state {version}\n"));
-            } else if line.starts_with("split ") {
-                if version == 2 {
-                    compact.push_str(
-                        &line
-                            .split_whitespace()
-                            .take(3)
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    );
-                    compact.push('\n');
-                }
-            } else {
-                compact.push_str(line);
-                compact.push('\n');
-            }
+    assert!(serialized.starts_with(&format!("circuit-mixer-state {STATE_VERSION}\n")));
+    // Optional sections may be absent: no staps section and the short
+    // (three-field) split line still load and continue.
+    let mut compact = String::new();
+    for line in serialized.lines() {
+        if line.starts_with("staps ") {
+            break;
         }
-        std::fs::write(&path, compact).unwrap();
-        let mut resumed =
-            Mixer::resume_state(path.to_str().unwrap(), params.clone(), FrozenDb::empty()).unwrap();
-        assert_eq!(resumed.arena.to_vec(), original.arena.to_vec());
-        resumed.run();
-        resumed.global_check();
-        assert!(resumed.moves_done > 0);
+        if line.starts_with("split ") {
+            compact.push_str(
+                &line
+                    .split_whitespace()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            compact.push('\n');
+        } else {
+            compact.push_str(line);
+            compact.push('\n');
+        }
+    }
+    std::fs::write(&path, &compact).unwrap();
+    let mut resumed =
+        Mixer::resume_state(path.to_str().unwrap(), params.clone(), FrozenDb::empty()).unwrap();
+    assert_eq!(resumed.arena.to_vec(), original.arena.to_vec());
+    resumed.run();
+    resumed.global_check();
+    assert!(resumed.moves_done > 0);
+    // Older versions carry the retired curated counters and are refused.
+    for version in [1, 2] {
+        let old = compact.replacen(
+            &format!("circuit-mixer-state {STATE_VERSION}\n"),
+            &format!("circuit-mixer-state {version}\n"),
+            1,
+        );
+        std::fs::write(&path, old).unwrap();
+        assert!(
+            Mixer::resume_state(path.to_str().unwrap(), params.clone(), FrozenDb::empty()).is_err(),
+            "state version {version} must be refused"
+        );
     }
     std::fs::remove_file(path).unwrap();
 }

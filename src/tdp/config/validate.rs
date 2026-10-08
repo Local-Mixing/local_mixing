@@ -35,25 +35,8 @@ where
         repo_root,
         &getenv,
     )?;
-    let frozen_curated = sourced_path(
-        raw.value("frozen_curated_dir"),
-        "FROZEN_CURATED_DIR",
-        repo_root,
-        &getenv,
-    )?;
-    validate_path_separation(
-        &run_dir,
-        &build_target_dir,
-        frozen_db.path.as_deref(),
-        frozen_curated.path.as_deref(),
-    )?;
+    validate_path_separation(&run_dir, &build_target_dir, frozen_db.path.as_deref())?;
 
-    let curated_value_convention = parse_enum(
-        raw,
-        "curated_value_convention",
-        "native",
-        &["native", "legacy-swapped-controls"],
-    )?;
     let preprocessing_mode = parse_preprocessing_mode(raw)?;
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
@@ -273,8 +256,6 @@ where
         build_target_dir,
         adopt_existing_run,
         frozen_db,
-        frozen_curated,
-        curated_value_convention,
         preprocessing_mode,
         calibration_only,
         calibration_seed,
@@ -374,23 +355,6 @@ pub(crate) fn parse_bool(raw: &RawConfig, key: &str, default: bool) -> Result<bo
             &format!("expected true or false; got {other:?}"),
         )),
     }
-}
-
-pub(crate) fn parse_enum(
-    raw: &RawConfig,
-    key: &str,
-    default: &str,
-    allowed: &[&str],
-) -> Result<String, String> {
-    let value = raw.value(key).unwrap_or(default);
-    if !allowed.contains(&value) {
-        return Err(config_error(
-            raw,
-            key,
-            &format!("expected one of {}; got {value:?}", allowed.join(", ")),
-        ));
-    }
-    Ok(value.to_owned())
 }
 
 pub(crate) fn config_error(raw: &RawConfig, key: &str, message: &str) -> String {

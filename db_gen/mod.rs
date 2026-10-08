@@ -1,8 +1,6 @@
 //! Offline database builders and candidate generation.
 //! Shared storage and validation live under crate::database.
 #[cfg(any(test, feature = "db-tools"))]
-pub mod curated_full;
-#[cfg(any(test, feature = "db-tools"))]
 pub mod frozen_build;
 #[cfg(feature = "db-tools")]
 pub mod regular;

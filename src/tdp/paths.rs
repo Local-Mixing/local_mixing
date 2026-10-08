@@ -31,23 +31,10 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
             validate_frozen_store(path, "database.regular_dir")?;
             validate_requested_filter(path, "database.regular_dir", config.frozen_filter)?;
         }
-        if let Some(path) = &config.frozen_curated.path {
-            validate_frozen_store(path, "database.curated_dir")?;
-            validate_requested_filter(path, "database.curated_dir", config.frozen_filter)?;
-        }
     }
     if stage_three_will_run && config.allow_empty_store && config.frozen_db.path.is_some() {
         return Err(
             "database.allow_no_database_for_tests=true conflicts with a configured database.regular_dir; clear one so the db_mixing mode is unambiguous"
-                .to_owned(),
-        );
-    }
-    if stage_three_will_run
-        && config.frozen_db.path.is_none()
-        && config.frozen_curated.path.is_some()
-    {
-        return Err(
-            "database.curated_dir cannot be used without database.regular_dir; the curated store is a cascade ahead of the regular store"
                 .to_owned(),
         );
     }
@@ -170,7 +157,7 @@ pub(crate) fn reject_legacy_run(run_dir: &Path) -> Result<(), String> {
     for marker in ["gss_command.conf", "gss.mpmct1"] {
         if run_dir.join(marker).exists() {
             return Err(format!(
-                "existing run_dir {} contains legacy GSS artifact {marker}; tdp_gen requires a fresh run.directory or a TDP v8 run; resume this run with the checkout that created it; the original run is unchanged",
+                "existing run_dir {} contains legacy GSS artifact {marker}; tdp_gen requires a fresh run.directory or a TDP v9 run; resume this run with the checkout that created it; the original run is unchanged",
                 run_dir.display()
             ));
         }
@@ -211,7 +198,6 @@ pub(crate) fn validate_path_separation(
     run_dir: &Path,
     target_dir: &Path,
     frozen_db: Option<&Path>,
-    frozen_curated: Option<&Path>,
 ) -> Result<(), String> {
     let mut paths = vec![
         ("run_dir", resolve_existing_prefix(run_dir)),
@@ -219,9 +205,6 @@ pub(crate) fn validate_path_separation(
     ];
     if let Some(path) = frozen_db {
         paths.push(("database.regular_dir", resolve_existing_prefix(path)));
-    }
-    if let Some(path) = frozen_curated {
-        paths.push(("database.curated_dir", resolve_existing_prefix(path)));
     }
     let paths: Vec<(&str, PathBuf)> = paths
         .into_iter()

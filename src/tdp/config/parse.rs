@@ -73,18 +73,6 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "string",
     ),
     (
-        "database.curated_dir",
-        "database.curated_dir",
-        "frozen_curated_dir",
-        "string",
-    ),
-    (
-        "database.curated_control_order",
-        "database.curated_value_convention",
-        "curated_value_convention",
-        "string",
-    ),
-    (
         "database.lookup_miss_filter",
         "database.filter",
         "frozen_filter",

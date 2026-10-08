@@ -25,9 +25,12 @@ fn golden_hash(mx: &Mixer) -> u64 {
     h.finish()
 }
 
-const GOLDEN_PROFILE_NULL_PLANT: u64 = 0xa5a0889c5985fa88;
-const GOLDEN_SPLIT_STOP: u64 = 0x2b4e93a0d195a7c2;
-const GOLDEN_THERMOSTAT_WALK: u64 = 0xbc178ac2df496fe3;
+// Re-baselined 2026-10-08 when the two curated counters left the counters
+// line; the gate/meta trajectory was verified unchanged against the previous
+// constants by re-inserting the two (zero) fields.
+const GOLDEN_PROFILE_NULL_PLANT: u64 = 0x8624858b7434eace;
+const GOLDEN_SPLIT_STOP: u64 = 0x32684402a67eeea0;
+const GOLDEN_THERMOSTAT_WALK: u64 = 0x60a50a097a564f19;
 
 #[test]
 fn golden_profile_null_plant_is_stable() {

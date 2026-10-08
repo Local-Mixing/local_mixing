@@ -474,8 +474,7 @@ fn canonicalize_skips_window_over_64_distinct_wires() {
     let skips_before = OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed);
     assert!(circuit.canonicalize_polys_single(false).0.is_empty());
     assert!(circuit.canonicalize_polys_single(true).0.is_empty());
-    assert!(circuit.canonicalize_polys_single_neg(&[]).0.is_empty());
-    assert!(OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed) >= skips_before.saturating_add(3));
+    assert!(OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed) >= skips_before.saturating_add(2));
 
     let small = CircuitSeq {
         gates: vec![[0, 1, 2], [1, 2, 0]],
@@ -771,98 +770,6 @@ fn opt_equiv_canonicalize_polys_single_hashed_matches_plain() {
     assert_eq!(used.len(), 66);
 }
 
-// The cached neg variant must match the reference uncached pipeline
-// (per-input substitution in caller order) on fresh and hit paths, and an
-// empty negation set must coincide with the plain canonicalization.
-#[test]
-fn opt_equiv_canon_single_neg_cache_matches_uncached_reference() {
-    fn reference_neg(
-        circuit: &CircuitSeq,
-        negated_inputs: &[u16],
-    ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
-        let used = circuit.used_wires();
-        if used.len() > 64 {
-            return (Vec::new(), Permutation { data: Vec::new() }, used);
-        }
-        let wire_map = dense_wire_map(&used);
-        let mut c = CircuitSeq {
-            gates: circuit
-                .gates
-                .iter()
-                .map(|&[t, c1, c2]| {
-                    [
-                        wire_map[t as usize],
-                        wire_map[c1 as usize],
-                        wire_map[c2 as usize],
-                    ]
-                })
-                .collect(),
-        };
-        c.canonicalize();
-        let n = c.max_wire() as usize + 1;
-        let mut polys = c.to_polynomial(n, 0, c.gates.len());
-        for &w in negated_inputs {
-            let mapped = match wire_map.get(w as usize) {
-                Some(&mw) if mw != u16::MAX => mw as usize,
-                _ => continue,
-            };
-            for p in polys.iter_mut() {
-                // Reference substitution toggles each remainder in sequence.
-                let bit = 1u64 << mapped;
-                let rests: Vec<Monomial> = p
-                    .iter()
-                    .filter(|&&mm| mm & bit != 0)
-                    .map(|&mm| mm & !bit)
-                    .collect();
-                for rest in rests {
-                    toggle_monomial(p, rest);
-                }
-            }
-        }
-        let canon = match canonicalize_polys_4(polys, true) {
-            Ok(canon) => canon,
-            Err(()) => return (Vec::new(), Permutation { data: Vec::new() }, used),
-        };
-        (canon.0, canon.1, used)
-    }
-
-    let mut rng = fastrand::Rng::with_seed(0x6e65_675f_6361_6368);
-    for trial in 0..60 {
-        let n = rng.usize(3..=10);
-        let m = rng.usize(1..=(3 * n));
-        fastrand::seed(rng.u64(..));
-        let circuit = random_circuit(n, m);
-        // Random negation list: in-range wires (used or not), a possible
-        // duplicate (involution), and a possible out-of-range wire to
-        // exercise the skip filter.
-        let mut negs: Vec<u16> = (0..rng.usize(0..=4))
-            .map(|_| rng.u16(0..n as u16))
-            .collect();
-        if rng.bool() && !negs.is_empty() {
-            let dup = negs[0];
-            negs.push(dup);
-        }
-        if rng.bool() {
-            negs.push(500);
-        }
-        let expected = reference_neg(&circuit, &negs);
-        let first = circuit.canonicalize_polys_single_neg(&negs);
-        let second = circuit.canonicalize_polys_single_neg(&negs);
-        assert_eq!(first.0, expected.0, "trial={trial} negs={negs:?}");
-        assert_eq!(first.1.data, expected.1.data, "trial={trial} negs={negs:?}");
-        assert_eq!(first.2, expected.2);
-        assert_eq!(second.0, expected.0, "hit path, trial={trial}");
-        assert_eq!(second.1.data, expected.1.data);
-        assert_eq!(second.2, expected.2);
-        // Empty negation set must coincide with plain canonicalization.
-        let plain = circuit.canonicalize_polys_single(false);
-        let neg_empty = circuit.canonicalize_polys_single_neg(&[]);
-        assert_eq!(neg_empty.0, plain.0, "trial={trial}");
-        assert_eq!(neg_empty.1.data, plain.1.data);
-        assert_eq!(neg_empty.2, plain.2);
-    }
-}
-
 #[test]
 fn to_polynomial_matches_evaluate_control_semantics() {
     let cases = [
@@ -904,7 +811,7 @@ fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
     xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
 }
 
-// Golden canonical-form hashes guard the key format used by curated databases.
+// Golden canonical-form hashes guard the key format used by the frozen stores.
 // Changing these values invalidates those keys, so do not regenerate them casually.
 // The g57 monomial uses NOT(b)*c, matching the executor and from_g57.
 #[test]
@@ -1151,7 +1058,7 @@ fn opt_equiv_canon4_poly_key_compact_matches_fat() {
 
 // End-to-end: the shipped compact/split2/cleanskip canonicalizer must
 // stay deterministic and produce a canonical form invariant under wire
-// relabeling — the property every curated-DB key relies on. Narrow trials
+// relabeling — the property every frozen-store key relies on. Narrow trials
 // run the compact path, wide trials (a forced degree-17+ monomial) run
 // the fat fallback through the same driver.
 #[test]

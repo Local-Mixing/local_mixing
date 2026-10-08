@@ -379,15 +379,6 @@ pub(crate) fn configure_environment(
         );
     }
     set_or_remove_env(command, "FROZEN_DB_DIR", config.frozen_db.path.as_deref());
-    set_or_remove_env(
-        command,
-        "FROZEN_CURATED_DIR",
-        config.frozen_curated.path.as_deref(),
-    );
-    command.env(
-        "FROZEN_CURATED_VALUE_CONVENTION",
-        &config.curated_value_convention,
-    );
     command.env("FROZEN_REGULAR_VALUE_CONVENTION", "native");
     command.env("CANON_RULE_L_BRANCH_CAP", "512");
     command.env("CANON_MONOMIAL_CAP", "200000");
@@ -438,10 +429,8 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         }
     );
     print_store("regular frozen store", &config.frozen_db);
-    print_store("curated frozen store", &config.frozen_curated);
     println!(
-        "[tdp_gen] store convention/filter: curated={} filter={}",
-        config.curated_value_convention,
+        "[tdp_gen] store filter: {}",
         match config.frozen_filter {
             FrozenFilter::Auto => "auto",
             FrozenFilter::On => "on",

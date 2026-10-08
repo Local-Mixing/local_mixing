@@ -77,25 +77,6 @@ fn explicit_window_budgets_do_not_replay_cached_successes() {
             expected
         );
     }
-    let neg = circuit.canonicalize_polys_single_neg_with_options(&[1], &roomy);
-    assert!(!neg.0.is_empty());
-    assert!(
-        circuit
-            .canonicalize_polys_single_neg_with_options(
-                &[1],
-                &G57CanonicalizationOptions {
-                    monomial_cap: Some(1),
-                    ..roomy
-                }
-            )
-            .0
-            .is_empty()
-    );
-    assert_eq!(
-        circuit.canonicalize_polys_single_neg_with_options(&[1], &roomy),
-        neg
-    );
-
     let gates = vec![XGate::conj(0, [(1, true), (2, true), (3, true)]).unwrap()];
     let mut options = xgate::XGateCanonicalizationOptions::default();
     let expected = xgate::canonicalize_xgates_single_with_options(&gates, false, &options).unwrap();

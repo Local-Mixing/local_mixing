@@ -36,7 +36,7 @@ fn run_with_value(
         None,
         config,
         |window, num_wires, budget, limits, rng| {
-            qc_candidates_with(window, num_wires, budget, limits, rng, |_, _| value.clone())
+            qc_candidates_with(window, num_wires, budget, limits, rng, |_| value.clone())
         },
     )
     .unwrap()
@@ -104,7 +104,7 @@ fn controller_rejects_equivalent_replacement_with_same_affine_leakage() {
         None,
         &QualityConfig::default(),
         |window, num_wires, budget, limits, rng| {
-            qc_candidates_with(window, num_wires, budget, limits, rng, |query, _| {
+            qc_candidates_with(window, num_wires, budget, limits, rng, |query| {
                 if *query == key {
                     Some(value.clone())
                 } else {

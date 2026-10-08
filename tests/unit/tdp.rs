@@ -325,7 +325,7 @@ fn checked_in_toml_recipe_uses_embedded_masking() {
         (2, 3, 2)
     );
     assert_eq!(config.hold.as_deref(), Some("27"));
-    assert_eq!(config.recipe_version, 8);
+    assert_eq!(config.recipe_version, 9);
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
         expected,
         recipe_manifest(&explicit_defaults, &fingerprints, 4)
     );
-    assert!(expected.starts_with("tdp_command_recipe=8\n"));
+    assert!(expected.starts_with("tdp_command_recipe=9\n"));
     assert!(expected.contains("\npieces=1\n"));
     // `pieces` is a locked recipe value; `piece_threads` is lifecycle.
     let pieced = resolve_for_test(&parse(
@@ -405,11 +405,11 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
 #[test]
 fn manifest_comparison_accepts_exact_and_rejects_changed_or_oversized() {
     let path = temp_path("manifest");
-    let desired = "tdp_command_recipe=8\nn=128\n";
+    let desired = "tdp_command_recipe=9\nn=128\n";
     fs::write(&path, desired).unwrap();
     compare_recipe_manifest(&path, desired).unwrap();
 
-    let mismatch = compare_recipe_manifest(&path, "tdp_command_recipe=8\nn=129\n").unwrap_err();
+    let mismatch = compare_recipe_manifest(&path, "tdp_command_recipe=9\nn=129\n").unwrap_err();
     assert_eq!(mismatch.exit_code, 2);
     assert!(mismatch.message.contains("mixed-provenance"));
 
@@ -491,9 +491,9 @@ fn run_target_and_store_trees_must_not_overlap() {
     let run = base.join("run");
     let target = base.join("target");
     let store = base.join("store");
-    assert!(validate_path_separation(&run, &run.join("target"), None, None).is_err());
-    assert!(validate_path_separation(&run, &target, Some(&target.join("store")), None).is_err());
-    validate_path_separation(&run, &target, Some(&store), None).unwrap();
+    assert!(validate_path_separation(&run, &run.join("target"), None).is_err());
+    assert!(validate_path_separation(&run, &target, Some(&target.join("store"))).is_err());
+    validate_path_separation(&run, &target, Some(&store)).unwrap();
     fs::remove_dir_all(base).unwrap();
 }
 
@@ -611,12 +611,12 @@ fn toml_default_hold_and_explicit_27_have_the_same_recipe() {
         recipe_manifest(&explicit, &[], 7)
     );
     assert!(recipe_manifest(&implicit, &[], 7).contains("hold=27\n"));
-    assert!(recipe_manifest(&implicit, &[], 7).starts_with("tdp_command_recipe=8\n"));
+    assert!(recipe_manifest(&implicit, &[], 7).starts_with("tdp_command_recipe=9\n"));
 }
 
 #[test]
-fn managed_v8_dry_run_preserves_manifest_and_rejects_changed_binary() {
-    let base = temp_path("managed-v8");
+fn managed_v9_dry_run_preserves_manifest_and_rejects_changed_binary() {
+    let base = temp_path("managed-v9");
     let run_dir = base.join("run");
     let target_dir = base.join("target");
     let binary_dir = target_dir
@@ -723,7 +723,7 @@ fn embedded_masking_rejects_silently_clamped_width_and_insufficient_band() {
 
 #[test]
 fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchanged() {
-    for version in [3, 4, 5, 6, 7] {
+    for version in [3, 4, 5, 6, 7, 8] {
         let base = temp_path("unsupported-version");
         let run_dir = base.join("run");
         let target_dir = base.join("target");
@@ -834,7 +834,7 @@ fn completed_db_mixing_uses_current_artifact_name() {
 fn embedded_masking_config_uses_canonical_names() {
     let config = resolve_for_test(&parse("preprocessing.mode = \"embedded-masking\"")).unwrap();
     validate_current_recipe(&config).unwrap();
-    assert_eq!(config.recipe_version, 8);
+    assert_eq!(config.recipe_version, 9);
     let manifest = recipe_manifest(&config, &[], 1);
     assert!(manifest.contains("preprocessing_mode=embedded-masking\n"));
     assert!(manifest.contains("preprocessing_balanced_masks=1\n"));
@@ -853,7 +853,7 @@ fn embedded_masking_config_uses_canonical_names() {
 }
 
 #[test]
-fn nonlinear291_rejects_only_explicit_mask_controls_for_v8() {
+fn nonlinear291_rejects_only_explicit_mask_controls_for_v9() {
     let base = "config_version = 1\nsource.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\n";
     let config = resolve_for_test(&parse_config(base).unwrap()).unwrap();
     validate_current_recipe(&config).unwrap();
@@ -879,7 +879,7 @@ fn nonlinear291_rejects_only_explicit_mask_controls_for_v8() {
 }
 
 #[test]
-fn embedded_mask_balancing_is_typed_pinned_and_locked_in_v8() {
+fn embedded_mask_balancing_is_typed_pinned_and_locked_in_v9() {
     let raw = parse_config("config_version = 1\n[preprocessing]\nbalanced_masks = false").unwrap();
     let mut config = resolve_for_test(&raw).unwrap();
     validate_current_recipe(&config).unwrap();
@@ -974,10 +974,9 @@ fn manifests_without_shuffling_settings_require_defaults_and_matching_binaries()
 fn current_manifest_records_default_shuffling_deterministically() {
     let raw = parse_config("config_version = 1\nsource.wires = 4").unwrap();
     let config = resolve_for_test(&raw).unwrap();
-    // Keep the TDP v8 manifest deterministic, including every field and its order.
+    // Keep the TDP v9 manifest deterministic, including every field and its order.
     let expected = concat!(
-        "tdp_command_recipe=8\nn=4\nfrozen_db_dir=unset\nfrozen_curated_dir=unset\n",
-        "curated_value_convention=native\npreprocessing_mode=embedded-masking\n",
+        "tdp_command_recipe=9\nn=4\nfrozen_db_dir=unset\npreprocessing_mode=embedded-masking\n",
         "production_preset=not-applicable\npost_fragment=not-applicable\n",
         "mcd=derived\nexpand=2\nhold=27\nxr=2\nxb=3\nxc=1\nxtdiv=25\n",
         "xmoves=6*target\npieces=1\nallow_empty_store=false\ncalibration_only=false\n",
@@ -996,10 +995,10 @@ fn current_manifest_records_default_shuffling_deterministically() {
 
 #[test]
 #[cfg(unix)]
-fn fresh_v8_managed_runs_record_and_resume_both_preprocessing_modes() {
+fn fresh_v9_managed_runs_record_and_resume_both_preprocessing_modes() {
     use std::os::unix::fs::PermissionsExt;
     for mode in ["embedded-masking", "nonlinear291"] {
-        let base = temp_path("fresh-v8");
+        let base = temp_path("fresh-v9");
         let run_dir = base.join("run");
         let target_dir = base.join("target");
         let binary_dir = target_dir
@@ -1040,9 +1039,9 @@ fn fresh_v8_managed_runs_record_and_resume_both_preprocessing_modes() {
         run_inner(&matches).unwrap();
         let manifest_path = run_dir.join("tdp_command.conf");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
-        assert!(manifest.starts_with("tdp_command_recipe=8\n"));
+        assert!(manifest.starts_with("tdp_command_recipe=9\n"));
         assert!(manifest.contains(&format!("preprocessing_mode={mode}\n")));
-        assert_eq!(read_recipe_version(&manifest_path).unwrap(), 8);
+        assert_eq!(read_recipe_version(&manifest_path).unwrap(), 9);
         let stage_marker = fs::read_to_string(run_dir.join("stage12.recipe")).unwrap();
         assert!(stage_marker.contains(&format!("preprocessing_mode={mode}\n")));
         run_inner(&matches).unwrap();

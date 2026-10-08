@@ -147,15 +147,11 @@ gate is an involution, reversing the gate sequence computes the inverse
 function. The regular g57 store chooses the smaller of the forward and
 reverse canonical forms. Normal regular lookup computes both directions and
 probes the smaller one; a reverse-direction replacement is reversed again
-before insertion. Compatibility modes can probe both keys. Curated lookup
-uses the forward form, with regular fallback following the regular rule.
+before insertion. Compatibility modes can probe both keys.
 
 We do not automatically identify a function with arbitrary input negations,
-output negations, affine changes of basis, or internal shuffles. The legacy
-`canonicalize_polys_single_neg` helper explicitly substitutes
-$x_w\leftarrow x_w+1$ for specified pending input NOTs. That is a requested
-change to the function being keyed, rather than a search over every possible
-negation. Likewise, the shuffles in
+output negations, affine changes of basis, or internal shuffles. The
+shuffles in
 [gadgetization](gadgetization.md) are actual circuit operations, not labels
 that canonicalization can simply discard.
 

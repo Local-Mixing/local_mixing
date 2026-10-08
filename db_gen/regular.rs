@@ -329,8 +329,7 @@ pub fn open_wide_db_for_read(path: &str) -> Result<DB, Box<dyn std::error::Error
 
 /// S7 of the wide-gate design: extend band `m` by ONE 3-control conjunction
 /// gate per candidate (append and prepend), writing MPX1 values keyed on the
-/// FORWARD canonical function (the curated store's precedent; lookups probe
-/// both frames). Reads `rocks_db_m{m}`, writes `test_wide_db_m{m}`.
+/// FORWARD canonical function (lookups probe both frames). Reads `rocks_db_m{m}`, writes `test_wide_db_m{m}`.
 ///
 /// v1 writer: direct batched merges — sized for the exhaustive small-band
 /// tiers; the demand-driven tier gets the SST/router scale-out later.
@@ -2300,8 +2299,8 @@ pub fn rocks_to_lmdb(rocks_path: &str, lmdb_path: &str) -> Result<(), Box<dyn st
 
     // Bulk-load environment: NO_SYNC + WRITE_MAP + MAP_ASYNC with a single
     // explicit sync at the end (the output is rebuildable staging data until
-    // validation passes). 6 TiB virtual map; max_dbs 600 leaves room for the
-    // curated_XX shards added to the same environment later.
+    // validation passes). 6 TiB virtual map; max_dbs 600 (historically sized
+    // to also hold the retired curated_XX shards).
     let env = Environment::new()
         .set_flags(
             EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC,

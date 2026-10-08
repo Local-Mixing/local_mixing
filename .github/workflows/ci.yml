@@ -69,12 +69,12 @@ jobs:
       - name: Frozen database correctness tests
         run: cargo test --locked --test frozen_roundtrip --test mixer_db_replacement
 
-      # Run the existing library, command-parser and curated-builder tests.
+      # Run the existing library and command-parser tests.
       # Tests requiring prebuilt external stores remain explicitly ignored.
       - name: Database generation unit and command correctness
         run: |
           cargo test --locked --features db-tools --lib db_generation::
-          cargo test --locked --features db-tools --bin local_mixing_bin --bin build_curated_full
+          cargo test --locked --features db-tools --bin local_mixing_bin
 
       - name: Regular band merge correctness
         run: cargo test --locked --features db-tools --test frozen_roundtrip rocksdb_bands_merge_keys_and_deduplicate_candidates_within_the_shard -- --exact

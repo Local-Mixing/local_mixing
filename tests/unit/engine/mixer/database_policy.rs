@@ -154,8 +154,7 @@ fn db_splice_stamps_upper_median_plus_one() {
     mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
     let window = vec![g.clone(), g.clone()];
     let replacement = vec![h.clone(), h.clone()]; // also an identity: verifies
-    assert!(mx.try_db_splice_curated(
-        false,
+    assert!(mx.try_db_splice(
         &ids[..2],
         Dir::R,
         &window,
@@ -185,8 +184,7 @@ fn db_splice_stamps_upper_median_plus_one() {
     mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
     let window = vec![h.clone(), h.clone()];
     let replacement = vec![g.clone(), g.clone()];
-    assert!(mx.try_db_splice_curated(
-        false,
+    assert!(mx.try_db_splice(
         &ids[..2],
         Dir::R,
         &window,
@@ -214,8 +212,7 @@ fn db_splice_stamps_upper_median_plus_one() {
     }
     let window = vec![g.clone(), g.clone()];
     let replacement = vec![h.clone(), h.clone()];
-    assert!(mx.try_db_splice_curated(
-        false,
+    assert!(mx.try_db_splice(
         &ids[..2],
         Dir::R,
         &window,

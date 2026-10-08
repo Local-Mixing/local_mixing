@@ -129,13 +129,9 @@ impl<'db> LookupCache<'db> {
         }
     }
     pub fn get_regular(&self, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
-        cached_db_get_using(
-            self.db,
-            key,
-            self.map.as_ref(),
-            &self.bytes,
-            || self.cap_bytes,
-        )
+        cached_db_get_using(self.db, key, self.map.as_ref(), &self.bytes, || {
+            self.cap_bytes
+        })
     }
 }
 

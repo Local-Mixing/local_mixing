@@ -910,9 +910,7 @@ where
     let fwd_idx = directions.iter().position(|(reversed, _)| !reversed);
     let rev_idx = directions.iter().position(|(reversed, _)| *reversed);
     let min_mode = match (fwd_idx, rev_idx) {
-        (Some(_), Some(_)) => {
-            options.map_or_else(min_dir_lookup_mode, |options| options.direction)
-        }
+        (Some(_), Some(_)) => options.map_or_else(min_dir_lookup_mode, |options| options.direction),
         _ => MinDirLookup::Legacy,
     };
     match min_mode {

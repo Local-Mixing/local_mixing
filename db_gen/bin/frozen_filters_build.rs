@@ -2,8 +2,7 @@
 //!
 //! The frozen store is the authoritative source. Scanning its encoded key
 //! fields prevents a filter/source mismatch from turning real keys into false
-//! negatives at runtime, and works for regular and curated stores without
-//! RocksDB.
+//! negatives at runtime, and works without RocksDB.
 //!
 //! ```text
 //! frozen_filters_build from-frozen FROZEN_DIR

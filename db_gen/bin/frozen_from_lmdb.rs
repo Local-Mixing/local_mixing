@@ -1,66 +1,23 @@
 //! CLI wrapper over `local_mixing::db_generation::frozen_build`: convert a sharded
-//! replacement store into a frozen-table directory.
+//! regular replacement store into a frozen-table directory.
 //!
 //! Subcommands (run tables, then write, then validate):
-//!   frozen_from_lmdb tables   <input> <out_dir> [--curated] [--composite] [per_range]
-//!   frozen_from_lmdb write    <input> <out_dir> [--curated] [--composite]
-//!   frozen_from_lmdb validate <input> <out_dir> [--curated] [--composite]
+//!   frozen_from_lmdb tables   <input> <out_dir> [--bands] [per_range]
+//!   frozen_from_lmdb write    <input> <out_dir> [--bands]
+//!   frozen_from_lmdb validate <input> <out_dir> [--bands]
 //!
-//! --curated reads the "curated_XX" dbs (build FROZEN_CURATED_DIR); default
-//! reads the regular "XX" dbs (build FROZEN_DB_DIR). Curated conversion
-//! requires the completion marker written by `build_curated_full to-lmdb`.
-//!
-//! --composite reads a curated-full composite RocksDB store directly instead
-//! of an LMDB directory. This is the only route for the uncapped curated
-//! database: LMDB caps a non-DUPSORT value at `MAXDATASIZE` (4 GiB - 1) and the
-//! largest curated key needs ~16 GiB, so `to-lmdb` cannot represent it at all.
-//! The frozen encoding is identical either way -- the composite store yields
-//! the same keys in the same order with the same value bytes.
+//! The default input is an LMDB directory with the regular "XX" shard dbs
+//! (build FROZEN_DB_DIR). --bands instead reads a manifest file listing
+//! regular RocksDB band directories (one per line) and k-way merges them.
 
 use local_mixing::db_generation::frozen_build::{
-    LmdbShards, ShardReader, require_curated_full_manifest, stage_tables, stage_validate,
-    stage_write,
+    LmdbShards, ShardReader, stage_tables, stage_validate, stage_write,
 };
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let curated = args.iter().any(|a| a == "--curated");
-    let composite = args.iter().any(|a| a == "--composite");
     let bands = args.iter().any(|a| a == "--bands");
-    let prefix = if curated { "curated_" } else { "" };
-    // Drop keys whose shortest circuit has fewer than N gates. Composite input
-    // only -- an LMDB value is already a flat blob with no per-key rebuild step
-    // to filter in. Must be identical across tables/write/validate or the
-    // stages disagree about which keys exist.
-    let min_gates_position = args.iter().position(|a| a == "--min-gates");
-    let min_gates: usize = match min_gates_position {
-        None => 0,
-        Some(index) => args
-            .get(index + 1)
-            .unwrap_or_else(|| invalid("--min-gates requires a value"))
-            .parse()
-            .unwrap_or_else(|_| invalid("--min-gates must be a nonnegative integer")),
-    };
-    if min_gates > 0 && !composite {
-        eprintln!("--min-gates requires --composite");
-        std::process::exit(2);
-    }
-    let skip: Vec<String> = args
-        .iter()
-        .position(|a| a == "--min-gates")
-        .map(|i| {
-            vec![
-                args[i].clone(),
-                args.get(i + 1).cloned().unwrap_or_default(),
-            ]
-        })
-        .unwrap_or_default();
-    let pos: Vec<&String> = args
-        .iter()
-        .filter(|a| {
-            *a != "--curated" && *a != "--composite" && *a != "--bands" && !skip.contains(a)
-        })
-        .collect();
+    let pos: Vec<&String> = args.iter().filter(|a| *a != "--bands").collect();
 
     let Some(input) = pos.get(2) else {
         usage();
@@ -85,12 +42,6 @@ fn main() {
     };
     prepare_output(stage, out_dir);
 
-    if composite && curated {
-        // A composite store carries its own completion manifest, checked on open.
-    } else if curated {
-        require_curated_full_manifest(input);
-    }
-
     let source: Box<dyn ShardReader> = if bands {
         #[cfg(feature = "db-tools")]
         {
@@ -111,25 +62,8 @@ fn main() {
             eprintln!("--bands requires the db-tools feature");
             std::process::exit(2);
         }
-    } else if composite {
-        #[cfg(feature = "db-tools")]
-        {
-            if min_gates > 0 {
-                eprintln!("[source] composite {input}, dropping keys with min-gates < {min_gates}");
-            }
-            Box::new(
-                local_mixing::db_generation::frozen_build::CompositeShards::open_with_min_gates(
-                    input, min_gates,
-                ),
-            )
-        }
-        #[cfg(not(feature = "db-tools"))]
-        {
-            eprintln!("--composite requires the db-tools feature");
-            std::process::exit(2);
-        }
     } else {
-        Box::new(LmdbShards::open(input, prefix))
+        Box::new(LmdbShards::open(input, ""))
     };
 
     match stage {
@@ -196,7 +130,7 @@ fn invalid(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: frozen_from_lmdb tables|write|validate <input> <out_dir> [--curated] [--composite] [per_range]"
+        "usage: frozen_from_lmdb tables|write|validate <input> <out_dir> [--bands] [per_range]"
     );
     std::process::exit(2);
 }
