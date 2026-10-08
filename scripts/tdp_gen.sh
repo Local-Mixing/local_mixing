@@ -491,4 +491,6 @@ EOF
 else
   note "stage 3: $DB_MIXING exists, skipping"
 fi
-note "PIPELINE COMPLETE: $DB_MIXING"
+note "PIPELINE COMPLETE (stages 1-3): $DB_MIXING"
+# Stage 4 (packing) is not driven from here yet; see docs/tdp_pipeline.md.
+note "stage 4 (packing) is not run by this driver: pack $DB_MIXING with the scripts/windowed_delivery/ prototypes (docs/tdp_pipeline.md)"

@@ -206,6 +206,12 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     if !status.success() {
         return Err(TdpError::child("TDP_GEN pipeline", status));
     }
+    if config.stop_after.as_deref().unwrap_or("3") == "3" {
+        println!(
+            "[tdp_gen] stages 1-3 complete: {}; stage 4 (packing) is not driven by tdp_gen yet: run the scripts/windowed_delivery/ prototypes (docs/tdp_pipeline.md)",
+            config.run_dir.join("db_mixing.mpmct1").display()
+        );
+    }
     Ok(())
 }
 

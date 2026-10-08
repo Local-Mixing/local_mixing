@@ -5,6 +5,9 @@
 # Check: cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
 # Run:   cargo run --release --locked -- tdp_gen --config configs/local.toml
 # Full explanations and shell-flag mapping: docs/tdp_pipeline.md.
+# Four-stage pipeline: 1 sandwich + 2 preprocessing (one step), 3 db_mixing,
+# 4 packing. This driver runs stages 1-3 and ends at db_mixing.mpmct1; stage 4
+# (packing) still runs from the scripts/windowed_delivery/ prototypes.
 config_version = 1  # required TOML schema version (distinct from saved recipe v9)
 
 [run]
