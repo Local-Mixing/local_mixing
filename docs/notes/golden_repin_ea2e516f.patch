@@ -1,0 +1,348 @@
+diff --git a/src/database/frozen.rs b/src/database/frozen.rs
+index a3078bc..b8d2ead 100644
+--- a/src/database/frozen.rs
++++ b/src/database/frozen.rs
+@@ -1075,6 +1075,8 @@ impl FilterSetting {
+ pub struct FrozenDb {
+     regular: Option<Frozen>,
+     curated: Option<Frozen>,
++    #[cfg(test)]
++    memory: Option<std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u8>>>>,
+ }
+ 
+ impl FrozenDb {
+@@ -1136,7 +1138,12 @@ impl FrozenDb {
+             "[frozen] value conventions: regular={reg_name}, curated={}",
+             if curated.is_some() { cur_name } else { "-" }
+         );
+-        Self { regular, curated }
++        Self {
++            regular,
++            curated,
++            #[cfg(test)]
++            memory: None,
++        }
+     }
+ 
+     /// A handle with no stores: every lookup misses.
+@@ -1144,9 +1151,27 @@ impl FrozenDb {
+         Self {
+             regular: None,
+             curated: None,
++            #[cfg(test)]
++            memory: None,
+         }
+     }
+ 
++    #[cfg(test)]
++    pub(crate) fn from_memory(
++        map: std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u8>>>,
++    ) -> Self {
++        Self {
++            regular: None,
++            curated: None,
++            memory: Some(map),
++        }
++    }
++
++    #[cfg(test)]
++    pub(crate) fn is_memory(&self) -> bool {
++        self.memory.is_some()
++    }
++
+     /// Open stores from `FROZEN_DB_DIR` and optional `FROZEN_CURATED_DIR`.
+     /// The regular store is required.
+     pub fn from_env() -> Self {
+@@ -1167,6 +1192,10 @@ impl FrozenDb {
+ 
+     #[inline]
+     pub fn get_regular(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
++        #[cfg(test)]
++        if let Some(memory) = &self.memory {
++            return memory.get(key).cloned();
++        }
+         self.regular.as_ref()?.get(key)
+     }
+ 
+@@ -1187,6 +1216,10 @@ impl FrozenDb {
+         max_candidates: usize,
+         max_bucket_bytes: usize,
+     ) -> Result<Option<Vec<u8>>, QcLookupLimit> {
++        #[cfg(test)]
++        if let Some(memory) = &self.memory {
++            return Ok(memory.get(key).cloned());
++        }
+         match &self.regular {
+             Some(store) => store.get_qc(key, max_candidates, max_bucket_bytes),
+             None => Ok(None),
+diff --git a/src/database/lookup_cache.rs b/src/database/lookup_cache.rs
+index e3f05a2..84a6b7c 100644
+--- a/src/database/lookup_cache.rs
++++ b/src/database/lookup_cache.rs
+@@ -81,6 +81,10 @@ fn cached_db_get_using(
+     let Some(cache) = cache else {
+         return raw_db_get(db, namespace, key);
+     };
++    #[cfg(test)]
++    if db.is_memory() {
++        return raw_db_get(db, namespace, key);
++    }
+     let mut ns_key = [0u8; 17];
+     ns_key[0] = namespace;
+     ns_key[1..].copy_from_slice(key);
+diff --git a/tests/unit/database/frozen/tests.rs b/tests/unit/database/frozen/tests.rs
+index 93fc042..fcaf405 100644
+--- a/tests/unit/database/frozen/tests.rs
++++ b/tests/unit/database/frozen/tests.rs
+@@ -30,6 +30,7 @@ fn qc_cached_lookup_copies_only_requested_records_and_preserves_sampler_cache()
+     let db = FrozenDb {
+         regular: Some(store),
+         curated: None,
++        memory: None,
+     };
+     assert_eq!(db.get_regular_qc(&key, 2, 8), Ok(Some(value[..8].to_vec())));
+     assert_eq!(
+@@ -341,6 +342,7 @@ fn explicit_lookup_caches_keep_distinct_store_values_separate() {
+         FrozenDb {
+             regular: Some(store),
+             curated: None,
++            memory: None,
+         }
+     };
+     let first = build(vec![3, 0, 1, 2]);
+diff --git a/tests/unit/engine/mixer/mod.rs b/tests/unit/engine/mixer/mod.rs
+index 6c1f323..49f3f4c 100644
+--- a/tests/unit/engine/mixer/mod.rs
++++ b/tests/unit/engine/mixer/mod.rs
+@@ -14,3 +14,4 @@ include!("database_policy.rs");
+ include!("generations.rs");
+ include!("ancestry.rs");
+ include!("checkpoints.rs");
++include!("repin_check.rs");
+diff --git a/tests/unit/engine/mixer/repin_check.rs b/tests/unit/engine/mixer/repin_check.rs
+new file mode 100644
+index 0000000..f9082df
+--- /dev/null
++++ b/tests/unit/engine/mixer/repin_check.rs
+@@ -0,0 +1,221 @@
++// ---- golden re-pin check (backported onto ea2e516f) ----
++// ---- the in-memory g57 fixture store ----
++//
++// Every g57 circuit of at most `max_len` gates on at most `wires` wires,
++// grouped by function and encoded exactly as the store builder encodes
++// friends: each circuit is relabeled into the canonical wire space of its OWN
++// canonicalization (forward under the forward key, reversed under the
++// reverse key), and identity classes also hold the empty friend. Circuits on
++// the dense wires 0..m cover every canonical shape, so any window of up to
++// `max_len` g57 gates touching at most `wires` wires hits -- on any circuit
++// width. Lets tests drive the stage-3 DB path (p_db = 1.0) with real
++// splices, the path that replaced the historic crossing walk as the
++// engine's driver.
++fn g57_fixture_build(wires: u16, max_len: usize) -> std::collections::HashMap<[u8; 16], Vec<u8>> {
++    use crate::canonicalization::polys_repr_blob;
++    use crate::canonicalization::xgate::canonicalize_xgates_single_capped;
++    use std::collections::{BTreeSet, HashMap};
++    let w_max: u16 = wires;
++    let mut triples: Vec<[u16; 3]> = Vec::new();
++    for t in 0..w_max {
++        for a in 0..w_max {
++            for b in 0..w_max {
++                if t != a && t != b && a != b {
++                    triples.push([t, a, b]);
++                }
++            }
++        }
++    }
++    let mut circuits: Vec<Vec<[u16; 3]>> = triples.iter().map(|&g| vec![g]).collect();
++    let mut last = circuits.clone();
++    for _ in 1..max_len {
++        let mut next = Vec::new();
++        for c in &last {
++            for &h in &triples {
++                let mut c2 = c.clone();
++                c2.push(h);
++                next.push(c2);
++            }
++        }
++        circuits.extend(next.iter().cloned());
++        last = next;
++    }
++    let mut classes: HashMap<[u8; 16], BTreeSet<Vec<u8>>> = HashMap::new();
++    for c in circuits {
++        // Dense wires only: every canonical shape has a dense member.
++        let mut used: Vec<u16> = c.iter().flatten().copied().collect();
++        used.sort_unstable();
++        used.dedup();
++        if used.iter().enumerate().any(|(i, &w)| i as u16 != w) {
++            continue;
++        }
++        let gates: Vec<XGate> = c.iter().map(|&g| XGate::from_g57(g)).collect();
++        let mut fwd_key = None;
++        for reversed in [false, true] {
++            let canon = canonicalize_xgates_single_capped(&gates, reversed, Default::default(), 0)
++                .expect("fixture circuits canonicalize");
++            let key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.polys)).to_le_bytes();
++            if reversed && fwd_key == Some(key) {
++                continue; // the runtime decodes an equal key forward
++            }
++            // global -> dense (used_wires) -> canonical (inverse of order).
++            let dense = |w: u16| {
++                canon
++                    .used_wires
++                    .iter()
++                    .position(|&u| u == w)
++                    .expect("used wire")
++            };
++            let canonical = |w: u16| {
++                canon
++                    .order
++                    .data
++                    .iter()
++                    .position(|&d| d == dense(w))
++                    .expect("dense wire in order") as u8
++            };
++            let mut enc: Vec<[u8; 3]> = c
++                .iter()
++                .map(|g| [canonical(g[0]), canonical(g[1]), canonical(g[2])])
++                .collect();
++            if reversed {
++                enc.reverse();
++            }
++            classes
++                .entry(key)
++                .or_default()
++                .insert(enc.into_iter().flatten().collect());
++            if !reversed {
++                fwd_key = Some(key);
++                if rules::verify_rewrite(&gates, &[]) {
++                    classes.entry(key).or_default().insert(Vec::new());
++                }
++            }
++        }
++    }
++    classes
++        .into_iter()
++        .map(|(key, friends)| {
++            let mut value = Vec::new();
++            for f in friends {
++                value.push(f.len() as u8);
++                value.extend(f);
++            }
++            (key, value)
++        })
++        .collect()
++}
++
++fn g57_fixture_map() -> std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u8>>> {
++    use std::sync::{Arc, OnceLock};
++    static MAP: OnceLock<Arc<std::collections::HashMap<[u8; 16], Vec<u8>>>> = OnceLock::new();
++    // Up to three gates on five wires: ~1.1k classes, built in about half a
++    // second (release). Two-gate windows sampled convexly share a wire and
++    // always fit; three-gate classes hold genuine re-spellings.
++    MAP.get_or_init(|| Arc::new(g57_fixture_build(5, 3)))
++        .clone()
++}
++
++fn g57_fixture_store() -> FrozenDb {
++    FrozenDb::from_memory(g57_fixture_map())
++}
++
++// The stage-3 driver for tests: every round not taken by a twist, shuffle or
++// bridge is a DB move against the fixture store, descending from four-gate
++// windows, with the layer-2 MIX/COMP coin at p_mix = 0.3 so growth (MIX pays
++// for longer spellings) and compression roughly balance, with heavy lineage
++// mixing. `db_advance` is on, as `circuit_mixer --tdp` forces it: every DB
++// splice product gets the directional birth advance production runs.
++fn db_walk_params() -> MixParams {
++    MixParams {
++        p_db: 1.0,
++        s_db: 4,
++        db_prefixes: true,
++        p_mix: 0.3,
++        db_advance: true,
++        ..MixParams::default()
++    }
++}
++
++fn trajectory_hash(mx: &mut Mixer) -> u64 {
++    use std::collections::hash_map::DefaultHasher;
++    let mut h = DefaultHasher::new();
++    for id in mx.arena.ids_in_order() {
++        mx.arena.gate(id).hash(&mut h);
++        let m = mx.meta_of(id);
++        (m.origin, m.dir == Dir::R, m.dgen, m.litter, m.litter_size).hash(&mut h);
++    }
++    mx.moves_done.hash(&mut h);
++    let c = &mx.counters;
++    (
++        c.db_slot2_hits,
++        c.db_agn_hits,
++        c.db_comp_hits,
++        c.db_gates_added,
++        c.scatters,
++        c.scatter_steps,
++        c.twist_relabels,
++    )
++        .hash(&mut h);
++    mx.rng.random::<u64>().hash(&mut h);
++    h.finish()
++}
++
++const TRAJECTORY_PROFILE_NULL_PLANT: u64 = 0xbaa42bedc74dc44e;
++const TRAJECTORY_STAGE3_FIXTURE: u64 = 0xec5a286a7b0a742f;
++
++// golden_profile_null_plant_is_stable with its ea2e516f parameters.
++#[test]
++fn repin_check_profile_null_plant() {
++    let gates = random_mixed_circuit(41, 16, 400);
++    let params = MixParams {
++        k_max: 6,
++        moves: 4_000_000,
++        temp: 20.0,
++        p_db: 1.0,
++        p_comp: 1.0,
++        p_any: 0.1,
++        s_db: 5,
++        p_convex: 0.5,
++        mix_pay_random: true,
++        prof_n: [6.0, 18.0, 34.0],
++        prof_r: [4.0, 2.0],
++        prof_cadence_eff: 0.5,
++        report_every: u64::MAX,
++        verify_every: 200_000,
++        seed: 3,
++        ..MixParams::default()
++    };
++    let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
++    let stop = mx.run();
++    assert!(matches!(stop, MixStop::ProfileDone));
++    let t = trajectory_hash(&mut mx);
++    assert_eq!(t, TRAJECTORY_PROFILE_NULL_PLANT, "got {t:#018x}");
++}
++
++// golden_stage3_fixture_walk_is_stable with the stage-3 flags of ea2e516f
++// (incl. the then-inert p_comp 1.0 / p_any 0.1).
++#[test]
++fn repin_check_stage3_fixture() {
++    let gates = random_g57_circuit(43, 16, 300);
++    let params = MixParams {
++        k_max: 6,
++        moves: 20_000,
++        p_convex: 0.5,
++        mix_pay_random: true,
++        twist_g57: true,
++        p_twist: 0.05,
++        twist_min_len: 4,
++        verify_every: 5_000,
++        report_every: u64::MAX,
++        seed: 11,
++        p_comp: 1.0,
++        p_any: 0.1,
++        ..db_walk_params()
++    };
++    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
++    mx.run();
++    mx.global_check();
++    let t = trajectory_hash(&mut mx);
++    assert_eq!(t, TRAJECTORY_STAGE3_FIXTURE, "got {t:#018x}");
++}

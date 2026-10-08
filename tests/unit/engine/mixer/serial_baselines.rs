@@ -23,7 +23,11 @@ fn golden_hash(mx: &Mixer) -> u64 {
 // counter trajectory was verified unchanged against the previous constant by
 // re-inserting the retired fields as zeros (step 4: old 0xc277215de595bf62
 // reproduced exactly). The thermostat-walk golden is gone with the walk.
+// TRAJECTORY_PROFILE_NULL_PLANT (version-neutral, see trajectory_hash) is
+// reproduced at ea2e516f by docs/notes/golden_repin_ea2e516f.patch; how to
+// re-run it: docs/notes/golden_repin_check_20261008.md.
 const GOLDEN_PROFILE_NULL_PLANT: u64 = 0xaed23f37b193b604;
+const TRAJECTORY_PROFILE_NULL_PLANT: u64 = 0xbaa42bedc74dc44e;
 
 #[test]
 fn golden_profile_null_plant_is_stable() {
@@ -47,9 +51,11 @@ fn golden_profile_null_plant_is_stable() {
     let stop = mx.run();
     assert!(matches!(stop, MixStop::ProfileDone));
     let h = golden_hash(&mx);
+    let t = trajectory_hash(&mut mx);
     assert_eq!(
-        h, GOLDEN_PROFILE_NULL_PLANT,
-        "serial profile trajectory drifted: got {h:#018x}"
+        (h, t),
+        (GOLDEN_PROFILE_NULL_PLANT, TRAJECTORY_PROFILE_NULL_PLANT),
+        "serial profile trajectory drifted: got ({h:#018x}, {t:#018x})"
     );
 }
 
@@ -84,10 +90,11 @@ fn trajectory_hash(mx: &mut Mixer) -> u64 {
 // The stage-3 path with real mutations: DB splices against the g57 fixture
 // store (MIX re-spellings and COMP contractions, db_advance birth transport,
 // pay-random MIX, convex windows) plus twist-g57 brackets. Pinned 2026-10-08
-// on the cleanup branch. TRAJECTORY_STAGE3_FIXTURE was also reproduced at
+// on the cleanup branch. TRAJECTORY_STAGE3_FIXTURE is also reproduced at
 // ea2e516f (the pre-cleanup tip, with the in-memory fixture store backported
 // and its stage-3 flags incl. p_comp 1.0 / p_any 0.1), so the cleanup left
-// this trajectory unchanged.
+// this trajectory unchanged. The backport and the command are committed:
+// docs/notes/golden_repin_ea2e516f.patch, docs/notes/golden_repin_check_20261008.md.
 const GOLDEN_STAGE3_FIXTURE: u64 = 0xb7c7ebe60b41be59;
 const TRAJECTORY_STAGE3_FIXTURE: u64 = 0xec5a286a7b0a742f;
 
