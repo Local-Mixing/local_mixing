@@ -4,23 +4,48 @@ use super::*;
 fn shuffling_controls_validate_before_construction() {
     let mode = PreprocessingMode::EmbeddedMasking;
     assert_eq!(
-        parse_shuffling_controls(mode, None, None).unwrap(),
-        (0, true)
+        parse_shuffling_controls(mode, None, None, None).unwrap(),
+        (0, true, 0)
     );
     assert_eq!(
-        parse_shuffling_controls(mode, Some("8"), Some("1")).unwrap(),
-        (8, true)
+        parse_shuffling_controls(mode, Some("8"), Some("1"), None).unwrap(),
+        (8, true, 0)
     );
     assert_eq!(
-        parse_shuffling_controls(mode, Some("0"), Some("false")).unwrap(),
-        (0, false)
+        parse_shuffling_controls(mode, Some("0"), Some("false"), None).unwrap(),
+        (0, false, 0)
     );
-    for value in ["1", "7", "-1", "eight", "18446744073709551616"] {
-        assert!(parse_shuffling_controls(mode, Some(value), None).is_err());
+    for value in ["-1", "eight", "18446744073709551616"] {
+        assert!(parse_shuffling_controls(mode, Some(value), None, None).is_err());
     }
-    assert!(parse_shuffling_controls(mode, Some("8"), Some("false")).is_err());
-    assert!(parse_shuffling_controls(mode, None, Some("yes")).is_err());
-    assert!(parse_shuffling_controls(PreprocessingMode::Nonlinear291, Some("0"), None).is_err());
+    // RC 2026-10-06: small positive doses are valid (1 = one transfer per
+    // original-circuit write, the punchlist-#4 granularity).
+    assert_eq!(
+        parse_shuffling_controls(mode, Some("1"), Some("0"), None).unwrap(),
+        (1, false, 0)
+    );
+    // Persistent carrier migration (RC 2026-10-05): return_home=false with
+    // active segments is now valid; the stage-2 tail restores the ports.
+    assert_eq!(
+        parse_shuffling_controls(mode, Some("8"), Some("false"), None).unwrap(),
+        (8, false, 0)
+    );
+    assert!(parse_shuffling_controls(mode, None, Some("yes"), None).is_err());
+    assert!(
+        parse_shuffling_controls(PreprocessingMode::Nonlinear291, Some("0"), None, None).is_err()
+    );
+    // Punchlist #8: just-in-time drains need active persistent migration.
+    assert_eq!(
+        parse_shuffling_controls(mode, Some("8"), Some("0"), Some("24")).unwrap(),
+        (8, false, 24)
+    );
+    assert_eq!(
+        parse_shuffling_controls(mode, Some("8"), Some("0"), Some("off")).unwrap(),
+        (8, false, 0)
+    );
+    assert!(parse_shuffling_controls(mode, Some("8"), Some("0"), Some("soon")).is_err());
+    assert!(parse_shuffling_controls(mode, None, Some("0"), Some("24")).is_err());
+    assert!(parse_shuffling_controls(mode, Some("8"), Some("1"), Some("24")).is_err());
 }
 
 #[test]

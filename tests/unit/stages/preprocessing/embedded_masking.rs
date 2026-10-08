@@ -254,6 +254,20 @@ fn assert_emitted_shuffling_replays(
     for gate in &baseline.gates[cursor..] {
         rebuilt.push(map_gate(gate, &layout));
     }
+    // Mirror the persistent-mode tail port restoration (a no-op when the
+    // data roles already sit home, i.e. under per-box return home).
+    for role in 0..np {
+        let wire = layout[role];
+        if wire as usize != role {
+            let home = role as u16;
+            let displaced = layout.iter().position(|&w| w as usize == role).unwrap();
+            rebuilt.push(XGate::cnot(home, wire));
+            rebuilt.push(XGate::cnot(wire, home));
+            rebuilt.push(XGate::cnot(home, wire));
+            layout[role] = home;
+            layout[displaced] = wire;
+        }
+    }
     assert_eq!(
         rebuilt, shuffled.gates,
         "packets, remapped gates and closes must replay exactly"

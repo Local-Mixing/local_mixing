@@ -135,8 +135,28 @@ fn replay(gates: &[XGate], boxes: &[FireBox], output: &ShufflingOutput, np: usiz
     for gate in &gates[source_cursor..] {
         reconstructed.push(mapped_independently(gate, &layout));
     }
+    // Mirror the persistent-mode tail restoration (a no-op when the data
+    // roles already sit home, i.e. under per-box return home).
+    for role in 0..np {
+        let wire = layout[role];
+        if wire as usize != role {
+            let home = role as u16;
+            let displaced = layout.iter().position(|&w| w as usize == role).unwrap();
+            reconstructed.push(XGate::cnot(home, wire));
+            reconstructed.push(XGate::cnot(wire, home));
+            reconstructed.push(XGate::cnot(home, wire));
+            layout[role] = home;
+            layout[displaced] = wire;
+        }
+    }
     assert_eq!(reconstructed, output.gates);
     assert_eq!(layout, output.final_layout);
+    assert!(
+        layout[..np]
+            .iter()
+            .enumerate()
+            .all(|(role, &wire)| role == wire as usize)
+    );
 }
 
 #[test]
@@ -144,7 +164,7 @@ fn transfers_replay_and_preserve_4096_dirty_states_and_inverses() {
     let (gates, boxes) = fixture();
     for return_home in [false, true] {
         for seed in [0, 9001, u64::MAX] {
-            let output = apply_shuffling(&gates, &boxes, 3, 32, 8, return_home, seed);
+            let output = apply_shuffling(&gates, &boxes, 3, 32, 8, return_home, 0, seed);
             replay(&gates, &boxes, &output, 3);
             assert!(output.stats.transfer_count > 0);
             if return_home {
@@ -188,6 +208,114 @@ fn transfers_replay_and_preserve_4096_dirty_states_and_inverses() {
     }
 }
 
+/// Just-in-time drains (punchlist #8): masks outlive their boxes, drain at
+/// their read/holder-write triggers, and idle data roles get bridged. The
+/// authoritative leakage measurement is the pipeline census; here we pin the
+/// functional contract and the mask ledger conservation law.
+#[test]
+fn jit_drains_preserve_function_and_conserve_the_mask_ledger() {
+    let (gates, boxes) = fixture();
+    for gap in [1, 4, 64] {
+        for seed in [0, 9001, u64::MAX] {
+            let output = apply_shuffling(&gates, &boxes, 3, 32, 8, false, gap, seed);
+            assert!(output.stats.transfer_count > 0);
+            // Every mask (transfer or re-mask) is applied once and drained
+            // once; transfers cost 2 gates, re-masks and drains 1 each. With
+            // nothing else added, the stream length is fully accounted for:
+            // original + 3*transfers + 2*remasks + 3*restored ports.
+            assert_eq!(
+                output.stats.added_gates,
+                3 * output.stats.transfer_count
+                    + 2 * output.stats.jit_remasks
+                    + 3 * output.stats.restored_ports
+            );
+            // The fixture reads each box target right after its box while the
+            // targets' masks are standing, and the inter-box reads sit beyond
+            // a small gap, so small gaps must produce bridge re-masks.
+            if gap <= 4 {
+                assert!(output.stats.jit_remasks > 0);
+            }
+            let mut rng = StdRng::seed_from_u64(0xd17_57a7e);
+            for _ in 0..64 {
+                let input: Vec<u64> = (0..32).map(|_| rng.random()).collect();
+                let mut baseline = input.clone();
+                let mut shuffled = input.clone();
+                eval_lanes(&gates, &mut baseline);
+                eval_lanes(&output.gates, &mut shuffled);
+                for role in 0..32 {
+                    assert_eq!(baseline[role], shuffled[output.final_layout[role] as usize]);
+                }
+                eval_lanes(output.gates.iter().rev(), &mut shuffled);
+                assert_eq!(shuffled, input);
+            }
+            for input in [0, u32::MAX as u64]
+                .into_iter()
+                .chain((0..32).map(|wire| 1u64 << wire))
+            {
+                let baseline = eval_u64(&gates, input);
+                let shuffled = eval_u64(&output.gates, input);
+                for role in 0..32 {
+                    assert_eq!(
+                        (baseline >> role) & 1,
+                        (shuffled >> output.final_layout[role]) & 1
+                    );
+                }
+                assert_eq!(eval_u64(output.gates.iter().rev(), shuffled), input);
+            }
+        }
+    }
+}
+
+/// A box target with no later reads keeps its masks standing to the stream
+/// tail: the bare value is reborn only at the tail drain, never at box end.
+#[test]
+fn jit_keeps_an_unread_target_masked_until_the_tail() {
+    let gates = vec![XGate::x_gate(0); 8];
+    let boxes = vec![FireBox {
+        target: 0,
+        start: 0,
+        end: gates.len(),
+        unit_cuts: (0..=gates.len()).collect(),
+        mask_support: vec![(0, vec![])],
+    }];
+    let output = apply_shuffling(&gates, &boxes, 1, 4, 8, false, 2, 5);
+    assert!(output.stats.transfer_count > 0);
+    replay_free_function_check(&gates, &output, 4);
+    // Every drain comes after the last original gate: before it, the only
+    // single-control writes in the stream are the reciprocal transfer pairs
+    // (2 CNOTs per transfer), so nothing unmasks the carrier early.
+    let last_original = output
+        .gates
+        .iter()
+        .rposition(|gate| gate.ctrls.is_empty())
+        .unwrap();
+    let single_control_writes = output.gates[..last_original]
+        .iter()
+        .filter(|gate| gate.ctrls.len() == 1)
+        .count();
+    assert_eq!(single_control_writes, 2 * output.stats.transfer_count);
+}
+
+fn replay_free_function_check(gates: &[XGate], output: &ShufflingOutput, wires: usize) {
+    for input in 0..1u64 << wires {
+        let baseline = eval_u64(gates, input);
+        let shuffled = eval_u64(&output.gates, input);
+        for role in 0..wires {
+            assert_eq!(
+                (baseline >> role) & 1,
+                (shuffled >> output.final_layout[role]) & 1
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "just-in-time drains require persistent migration")]
+fn jit_with_return_home_is_rejected() {
+    let (gates, boxes) = fixture();
+    apply_shuffling(&gates, &boxes, 3, 32, 8, true, 16, 1);
+}
+
 #[test]
 fn skipping_unavailable_partners_never_drops_source_gates() {
     let gates = vec![XGate::cnot(0, 1); 48];
@@ -201,7 +329,7 @@ fn skipping_unavailable_partners_never_drops_source_gates() {
         mask_support: vec![(0, vec![])],
     }];
     for return_home in [false, true] {
-        let output = apply_shuffling(&gates, &boxes, 1, 2, 8, return_home, 9001);
+        let output = apply_shuffling(&gates, &boxes, 1, 2, 8, return_home, 0, 9001);
         assert_eq!(output.gates, gates);
         assert_eq!(output.final_layout, [0, 1]);
         assert_eq!(output.stats.skipped_cut_count, 8);
@@ -235,13 +363,13 @@ fn dirty_helper_controls_are_excluded_even_when_target_gates_do_not_read_them() 
     }];
     for return_home in [false, true] {
         // All three band roles occur somewhere in the target-writing unit.
-        let blocked = apply_shuffling(&gates, &boxes, 2, 5, 8, return_home, 7);
+        let blocked = apply_shuffling(&gates, &boxes, 2, 5, 8, return_home, 0, 7);
         assert_eq!(blocked.gates, gates);
         assert_eq!(blocked.stats.transfer_count, 0);
 
         // With one independent band role, transfers still run and preserve all
         // dirty inputs, including the helper, after decoding the final layout.
-        let shuffled = apply_shuffling(&gates, &boxes, 2, 6, 8, return_home, 7);
+        let shuffled = apply_shuffling(&gates, &boxes, 2, 6, 8, return_home, 0, 7);
         assert!(shuffled.stats.transfer_count > 0);
         assert!(
             shuffled.stats.boxes[0]
@@ -274,7 +402,7 @@ fn return_home_still_runs_after_all_intermediate_cuts_are_skipped() {
         unit_cuts: (0..=gates.len()).collect(),
         mask_support: vec![(0, vec![])],
     }];
-    let output = apply_shuffling(&gates, &boxes, 1, 2, 8, true, 123);
+    let output = apply_shuffling(&gates, &boxes, 1, 2, 8, true, 0, 123);
     assert_eq!(output.stats.transfer_count, 2);
     assert_eq!(output.stats.skipped_cut_count, 6);
     assert_eq!(output.stats.added_gates, 4);
@@ -295,7 +423,7 @@ fn updated_mask_support_can_make_a_late_partner_available() {
         unit_cuts: (0..=gates.len()).collect(),
         mask_support: vec![(0, vec![1]), (12, vec![])],
     }];
-    let output = apply_shuffling(&gates, &boxes, 1, 2, 8, true, 123);
+    let output = apply_shuffling(&gates, &boxes, 1, 2, 8, true, 0, 123);
     assert_eq!(output.stats.transfer_count, 2);
     assert_eq!(output.stats.skipped_cut_count, 6);
     assert_eq!(output.stats.boxes[0].transfers[0].cut, 12);
@@ -317,7 +445,7 @@ fn return_home_removes_first_mask_and_closes_remaining_masks() {
         unit_cuts: (0..=gates.len()).collect(),
         mask_support: vec![(0, vec![])],
     }];
-    let output = apply_shuffling(&gates, &boxes, 1, 10, 8, true, 123);
+    let output = apply_shuffling(&gates, &boxes, 1, 10, 8, true, 0, 123);
     let events = &output.stats.boxes[0].transfers;
     assert_eq!(events.len(), 8);
     assert_eq!(events[0].partner, events[7].partner);
@@ -353,14 +481,14 @@ fn one_available_cut_keeps_data_home() {
         unit_cuts: vec![0, 1],
         mask_support: vec![(0, vec![])],
     };
-    let output = apply_shuffling(&gates, &[fire_box.clone()], 3, 5, 8, true, 1);
+    let output = apply_shuffling(&gates, &[fire_box.clone()], 3, 5, 8, true, 0, 1);
     assert_eq!(output.gates, gates);
     assert_eq!(output.stats.skipped_cut_count, 1);
     assert_eq!(output.final_layout, [0, 1, 2, 3, 4]);
     // Zero-write boxes have no transfers and leave the gate stream intact.
     let mut no_target_writes = fire_box.clone();
     no_target_writes.target = 2;
-    let output = apply_shuffling(&gates, &[no_target_writes], 3, 5, 8, true, 1);
+    let output = apply_shuffling(&gates, &[no_target_writes], 3, 5, 8, true, 0, 1);
     assert_eq!(output.gates, gates);
     assert_eq!(output.final_layout, [0, 1, 2, 3, 4]);
 }
@@ -423,7 +551,7 @@ fn bounded_quantiles_match_naive_selection_and_handle_maximum_segments() {
 #[test]
 fn disabled_shuffling_preserves_exact_stream_and_identity_layout() {
     let (gates, _) = fixture();
-    let output = apply_shuffling(&gates, &[], 3, 32, 0, true, 777);
+    let output = apply_shuffling(&gates, &[], 3, 32, 0, true, 0, 777);
     assert_eq!(output.gates, gates);
     assert_eq!(output.final_layout, (0..32).collect::<Vec<u16>>());
     assert_eq!(output.stats.added_gates, 0);
@@ -440,7 +568,7 @@ fn target_read_in_box_is_rejected() {
         unit_cuts: vec![0, 1],
         mask_support: vec![(0, vec![])],
     }];
-    apply_shuffling(&gates, &boxes, 1, 2, 8, true, 1);
+    apply_shuffling(&gates, &boxes, 1, 2, 8, true, 0, 1);
 }
 
 #[test]
@@ -454,5 +582,5 @@ fn mask_snapshot_inside_atomic_unit_is_rejected() {
         unit_cuts: vec![0, 4],
         mask_support: vec![(0, vec![]), (1, vec![1])],
     }];
-    apply_shuffling(&gates, &boxes, 1, 3, 8, true, 1);
+    apply_shuffling(&gates, &boxes, 1, 3, 8, true, 0, 1);
 }

@@ -43,16 +43,21 @@ fn parse_shuffling_controls(
     mode: PreprocessingMode,
     segments: Option<&str>,
     return_home: Option<&str>,
-) -> Result<(usize, bool), String> {
-    if mode != PreprocessingMode::EmbeddedMasking && (segments.is_some() || return_home.is_some()) {
+    jit_gap: Option<&str>,
+) -> Result<(usize, bool, usize), String> {
+    if mode != PreprocessingMode::EmbeddedMasking
+        && (segments.is_some() || return_home.is_some() || jit_gap.is_some())
+    {
         return Err("shuffling controls require embedded-masking".into());
     }
     let segments = segments.unwrap_or("0").parse::<usize>().map_err(|_| {
-        "EMBEDDED_MASKING_SHUFFLING must be 0 (off) or an integer at least 8".to_string()
+        "EMBEDDED_MASKING_SHUFFLING must be 0 (off) or a positive integer".to_string()
     })?;
-    if segments != 0 && segments < 8 {
-        return Err("EMBEDDED_MASKING_SHUFFLING must be 0 (off) or at least 8".into());
-    }
+    // RC 2026-10-06: segments=1 is the punchlist-#4 intent -- one carrier
+    // transfer per ORIGINAL-circuit write (3 gates per fire box); larger
+    // doses additionally protect intra-box partial sums and supply
+    // read-pressure refreshes.
+
     let return_home = match return_home.unwrap_or("true") {
         "0" | "false" => false,
         "1" | "true" => true,
@@ -62,10 +67,29 @@ fn parse_shuffling_controls(
             );
         }
     };
-    if segments > 0 && !return_home {
-        return Err("EMBEDDED_MASKING_SHUFFLING_RETURN_HOME must be true to preserve the sandwich's physical output ports".into());
+    // return_home=false selects PERSISTENT carrier migration: data roles hop
+    // across wires for the whole stream and are swapped back to their
+    // physical ports once, at the stage-2 tail, so the sandwich's output
+    // ports are preserved in both modes.
+    let jit_gap = match jit_gap.unwrap_or("0") {
+        "0" | "off" => 0,
+        value => value.parse::<usize>().map_err(|_| {
+            "EMBEDDED_MASKING_JIT must be 0/off or a positive re-mask gap in source gates"
+                .to_string()
+        })?,
+    };
+    // Punchlist #8: just-in-time drains keep migration masks standing past
+    // the fire-box end and bridge idle data-role stretches, so bare role
+    // values stop being reborn at every box end (the celebrity class).
+    if jit_gap > 0 && segments == 0 {
+        return Err("EMBEDDED_MASKING_JIT requires EMBEDDED_MASKING_SHUFFLING > 0".into());
     }
-    Ok((segments, return_home))
+    if jit_gap > 0 && return_home {
+        return Err(
+            "EMBEDDED_MASKING_JIT requires EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0".into(),
+        );
+    }
+    Ok((segments, return_home, jit_gap))
 }
 
 pub fn run() {
@@ -147,12 +171,13 @@ pub fn run() {
     }
 
     // Validate before writing the source or sandwich artifacts.
-    let (shuffling_segments, shuffling_return_home) = parse_shuffling_controls(
+    let (shuffling_segments, shuffling_return_home, shuffling_jit_gap) = parse_shuffling_controls(
         gadgetization_mode,
         std::env::var("EMBEDDED_MASKING_SHUFFLING").ok().as_deref(),
         std::env::var("EMBEDDED_MASKING_SHUFFLING_RETURN_HOME")
             .ok()
             .as_deref(),
+        std::env::var("EMBEDDED_MASKING_JIT").ok().as_deref(),
     )
     .unwrap_or_else(|error| panic!("invalid preprocessing settings: {error}"));
 
@@ -225,6 +250,7 @@ pub fn run() {
                 active_wires: n,
                 shuffling_segments,
                 shuffling_return_home,
+                shuffling_jit_gap,
                 k: envu("EMBEDDED_MASKING_K", base.k),
                 rerand_level: envu("EMBEDDED_MASKING_RERAND", base.rerand_level),
                 rerand_repair: envu("EMBEDDED_MASKING_REPAIR", base.rerand_repair),
@@ -248,6 +274,12 @@ pub fn run() {
             let options = PreprocessingParams::EmbeddedMasking {
                 balanced_seed: std::env::var("EMBEDDED_MASKING_BAL_SEED")
                     .map_or(params.balanced, |v| v != "0"),
+                // Punchlist #5: rich band seed/reseed (pivot + linear sources
+                // + nonlinear products). 0 = legacy thin 2-CNOT seed.
+                seed_fill_nl: std::env::var("EMBEDDED_MASKING_SEED_NL")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(4),
                 execution: EmbeddedMaskingExecution {
                     ancilla_band_only: std::env::var("EMBEDDED_MASKING_ANC_POOL")
                         .map_or(true, |v| v != "all"),
@@ -269,6 +301,19 @@ pub fn run() {
                     report.band_seed_gates,
                     report.band_reseed_gates,
                     report.guard_gates
+                );
+                println!(
+                    "[gen] compute: {} fire gates + {} shuffling gates ({} transfers, {} skipped cuts, {} ports restored, {} jit remasks, {} drain/other) ; {} rerand bursts",
+                    report.original_compute_gates,
+                    report.shuffling_added_gates,
+                    report.transfer_count,
+                    report.skipped_cuts,
+                    report.restored_ports,
+                    report.jit_remasks,
+                    report
+                        .shuffling_added_gates
+                        .saturating_sub(2 * report.transfer_count + 3 * report.restored_ports),
+                    report.rerand_done
                 );
                 if let Ok(path) = std::env::var("EMBEDDED_MASKING_HOT_MANIFEST") {
                     let mut body = String::from(

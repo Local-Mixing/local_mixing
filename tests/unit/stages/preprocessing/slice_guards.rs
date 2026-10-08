@@ -98,3 +98,40 @@ fn nonlinear_preblock_fan_in_two_preserves_zero_slice_and_dirty_auxiliaries() {
         );
     }
 }
+
+#[test]
+fn feistel_guard_is_dead_only_on_zero_slice_and_width_bounded() {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    // Small enough for the exhaustive only-zero-slice-fixes check, wide
+    // enough band (6 > acc_size 2) to exercise real rounds.
+    let (n, nondata, gates) = (8, 6, 40);
+    for seed in [1u64, 7, 99] {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let block = try_slice_zero_feistel_dims(n, 0, n / 2, nondata, gates, &mut rng).unwrap();
+        assert_eq!(block.gates.len(), gates);
+        assert!(
+            block.gates.iter().all(|g| g.ctrls.len() <= 2),
+            "feistel guard must stay within two controls"
+        );
+        assert!(
+            block
+                .gates
+                .iter()
+                .all(|g| (g.target as usize) < n / 2 || (g.target as usize) >= n),
+            "data writes must stay in the junk half"
+        );
+        assert!(slice_preblock_fixes_only_zero_slice(
+            &block.gates,
+            n,
+            nondata
+        ));
+        // Zero slice: data AND clean band wires must pass through exactly
+        // (accumulators were uncomputed; triggers never written).
+        let mask = (1u64 << n) - 1;
+        for x in [0u64, 0x5a, 0xff, 0x13] {
+            let out = crate::circuit::xgate::eval_u64(&block.gates, x & mask);
+            assert_eq!(out & mask, x & mask, "zero-slice data pass-through");
+        }
+    }
+}

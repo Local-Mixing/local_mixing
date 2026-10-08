@@ -34,6 +34,12 @@ pub enum PreprocessingParams {
         params: EmbeddedMaskingParams,
         execution: EmbeddedMaskingExecution,
         balanced_seed: bool,
+        /// Nonlinear product terms per band wire in the band seed/reseed
+        /// (punchlist #5). `0` keeps the legacy 2-CNOT thin seed; the
+        /// managed default (4) makes each seed block slice-guard-sized,
+        /// reviving the pre-reorganization `emit_band_fill_nl_pivots_src`
+        /// generator (pivot + 1..=7 linear sources + nonlinear products).
+        seed_fill_nl: usize,
     },
     Nonlinear291,
 }
@@ -44,6 +50,7 @@ impl PreprocessingParams {
             params: EmbeddedMaskingParams::managed_tdp(seed, source_wires),
             execution: EmbeddedMaskingExecution::default(),
             balanced_seed: true,
+            seed_fill_nl: 4,
         }
     }
 }
@@ -61,6 +68,19 @@ pub struct EmbeddedMaskingReport {
     /// (Logical data role, original gate start, original gate end), before
     /// optional physical-role shuffling and before the surrounding modules.
     pub hot_intervals: Vec<(u16, usize, usize)>,
+    /// Rerand bursts executed inside the compute (masking hygiene).
+    pub rerand_done: usize,
+    /// Carrier transfers emitted by preprocessing shuffling (2 CNOTs each).
+    pub transfer_count: usize,
+    /// Total gates shuffling added to the compute (transfers + per-box
+    /// pending-mask drains + the persistent-mode port-restoration tail).
+    pub shuffling_added_gates: usize,
+    /// Data roles swapped home by the persistent-mode tail (3 CNOTs each).
+    pub restored_ports: usize,
+    /// Transfer cuts skipped for lack of an eligible partner.
+    pub skipped_cuts: usize,
+    /// Fresh masks applied by just-in-time drain management (punchlist #8).
+    pub jit_remasks: usize,
 }
 
 /// The low sandwich-width wires retain the logical layout. Auxiliary wires

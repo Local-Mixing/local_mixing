@@ -153,14 +153,27 @@ pub struct EmbeddedMaskingParams {
     /// below `max_open` (the rolling cap closes one when the cap is reached).
     pub min_open: usize,
     /// Internal active-role transfers per fire box. `0` disables preprocessing
-    /// shuffling and preserves the original seeded circuit; enabled values must
-    /// be at least 8. Safe unit boundaries and available partners can reduce the
-    /// number of actual transfers. This experimental policy is opt-in.
+    /// shuffling and preserves the original seeded circuit; `1` is one carrier
+    /// transfer per ORIGINAL-circuit write (punchlist #4's intent); larger
+    /// doses additionally shorten intra-box partial-sum residencies and supply
+    /// read-pressure refreshes. Safe unit boundaries and available partners can
+    /// reduce the number of actual transfers.
     pub shuffling_segments: usize,
-    /// Restore each data role to its original wire before its box ends. Band
-    /// roles remain permuted. Production slice contracts require this setting;
-    /// comparison harnesses may instead consume `final_layout` explicitly.
+    /// `true`: restore each data role to its original wire before its box
+    /// ends. `false`: PERSISTENT carrier migration -- data roles hop across
+    /// wires for the whole stream and are swapped home once, at the stream
+    /// tail, so port contracts hold in both modes. Band roles remain
+    /// permuted either way.
     pub shuffling_return_home: bool,
+    /// `0`: eager per-box mask drains (legacy). Positive: JUST-IN-TIME drains
+    /// (punchlist #8) -- transfer masks outlive their fire box and drain
+    /// right before a read of the masked role or a write of the holder, and
+    /// any bare data role whose next touch is more than this many source
+    /// gates away is immediately re-masked. Bare role values then live only
+    /// in short read-adjacent stretches instead of being reborn at every box
+    /// end (the migration-drain celebrity class). Requires persistent
+    /// migration (`shuffling_return_home == false`).
+    pub shuffling_jit_gap: usize,
 }
 
 impl EmbeddedMaskingParams {
@@ -199,6 +212,7 @@ impl EmbeddedMaskingParams {
             min_open: 2,
             shuffling_segments: 0,
             shuffling_return_home: true,
+            shuffling_jit_gap: 0,
         }
     }
 }
@@ -244,8 +258,9 @@ pub struct EmbeddedMaskingOutput {
     /// Effective band pool used.
     pub r_used: usize,
     /// Logical role -> physical wire after compute and the mapped decoder.
-    /// Data entries are identity when `shuffling_return_home` is true. Encoded
-    /// I/O callers using a carried layout must read outputs through this map.
+    /// Data entries are identity in both shuffling modes (persistent mode
+    /// restores ports at the stream tail). Encoded I/O callers using a
+    /// carried layout must read outputs through this map.
     pub final_layout: Vec<u16>,
     /// Target-write distribution and gate cost of the optional transform.
     pub shuffling_stats: ShufflingStats,
@@ -594,8 +609,14 @@ fn product_fire(
     blinded: &mut usize,
     census: &mut [usize; 8],
     ancilla_band_only: bool,
-) -> Vec<Vec<XGate>> {
+) -> (Vec<Vec<XGate>>, Vec<(usize, u16)>) {
     let mut units: Vec<Vec<XGate>> = Vec::new();
+    // (unit index, band ancilla) of every bracket whose FINAL gate is a pure
+    // ancilla restore: the caller may drop it when the ancilla is outside the
+    // fire's full stability set (open masks + cover + straddle), letting the
+    // ancilla drift instead of re-materialising its prior value (the
+    // celebrity-value surface, RC 2026-10-06).
+    let mut droppable: Vec<(usize, u16)> = Vec::new();
     match ops.len() {
         0 => {
             if comp {
@@ -680,7 +701,21 @@ fn product_fire(
                 let pool = if pref.is_empty() { &free } else { &pref };
                 pool[rng.random_range(0..pool.len())]
             };
-            // `t ^= P · x · y` on a dirty `h` (4 gates, h restored)
+            // `t ^= P · x · y` on a dirty `h`. The net target update is
+            // complete after the third gate; the fourth only restores `h`.
+            // For BAND ancillas the restore is dropped (RC 2026-10-06): it
+            // re-materialised the ancilla's prior value verbatim once per
+            // bracket (~1,000x per hot wire = the celebrity-value surface,
+            // and recurrence >= 4 implies boundary exposure deterministically).
+            // Without it the ancilla DRIFTS by `P∧x` -- band junk has no
+            // value contract, and consecutive borrows then differ by data
+            // QUADRATICS, never linear relations. Data ancillas
+            // (ANC_POOL=all) still restore: their values are real.
+            // The net target update is complete after the third gate; the
+            // fourth only restores `h`. Emit it always -- the caller strips it
+            // for band ancillas outside the fire's stability set (see
+            // `droppable`), because band values must stay stable while any
+            // open mask, cover or straddle references them.
             let and3 = |p: u16, x: u16, y: u16, h: u16| -> Vec<XGate> {
                 vec![and2(t, h, y), and2(h, p, x), and2(t, h, y), and2(h, p, x)]
             };
@@ -724,22 +759,38 @@ fn product_fire(
             // 3-literal terms: (a' or one l_i) × x'y', and the mirror
             for &(x, y) in &qb {
                 let h = pick(rng, &[x, y, a.w], (a.w, x));
-                units.push(and3(a.w, x, y, h));
-                census[4] += 4; // wire x quadratic (4-gate bracket)
+                let u = and3(a.w, x, y, h);
+                census[4] += u.len(); // wire x quadratic (bracket)
+                if (h as usize) >= np {
+                    droppable.push((units.len(), h));
+                }
+                units.push(u);
                 for &l in &la {
                     let h = pick(rng, &[x, y, l], (l, x));
-                    units.push(and3(l, x, y, h));
-                    census[5] += 4; // linear x quadratic
+                    let u = and3(l, x, y, h);
+                    census[5] += u.len(); // linear x quadratic
+                    if (h as usize) >= np {
+                        droppable.push((units.len(), h));
+                    }
+                    units.push(u);
                 }
             }
             for &(x, y) in &qa {
                 let h = pick(rng, &[x, y, b.w], (b.w, x));
-                units.push(and3(b.w, x, y, h));
-                census[4] += 4;
+                let u = and3(b.w, x, y, h);
+                census[4] += u.len();
+                if (h as usize) >= np {
+                    droppable.push((units.len(), h));
+                }
+                units.push(u);
                 for &l in &lb {
                     let h = pick(rng, &[x, y, l], (l, x));
-                    units.push(and3(l, x, y, h));
-                    census[5] += 4;
+                    let u = and3(l, x, y, h);
+                    census[5] += u.len();
+                    if (h as usize) >= np {
+                        droppable.push((units.len(), h));
+                    }
+                    units.push(u);
                 }
             }
             // Q_a·Q_b on two dirty ancillas: 8 gates, cross-operand grouping,
@@ -760,17 +811,32 @@ fn product_fire(
                     let (p1, p2) = *pick2;
                     let h1 = pick(rng, &[p1.0, p1.1, p2.0, p2.1], p1);
                     let h2 = pick(rng, &[p1.0, p1.1, p2.0, p2.1, h1], p2);
-                    units.push(vec![
+                    // The Gray walk needs the mid-walk restore of the FIRST
+                    // ancilla (the fourth t-read uses its original value), so
+                    // only the LAST toggle is a pure restore. Randomise which
+                    // ancilla toggles last (spreading the inherent mid-walk
+                    // rebirth across wires) and drop its final restore when it
+                    // is a band wire, as in `and3`.
+                    let ((fa, fp), (sa, sp)) = if rng.random_bool(0.5) {
+                        ((h1, p1), (h2, p2))
+                    } else {
+                        ((h2, p2), (h1, p1))
+                    };
+                    let u = vec![
                         and2(t, h1, h2),
-                        and2(h1, p1.0, p1.1),
+                        and2(fa, fp.0, fp.1),
                         and2(t, h1, h2),
-                        and2(h2, p2.0, p2.1),
+                        and2(sa, sp.0, sp.1),
                         and2(t, h1, h2),
-                        and2(h1, p1.0, p1.1),
+                        and2(fa, fp.0, fp.1),
                         and2(t, h1, h2),
-                        and2(h2, p2.0, p2.1),
-                    ]);
-                    census[6] += 8; // quadratic x quadratic (8-gate bracket)
+                        and2(sa, sp.0, sp.1),
+                    ];
+                    census[6] += u.len(); // quadratic x quadratic (bracket)
+                    if (sa as usize) >= np {
+                        droppable.push((units.len(), sa));
+                    }
+                    units.push(u);
                 }
             }
             if comp ^ (ca && cb) {
@@ -779,7 +845,7 @@ fn product_fire(
             }
         }
     }
-    units
+    (units, droppable)
 }
 
 /// The band-seeding module (module 2 of the 5-step pipeline): each band wire
@@ -818,6 +884,173 @@ pub fn seed_band_mode(
         } else {
             out.push(XGate::conj(aw, [(i1, true), (i2, false)]).unwrap());
         }
+    }
+    out
+}
+
+/// Emit `target ^= F(lits)` for 1..=2 literals using g57-form pieces.
+/// Returns whether a residual constant complement was folded into `F`
+/// (irrelevant for band seeding: constants only complement junk).
+/// Revived verbatim from the pre-reorganization tree
+/// (5f386381:src/preprocessing/gadgets.rs).
+fn emit_g57_form(
+    target: u16,
+    lits: &[(u16, bool)],
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    match *lits {
+        [(w, true)] => {
+            out.push(XGate::cnot(target, w));
+            false
+        }
+        [(w, false)] => {
+            // ¬w = w ^ 1.
+            out.push(XGate::cnot(target, w));
+            true
+        }
+        [a, b] => {
+            let ((xw, xp), (yw, yp)) = if rng.random_bool(0.5) { (a, b) } else { (b, a) };
+            match (xp, yp) {
+                // 1 ^ ¬x·y is exactly the g57 monomial.
+                (false, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    true
+                }
+                (true, false) => {
+                    out.push(XGate::from_g57([target, yw, xw]));
+                    true
+                }
+                // x·y = (1 ^ ¬x·y) ^ y ^ 1.
+                (true, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, yw));
+                    true
+                }
+                // ¬x·¬y = (1 ^ ¬x·y) ^ x — no residual constant.
+                (false, false) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, xw));
+                    false
+                }
+            }
+        }
+        _ => unreachable!("emit_g57_form takes 1..=2 literals"),
+    }
+}
+
+/// Rich band seed (punchlist #5): per band wire, a private pivot CNOT,
+/// 1..=7 extra linear source CNOTs, and `fill_nl` nonlinear g57-form
+/// product terms cascading over earlier band wires. Revived from the
+/// pre-reorganization production fill `emit_band_fill_nl_pivots_src`
+/// (5f386381:src/preprocessing/gadgets.rs; measured leakage-neutral).
+/// Sources are drawn from `0..active`; band wires are `np..np+r`.
+/// `avoid` lists raw data-wire pairs (min, max) the nonlinear products must not
+/// read together: a seed product on a first-layer C gate's control pair is a
+/// ready-made copy of that gate's nonlinear term (fringe fix 2).
+pub fn seed_band_rich(
+    np: usize,
+    r: usize,
+    active_wires: usize,
+    seed: u64,
+    fill_nl: usize,
+    avoid: &std::collections::HashSet<(u16, u16)>,
+) -> Vec<XGate> {
+    let n = if active_wires == 0 || active_wires > np {
+        np
+    } else {
+        active_wires
+    };
+    let band: Vec<u16> = ((np as u16)..((np + r) as u16)).collect();
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut out = Vec::with_capacity(r * (5 + 2 * fill_nl));
+    // Reserving needs room to spare, not just b <= n: every reserved pivot is
+    // removed from the linear pool AND from the product-source draw, so at
+    // b == n there is no legal non-pivot data wire left and the draw cannot
+    // terminate. Leave at least a quarter of the data wires unreserved.
+    let reserve = band.len() + band.len() / 3 + 2 <= n;
+    // One private pivot per band wire, drawn without replacement.
+    let pivots: Vec<usize> = if reserve {
+        let mut all: Vec<usize> = (0..n).collect();
+        for i in 0..band.len() {
+            let j = i + rng.random_range(0..(n - i));
+            all.swap(i, j);
+        }
+        all.truncate(band.len());
+        all
+    } else {
+        Vec::new()
+    };
+    let reserved: std::collections::HashSet<usize> = pivots.iter().copied().collect();
+    // Transitive data support per already-filled band wire (pivot included).
+    let mut supports: Vec<std::collections::HashSet<usize>> = Vec::new();
+    for (index, &band_wire) in band.iter().enumerate() {
+        let pivot = if reserve {
+            pivots[index]
+        } else {
+            rng.random_range(0..n)
+        };
+        let mut support: std::collections::HashSet<usize> = std::iter::once(pivot).collect();
+        out.push(XGate::cnot(band_wire, pivot as u16));
+        // Small linear part: 1..=min(7, n-1) extra data wires besides the pivot
+        // (and, when reserved, besides every OTHER wire's pivot — that is the
+        // whole difference, and it is what makes the map triangular).
+        let lin_max = (n - 1).min(7);
+        let lin_w = 1 + rng.random_range(0..lin_max);
+        let mut pool: Vec<usize> = (0..n)
+            .filter(|&w| w != pivot && !(reserve && reserved.contains(&w)))
+            .collect();
+        let lin_w = lin_w.min(pool.len());
+        for _ in 0..lin_w {
+            let i = rng.random_range(0..pool.len());
+            let w = pool.swap_remove(i);
+            support.insert(w);
+            out.push(XGate::cnot(band_wire, w as u16));
+        }
+        // Nonlinear products, cascading over pivot-free earlier band wires.
+        let eligible_band: Vec<usize> = (0..index)
+            .filter(|&i| !supports[i].contains(&pivot))
+            .collect();
+        for _ in 0..fill_nl {
+            let mut draw = |exclude: Option<u16>| loop {
+                let wire = if !eligible_band.is_empty() && rng.random_bool(0.5) {
+                    band[eligible_band[rng.random_range(0..eligible_band.len())]]
+                } else {
+                    loop {
+                        let w = rng.random_range(0..n);
+                        if w != pivot && !(reserve && reserved.contains(&w)) {
+                            break w as u16;
+                        }
+                    }
+                };
+                if Some(wire) != exclude {
+                    break wire;
+                }
+            };
+            let (s1, s2) = loop {
+                let s1 = draw(None);
+                let s2 = draw(Some(s1));
+                if !avoid.contains(&(s1.min(s2), s1.max(s2))) {
+                    break (s1, s2);
+                }
+            };
+            let lits = [(s1, rng.random::<bool>()), (s2, rng.random::<bool>())];
+            // Residual constants just complement F — balance is unaffected.
+            emit_g57_form(band_wire, &lits, &mut rng, &mut out);
+            for source in [s1, s2] {
+                match band[..index].iter().position(|&w| w == source) {
+                    Some(earlier) => {
+                        let earlier_support: Vec<usize> =
+                            supports[earlier].iter().copied().collect();
+                        support.extend(earlier_support);
+                    }
+                    None => {
+                        support.insert(source as usize);
+                    }
+                }
+            }
+        }
+        supports.push(support);
     }
     out
 }
@@ -862,6 +1095,21 @@ fn compute_deps(src: &[XGate], np: usize) -> Vec<Vec<usize>> {
 /// (opening if closed, closing if open -- self-inverse either way).
 /// A balanced LGI carries an odd trailing wire `z` = the CNOT term `w ^= z`,
 /// toggled in `lin` (the wire's net-open linear band terms).
+fn emit_lgi_tagged(
+    tag: &'static str,
+    w: u16,
+    cy: &[u16],
+    out: &mut Vec<XGate>,
+    pairs: &mut BTreeSet<(u16, u16)>,
+    lin: &mut BTreeSet<u16>,
+) {
+    if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() && (cy.contains(&7) || cy.contains(&29))
+    {
+        eprintln!("[lgi] {tag} at out.len()={} w={w} cy={cy:?}", out.len());
+    }
+    emit_lgi(w, cy, out, pairs, lin)
+}
+
 fn emit_lgi(
     w: u16,
     cy: &[u16],
@@ -923,8 +1171,8 @@ pub fn preprocess_embedded_masking_with_execution(
     execution: &EmbeddedMaskingExecution,
 ) -> EmbeddedMaskingOutput {
     assert!(
-        p.shuffling_segments == 0 || p.shuffling_segments >= 8,
-        "preprocessing shuffling requires 0 (off) or at least 8 segments"
+        true,
+        "preprocessing shuffling accepts any segment count (0 = off; 1 = one transfer per original write)"
     );
     let k = p.k.max(2); // g57 1-cycle is a degenerate constant flip
     let r = if p.r == 0 { np } else { p.r };
@@ -956,6 +1204,30 @@ pub fn preprocess_embedded_masking_with_execution(
     let total = np + r;
     assert!(total < u16::MAX as usize, "too many wires");
     let band: Vec<u16> = (np as u16..(np + r) as u16).collect(); // scratch wires are NOT band
+    // Reserved ancilla pool (linkable-mass lever, RC 2026-10-07): the fire's
+    // dirty ancillas come only from `anc_band`, which no mask cycle or fire
+    // cover pair ever uses, so every bracket restore on them is droppable --
+    // each borrow then evolves the ancilla instead of re-bearing its prior
+    // value (bracket restores were 84% of the recurring-value births).
+    // Drawn from its own seeded stream: 0 (default) leaves the circuit as is.
+    let anc_reserve: usize = std::env::var("EMBEDDED_MASKING_ANC_RESERVE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .min(r / 2);
+    let (mask_band, anc_band): (Vec<u16>, Vec<u16>) = if anc_reserve > 0 {
+        let mut prng = StdRng::seed_from_u64(p.seed ^ 0xA9C1_11A5);
+        let mut all = band.clone();
+        for i in (1..all.len()).rev() {
+            let j = prng.random_range(0..=i);
+            all.swap(i, j);
+        }
+        let pool: Vec<u16> = all[..anc_reserve].to_vec();
+        let rest: Vec<u16> = band.iter().copied().filter(|w| !pool.contains(w)).collect();
+        (rest, pool)
+    } else {
+        (band.clone(), band.clone())
+    };
     let max_open = p.max_open.max(1);
     let min_open = p.min_open.clamp(1, max_open.saturating_sub(1).max(1));
     assert!(
@@ -1054,6 +1326,9 @@ pub fn preprocess_embedded_masking_with_execution(
     let mut shuffling_boxes: Vec<FireBox> = Vec::new();
     let mut current_box: Option<FireBox> = None;
     let mut box_cover: Vec<u16> = Vec::new();
+    // Band ancillas drifted (restore dropped) inside the current fire box:
+    // excluded from shuffling partner selection via every mask_support entry.
+    let mut box_drifted: Vec<u16> = Vec::new();
     macro_rules! record_box_boundary {
         ($masks_changed:expr) => {
             if let Some(b) = current_box.as_mut() {
@@ -1063,6 +1338,7 @@ pub fn preprocess_embedded_masking_with_execution(
                         .iter()
                         .flatten()
                         .chain(box_cover.iter())
+                        .chain(box_drifted.iter())
                         .copied()
                         .collect();
                     b.mask_support
@@ -1072,6 +1348,20 @@ pub fn preprocess_embedded_masking_with_execution(
         };
     }
     let mut rerand_done = 0usize;
+    // EMBEDDED_MASKING_STRADDLE_CENSUS: per bracket borrow, how many live
+    // ledger entries (open cycles / open_lin terms over all data wires)
+    // contain the borrowed ancilla -- the injection count a restore-drop or
+    // retirement at that point would pay (RC's compensation scheme pricing).
+    let straddle_census_on = std::env::var("EMBEDDED_MASKING_STRADDLE_CENSUS").is_ok();
+    let mut straddle_hist: Vec<usize> = Vec::new();
+    let mut straddle_firelocal = 0usize;
+    // Bracket-ancilla borrows per band wire since its last burst write:
+
+    // rerand slots target the hottest wire (punchlist #8, hot-targeting leg)
+    // so the celebrity base values are re-randomised every few borrows
+    // instead of recurring ~1,000x. Bursts legally rewrite ANY band wire --
+    // the repair machinery closes/reopens every referencing mask.
+    let mut band_uses: Vec<usize> = vec![0usize; total];
     let diag = execution.diagnostics;
     let (mut n_reads, mut n_bare, mut rho_sum) = (0usize, 0usize, 0usize);
     let mut rho_min = usize::MAX;
@@ -1139,7 +1429,7 @@ pub fn preprocess_embedded_masking_with_execution(
             used.extend(extra.iter().copied());
             let mut tries = 0usize;
             loop {
-                let cy = sample_k(&band, lgi_k, &mut rng);
+                let cy = sample_k(&mask_band, lgi_k, &mut rng);
                 tries += 1;
                 if avoid.is_some_and(|b| cy.iter().any(|&x| x == b)) {
                     assert!(
@@ -1177,7 +1467,8 @@ pub fn preprocess_embedded_masking_with_execution(
                 // wire never drops below `min_open` (never below one at least)
                 for _ in remain..min_open {
                     let cy = sample_fresh!(w, Some(b), &BTreeSet::new());
-                    emit_lgi(
+                    emit_lgi_tagged(
+                        "site0",
                         w as u16,
                         &cy,
                         &mut out,
@@ -1233,7 +1524,20 @@ pub fn preprocess_embedded_masking_with_execution(
             if in_drain {
                 drain_slots += 1;
             }
-            let b = band[rng.random_range(0..band.len())];
+            let b = {
+                let hottest = band
+                    .iter()
+                    .map(|&w| band_uses[w as usize])
+                    .max()
+                    .unwrap_or(0);
+                let pool: Vec<u16> = band
+                    .iter()
+                    .copied()
+                    .filter(|&w| band_uses[w as usize] == hottest)
+                    .collect();
+                pool[rng.random_range(0..pool.len())]
+            };
+            band_uses[b as usize] = 0;
             if is_repair {
                 for w in 0..np {
                     keep_covered!(w, b);
@@ -1264,7 +1568,8 @@ pub fn preprocess_embedded_masking_with_execution(
                     while idx < open_cy[w].len() {
                         if open_cy[w][idx].iter().any(|&x| x == b) {
                             let cy = open_cy[w].remove(idx);
-                            emit_lgi(
+                            emit_lgi_tagged(
+                                "site1",
                                 w as u16,
                                 &cy,
                                 &mut out,
@@ -1294,6 +1599,249 @@ pub fn preprocess_embedded_masking_with_execution(
             }
         }};
     }
+    // Threshold retirement (punchlist #8, RC 2026-10-07): any band wire
+    // borrowed >= retire_k times since its last write gets its value retired
+    // at the next box boundary via a mini-slot -- early-close the open
+    // cycles containing it (the close is MOVED, not added; min_open
+    // machinery reopens coverage), then one fresh nonlinear write. Caps
+    // every bracket-restore chain near the recurrence-law threshold without
+    // any compensation gates, by reusing the hot-targeting slot mechanics
+    // at per-wire cadence instead of once per rerand slot.
+    let chain_k: usize = std::env::var("EMBEDDED_MASKING_CHAIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut chained_brackets = 0usize;
+    let chain_rotate = std::env::var("EMBEDDED_MASKING_CHAIN_ROTATE").is_ok_and(|v| v != "0");
+    let chain_len: usize = std::env::var("EMBEDDED_MASKING_CHAIN_LEN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let retire_k: usize = std::env::var("EMBEDDED_MASKING_RETIRE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    // Input-fringe guard (ret32w probe): no retirement during the first
+    // N% of the compute, so the band accumulates nonlinear depth before
+    // churn begins -- the early-C t*=2..8 leak in the delivered artifact
+    // tracked retirement material in the input fringe.
+    let retire_warmup_pct: usize = std::env::var("EMBEDDED_MASKING_RETIRE_WARMUP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    // A retirement's new band value differs from the old by its write
+    // gates alone; with one gate whose two band controls are some data
+    // wire's open mask pair, old ^ new IS that mask product (up to affine
+    // terms), and the long-lived old value's copies make it strippable at a
+    // boundary. SAFE redraws such gates; BURST writes several products so
+    // old ^ new is never a single mask term.
+    let retire_safe = std::env::var("EMBEDDED_MASKING_RETIRE_SAFE").map_or(true, |v| v != "0");
+    let retire_burst: usize = std::env::var("EMBEDDED_MASKING_RETIRE_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let retire_repair = std::env::var("EMBEDDED_MASKING_RETIRE_MODE").is_ok_and(|v| v == "repair");
+    // Pinned-coverage gate: writes to one data wire commute, so between two
+    // reads of `w` the mixer may reorder all of its mask opens and closes.
+    // Only masks opened BEFORE `w`'s last read survive every such reordering
+    // up to the next read. Retire `b` only when each data wire whose open
+    // cycle reads `b` keeps `min_open` pinned cycles without it; otherwise
+    // defer. Tracked by an incremental scan of `out`: last read per data
+    // wire, last write position per (wire, mask pair) gate.
+    let retire_pin_need: usize = std::env::var("EMBEDDED_MASKING_RETIRE_PIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let retire_pin = retire_pin_need > 0;
+    // Count-only variant: no replacement opens at retirement (so no open
+    // sits next to a close on the same wire); defer while any affected wire
+    // would drop below `min_open` open cycles.
+    let retire_norep = std::env::var("EMBEDDED_MASKING_RETIRE_NOREPLACE").is_ok_and(|v| v != "0");
+    // Early replacement: once a band wire reaches PREOPEN% of the threshold,
+    // open the replacement cycles its retirement will need on every affected
+    // data wire NOW, so the eventual close is never adjacent to an open on
+    // the same wire (a local rewrite could otherwise merge the two and expose
+    // an under-masked intermediate). Same opens as at retirement, moved
+    // earlier: no added gates.
+    let retire_preopen_pct: usize = std::env::var("EMBEDDED_MASKING_RETIRE_PREOPEN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut retire_preopens = 0usize;
+    let mut pin_scan = 0usize;
+    let mut pin_last_read: Vec<Option<usize>> = vec![None; np];
+    let mut pin_pair_pos: std::collections::HashMap<(u16, u16, u16), usize> =
+        std::collections::HashMap::new();
+    let mut retire_deferrals = 0usize;
+    let mut retire_redraws = 0usize;
+    let mut retired = 0usize;
+    macro_rules! retire_gate {
+        ($b:expr) => {{
+            let b: u16 = $b;
+            let mut tries = 0usize;
+            loop {
+                let g = burst_gate_safe!(b, if p.burst_band_only { 0 } else { active });
+                let (c1, c2) = (g.ctrls[0].0, g.ctrls[1].0);
+                let mask_pair = retire_safe
+                    && (c1 as usize) >= np
+                    && (c2 as usize) >= np
+                    && (0..np).any(|w| {
+                        open_pairs[w].contains(&(c1, c2)) || open_pairs[w].contains(&(c2, c1))
+                    });
+                tries += 1;
+                if !mask_pair || tries > 256 {
+                    break g;
+                }
+                retire_redraws += 1;
+            }
+        }};
+    }
+    macro_rules! retire_sweep {
+        () => {{
+            if retire_k > 0 {
+                if retire_pin {
+                    while pin_scan < out.len() {
+                        let g = &out[pin_scan];
+                        for &(c, _) in g.ctrls.iter() {
+                            if (c as usize) < np {
+                                pin_last_read[c as usize] = Some(pin_scan);
+                            }
+                        }
+                        if (g.target as usize) < np {
+                            let key = match g.ctrls.len() {
+                                1 => Some((g.target, g.ctrls[0].0, u16::MAX)),
+                                2 => {
+                                    let (a, c) = (g.ctrls[0].0, g.ctrls[1].0);
+                                    Some((g.target, a.min(c), a.max(c)))
+                                }
+                                _ => None,
+                            };
+                            if let Some(key) = key {
+                                pin_pair_pos.insert(key, pin_scan);
+                            }
+                        }
+                        pin_scan += 1;
+                    }
+                }
+                if retire_preopen_pct > 0 {
+                    let pre_at = (retire_k * retire_preopen_pct / 100).max(1);
+                    let near: Vec<u16> = band
+                        .iter()
+                        .copied()
+                        .filter(|&w| {
+                            let u = band_uses[w as usize];
+                            u >= pre_at && u < retire_k
+                        })
+                        .collect();
+                    for b in near {
+                        for w in 0..np {
+                            let before = open_cy[w].len();
+                            keep_covered!(w, b);
+                            retire_preopens += open_cy[w].len() - before;
+                        }
+                    }
+                }
+                let due: Vec<u16> = band
+                    .iter()
+                    .copied()
+                    .filter(|&w| band_uses[w as usize] >= retire_k)
+                    .collect();
+                for b in due {
+                    if retire_pin {
+                        let pinned = |w: usize, cy: &[u16]| -> bool {
+                            let Some(read) = pin_last_read[w] else {
+                                return false;
+                            };
+                            let mut keys: Vec<(u16, u16, u16)> = (0..cy.len() / 2)
+                                .map(|i| {
+                                    let (a, c) = (cy[2 * i], cy[2 * i + 1]);
+                                    (w as u16, a.min(c), a.max(c))
+                                })
+                                .collect();
+                            if cy.len() % 2 == 1 {
+                                keys.push((w as u16, cy[cy.len() - 1], u16::MAX));
+                            }
+                            keys.iter()
+                                .all(|key| pin_pair_pos.get(key).is_none_or(|&at| at < read))
+                        };
+                        let blocked = (0..np).any(|w| {
+                            open_cy[w].iter().any(|cy| cy.contains(&b))
+                                && open_cy[w]
+                                    .iter()
+                                    .filter(|cy| !cy.contains(&b) && pinned(w, cy))
+                                    .count()
+                                    < retire_pin_need
+                        });
+                        if blocked {
+                            retire_deferrals += 1;
+                            continue;
+                        }
+                    }
+                    if retire_norep
+                        && (0..np).any(|w| {
+                            let hits = open_cy[w].iter().filter(|cy| cy.contains(&b)).count();
+                            hits > 0 && open_cy[w].len() - hits < min_open
+                        })
+                    {
+                        retire_deferrals += 1;
+                        continue;
+                    }
+                    band_uses[b as usize] = 0;
+                    if retire_repair {
+                        // Repair-slot form: masks reading `b` stay open and are
+                        // re-keyed across the write (each LGI's term containing
+                        // `b` is applied before and after), so no cycle is
+                        // closed early.
+                        for w in 0..np {
+                            keep_covered!(w, b);
+                            for cy in &open_cy[w] {
+                                if let Some(gg) = b_g57(w as u16, cy, b) {
+                                    out.push(gg);
+                                }
+                            }
+                        }
+                        for _ in 0..retire_burst {
+                            out.push(retire_gate!(b));
+                        }
+                        for w in 0..np {
+                            for cy in &open_cy[w] {
+                                if let Some(gg) = b_g57(w as u16, cy, b) {
+                                    out.push(gg);
+                                }
+                            }
+                        }
+                        retired += 1;
+                        continue;
+                    }
+                    for w in 0..np {
+                        keep_covered!(w, b);
+                        let mut idx = 0;
+                        while idx < open_cy[w].len() {
+                            if open_cy[w][idx].iter().any(|&x| x == b) {
+                                let cy = open_cy[w].remove(idx);
+                                emit_lgi_tagged(
+                                    "site10",
+                                    w as u16,
+                                    &cy,
+                                    &mut out,
+                                    &mut open_pairs[w],
+                                    &mut open_lin[w],
+                                );
+                            } else {
+                                idx += 1;
+                            }
+                        }
+                    }
+                    for _ in 0..retire_burst {
+                        out.push(retire_gate!(b));
+                    }
+                    retired += 1;
+                }
+            }
+        }};
+    }
+
     // After an open on wire `w`, bring it up to `min_open` open masks (extra to
     // the u_w+1 budget, counted in `min_open_opens`); `$extra` = band wires to
     // stay away from (the fire's wires when called mid-fire).
@@ -1305,7 +1853,8 @@ pub fn preprocess_embedded_masking_with_execution(
             let w: usize = $w;
             while open_cy[w].len() < min_open {
                 let cy = sample_fresh!(w, None, $extra);
-                emit_lgi(
+                emit_lgi_tagged(
+                    "site2",
                     w as u16,
                     &cy,
                     &mut out,
@@ -1321,9 +1870,13 @@ pub fn preprocess_embedded_masking_with_execution(
     macro_rules! filler_open {
         ($w:expr) => {{
             let w = $w;
+            if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() {
+                eprintln!("[trace] filler w={w} at out.len()={}", out.len());
+            }
             if open_cy[w].len() >= max_open {
                 let cy = open_cy[w].remove(0);
-                emit_lgi(
+                emit_lgi_tagged(
+                    "site3",
                     w as u16,
                     &cy,
                     &mut out,
@@ -1332,7 +1885,8 @@ pub fn preprocess_embedded_masking_with_execution(
                 );
             }
             let cy = sample_fresh!(w, None, &BTreeSet::new());
-            emit_lgi(
+            emit_lgi_tagged(
+                "site4",
                 w as u16,
                 &cy,
                 &mut out,
@@ -1353,10 +1907,37 @@ pub fn preprocess_embedded_masking_with_execution(
         for w in 0..np {
             for _ in 0..max_open {
                 let cy = sample_fresh!(w, None, &BTreeSet::new());
-                emit_lgi(
+                emit_lgi_tagged(
+                    "site5",
                     w as u16,
                     &cy,
                     &mut pre,
+                    &mut open_pairs[w],
+                    &mut open_lin[w],
+                );
+                open_cy[w].push(cy);
+            }
+        }
+    }
+    // Up-front masking (fringe fix 1): otherwise a data wire is first masked
+    // only when first used, so raw input copies survive deep into the compute
+    // and, with a reordered fire ancilla holding a bare operand product,
+    // recombine into a first-layer C value at a delivered boundary.
+    let premask = std::env::var("EMBEDDED_MASKING_PREMASK").is_ok_and(|v| v != "0");
+    if premask && !p.encoded_io {
+        let mut order: Vec<usize> = (0..np).collect();
+        for i in (1..order.len()).rev() {
+            let j = rng.random_range(0..=i);
+            order.swap(i, j);
+        }
+        for w in order {
+            while open_cy[w].len() < min_open {
+                let cy = sample_fresh!(w, None, &BTreeSet::new());
+                emit_lgi_tagged(
+                    "site11",
+                    w as u16,
+                    &cy,
+                    &mut out,
                     &mut open_pairs[w],
                     &mut open_lin[w],
                 );
@@ -1374,6 +1955,13 @@ pub fn preprocess_embedded_masking_with_execution(
         let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
         let mut operands: Vec<Operand> = Vec::new();
         let mut undo: Vec<XGate> = Vec::new();
+        if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() {
+            eprintln!(
+                "[trace] fire gi={gi} target={} at out.len()={}",
+                src[gi].target,
+                out.len()
+            );
+        }
         for &(w, pol) in &src[gi].ctrls {
             if p.quad_fire {
                 // Masked fire: the operand is only READ, under whatever masks it
@@ -1421,10 +2009,10 @@ pub fn preprocess_embedded_masking_with_execution(
             let mut guard = 0;
             loop {
                 for _ in 0..extra {
-                    let r1 = band[rng.random_range(0..band.len())];
-                    let mut r2 = band[rng.random_range(0..band.len())];
+                    let r1 = mask_band[rng.random_range(0..mask_band.len())];
+                    let mut r2 = mask_band[rng.random_range(0..mask_band.len())];
                     while r2 == r1 {
-                        r2 = band[rng.random_range(0..band.len())];
+                        r2 = mask_band[rng.random_range(0..mask_band.len())];
                     }
                     out.push(g57(w, r1, r2));
                     out.push(g57(w, r2, r1));
@@ -1458,13 +2046,13 @@ pub fn preprocess_embedded_masking_with_execution(
             // terms folded into `ρ` that can be impossible on a tiny band, so
             // stop rather than spin — the floor is then bounded by the band.)
             while rho.len() < min_mask && rho.len() + 2 <= r {
-                let mut r1 = band[rng.random_range(0..band.len())];
+                let mut r1 = mask_band[rng.random_range(0..mask_band.len())];
                 while rho.contains(&r1) {
-                    r1 = band[rng.random_range(0..band.len())];
+                    r1 = mask_band[rng.random_range(0..mask_band.len())];
                 }
-                let mut r2 = band[rng.random_range(0..band.len())];
+                let mut r2 = mask_band[rng.random_range(0..mask_band.len())];
                 while r2 == r1 || rho.contains(&r2) {
-                    r2 = band[rng.random_range(0..band.len())];
+                    r2 = mask_band[rng.random_range(0..mask_band.len())];
                 }
                 out.push(g57(w, r1, r2));
                 out.push(g57(w, r2, r1));
@@ -1485,6 +2073,8 @@ pub fn preprocess_embedded_masking_with_execution(
             ctrls.push((w, pol, rho));
         }
         // The fire as commuting UNITS (masked fire) or single monomials (legacy).
+        let mut fire_droppable: Vec<(usize, u16)> = Vec::new();
+        let mut fire_support: BTreeSet<u16> = BTreeSet::new();
         let mut units: Vec<Vec<XGate>> = if p.quad_fire {
             // pairs open on ANY data wire right now: an ancilla must never hold
             // one of them (see `product_fire`)
@@ -1493,26 +2083,40 @@ pub fn preprocess_embedded_masking_with_execution(
                 .flatten()
                 .flat_map(|cy| (0..cy.len() / 2).map(move |i| norm_pair(cy[2 * i], cy[2 * i + 1])))
                 .collect();
-            product_fire(
+            // Every band wire referenced by ANY currently-open mask (cycles
+            // incl. balancing terms, plus the balanced linear parts): bracket
+            // ancillas inside this set must be restored exactly.
+            let open_support: BTreeSet<u16> = open_cy
+                .iter()
+                .flatten()
+                .flatten()
+                .copied()
+                .chain(open_lin.iter().flat_map(|l| l.iter().copied()))
+                .collect();
+            let (fire_units, droppable) = product_fire(
                 src[gi].target,
                 &operands,
                 src[gi].comp,
                 &open_pair_set,
                 &open_pairs,
-                &band,
+                &anc_band,
                 np,
                 r,
                 &mut rng,
                 &mut qq_blinded,
                 &mut fire_census,
                 execution.ancilla_band_only,
-            )
+            );
+            fire_droppable = droppable;
+            fire_support = open_support;
+            fire_units
         } else {
             let mut fires = Vec::new();
             masked_fire(src[gi].target, &ctrls, src[gi].comp, &mut fires);
             fires.into_iter().map(|g| vec![g]).collect()
         };
         if p.shuffling_segments != 0 {
+            box_drifted.clear();
             let support: BTreeSet<u16> = open_cy[c].iter().flatten().copied().collect();
             current_box = Some(FireBox {
                 target: c as u16,
@@ -1524,7 +2128,8 @@ pub fn preprocess_embedded_masking_with_execution(
         }
         if open_cy[c].len() >= max_open {
             let cy = open_cy[c].remove(0);
-            emit_lgi(
+            emit_lgi_tagged(
+                "site6",
                 c as u16,
                 &cy,
                 &mut out,
@@ -1556,7 +2161,8 @@ pub fn preprocess_embedded_masking_with_execution(
                 .collect()
         };
         let cover = sample_fresh!(c, None, &fire_wires);
-        emit_lgi(
+        emit_lgi_tagged(
+            "site7",
             c as u16,
             &cover,
             &mut out,
@@ -1569,17 +2175,337 @@ pub fn preprocess_embedded_masking_with_execution(
         record_box_boundary!(true);
         fire_wires.extend(cover.iter().copied());
         fire_covers += 1;
+        // Draw the mid-fire straddle BEFORE emitting any unit so the full
+        // stability set (open masks + cover + straddle) is known for the
+        // restore-drop pass below. Same avoid set as before, so the draw
+        // distribution is unchanged.
+        let cy = sample_fresh!(c, None, &fire_wires);
+        // The mid-fire ensure_min_open on the TARGET (after the straddle,
+        // before the second unit half) also opens cycles whose wires must
+        // not drift -- and it draws AFTER this pass. Pre-draw those cycles
+        // here (same avoid set, same count) so the stability set is
+        // complete; they are emitted at their original position below.
+        let midfire_opens: Vec<Vec<u16>> = {
+            let have = open_cy[c].len() + 1; // straddle joins before the ensure
+            (have..min_open.max(have))
+                .map(|_| sample_fresh!(c, None, &fire_wires))
+                .collect()
+        };
+        // Chained brackets (RC 2026-10-07): a bracket's first gates add its
+        // product to the target WHATEVER value the ancilla holds, so the
+        // fire's brackets can share `chain_k` ancillas with no restore in
+        // between -- each ancilla accumulates its terms, and all restores run
+        // once, after the last unit, in emission order (the ancilla passes
+        // through fresh partial sums; its starting value comes back once per
+        // fire instead of once per bracket). Ancillas are drawn from band
+        // wires that no other gate of this fire reads or writes (units,
+        // cover, straddle, mid-fire opens, cover-pair undo), so every reader
+        // outside the brackets sees them unchanged; restored before the
+        // cover closes. Chained brackets never drift.
+        let mut chain_restore: Vec<Option<XGate>> = vec![None; units.len()];
+        let mut chain_ancillas: Vec<u16> = Vec::new();
+        let mut seg_tail = 0usize;
+        if chain_k > 0 && !fire_droppable.is_empty() {
+            let bracket_ancillas = |ui: usize, sa: u16| -> Vec<u16> {
+                let u = &units[ui];
+                if u.len() == 4 {
+                    vec![u[1].target]
+                } else {
+                    let fa = if u[1].target != sa {
+                        u[1].target
+                    } else {
+                        u[3].target
+                    };
+                    vec![fa, sa]
+                }
+            };
+            let anc_of: HashMap<usize, Vec<u16>> = fire_droppable
+                .iter()
+                .map(|&(ui, sa)| (ui, bracket_ancillas(ui, sa)))
+                .collect();
+            let mut reads: BTreeSet<u16> = BTreeSet::new();
+            reads.insert(c as u16);
+            for (ui, unit) in units.iter().enumerate() {
+                let own: &[u16] = anc_of.get(&ui).map_or(&[], |v| v.as_slice());
+                for g in unit {
+                    if !own.contains(&g.target) {
+                        reads.insert(g.target);
+                    }
+                    for &(w, _) in &g.ctrls {
+                        if !own.contains(&w) {
+                            reads.insert(w);
+                        }
+                    }
+                }
+            }
+            reads.extend(fire_wires.iter().copied());
+            reads.extend(cy.iter().copied());
+            reads.extend(midfire_opens.iter().flatten().copied());
+            for g in &undo {
+                reads.insert(g.target);
+                reads.extend(g.ctrls.iter().map(|&(w, _)| w));
+            }
+            let mut cands: Vec<u16> = band
+                .iter()
+                .copied()
+                .filter(|w| !reads.contains(w))
+                .collect();
+            if cands.len() >= 2 {
+                for i in (1..cands.len()).rev() {
+                    let j = rng.random_range(0..=i);
+                    cands.swap(i, j);
+                }
+                if chain_rotate && chain_len > 0 {
+                    // Rotating segments: every L brackets form one ATOMIC unit
+                    // on the next pair of fire-safe ancillas, closed by its own
+                    // restores -- displacement never leaves the segment, and
+                    // each band value serves (and is re-born) at most once per
+                    // segment, spread over every free band wire.
+                    let bracket_idx: Vec<usize> =
+                        fire_droppable.iter().map(|&(ui, _)| ui).collect();
+                    let mut layout: Vec<u16> = (0..total as u16).collect();
+                    let mut segs: Vec<Vec<XGate>> = Vec::new();
+                    let mut next = 0usize;
+                    for chunk in bracket_idx.chunks(chain_len) {
+                        let a1 = cands[next % cands.len()];
+                        let a2 = cands[(next + 1) % cands.len()];
+                        next += 2;
+                        let mut body: Vec<XGate> = Vec::new();
+                        let mut rest: Vec<XGate> = Vec::new();
+                        let mut used2 = false;
+                        for &ui in chunk {
+                            let ancs = &anc_of[&ui];
+                            for (k, &h) in ancs.iter().enumerate() {
+                                layout[h as usize] = if k == 0 { a1 } else { a2 };
+                            }
+                            used2 |= ancs.len() > 1;
+                            let mut mapped: Vec<XGate> =
+                                units[ui].iter().map(|g| remap_gate(g, &layout)).collect();
+                            for &h in ancs {
+                                layout[h as usize] = h;
+                            }
+                            rest.push(mapped.pop().expect("bracket restore"));
+                            body.extend(mapped);
+                        }
+                        body.extend(rest);
+                        segs.push(body);
+                        chain_ancillas.push(a1);
+                        if used2 {
+                            chain_ancillas.push(a2);
+                        }
+                    }
+                    let bset: HashSet<usize> = bracket_idx.into_iter().collect();
+                    let mut kept: Vec<Vec<XGate>> = std::mem::take(&mut units)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !bset.contains(i))
+                        .map(|(_, u)| u)
+                        .collect();
+                    seg_tail = segs.len();
+                    kept.extend(segs);
+                    units = kept;
+                    chain_restore = vec![None; units.len()];
+                    chained_brackets += fire_droppable.len();
+                    fire_droppable.clear();
+                } else {
+                    cands.truncate(chain_k.max(2));
+                    let mut layout: Vec<u16> = (0..total as u16).collect();
+                    for &(ui, _) in &fire_droppable {
+                        let ancs = &anc_of[&ui];
+                        let first = rng.random_range(0..cands.len());
+                        for (k, &h) in ancs.iter().enumerate() {
+                            layout[h as usize] = cands[(first + k) % cands.len()];
+                        }
+                        let mapped: Vec<XGate> =
+                            units[ui].iter().map(|g| remap_gate(g, &layout)).collect();
+                        for &h in ancs {
+                            layout[h as usize] = h;
+                        }
+                        units[ui] = mapped;
+                        chain_restore[ui] = units[ui].pop();
+                    }
+                    chained_brackets += fire_droppable.len();
+                    fire_droppable.clear();
+                    chain_ancillas = cands;
+                }
+            }
+        }
+        // Restore-drop pass (RC 2026-10-06): strip the final ancilla restore
+        // of every bracket whose band ancilla is OUTSIDE the stability set.
+        // The ancilla then drifts by the bracket's product instead of
+        // re-materialising its prior value (the celebrity-value surface);
+        // consecutive borrows differ by data QUADRATICS, never linear
+        // relations. Drifted wires are appended to the fire box's mask
+        // support so the shuffling pass never uses them as transfer
+        // partners (a pending transfer mask must stay constant to its
+        // drain).
+        // A chained ancilla is re-born once per fire however many brackets it
+        // serves: count it as one borrow (2 toggles, matching a restored
+        // bracket) rather than per toggle.
+        let seg_from = units.len() - seg_tail;
+        for (ui, unit) in units.iter().enumerate() {
+            if chain_restore[ui].is_some() || ui >= seg_from {
+                continue;
+            }
+            for g in unit {
+                if (g.target as usize) >= np {
+                    band_uses[g.target as usize] += 1;
+                }
+            }
+        }
+        for &a in &chain_ancillas {
+            band_uses[a as usize] += 2;
+        }
+        // The half-shuffle below relies on units commuting, which holds only
+        // while every bracket restores its ancilla: two units touching the
+        // SAME ancilla stop commuting once one of them drifts. A restore may
+        // therefore be dropped only when its ancilla appears in no other
+        // unit of this fire.
+        let mut band_unit_of: HashMap<u16, Option<usize>> = HashMap::new();
+        for (ui, unit) in units.iter().enumerate() {
+            for g in unit {
+                let mut touch = |wire: u16| {
+                    if (wire as usize) >= np {
+                        band_unit_of
+                            .entry(wire)
+                            .and_modify(|e| {
+                                if *e != Some(ui) {
+                                    *e = None; // shared across units
+                                }
+                            })
+                            .or_insert(Some(ui));
+                    }
+                };
+                touch(g.target);
+                for &(w, _) in &g.ctrls {
+                    touch(w);
+                }
+            }
+        }
+        let mut drifted: Vec<u16> = Vec::new();
+        // The stability set must be LIVE at drop time: the target's own
+        // ensure_min_open / overflow bookkeeping runs between the
+        // product_fire snapshot and this pass (that stale snapshot was the
+        // 2026-10-06 leak: a cycle opened on the target right after the
+        // snapshot straddled a drift). Union with the snapshot anyway.
+        let mut live_support: BTreeSet<u16> = open_cy
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .chain(open_lin.iter().flat_map(|l| l.iter().copied()))
+            .collect();
+        live_support.extend(fire_support.iter().copied());
+        // DEFAULT ON (punchlist #8, RC sign-off pending 2026-10-07): the
+        // ancilla-restore drop kills the celebrity-value rebirth surface.
+        // Stability layers, each required (violations found empirically):
+        // live open-mask support incl. open_lin, the fire cover, the
+        // straddle (drawn early), the PRE-DRAWN mid-fire min-open cycles,
+        // per-unit ancilla uniqueness (shuffled units stop commuting if a
+        // drifted ancilla is shared), and in-box-written partner exclusion
+        // in the shuffling pass. EMBEDDED_MASKING_DRIFT=0 restores the
+        // legacy always-restore behaviour.
+        let drift_enabled = std::env::var("EMBEDDED_MASKING_DRIFT").map_or(true, |v| v != "0")
+            && std::env::var("EMBEDDED_MASKING_DRIFT_ONLY").map_or(true, |w| {
+                w.split_once(':').is_some_and(|(lo, hi)| {
+                    lo.parse::<usize>().is_ok_and(|l| gi >= l)
+                        && hi.parse::<usize>().is_ok_and(|h| gi < h)
+                })
+            });
+        if straddle_census_on {
+            for &(_, h) in &fire_droppable {
+                let injections = open_cy
+                    .iter()
+                    .flatten()
+                    .filter(|cycle| cycle.contains(&h))
+                    .count()
+                    + open_lin.iter().filter(|l| l.contains(&h)).count();
+                straddle_hist.push(injections);
+                if cover.contains(&h)
+                    || cy.contains(&h)
+                    || midfire_opens.iter().flatten().any(|&mw| mw == h)
+                {
+                    straddle_firelocal += 1;
+                }
+            }
+        }
+        for &(ui, h) in &fire_droppable {
+            if !drift_enabled {
+                break;
+            }
+
+            if !live_support.contains(&h)
+                && !cover.contains(&h)
+                && !cy.contains(&h)
+                && !midfire_opens.iter().flatten().any(|&mw| mw == h)
+                && band_unit_of.get(&h) == Some(&Some(ui))
+            {
+                units[ui].pop();
+                drifted.push(h);
+            }
+        }
+        if std::env::var("EMBEDDED_MASKING_DRIFT_DEBUG").is_ok() && !drifted.is_empty() {
+            eprintln!(
+                "[drift] fire gi={gi} c={c} drifted={drifted:?} support={fire_support:?} cover={cover:?} straddle={cy:?} open_cy[c]={:?}",
+                open_cy[c]
+            );
+        }
+        box_drifted = drifted.clone();
+        if let Some(fire_box) = current_box.as_mut() {
+            if !drifted.is_empty() {
+                for (_, support) in fire_box.mask_support.iter_mut() {
+                    support.extend(drifted.iter().copied());
+                    support.sort_unstable();
+                    support.dedup();
+                }
+            }
+        }
         // straddle: fire-part-1, OPEN a fresh LGI on c (mid-fire), fire-part-2 --
         // each half emitted in an independently random order (units commute).
         let cut = ((units.len() + 1) / 2).min(units.len());
-        shuffle_units(&mut units[..cut], &mut rng);
-        shuffle_units(&mut units[cut..], &mut rng);
-        for u in &units[..cut] {
+        // Shuffle each half with its deferred restores attached (same draw
+        // sequence as `shuffle_units`), so restores follow emission order.
+        let mut paired: Vec<(Vec<XGate>, Option<XGate>)> = std::mem::take(&mut units)
+            .into_iter()
+            .zip(chain_restore)
+            .collect();
+        for range in [0..cut, cut..paired.len()] {
+            let half = &mut paired[range];
+            for i in (1..half.len()).rev() {
+                let j = rng.random_range(0..=i);
+                half.swap(i, j);
+            }
+        }
+        // Deferred restores, queued per ancilla (the restore's target). With
+        // CHAIN_LEN = L > 0 an ancilla's queue is flushed after every L of its
+        // brackets (bounded displacement); otherwise once, after the last unit.
+        let mut pending_restores: Vec<(u16, Vec<XGate>)> = Vec::new();
+        macro_rules! queue_restore {
+            ($r:expr) => {{
+                if let Some(g) = $r {
+                    let a = g.target;
+                    let slot = match pending_restores.iter().position(|(w, _)| *w == a) {
+                        Some(i) => i,
+                        None => {
+                            pending_restores.push((a, Vec::new()));
+                            pending_restores.len() - 1
+                        }
+                    };
+                    pending_restores[slot].1.push(g.clone());
+                    if chain_len > 0 && pending_restores[slot].1.len() >= chain_len {
+                        let (_, gs) = pending_restores.remove(slot);
+                        out.extend(gs);
+                    }
+                }
+            }};
+        }
+        for (u, r) in &paired[..cut] {
             out.extend_from_slice(u);
+            queue_restore!(r.as_ref());
             record_box_boundary!(false);
         }
-        let cy = sample_fresh!(c, None, &fire_wires);
-        emit_lgi(
+        emit_lgi_tagged(
+            "site8",
             c as u16,
             &cy,
             &mut out,
@@ -1588,13 +2514,33 @@ pub fn preprocess_embedded_masking_with_execution(
         );
         open_cy[c].push(cy);
         record_box_boundary!(true);
-        ensure_min_open!(c, &fire_wires);
-        for u in &units[cut..] {
+        for mcy in &midfire_opens {
+            emit_lgi_tagged(
+                "site2-mid",
+                c as u16,
+                mcy,
+                &mut out,
+                &mut open_pairs[c],
+                &mut open_lin[c],
+            );
+            open_cy[c].push(mcy.clone());
+            min_open_opens += 1;
+            record_box_boundary!(true);
+        }
+        for (u, r) in &paired[cut..] {
             out.extend_from_slice(u);
+            queue_restore!(r.as_ref());
+            record_box_boundary!(false);
+        }
+        if !pending_restores.is_empty() {
+            for (_, gs) in pending_restores.drain(..) {
+                out.extend(gs);
+            }
             record_box_boundary!(false);
         }
         // close the bracket (toggles its pairs/linear term back off)
-        emit_lgi(
+        emit_lgi_tagged(
+            "site9",
             c as u16,
             &cover,
             &mut out,
@@ -1614,6 +2560,9 @@ pub fn preprocess_embedded_masking_with_execution(
         }
         straddles_left[c] -= 1;
         placed += 1;
+        if placed * 100 >= retire_warmup_pct * m {
+            retire_sweep!();
+        }
         maybe_rerand!();
         for &d in &dependents[gi] {
             indeg[d] -= 1;
@@ -1737,6 +2686,7 @@ pub fn preprocess_embedded_masking_with_execution(
             total,
             p.shuffling_segments,
             p.shuffling_return_home,
+            p.shuffling_jit_gap,
             p.seed,
         );
         post = post
@@ -1749,6 +2699,55 @@ pub fn preprocess_embedded_masking_with_execution(
             transformed.stats,
         )
     };
+    if chain_k > 0 {
+        eprintln!("[chain] k={chain_k}: {chained_brackets} brackets chained");
+    }
+    if retire_k > 0 {
+        eprintln!(
+            "[retire] threshold={retire_k} warmup={retire_warmup_pct}% safe={retire_safe} burst={retire_burst} repair={retire_repair} pin={retire_pin_need} norep={retire_norep} preopen={retire_preopen_pct}%: {retired} band-wire retirements, {retire_redraws} mask-pair redraws, {retire_deferrals} pin deferrals, {retire_preopens} early opens"
+        );
+    }
+    if straddle_census_on && !straddle_hist.is_empty() {
+        straddle_hist.sort_unstable();
+        let n = straddle_hist.len();
+        let total: usize = straddle_hist.iter().sum();
+        let zero = straddle_hist.iter().filter(|&&x| x == 0).count();
+        eprintln!(
+            "[straddle-census] borrows={} total injections={} (avg {:.2}) zero={} ({:.0}%) med={} p90={} max={} fire-local-pinned={} ({:.0}%)",
+            n,
+            total,
+            total as f64 / n as f64,
+            zero,
+            100.0 * zero as f64 / n as f64,
+            straddle_hist[n / 2],
+            straddle_hist[(9 * n) / 10],
+            straddle_hist[n - 1],
+            straddle_firelocal,
+            100.0 * straddle_firelocal as f64 / n as f64,
+        );
+    }
+    if let Ok(path) = std::env::var("EMBEDDED_MASKING_DUMP_GATES") {
+        use std::io::Write;
+        let mut body = format!(
+            "=== call np={np} r={r} segments={} seed={}\n",
+            p.shuffling_segments, p.seed
+        );
+        for (tag, gs) in [("pre", &pre), ("main", &out), ("post", &post)] {
+            for g in gs.iter() {
+                body.push_str(&format!(
+                    "{tag} {} {} {:?}\n",
+                    g.target, g.comp as u8, g.ctrls
+                ));
+            }
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = f.write_all(body.as_bytes());
+        }
+    }
     EmbeddedMaskingOutput {
         gates: out,
         num_wires: total,

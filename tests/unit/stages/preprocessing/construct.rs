@@ -34,9 +34,9 @@ fn managed_and_raw_presets_preserve_seeded_generator_artifacts() {
     // Pinned fixture: n=6, |C|=|D|=3, s=6,
     // slice_gates=120, source_seed=41, preprocessing_seed=43, sandwich_seed=47.
     for (variant, band_only, expected) in [
-        (SandwichVariant::Classic, false, 0x71ab64ed195601f7),
-        (SandwichVariant::Classic, true, 0x404fa955da991cca),
-        (SandwichVariant::Balanced, false, 0xe28764ca880470dc),
+        (SandwichVariant::Classic, false, 0x1492faa91c3ccdf6),
+        (SandwichVariant::Classic, true, 0xfa07015544e3de02),
+        (SandwichVariant::Balanced, false, 0xcc27675ed50a51d6),
     ] {
         let source = prepare_source(6, 3, 41, None).unwrap();
         let sandwich = construct_seeded_sandwich(&source, 6, 3, 6, variant, 47);
@@ -56,9 +56,15 @@ fn managed_and_raw_presets_preserve_seeded_generator_artifacts() {
             },
             execution: EmbeddedMaskingExecution::default(),
             balanced_seed: true,
+            seed_fill_nl: 4,
         };
         let mut rng = StdRng::seed_from_u64(43 ^ 0x6AD6_E75E);
         let output = preprocess_sandwich(&sandwich, 6, 120, variant, &options, &mut rng).unwrap();
+        // Hashes re-pinned 2026-10-05 (rich band seed, punchlist #5),
+        // 2026-10-06 (feistel slice guard default, punchlist #7), and
+        // 2026-10-06b (8-bracket ancilla-order randomisation draws).
+        // Hashes re-pinned through the 2026-10-05/07 preprocessing work;
+        // latest: burst hot-targeting (punchlist #8, hot leg).
         assert_eq!(structural_digest(&output.circuit), expected, "{variant:?}");
         verify_payload(&sandwich, &output.circuit, 6, output.guarded, variant, 41);
     }
@@ -110,7 +116,7 @@ fn managed_preprocessing_shuffling_preserves_classic_and_balanced_ports() {
         for variant in [SandwichVariant::Classic, SandwichVariant::Balanced] {
             let source = prepare_source(n, 3, 41, None).unwrap();
             let sandwich = construct_seeded_sandwich(&source, n, 3, 6, variant, 47);
-            let make_output = |segments| {
+            let make_output = |segments, return_home| {
                 let options = PreprocessingParams::EmbeddedMasking {
                     params: EmbeddedMaskingParams {
                         // Enough band roles to exercise actual transfers even
@@ -118,7 +124,7 @@ fn managed_preprocessing_shuffling_preserves_classic_and_balanced_ports() {
                         // and the stage itself derives its values from data.
                         r: 32,
                         shuffling_segments: segments,
-                        shuffling_return_home: true,
+                        shuffling_return_home: return_home,
                         ..EmbeddedMaskingParams::managed_tdp(seed, n)
                     },
                     execution: EmbeddedMaskingExecution {
@@ -126,77 +132,82 @@ fn managed_preprocessing_shuffling_preserves_classic_and_balanced_ports() {
                         ..Default::default()
                     },
                     balanced_seed: true,
+                    seed_fill_nl: 4,
                 };
                 let mut rng = StdRng::seed_from_u64(seed ^ 0x6AD6_E75E);
                 preprocess_sandwich(&sandwich, n, 120, variant, &options, &mut rng).unwrap()
             };
-            let baseline = make_output(0);
-            let shuffled = make_output(8);
-            let baseline_report = baseline.embedded_masking_report.as_ref().unwrap();
-            let shuffled_report = shuffled.embedded_masking_report.as_ref().unwrap();
-            assert!(!baseline_report.hot_intervals.is_empty());
-            assert_eq!(shuffled_report.hot_intervals, baseline_report.hot_intervals);
-            assert_eq!(
-                shuffled_report.original_compute_gates,
-                baseline_report.compute_gates
-            );
-            assert!(shuffled_report.compute_gates > shuffled_report.original_compute_gates);
-            assert!(
-                shuffled_report
-                    .hot_intervals
-                    .iter()
-                    .any(|&(_, _, end)| end == shuffled_report.original_compute_gates)
-            );
-            assert!(shuffled.guarded);
-            assert!(shuffled.circuit.gates.len() > baseline.circuit.gates.len());
-            let (from, to, reverse_checked) = verify_payload(
-                &sandwich,
-                &shuffled.circuit,
-                n,
-                shuffled.guarded,
-                variant,
-                seed,
-            );
-            assert_eq!(reverse_checked, variant == SandwichVariant::Classic);
+            let baseline = make_output(0, true);
+            // Per-box return home and persistent migration (tail-restored
+            // ports) must both preserve every port contract below.
+            for return_home in [true, false] {
+                let shuffled = make_output(8, return_home);
+                let baseline_report = baseline.embedded_masking_report.as_ref().unwrap();
+                let shuffled_report = shuffled.embedded_masking_report.as_ref().unwrap();
+                assert!(!baseline_report.hot_intervals.is_empty());
+                assert_eq!(shuffled_report.hot_intervals, baseline_report.hot_intervals);
+                assert_eq!(
+                    shuffled_report.original_compute_gates,
+                    baseline_report.compute_gates
+                );
+                assert!(shuffled_report.compute_gates > shuffled_report.original_compute_gates);
+                assert!(
+                    shuffled_report
+                        .hot_intervals
+                        .iter()
+                        .any(|&(_, _, end)| end == shuffled_report.original_compute_gates)
+                );
+                assert!(shuffled.guarded);
+                assert!(shuffled.circuit.gates.len() > baseline.circuit.gates.len());
+                let (from, to, reverse_checked) = verify_payload(
+                    &sandwich,
+                    &shuffled.circuit,
+                    n,
+                    shuffled.guarded,
+                    variant,
+                    seed,
+                );
+                assert_eq!(reverse_checked, variant == SandwichVariant::Classic);
 
-            // Exhaust all 2^(2n) sandwich inputs, including the nonzero upper
-            // data half, with the auxiliary band on its required zero slice.
-            for first_input in (0..1usize << sandwich.num_wires).step_by(256) {
-                let initial: Vec<[u64; 4]> = (0..shuffled.circuit.num_wires)
-                    .map(|wire| {
-                        std::array::from_fn(|batch| {
-                            (0..64).fold(0, |lanes, lane| {
-                                let input = first_input + batch * 64 + lane;
-                                lanes | (((input >> wire) & 1) as u64) << lane
+                // Exhaust all 2^(2n) sandwich inputs, including the nonzero upper
+                // data half, with the auxiliary band on its required zero slice.
+                for first_input in (0..1usize << sandwich.num_wires).step_by(256) {
+                    let initial: Vec<[u64; 4]> = (0..shuffled.circuit.num_wires)
+                        .map(|wire| {
+                            std::array::from_fn(|batch| {
+                                (0..64).fold(0, |lanes, lane| {
+                                    let input = first_input + batch * 64 + lane;
+                                    lanes | (((input >> wire) & 1) as u64) << lane
+                                })
                             })
                         })
-                    })
-                    .collect();
-                let mut expected = initial.clone();
-                let mut before = initial.clone();
-                let mut actual = initial.clone();
-                eval_lanes4(&sandwich.gates, &mut expected);
-                eval_lanes4(&baseline.circuit.gates, &mut before);
-                eval_lanes4(&shuffled.circuit.gates, &mut actual);
-                assert_eq!(
-                    actual[from..to],
-                    expected[from..to],
-                    "source payload seed={seed} {variant:?}"
-                );
-                assert_eq!(
-                    actual[from..to],
-                    before[from..to],
-                    "baseline payload seed={seed} {variant:?}"
-                );
-                eval_lanes4(shuffled.circuit.gates.iter().rev(), &mut actual);
-                assert_eq!(actual, initial, "full inverse seed={seed} {variant:?}");
+                        .collect();
+                    let mut expected = initial.clone();
+                    let mut before = initial.clone();
+                    let mut actual = initial.clone();
+                    eval_lanes4(&sandwich.gates, &mut expected);
+                    eval_lanes4(&baseline.circuit.gates, &mut before);
+                    eval_lanes4(&shuffled.circuit.gates, &mut actual);
+                    assert_eq!(
+                        actual[from..to],
+                        expected[from..to],
+                        "source payload seed={seed} {variant:?}"
+                    );
+                    assert_eq!(
+                        actual[from..to],
+                        before[from..to],
+                        "baseline payload seed={seed} {variant:?}"
+                    );
+                    eval_lanes4(shuffled.circuit.gates.iter().rev(), &mut actual);
+                    assert_eq!(actual, initial, "full inverse seed={seed} {variant:?}");
+                }
             }
         }
     }
 }
 
 #[test]
-fn managed_preprocessing_rejects_carried_data_layout() {
+fn managed_preprocessing_accepts_persistent_migration() {
     let source = prepare_source(6, 3, 41, None).unwrap();
     let sandwich = construct_seeded_sandwich(&source, 6, 3, 6, SandwichVariant::Classic, 47);
     let options = PreprocessingParams::EmbeddedMasking {
@@ -207,6 +218,7 @@ fn managed_preprocessing_rejects_carried_data_layout() {
         },
         execution: EmbeddedMaskingExecution::default(),
         balanced_seed: true,
+        seed_fill_nl: 4,
     };
     let mut rng = StdRng::seed_from_u64(43 ^ 0x6AD6_E75E);
     let result = preprocess_sandwich(
@@ -217,8 +229,11 @@ fn managed_preprocessing_rejects_carried_data_layout() {
         &options,
         &mut rng,
     );
+    // Persistent migration (RC 2026-10-05) is now accepted: the stream tail
+    // swaps the data roles back to their physical ports, so the managed
+    // stage's fixed-port promise holds without per-box return home.
     assert!(
-        result.is_err(),
-        "the managed stage promises fixed physical data ports"
+        result.is_ok(),
+        "persistent carrier migration must be accepted"
     );
 }

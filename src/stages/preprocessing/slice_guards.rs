@@ -209,6 +209,193 @@ fn slice_preblock_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut 
     true
 }
 
+/// Punchlist #7 (RC 2026-10-06): the accumulate-and-inject slice guard.
+/// Same zero-slice contract as [`try_slice_zero_block_dims`] — identity
+/// exactly on the zero slice, every nonzero slice perturbs the data, targets
+/// restricted to the junk half — with NO gate wider than two controls, so
+/// the whole block lives in the vocabulary db_mixing digests.
+///
+/// Three gate populations:
+/// - PROLOGUE (first ~third, at least one gate per band wire, balanced):
+///   the original guard's width-<=2 shapes, `d ^= s` and `d ^= d_c & s`
+///   with `s` a band slice control. Dead on the zero slice; gives every
+///   single-hot band wire a direct data disturbance.
+/// - ACCUMULATE / UNCOMPUTE: `t ^= d_i & d_j` with `t` the live round's
+///   accumulator band wire and `d_i, d_j` drawn from the data wires the
+///   guard never writes (the complement of the target range), so the
+///   closing uncompute cancels exactly. Fires on every slice; only dirties
+///   band junk, which the port contract treats as junk anyway.
+/// - INJECTIONS: `d ^= t & s` with `t` a dirty accumulator and `s` a
+///   TRIGGER — a band wire clean at that point (never written, or already
+///   uncomputed). On the zero slice every trigger still holds its port 0,
+///   so the data is untouched; on nonzero slices the injection deposits
+///   degree-3 data-by-data products gated by the band — the same algebraic
+///   degree the width-3 quads used to provide.
+///
+/// Round discipline: disjoint accumulator sets per round, each round fully
+/// uncomputed before the next begins, triggers drawn outside the live
+/// round's accumulators. Rounds need at least three band wires; narrower
+/// bands fall back to an all-prologue block (still a valid guard).
+pub(crate) fn try_slice_zero_feistel_dims(
+    n: usize,
+    target_lo: usize,
+    target_hi: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> Result<CnotCircuit, String> {
+    if n < 3 {
+        return Err(format!("slice feistel guard requires n >= 3, got {n}"));
+    }
+    if !(3..=n).contains(&target_hi) || target_lo >= target_hi {
+        return Err(format!(
+            "slice guard targets need 3 <= target_hi <= {n} and target_lo < target_hi, \
+             got [{target_lo}, {target_hi})"
+        ));
+    }
+    let total = n
+        .checked_add(nondata)
+        .ok_or_else(|| "slice guard wire-count overflow".to_string())?;
+    if total > u16::MAX as usize {
+        return Err(format!(
+            "slice guard needs {total} wires; capacity is {}",
+            u16::MAX
+        ));
+    }
+    if gate_count < nondata {
+        return Err(format!(
+            "every non-data wire must be read: needs at least {nondata} gates, got {gate_count}"
+        ));
+    }
+    // Accumulator sources: data wires the guard never writes.
+    let sources: Vec<u16> = (0..n)
+        .filter(|w| !(target_lo..target_hi).contains(w))
+        .map(|w| w as u16)
+        .collect();
+    let acc_size = (nondata / 8).clamp(2, 16);
+    let rounds_possible = sources.len() >= 2 && nondata > acc_size;
+
+    for _ in 0..1000 {
+        // Budget: ~a third prologue (floored at one gate per band wire),
+        // remainder in accumulate/inject/uncompute rounds; any unroundable
+        // remainder tops up the prologue so the total is exact.
+        let mut prologue = (gate_count / 3).max(nondata).min(gate_count);
+        let mut rounds_budget = gate_count - prologue;
+        if !rounds_possible {
+            prologue = gate_count;
+            rounds_budget = 0;
+        }
+        let round_floor = 2 * acc_size + 8;
+        prologue += rounds_budget % round_floor.max(1);
+        // (exact accounting happens below; the modulo just reduces leftovers)
+        let mut gates: Vec<XGate> = Vec::with_capacity(gate_count);
+
+        // --- rounds plan first so the prologue can absorb the remainder ---
+        let mut planned: Vec<(Vec<u16>, usize)> = Vec::new(); // (acc set, injections)
+        let mut left = gate_count - prologue;
+        let mut band_order: Vec<u16> = ((n as u16)..(total as u16)).collect();
+        while left >= round_floor {
+            band_order.shuffle(rng);
+            let acc: Vec<u16> = band_order[..acc_size].to_vec();
+            let inj = (left - 2 * acc_size).min(6 * acc_size);
+            planned.push((acc, inj));
+            left -= 2 * acc_size + inj;
+        }
+        prologue += left;
+
+        // --- prologue: balanced slice-control coverage, width <= 2 ---
+        let mut slice_ctrl: Vec<usize> = (0..prologue).map(|i| n + i % nondata).collect();
+        slice_ctrl.shuffle(rng);
+        for (i, &w) in slice_ctrl.iter().enumerate() {
+            let target = rng.random_range(target_lo..target_hi);
+            if i % 3 == 0 {
+                gates.push(XGate::cnot(target as u16, w as u16));
+            } else {
+                let c = random_wire_except(n, &[target], rng);
+                gates.push(
+                    XGate::conj(target as u16, [(c as u16, true), (w as u16, true)])
+                        .expect("guard wires are distinct"),
+                );
+            }
+        }
+
+        // --- rounds ---
+        for (acc, inj) in &planned {
+            let acc_set: std::collections::HashSet<u16> = acc.iter().copied().collect();
+            let mut acc_gates: Vec<XGate> = Vec::with_capacity(acc.len());
+            for &t in acc {
+                let i1 = sources[rng.random_range(0..sources.len())];
+                let i2 = loop {
+                    let c = sources[rng.random_range(0..sources.len())];
+                    if c != i1 {
+                        break c;
+                    }
+                };
+                acc_gates
+                    .push(XGate::conj(t, [(i1, true), (i2, true)]).expect("distinct acc wires"));
+            }
+            gates.extend(acc_gates.iter().cloned());
+            for _ in 0..*inj {
+                let t = acc[rng.random_range(0..acc.len())];
+                let s = loop {
+                    let w = rng.random_range(n..total) as u16;
+                    if !acc_set.contains(&w) {
+                        break w;
+                    }
+                };
+                let target = rng.random_range(target_lo..target_hi);
+                gates.push(
+                    XGate::conj(target as u16, [(t, true), (s, true)])
+                        .expect("injection wires are distinct"),
+                );
+            }
+            // Uncompute: replay the same accumulator gates (sources are
+            // never written by the guard, so the XORed terms cancel exactly
+            // and the accumulators return to their port values).
+            gates.extend(acc_gates.into_iter().rev());
+        }
+        debug_assert_eq!(gates.len(), gate_count);
+
+        let ok = if nondata + n <= 20 {
+            slice_preblock_fixes_only_zero_slice(&gates, n, nondata)
+        } else {
+            slice_preblock_spot_check(&gates, n, total, rng)
+        };
+        if ok {
+            return Ok(CnotCircuit {
+                gates,
+                num_wires: total,
+            });
+        }
+    }
+    Err(format!(
+        "no feistel slice guard with every nonzero slice disturbed found at n={n} \
+         band={nondata} gates={gate_count} in 1000 draws"
+    ))
+}
+
+/// Accumulate-and-inject counterpart of [`slice_zero_junk_guard_dims`].
+pub fn slice_zero_feistel_guard_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    try_slice_zero_feistel_dims(n, 0, n / 2, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Accumulate-and-inject counterpart of [`slice_zero_junk_guard_dims_high`].
+pub fn slice_zero_feistel_guard_dims_high(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    try_slice_zero_feistel_dims(n, n / 2, n, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
 /// Number of logical slice probes per auxiliary wire in managed TDP.
 pub const SLICE_ZERO_CCNOT_GATES_PER_WIRE: usize = 10;
 
