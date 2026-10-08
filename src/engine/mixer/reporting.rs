@@ -5,12 +5,6 @@ impl Mixer {
     // ---- verification, metrics, reporting ----
 
     pub fn global_check(&mut self) {
-        assert_eq!(
-            self.indexed_count,
-            self.arena.len(),
-            "merge index drifted from arena (move {})",
-            self.moves_done
-        );
         // 4 batches x 64 lanes = 256 samples, carried together as [u64; 4] per
         // wire so the circuit is walked ONCE instead of four times. The arena
         // leg is a dependent-load chase over the node list, so it was four
@@ -214,31 +208,13 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[circuit_mixer] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} g57only={}/{} sled={}/{} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[circuit_mixer] mv={} size={} comp={} g57={} shaped={} polf={:.3} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} sled={}/{} bled={} | twist tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
-            self.params.target_size,
             self.remaining_g57(),
             g57c.opp_pol,
             g57c.shaped,
             g57c.pol_flipped(),
-            c.merges_cancel,
-            c.merges_xfuse,
-            c.merges_drop,
-            c.merges_subsume,
-            c.merges_absorb,
-            c.merges_sibling,
-            c.merges_cross_origin,
-            c.tabu_blocked,
-            c.merge_no_partner,
-            c.merge_wall_blocked,
-            c.merge_too_far,
-            c.merge_not_adjacent,
-            c.undos,
-            c.undo_dead,
-            c.undo_tabu,
-            c.undo_gather_miss,
-            self.journal.len(),
             self.params.p_db,
             c.db_slot2_hits,
             c.db_slot2_rounds,
@@ -255,18 +231,9 @@ impl Mixer {
             c.db_span_skips,
             c.db_build_aborts,
             c.db_identity_skips,
-            c.db_g57_hits,
-            c.db_g57_rounds,
             self.stable_led_added,
             self.stable_led_removed,
             self.band_led,
-            c.cross_r1,
-            c.cross_r2,
-            c.cross_r3,
-            c.presplits,
-            c.fresh_splits,
-            c.unsubs,
-            c.inserts,
             c.twist_negs,
             c.twist_swaps,
             c.twist_cnots,
@@ -278,10 +245,6 @@ impl Mixer {
             c.shuffle_moved,
             c.shuffle_steps,
             c.shuffle_ns / 1_000_000,
-            c.declined,
-            c.blocked_width,
-            c.blocked_deadlock,
-            c.boundary,
             c.floats,
             c.float_steps,
             c.scatters,

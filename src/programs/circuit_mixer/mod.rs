@@ -240,8 +240,8 @@ pub fn run(matches: clap::ArgMatches) {
             "--profile needs R1 >= 1 and 0 < R2 <= R1"
         );
         assert!(
-            args.target_size.is_none() && args.size_hi == 0 && args.size_lo == 0,
-            "--profile is the sole size authority: remove --target-size / --size-hi / --size-lo (make up your mind)"
+            args.size_hi == 0 && args.size_lo == 0,
+            "--profile is the sole size authority: remove --size-hi / --size-lo (make up your mind)"
         );
         assert!(
             args.p_mix < 0.0,
@@ -267,22 +267,10 @@ pub fn run(matches: clap::ArgMatches) {
     let num_wires = file_wires.max(max_wire(&gates) as usize + 1);
     let input_len = gates.len();
     let comp0 = gates.iter().filter(|g| g.comp).count();
-    let target = args.target_size.unwrap_or(input_len);
     if args.resume.is_none() {
         println!(
-            "[circuit_mixer] input: {} gates ({} g57 fossils), {} wires; k_max={} split_damp={} split_base={} dir_p={} dir_q={} target={} temp={} moves={} seed={}",
-            input_len,
-            comp0,
-            num_wires,
-            args.k_max,
-            args.split_damp,
-            args.split_base,
-            args.dir_p,
-            args.dir_q,
-            target,
-            args.temp.unwrap_or((target as f64 / 100.0).max(64.0)),
-            args.moves,
-            args.seed
+            "[circuit_mixer] input: {} gates ({} g57 fossils), {} wires; k_max={} dir_q={} moves={} seed={}",
+            input_len, comp0, num_wires, args.k_max, args.dir_q, args.moves, args.seed
         );
     }
     if args.p_pair > 0.0 {
@@ -303,12 +291,6 @@ pub fn run(matches: clap::ArgMatches) {
             args.p_bridge, args.bridge_min_span, args.bridge_max_span, args.bridge_max_colliders
         );
     }
-    if args.p_twist > 0.0 {
-        println!(
-            "[circuit_mixer] first-class twist rounds ON: p_twist={} (w-twist-* weights serve as type ratios)",
-            args.p_twist
-        );
-    }
     if args.shuffle_rate > 0.0 {
         println!(
             "[circuit_mixer] global re-randomisation ON: shuffle_rate={} (per-round p = {}/|circuit|, i.e. one expected whole-circuit reshuffle per |circuit|/{} rounds; semantics- and size-preserving)",
@@ -319,7 +301,7 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.p_twist > 0.0 {
         println!(
-            "[circuit_mixer] twists ON (swap family): p_twist={} twist_min_len={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips) (w_twist_* retired/ignored)",
+            "[circuit_mixer] twists ON (swap family): p_twist={} twist_min_len={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips)",
             args.p_twist, args.twist_min_len, args.twist_neg_p
         );
     }
@@ -344,16 +326,10 @@ pub fn run(matches: clap::ArgMatches) {
             args.p_mix
         );
     }
-    if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
+    if args.p_db > 0.0 {
         println!(
-            "[circuit_mixer] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} w_window={} w_pool={} verify={} (FROZEN_DB_DIR required)",
-            args.p_db,
-            args.db_mode,
-            args.p_comp,
-            args.p_any,
-            args.w_window,
-            args.w_pool,
-            !args.no_db_verify
+            "[circuit_mixer] DB ON: p_db(slot2)={} db_mode={} w_window={} w_pool={} verify={} (FROZEN_DB_DIR required)",
+            args.p_db, args.db_mode, args.w_window, args.w_pool, !args.no_db_verify
         );
         // Print what each mode will ACTUALLY use, resolved by the SAME code the
         // mixer runs (MixParams::db_knobs) rather than a second copy of the
@@ -389,12 +365,6 @@ pub fn run(matches: clap::ArgMatches) {
             kc.p_mingen,
             kc.prefixes
         );
-        if args.p_comp_g57 > 0.0 {
-            println!(
-                "[circuit_mixer] g57-only COMP attempts: p={} starting at s_db_g57={}",
-                args.p_comp_g57, args.s_db_g57
-            );
-        }
     }
     if args.db_advance {
         println!(
@@ -404,18 +374,13 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.gen_target > 0 {
         println!(
-            "[circuit_mixer] generation targeting ON: gen_target={} p_mingen={} pool_k={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} split_rule={}",
+            "[circuit_mixer] generation targeting ON: gen_target={} p_mingen={} pool_k={} gen_rescan={} gen_stop_frac={} twist_cov_stop={}",
             args.gen_target,
             args.p_mingen,
             args.pool_k,
             args.gen_rescan,
             args.gen_stop_frac,
             args.twist_cov_stop,
-            if args.gen_split_inherit {
-                "inherit"
-            } else {
-                "ratchet(+1)"
-            }
         );
         if args.canary_theta > 0.0 {
             println!(
@@ -433,11 +398,7 @@ pub fn run(matches: clap::ArgMatches) {
     );
     let params = MixParams {
         k_max: args.k_max,
-        split_damp: args.split_damp,
-        split_base: args.split_base,
-        dir_p: args.dir_p,
         dir_q: args.dir_q,
-        target_size: target,
         mix_pay_random: args.mix_pay_random,
         prof_n: profile.map(|(n, _)| n).unwrap_or([0.0; 3]),
         prof_r: profile.map(|(_, r)| r).unwrap_or([0.0; 2]),
@@ -446,26 +407,12 @@ pub fn run(matches: clap::ArgMatches) {
         prof_dp_max: args.prof_dp_max,
         prof_ewma: args.prof_ewma,
         prof_ki: args.prof_ki,
-        temp: args.temp.unwrap_or(0.0),
         moves: args.moves,
-        merge_reach: args.merge_reach,
-        journal_len: args.journal_len,
         // Piecewise-round knobs are set per piece by the driver, never here.
         eff_budget: 0.0,
-        undo_frac: args.undo_frac,
-        tabu_moves: args.tabu_moves,
-        w_cross: args.w_cross,
-        w_fresh: args.w_fresh,
-        w_unsub: args.w_unsub,
-        w_insert: args.w_insert,
-        w_twist_neg: args.w_twist_neg,
-        w_twist_swap: args.w_twist_swap,
-        w_twist_cnot: args.w_twist_cnot,
         twist_neg_p: args.twist_neg_p,
         twist_g57: args.twist_g57,
         twist_min_len: args.twist_min_len,
-        p_comp: args.p_comp,
-        p_any: args.p_any,
         db_mode: crate::stages::db_mixing::replacement::DbMode::parse(&args.db_mode)
             .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any|stable|stable-grow|stable-ledger|same|band-ledger)", args.db_mode)),
         p_db: args.p_db,
@@ -504,13 +451,10 @@ pub fn run(matches: clap::ArgMatches) {
         ancestors: args.ancestors,
         anc_samples: args.anc_samples,
         anc_sample_seed: args.anc_sample_seed,
-        p_comp_g57: args.p_comp_g57,
-        contract_ceiling: args.contract_ceiling,
         size_hi: args.size_hi,
         size_lo: args.size_lo,
         comp_release_eps: args.comp_release_eps,
         comp_release_window: args.comp_release_window,
-        s_db_g57: args.s_db_g57,
         gen_target: args.gen_target,
         p_mingen: args.p_mingen,
         pool_k: args.pool_k,
@@ -520,15 +464,11 @@ pub fn run(matches: clap::ArgMatches) {
         litter_samples: args.litter_samples,
         twist_place_tries: args.twist_place_tries,
         gen_rescan: args.gen_rescan,
-        gen_split_inherit: args.gen_split_inherit,
         gen_median_low: args.gen_median_low,
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
         gen_snap_every: args.gen_snap_every,
         snap_every_moves: args.snap_every_moves,
-        p_mincross: args.p_mincross,
-        cross_pool_k: args.cross_pool_k,
-        cross_rescan: args.cross_rescan,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -566,7 +506,7 @@ pub fn run(matches: clap::ArgMatches) {
         };
         if args.resume.is_some() {
             refuse(
-                "cannot resume a state file: the crossing walk stays serial, drop --parallel-pieces/--parallel-target-piece-gates",
+                "cannot resume a state file: a resumed run stays serial, drop --parallel-pieces/--parallel-target-piece-gates",
             );
         }
         if matches!(params.db_mode, DbMode::StableLedger | DbMode::BandLedger) {
@@ -629,7 +569,7 @@ pub fn run(matches: clap::ArgMatches) {
     };
     let mut mixer = match &args.resume {
         Some(path) => {
-            let db = if params.p_comp > 0.0 || params.p_db > 0.0 || params.p_any > 0.0 {
+            let db = if params.p_db > 0.0 || params.p_bridge > 0.0 {
                 crate::database::frozen::FrozenDb::from_env()
             } else {
                 crate::database::frozen::FrozenDb::empty()

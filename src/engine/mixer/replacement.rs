@@ -22,22 +22,6 @@ impl Mixer {
     // round unconsumed (same id, same arena stamp — a reused id fails the
     // stamp check), the seed missed: bump its counter so the tier machinery
     // can graduate it to the paid channel or retire it as unreachable.
-    /// A COMP-DB attempt that may be drawn as g57-only (see `p_comp_g57`).
-    pub(super) fn db_attempt_comp(&mut self) -> bool {
-        let g57 = self.params.p_comp_g57 > 0.0
-            && self.rng.random_bool(self.params.p_comp_g57.clamp(0.0, 1.0));
-        self.db_g57_only = g57;
-        if g57 {
-            self.counters.db_g57_rounds += 1;
-        }
-        let hit = self.db_attempt(DbMode::Compressing);
-        if g57 && hit {
-            self.counters.db_g57_hits += 1;
-        }
-        self.db_g57_only = false;
-        hit
-    }
-
     pub(super) fn db_attempt(&mut self, mode: DbMode) -> bool {
         // stable-ledger: pick between the two stable selections by the flow
         // ledger — ±1 while shrink budget remains (removed < added + slack),
@@ -170,11 +154,6 @@ impl Mixer {
         // Prefix descent always starts at the top of the range — the descent
         // itself visits every shorter length, so sampling a shorter start
         // would only duplicate coverage.
-        let wmax = if self.db_g57_only {
-            self.params.s_db_g57.max(wmin)
-        } else {
-            wmax
-        };
         let descend = self.active_prefixes();
         let len = if geo == DbSample::Pair {
             // A pair window is always the seed plus its partner; drawing a
@@ -659,7 +638,6 @@ impl Mixer {
             self.counters.litter_full_spliced += 1;
         }
         for &id in ids {
-            self.index_remove(id);
             self.arena.unlink(id);
             self.arena.free_node(id);
         }
@@ -691,13 +669,11 @@ impl Mixer {
         let mut placed: Vec<u32> = Vec::with_capacity(m);
         for (i, gate) in replacement.into_iter().enumerate() {
             c = self.arena.insert_after(c, gate);
-            self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
             self.set_meta(
                 c,
                 Meta {
                     origin,
-                    event: 0,
                     dir: d,
                     dgen,
                     litter,

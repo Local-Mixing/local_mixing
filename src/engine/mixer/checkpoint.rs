@@ -15,9 +15,6 @@ impl MixCounters {
             self.db_hard_rounds,
             self.db_hard_added,
             self.db_identity_skips,
-            self.merges_absorb,
-            self.db_g57_rounds,
-            self.db_g57_hits,
             self.db_slot2_rounds,
             self.db_slot2_hits,
             self.db_slot2_added,
@@ -33,21 +30,6 @@ impl MixCounters {
             self.litter_distinct_sum,
             self.litter_full_spliced,
             self.gen_misses,
-            self.merges_cancel,
-            self.merges_xfuse,
-            self.merges_drop,
-            self.merges_subsume,
-            self.merges_sibling,
-            self.merges_cross_origin,
-            self.tabu_blocked,
-            self.merge_no_partner,
-            self.merge_wall_blocked,
-            self.merge_too_far,
-            self.merge_not_adjacent,
-            self.undos,
-            self.undo_dead,
-            self.undo_tabu,
-            self.undo_gather_miss,
             self.db_comp_hits,
             self.db_comp_misses,
             self.db_agn_hits,
@@ -59,13 +41,6 @@ impl MixCounters {
             self.db_degree_skips,
             self.db_span_skips,
             self.db_build_aborts,
-            self.cross_r1,
-            self.cross_r2,
-            self.cross_r3,
-            self.presplits,
-            self.fresh_splits,
-            self.unsubs,
-            self.inserts,
             self.twist_negs,
             self.twist_swaps,
             self.twist_cnots,
@@ -73,20 +48,14 @@ impl MixCounters {
             self.twist_case_splits,
             self.twist_span,
             self.twist_skips,
-            self.blocked_width,
-            self.blocked_deadlock,
-            self.declined,
-            self.boundary,
             self.floats,
             self.float_steps,
             self.scatters,
             self.scatter_steps,
-            self.dropped_neverfire,
             // Trailing fields are parsed with a zero default so pre-existing
             // .state files stay loadable; append here, never insert.
             self.tg_consumed,
             self.tg_emitted,
-            self.cross_pool_shots,
         ];
         vals.iter()
             .map(|v| v.to_string())
@@ -110,9 +79,6 @@ impl MixCounters {
             db_hard_rounds: next_u64(&mut it)?,
             db_hard_added: next_u64(&mut it)?,
             db_identity_skips: next_u64(&mut it)?,
-            merges_absorb: next_u64(&mut it)?,
-            db_g57_rounds: next_u64(&mut it)?,
-            db_g57_hits: next_u64(&mut it)?,
             db_slot2_rounds: next_u64(&mut it)?,
             db_slot2_hits: next_u64(&mut it)?,
             db_slot2_added: next_u64(&mut it)?,
@@ -128,21 +94,6 @@ impl MixCounters {
             litter_distinct_sum: next_u64(&mut it)?,
             litter_full_spliced: next_u64(&mut it)?,
             gen_misses: next_u64(&mut it)?,
-            merges_cancel: next_u64(&mut it)?,
-            merges_xfuse: next_u64(&mut it)?,
-            merges_drop: next_u64(&mut it)?,
-            merges_subsume: next_u64(&mut it)?,
-            merges_sibling: next_u64(&mut it)?,
-            merges_cross_origin: next_u64(&mut it)?,
-            tabu_blocked: next_u64(&mut it)?,
-            merge_no_partner: next_u64(&mut it)?,
-            merge_wall_blocked: next_u64(&mut it)?,
-            merge_too_far: next_u64(&mut it)?,
-            merge_not_adjacent: next_u64(&mut it)?,
-            undos: next_u64(&mut it)?,
-            undo_dead: next_u64(&mut it)?,
-            undo_tabu: next_u64(&mut it)?,
-            undo_gather_miss: next_u64(&mut it)?,
             db_comp_hits: next_u64(&mut it)?,
             db_comp_misses: next_u64(&mut it)?,
             db_agn_hits: next_u64(&mut it)?,
@@ -154,13 +105,6 @@ impl MixCounters {
             db_degree_skips: next_u64(&mut it)?,
             db_span_skips: next_u64(&mut it)?,
             db_build_aborts: next_u64(&mut it)?,
-            cross_r1: next_u64(&mut it)?,
-            cross_r2: next_u64(&mut it)?,
-            cross_r3: next_u64(&mut it)?,
-            presplits: next_u64(&mut it)?,
-            fresh_splits: next_u64(&mut it)?,
-            unsubs: next_u64(&mut it)?,
-            inserts: next_u64(&mut it)?,
             twist_negs: next_u64(&mut it)?,
             twist_swaps: next_u64(&mut it)?,
             twist_cnots: next_u64(&mut it)?,
@@ -168,20 +112,14 @@ impl MixCounters {
             twist_case_splits: next_u64(&mut it)?,
             twist_span: next_u64(&mut it)?,
             twist_skips: next_u64(&mut it)?,
-            blocked_width: next_u64(&mut it)?,
-            blocked_deadlock: next_u64(&mut it)?,
-            declined: next_u64(&mut it)?,
-            boundary: next_u64(&mut it)?,
             floats: next_u64(&mut it)?,
             float_steps: next_u64(&mut it)?,
             scatters: next_u64(&mut it)?,
             scatter_steps: next_u64(&mut it)?,
-            dropped_neverfire: next_u64(&mut it)?,
             // Appended after the twist-g57 work landed: absent in older state
             // files, so they default to zero rather than failing the resume.
             tg_consumed: next_u64(&mut it).unwrap_or(0),
             tg_emitted: next_u64(&mut it).unwrap_or(0),
-            cross_pool_shots: next_u64(&mut it).unwrap_or(0),
             tg_solves: 0,
             tg_solve_ns: 0,
             tg_slides: 0,
@@ -235,9 +173,13 @@ impl MixCounters {
 // v2 (2026-08-05): the split-stage scalar line and the staps (canary) section.
 // v3 (2026-10-08): the curated-store counters left the counters line.
 // v4 (2026-10-08): the split stage is historic: the split scalar line, the
-// staps section and the eight split counters are gone. Older states are
-// refused; resume them with the archive branch ran/archive/curated-and-postmix.
-pub const STATE_VERSION: u32 = 4;
+// staps section and the eight split counters are gone.
+// v5 (2026-10-08): the crossing walk (old stage 5) is historic: the merge,
+// undo, cross and g57-only counters, the next_event scalar, the per-gate
+// event field and the tabu and journal sections are gone.
+// Older states are refused; resume them with the archive branch
+// ran/archive/curated-and-postmix.
+pub const STATE_VERSION: u32 = 5;
 
 impl Mixer {
     /// Write everything a resumed run needs and the circuit file does not
@@ -247,13 +189,12 @@ impl Mixer {
     /// Three things make this more than a gate dump:
     ///
     /// - Per-gate `dir` is load-bearing and has no sidecar. Directions are
-    ///   drawn at load and the whole directional walk rides on them, so a
-    ///   resume that redrew them would restart transport rather than continue
-    ///   it. Same for `dgen`, `litter` and `event`.
-    /// - The undo journal references arena IDs, so the checkpoint RENUMBERS to
-    ///   0..n-1 in arena order -- exactly what `Arena::from_gates` reproduces --
-    ///   and remaps the entries. Entries with any dead piece are dropped; they
-    ///   were already unusable.
+    ///   drawn at load and window sampling and birth-advance ride on them, so
+    ///   a resume that redrew them would restart transport rather than
+    ///   continue it. Same for `dgen` and `litter`.
+    /// - The generation pool references arena IDs, so the checkpoint
+    ///   RENUMBERS to 0..n-1 in arena order -- exactly what
+    ///   `Arena::from_gates` reproduces -- and remaps the pool.
     /// - The ORIGINAL circuit is what `global_check` compares against. A
     ///   resumed run verifying against its own resume point would verify
     ///   nothing about fidelity to the true input.
@@ -278,7 +219,6 @@ impl Mixer {
         let _ = writeln!(o, "circuit-mixer-state {STATE_VERSION}");
         let _ = writeln!(o, "wires {}", self.num_wires);
         let _ = writeln!(o, "moves {}", self.moves_done);
-        let _ = writeln!(o, "next_event {}", self.next_event);
         let _ = writeln!(o, "next_litter {}", self.next_litter);
         let _ = writeln!(o, "rng {}", self.rng.random::<u64>());
         let _ = writeln!(o, "metrics_rng {}", self.metrics_rng.random::<u64>());
@@ -315,9 +255,8 @@ impl Mixer {
             gate_line(&mut o, self.arena.gate(id));
             let _ = writeln!(
                 o,
-                " | {} {} {} {} {} {}",
+                " | {} {} {} {} {}",
                 m.origin,
-                m.event,
                 (m.dir == Dir::R) as u8,
                 m.dgen,
                 m.litter,
@@ -328,10 +267,6 @@ impl Mixer {
         for g in &self.original {
             gate_line(&mut o, g);
             o.push('\n');
-        }
-        let _ = writeln!(o, "tabu {}", self.tabu.len());
-        for &(e, mv) in self.tabu.iter() {
-            let _ = writeln!(o, "{e} {mv}");
         }
         let pool: Vec<u32> = self
             .pool
@@ -345,46 +280,6 @@ impl Mixer {
         let _ = writeln!(o, "canary {}", self.canary.len());
         for b in self.canary.iter() {
             let _ = writeln!(o, "{}", *b as u8);
-        }
-        // Journal: keep only entries every piece of which is still live, then
-        // remap. Stamps are NOT stored -- the rebuilt arena assigns its own, and
-        // resume reads them back from it.
-        let keep: Vec<&UndoEntry> = self
-            .journal
-            .iter()
-            .filter(|e| {
-                e.after.iter().all(|&(id, st)| {
-                    self.arena.is_linked(id)
-                        && self.arena.stamp(id) == st
-                        && newid.contains_key(&id)
-                })
-            })
-            .collect();
-        let _ = writeln!(o, "journal {}", keep.len());
-        for e in keep {
-            gate_line(&mut o, &e.before[0]);
-            o.push(' ');
-            gate_line(&mut o, &e.before[1]);
-            let _ = write!(
-                o,
-                " | {} {} {} {} {} {} {} {} {} {} {}",
-                (e.dir == Dir::R) as u8,
-                newid[&e.pivot],
-                e.event,
-                e.origins[0],
-                e.origins[1],
-                e.gens[0],
-                e.gens[1],
-                e.litters[0],
-                e.litters[1],
-                e.litter_sizes[0],
-                e.litter_sizes[1]
-            );
-            let _ = write!(o, " | {}", e.after.len());
-            for &(id, _) in &e.after {
-                let _ = write!(o, " {}", newid[&id]);
-            }
-            let _ = writeln!(o, " {}", e.misses);
         }
         let _ = writeln!(o, "ancsets {}", self.anc.len());
         for (l, bits) in self.anc.iter() {
@@ -432,8 +327,8 @@ impl Mixer {
             .next()
             .and_then(|x| x.parse().ok())
             .ok_or_else(|| bad("bad version"))?;
-        // v1-v3 counters lines carry retired curated or split counters, so
-        // their fields cannot be reinterpreted here.
+        // v1-v4 counters lines carry retired curated, split or crossing
+        // counters, so their fields cannot be reinterpreted here.
         if v != STATE_VERSION {
             return Err(bad(&format!(
                 "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
@@ -458,9 +353,6 @@ impl Mixer {
         let moves_done: u64 = scalar(&mut lines, "moves")?[0]
             .parse()
             .map_err(|_| bad("moves"))?;
-        let next_event: u64 = scalar(&mut lines, "next_event")?[0]
-            .parse()
-            .map_err(|_| bad("next_event"))?;
         let next_litter: u64 = scalar(&mut lines, "next_litter")?[0]
             .parse()
             .map_err(|_| bad("next_litter"))?;
@@ -522,19 +414,18 @@ impl Mixer {
                 .ok_or_else(|| bad("gate line missing meta"))?;
             let g = parse_gate(&mut gp.split_whitespace()).ok_or_else(|| bad("bad gate"))?;
             let m: Vec<&str> = mp.split_whitespace().collect();
-            if m.len() != 6 {
-                return Err(bad("gate meta must have 6 fields"));
+            if m.len() != 5 {
+                return Err(bad("gate meta must have 5 fields"));
             }
             let p = |i: usize| -> std::io::Result<u64> {
                 m[i].parse().map_err(|_| bad("bad meta field"))
             };
             metas.push(Meta {
                 origin: p(0)? as u32,
-                event: p(1)?,
-                dir: if p(2)? != 0 { Dir::R } else { Dir::L },
-                dgen: p(3)? as u32,
-                litter: p(4)?,
-                litter_size: p(5)? as u16,
+                dir: if p(1)? != 0 { Dir::R } else { Dir::L },
+                dgen: p(2)? as u32,
+                litter: p(3)?,
+                litter_size: p(4)? as u16,
             });
             gates.push(g);
         }
@@ -543,21 +434,6 @@ impl Mixer {
         for _ in 0..no {
             let l = lines.next().ok_or_else(|| bad("short original section"))?;
             original.push(parse_gate(&mut l.split_whitespace()).ok_or_else(|| bad("bad orig"))?);
-        }
-        let nt = section(&mut lines, "tabu")?;
-        let mut tabu: VecDeque<(u64, u64)> = VecDeque::with_capacity(nt);
-        for _ in 0..nt {
-            let l = lines.next().ok_or_else(|| bad("short tabu"))?;
-            let mut it = l.split_whitespace();
-            let e: u64 = it
-                .next()
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| bad("tabu"))?;
-            let mv: u64 = it
-                .next()
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| bad("tabu"))?;
-            tabu.push_back((e, mv));
         }
         let np = section(&mut lines, "pool")?;
         let mut pool = Vec::with_capacity(np);
@@ -570,35 +446,6 @@ impl Mixer {
         for _ in 0..nc {
             let l = lines.next().ok_or_else(|| bad("short canary"))?;
             canary.push_back(l.trim() != "0");
-        }
-        let nj = section(&mut lines, "journal")?;
-        let mut journal_raw = Vec::with_capacity(nj);
-        for _ in 0..nj {
-            let l = lines.next().ok_or_else(|| bad("short journal"))?;
-            let parts: Vec<&str> = l.split(" | ").collect();
-            if parts.len() != 3 {
-                return Err(bad("journal line shape"));
-            }
-            let mut gi = parts[0].split_whitespace();
-            let b0 = parse_gate(&mut gi).ok_or_else(|| bad("journal before0"))?;
-            let b1 = parse_gate(&mut gi).ok_or_else(|| bad("journal before1"))?;
-            let f: Vec<u64> = parts[1]
-                .split_whitespace()
-                .map(|x| x.parse().unwrap_or(0))
-                .collect();
-            if f.len() != 11 {
-                return Err(bad("journal meta shape"));
-            }
-            let mut ai = parts[2].split_whitespace();
-            let n: usize = ai
-                .next()
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| bad("after n"))?;
-            let after: Vec<u32> = (0..n)
-                .filter_map(|_| ai.next().and_then(|x| x.parse().ok()))
-                .collect();
-            let misses: u8 = ai.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-            journal_raw.push((b0, b1, f, after, misses));
         }
         let na = section(&mut lines, "ancsets")?;
         let mut anc: HashMap<u64, Vec<u64>> = HashMap::with_capacity(na);
@@ -632,7 +479,7 @@ impl Mixer {
 
         // Build the mixer on the SAME id assignment the checkpoint renumbered
         // to: Arena::from_gates hands out 0..n-1 in order, which is what
-        // save_state mapped the journal and pool onto.
+        // save_state mapped the pool onto.
         // Construct with ancestors OFF: the sizing guard in new_with_db reads
         // the CURRENT gate count, but ancestor sets are indexed by ORIGINAL
         // input gates and their width comes from the state file. A resumed 1.4M
@@ -661,7 +508,6 @@ impl Mixer {
         mx.moves_done = moves_done;
         mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
         mx.counters.moves = moves_done;
-        mx.next_event = next_event;
         mx.next_litter = next_litter;
         mx.rng = StdRng::seed_from_u64(rng_seed);
         mx.metrics_rng = StdRng::seed_from_u64(mrng_seed);
@@ -727,24 +573,6 @@ impl Mixer {
         for (i, m) in metas.into_iter().enumerate() {
             mx.set_meta(i as u32, m);
         }
-        // Stamps come from the freshly built arena; the checkpoint kept only
-        // entries whose pieces were all live, so every id here is linked.
-        mx.journal = journal_raw
-            .into_iter()
-            .map(|(b0, b1, f, after, misses)| UndoEntry {
-                before: [b0, b1],
-                dir: if f[0] != 0 { Dir::R } else { Dir::L },
-                pivot: f[1] as u32,
-                after: after.iter().map(|&id| (id, mx.arena.stamp(id))).collect(),
-                event: f[2],
-                origins: [f[3] as u32, f[4] as u32],
-                gens: [f[5] as u32, f[6] as u32],
-                litters: [f[7], f[8]],
-                litter_sizes: [f[9] as u16, f[10] as u16],
-                misses,
-            })
-            .collect();
-        mx.tabu = tabu;
         Ok(mx)
     }
 }

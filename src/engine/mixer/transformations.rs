@@ -38,9 +38,9 @@ pub const HIDDEN_SWAP_IDENTITY: &str =
 
 /// The pattern table. Deliberately small for now: this is the machinery, and
 /// the full menu of welcoming neighbourhood configurations is precomputed
-/// separately. The one entry here is the case the merge catalogue already
-/// settles -- a comp=1 gate absorbs a NOT on its target and comes out comp=0,
-/// which erodes a fossil in the bargain (see Merge::Absorb).
+/// separately. The one entry here is the classic absorber -- a comp=1 gate
+/// absorbs a NOT on its target and comes out comp=0 (the historic crossing
+/// walk's merge catalogue performed that absorption).
 pub static TWIST_PATTERNS: &[TwistPattern] = &[TwistPattern {
     name: "comp1-absorber",
     span: 1,
@@ -215,151 +215,6 @@ impl TgPlan {
     }
 }
 
-// Closed-form pairwise merge catalogue: for same-target gates, f_g XOR f_h is a
-// (possibly complemented) monomial in exactly these cases. Results are always
-// comp=0 (or a cancellation): pairs whose fusion would be complemented — which
-// is precisely the rejoin of a g57's presplit pieces — return None. That guard
-// is what makes g57 erosion irreversible under this chain.
-pub enum Merge {
-    // f_g == f_h: both gates vanish.
-    Cancel,
-    // Same controls, opposite comp: (c XOR m) XOR (!c XOR m) = 1, a NOT gate.
-    XFuse(XGate),
-    // Same wires, one polarity flipped, equal comp: xR XOR !xR = R.
-    DropLit(XGate),
-    // Wire sets differ by one literal, shared literals equal, equal comp:
-    // R XOR lR = !lR.
-    Subsume(XGate),
-    // A bare NOT absorbed into a comp=1 gate of ANY width: 1 XOR (1 XOR M) = M,
-    // i.e. the partner with its comp bit cleared. Always a single monomial, so
-    // it is always a legal merge -- but the catalogue used to refuse it for
-    // width >= 2 because the comp guard rejects every comp-differing pair. That
-    // guard is right for a comp=0 partner (the result would CREATE a fossil);
-    // for a comp=1 partner the result clears one, which is the allowed
-    // direction. This is what lets a twist bracket be swallowed by a
-    // neighbouring g57 instead of being paid for.
-    Absorb(XGate),
-}
-
-impl Merge {
-    pub fn gates(&self) -> Vec<XGate> {
-        match self {
-            Merge::Cancel => vec![],
-            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) | Merge::Absorb(g) => {
-                vec![g.clone()]
-            }
-        }
-    }
-}
-
-pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
-    if g.target != h.target {
-        return None;
-    }
-    if g.ctrls == h.ctrls {
-        return Some(if g.comp == h.comp {
-            Merge::Cancel
-        } else {
-            Merge::XFuse(XGate::x_gate(g.target))
-        });
-    }
-    // A bare NOT (empty control set, comp = 0, so f = 1) absorbs into a comp=1
-    // partner of any width, clearing its comp bit. The generic comp guard below
-    // would refuse this along with the genuinely banned direction.
-    for (a, b) in [(g, h), (h, g)] {
-        if a.ctrls.is_empty() && !a.comp && b.comp && !b.ctrls.is_empty() {
-            let mut out = b.clone();
-            out.comp = false;
-            return Some(Merge::Absorb(out));
-        }
-    }
-    // Below here the monomials differ; a complemented result is banned, and
-    // comp1 != comp2 always complements the residual monomial.
-    if g.comp != h.comp {
-        return None;
-    }
-    let (gl, hl) = (g.ctrls.len(), h.ctrls.len());
-    if gl == hl {
-        // Same wire multiset with exactly one polarity flipped -> drop that wire.
-        if !g.ctrls.iter().zip(h.ctrls.iter()).all(|(a, b)| a.0 == b.0) {
-            return None;
-        }
-        let mut diff = None;
-        for i in 0..gl {
-            if g.ctrls[i].1 != h.ctrls[i].1 {
-                if diff.is_some() {
-                    return None;
-                }
-                diff = Some(i);
-            }
-        }
-        let d = diff?;
-        let lits = g
-            .ctrls
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| i != d)
-            .map(|(_, &l)| l);
-        return Some(Merge::DropLit(
-            XGate::conj(g.target, lits).expect("drop-lit merge"),
-        ));
-    }
-    if gl.abs_diff(hl) != 1 {
-        return None;
-    }
-    // Subset-plus-one-literal with ALL shared polarities equal. A flipped shared
-    // polarity would complement the result (the presplit-rejoin case): banned.
-    let (small, big) = if gl < hl { (g, h) } else { (h, g) };
-    let mut extra = None;
-    let mut si = small.ctrls.iter().peekable();
-    for &(w, p) in &big.ctrls {
-        match si.peek() {
-            Some(&&(sw, sp)) if sw == w => {
-                if sp != p {
-                    return None;
-                }
-                si.next();
-            }
-            _ => {
-                if extra.is_some() {
-                    return None;
-                }
-                extra = Some((w, p));
-            }
-        }
-    }
-    if si.peek().is_some() {
-        return None;
-    }
-    let (w, _p) = extra?;
-    let lits = big
-        .ctrls
-        .iter()
-        .map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) });
-    Some(Merge::Subsume(
-        XGate::conj(big.target, lits).expect("subsume merge"),
-    ))
-}
-
-// Merge-partner index key: target + control WIRE SET (polarities and comp
-// excluded — cancel/xfuse partners share it exactly, drop-lit partners differ
-// only in a polarity, and subsume partners are found by looking up the key
-// with one wire removed). Hash collisions are harmless: merge_result rechecks.
-pub(crate) fn merge_key(target: u16, wires: impl Iterator<Item = u16>) -> u64 {
-    // FxHasher: the key is internal-only (never serialized) and collisions are
-    // rechecked (above), so the hash function choice is unobservable.
-    let mut h = rustc_hash::FxHasher::default();
-    target.hash(&mut h);
-    for w in wires {
-        w.hash(&mut h);
-    }
-    h.finish()
-}
-
-pub(crate) fn key_of(g: &XGate) -> u64 {
-    merge_key(g.target, g.ctrls.iter().map(|&(w, _)| w))
-}
-
 // Conjugation of a single gate by NOT(w): N g N. A gate reading w sees the
 // wire flipped on both sides, which is exactly a polarity flip of its
 // w-literal; a gate TARGETING w is invariant (the two flips cancel through the
@@ -472,25 +327,6 @@ pub(super) fn conj_by_cnot(g: &XGate, a: u16, b: u16) -> CnotConj {
 }
 
 impl Mixer {
-    // ---- expansion moves ----
-
-    pub(super) fn expand_move(&mut self) {
-        // Expansion is cross-or-ANY-DB. Unsubsume, insert and fresh-split are
-        // retired: the syntactic variety they supplied is supplied better by DB
-        // re-spelling, and insert was the only source of material not descended
-        // from the input, so retiring it also removes the born-random MAXGEN
-        // case from everything except twist bracket packets. Twists are slot 1
-        // now, so the expansion mix no longer performs them either.
-        if self.params.p_any > 0.0
-            && self.arena.len() >= 1
-            && self.rng.random_bool(self.params.p_any.clamp(0.0, 1.0))
-        {
-            self.db_attempt(DbMode::SizeAgnostic);
-            return;
-        }
-        self.cross_move();
-    }
-
     /// Look for a welcoming neighbourhood: sample up to `twist_place_tries`
     /// candidate positions and return the first that matches any entry of
     /// TWIST_PATTERNS, together with the wire that pattern prefers. `None`
@@ -697,9 +533,7 @@ impl Mixer {
                         "twist conjugation failed: {g:?} a={a} b={b} alpha={alpha} beta={beta}"
                     );
                 }
-                self.index_remove(cur);
                 self.arena.replace_gate(cur, g2);
-                self.index_add(cur);
                 relabeled += 1;
             }
             if is_last {
@@ -710,23 +544,19 @@ impl Mixer {
 
         // Bracket the window: opening packet P before `start`, closing packet
         // P^-1 after `end`. Packet gates are fresh synthetic material (no
-        // origin) sharing one event, so the trivial bracket-cancel is tabu like
-        // any fresh sibling pair. They are NOT scattered -- they sit tight on
-        // the window edges; later churn is free to float or merge them (every
-        // such move is independently function-preserving).
-        let ev = self.fresh_event();
+        // origin). They are NOT scattered -- they sit tight on the window
+        // edges; later moves are free to float or re-spell them (every such
+        // move is independently function-preserving).
         let mut anchor = self.arena.neighbor(start, Dir::L);
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
                     origin: ORIGIN_SYNTH,
-                    event: ev,
                     dir: d,
                     dgen: GEN_FRESH,
                     litter: lit,
@@ -738,14 +568,12 @@ impl Mixer {
         for g in &packet_inv {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
                     origin: ORIGIN_SYNTH,
-                    event: ev,
                     dir: d,
                     dgen: GEN_FRESH,
                     litter: lit,
@@ -1152,9 +980,7 @@ impl Mixer {
                         "g57-twist conjugation failed: {g:?} a={a} b={b}"
                     );
                 }
-                self.index_remove(cur);
                 self.arena.replace_gate(cur, g2);
-                self.index_add(cur);
                 relabeled += 1;
             }
             if is_last {
@@ -1185,7 +1011,6 @@ impl Mixer {
                 "g57-twist right seam failed: a={a} b={b}"
             );
         }
-        let ev = self.fresh_event();
         let mut inserted: Vec<u32> = Vec::with_capacity(plan.l.repl.len() + plan.r.repl.len());
         let l_anchor = match plan.l.ids.last() {
             Some(&far) => self.arena.neighbor(far, Dir::L),
@@ -1211,7 +1036,6 @@ impl Mixer {
         r_srcs.sort_unstable();
         r_srcs.dedup();
         for &id in plan.l.ids.iter().chain(plan.r.ids.iter()) {
-            self.index_remove(id);
             self.arena.unlink(id);
         }
         let l_lit = self.anc_union_litter(&l_srcs);
@@ -1220,12 +1044,10 @@ impl Mixer {
         for g in &plan.l.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
             self.set_meta(
                 anchor,
                 Meta {
                     origin: ORIGIN_SYNTH,
-                    event: ev,
                     dir: Dir::L,
                     dgen: GEN_FRESH,
                     litter: l_lit,
@@ -1238,12 +1060,10 @@ impl Mixer {
         for g in &plan.r.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
             self.set_meta(
                 anchor,
                 Meta {
                     origin: ORIGIN_SYNTH,
-                    event: ev,
                     dir: Dir::R,
                     dgen: GEN_FRESH,
                     litter: r_lit,
@@ -1413,17 +1233,14 @@ impl Mixer {
     /// telescoping identity; every inserted gate is returned so a declined
     /// far-window splice can roll the circuit back exactly.
     pub(super) fn bridge_insert(&mut self, plan: &BridgePlan) -> (u32, u32, Vec<u32>) {
-        let ev = self.fresh_event();
         let mut inserted: Vec<u32> = Vec::new();
         let stamp = |mx: &mut Self, id: u32| {
-            mx.index_add(id);
             let d = mx.rand_dir();
             let lit = mx.fresh_litter();
             mx.set_meta(
                 id,
                 Meta {
                     origin: ORIGIN_SYNTH,
-                    event: ev,
                     dir: d,
                     dgen: GEN_FRESH,
                     litter: lit,
@@ -1524,7 +1341,6 @@ impl Mixer {
         };
         if !ok2 {
             for &id in inserted.iter().rev() {
-                self.index_remove(id);
                 self.arena.unlink(id);
                 self.arena.free_node(id);
             }

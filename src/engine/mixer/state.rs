@@ -62,12 +62,6 @@ pub struct MixCounters {
     pub db_hard_added: u64,
     // Candidates refused by the identity guard.
     pub db_identity_skips: u64,
-    // NOT-into-comp=1 absorptions (Merge::Absorb): the channel that lets a
-    // twist bracket be swallowed by a neighbouring g57 rather than paid for.
-    pub merges_absorb: u64,
-    // g57-only COMP attempts and their hits.
-    pub db_g57_rounds: u64,
-    pub db_g57_hits: u64,
     // Slot-2 rounds, their hits, and the growth they added.
     pub db_slot2_rounds: u64,
     pub db_slot2_hits: u64,
@@ -109,21 +103,6 @@ pub struct MixCounters {
     pub litter_distinct_sum: u64,
     pub litter_full_spliced: u64,
     pub gen_misses: u64,
-    pub merges_cancel: u64,
-    pub merges_xfuse: u64,
-    pub merges_drop: u64,
-    pub merges_subsume: u64,
-    pub merges_sibling: u64,
-    pub merges_cross_origin: u64,
-    pub tabu_blocked: u64,
-    pub merge_no_partner: u64,
-    pub merge_wall_blocked: u64,
-    pub merge_too_far: u64,
-    pub merge_not_adjacent: u64,
-    pub undos: u64,
-    pub undo_dead: u64,
-    pub undo_tabu: u64,
-    pub undo_gather_miss: u64,
     // DB replacement moves (compressing channel + size-agnostic move).
     pub db_comp_hits: u64, // compressing: window replaced by a non-growing friend
     pub db_comp_misses: u64, // compressing: sampled window, no non-growing friend
@@ -176,13 +155,6 @@ pub struct MixCounters {
     pub db_degree_skips: u64, // attempts skipped by the degree guard (no lookup)
     pub db_span_skips: u64,   // attempts skipped by the span guard (no lookup)
     pub db_build_aborts: u64, // window builds aborted by the evade budget
-    pub cross_r1: u64,
-    pub cross_r2: u64,
-    pub cross_r3: u64,
-    pub presplits: u64,
-    pub fresh_splits: u64,
-    pub unsubs: u64,
-    pub inserts: u64,
     pub twist_negs: u64,
     pub twist_swaps: u64,
     pub twist_cnots: u64,
@@ -206,17 +178,12 @@ pub struct MixCounters {
     // Histogram of per-seam net cost (word len - context consumed), 0..=7.
     // A shape, so like splice_sizes it is not carried across resumes.
     pub tg_net_hist: [u64; 8],
-    pub blocked_width: u64,
-    pub blocked_deadlock: u64,
-    pub declined: u64,
-    pub boundary: u64,
+    // Window-building floats (convex sampling, ctrl-cap evasion) and the
+    // ballistic birth-advances of fresh products ("scatters").
     pub floats: u64,
     pub float_steps: u64,
     pub scatters: u64,
     pub scatter_steps: u64,
-    pub dropped_neverfire: u64,
-    // Cross shots drawn from the min-dgen pool (vs uniform).
-    pub cross_pool_shots: u64,
     // ---- pair geometry (session-local) ----
     // Rounds that drew the pair geometry, scans with no eligible partner,
     // scans cut by pair_scan_cap, fused windows and their splices, box-size
@@ -252,49 +219,29 @@ pub struct MixCounters {
     pub width_hist: [u64; 16],
 }
 
-impl MixCounters {
-    pub fn merges(&self) -> u64 {
-        self.merges_cancel + self.merges_xfuse + self.merges_drop + self.merges_subsume
-    }
-    pub fn expands(&self) -> u64 {
-        self.cross_r1
-            + self.cross_r2
-            + self.cross_r3
-            + self.presplits
-            + self.fresh_splits
-            + self.unsubs
-            + self.inserts
-            + self.twist_negs
-            + self.twist_swaps
-            + self.twist_cnots
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct Meta {
     pub(crate) origin: u32,
-    pub(crate) event: u64, // 0 = not a split product
-    // Persistent shooting direction: a cross floats this gate in `dir`.
-    // Fossils draw it uniformly at birth; fragments inherit per dir_p.
+    // Persistent direction: window sampling and the ballistic birth-advance
+    // of fresh products read it. Input gates draw it uniformly at birth (an
+    // RNG draw in Mixer::new that every trajectory depends on).
     pub(crate) dir: Dir,
     // Rewrite generation (benchmark semantics, 2026-07-21): how many
     // re-encodings this gate's material has been through since the input.
     // Input gates start at 0; a DB splice stamps its products with the
-    // outgoing window's upper-median generation + 1; every SPLIT (presplit,
-    // cross piece, fresh-split, unsubsume, twist case-split) stamps children
-    // with parent + 1; merges take the min of their parents. Born-random
-    // material (insert pairs, twist bracket packets) carries no input
-    // structure and gets GEN_FRESH (= the spec's MAXGEN, higher than every
-    // real generation; saturating arithmetic keeps it fixed).
+    // outgoing window's upper-median generation + 1. Born-random material
+    // (twist bracket packets, bridge carriers) carries no input structure
+    // and gets GEN_FRESH (= the spec's MAXGEN, higher than every real
+    // generation; saturating arithmetic keeps it fixed).
     pub(crate) dgen: u32,
     // Litter tag (ssg `80a2c1d2` semantics, ported for measurement): the
     // replacement event that CREATED this gate. Input gates and born-random
     // material are singleton litters. A DB splice stamps all of its products
-    // with one fresh id; splits and merges PROPAGATE the parent's id, so a
-    // litter fragments under churn rather than being reassigned.
+    // with one fresh id, so a litter fragments under churn rather than being
+    // reassigned.
     //
     // `litter_size` is the size at creation and is deliberately NOT maintained
-    // under splits: a window is "a complete litter" only when every gate shares
+    // afterwards: a window is "a complete litter" only when every gate shares
     // one id AND the count still equals that recorded size, so churn makes the
     // test conservative (it misses, never over-fires) exactly as in ssg.
     //
@@ -303,38 +250,14 @@ pub(crate) struct Meta {
     pub(crate) litter_size: u16,
 }
 
-/// Generation stamp for born-random material (fresh insert pairs, twist
-/// bracket packets): these gates never held any input structure, so for the
+/// Generation stamp for born-random material (twist bracket packets, bridge
+/// carriers and wakes): these gates never held any input structure, so for the
 /// gen-target machinery they count as already re-encoded.
 pub const GEN_FRESH: u32 = u32::MAX;
 
-// A recorded crossing, eligible for exact reversal while every emitted node is
-// still alive and untouched (checked via arena stamps — any later split, merge
-// or reuse of a piece bumps its stamp and kills the entry). Pieces pairwise
-// commute (same target, none reads it) and may drift to either side of the
-// pivot (rungs carry a flipped ladder literal, so under the separation
-// exemption most commute with the pivot too); the gather accretes from both
-// sides and the restore is exhaustively verified, so drift is harmless.
-pub(crate) struct UndoEntry {
-    // The pre-crossing pair, in circuit order for the recorded direction.
-    pub(crate) before: [XGate; 2],
-    pub(crate) dir: Dir,
-    pub(crate) pivot: u32,
-    pub(crate) after: Vec<(u32, u32)>, // (id, stamp) of every emitted node, incl. pivot
-    pub(crate) event: u64,
-    pub(crate) origins: [u32; 2], // origin of before[0], before[1]
-    pub(crate) gens: [u32; 2],    // gen of before[0], before[1] (restored on undo)
-    // Litter of before[0], before[1], restored on undo so that reversing a
-    // crossing also reverses its provenance rather than minting new litters.
-    pub(crate) litters: [u64; 2],
-    pub(crate) litter_sizes: [u16; 2],
-    pub(crate) misses: u8, // failed gather attempts; entry dropped after a few
-}
-
 /// Layer-2 profile-controller state (slot 0). While active it is the ONE
-/// size authority: it owns `target_size` (the thermostat pulls toward the
-/// moving setpoint), the static size brake is inert, and the per-round
-/// MIX/COMP coin is driven by `pmix`. Best-effort contract: on saturation it
+/// size authority: it owns the moving size setpoint, the static size brake is
+/// inert, and the per-round MIX/COMP coin is driven by `pmix`. Best-effort contract: on saturation it
 /// logs and holds the pinned lever rather than fighting the profile.
 pub struct ProfState {
     pub phase: u8, // 1 expand, 2 hold, 3 compress, 4 done (hold at r2)
@@ -343,7 +266,7 @@ pub struct ProfState {
     // Plant, all in GATES PER MOVE at full lever: ghat = drift if p_mix
     // were 1, shat = removal rate if p_mix were 0, dhat = the DISTURBANCE —
     // everything that changes size and is NOT the DB move (twists above all,
-    // plus expansion moves and thermostat contractions). The controller does
+    // plus bridge rounds). The controller does
     // not model twists; it measures their effect as the residual between
     // observed drift and DB-attributed drift, which is why it works at any
     // twist rate without being told what that rate is.
@@ -367,18 +290,6 @@ pub struct Mixer {
     pub params: MixParams,
     pub counters: MixCounters,
     pub(super) meta: Vec<Meta>,
-    // merge-key -> linked node ids with that (target, wire-set). Kept exact by
-    // the index_add/index_remove hooks in every splice; validated at verify
-    // points via indexed_count.
-    // FxHashMap: accessed by key only (never iterated), so the hasher choice
-    // cannot leak into behavior.
-    pub(crate) index: FxHashMap<u64, Vec<u32>>,
-    // Node id -> position in its merge-index bucket. This mirrors the split
-    // indexes' position arrays and turns every splice's index removal from a
-    // linear bucket search into an O(1) swap-remove without changing bucket
-    // order or merge selection.
-    pub(super) index_pos: Vec<u32>,
-    pub(super) indexed_count: usize,
     // Twist-g57 seam-solve memo: eng.solve(t, MAX_WORD) is a pure function of
     // the target perm `t`, and each twist round re-solves the same handful of
     // targets (both seams x wire-pair candidates x k-contexts x slides x
@@ -386,9 +297,6 @@ pub struct Mixer {
     // restored by load_state; a resumed run just starts cold. SmallVec: word
     // length is <= swap_words::MAX_WORD = 7, so hits never allocate.
     pub(super) solve_memo: FxHashMap<u64, Option<smallvec::SmallVec<[u8; 7]>>>,
-    pub(crate) journal: VecDeque<UndoEntry>,
-    pub(super) tabu: VecDeque<(u64, u64)>, // (event, move at creation)
-    pub(super) next_event: u64,
     // Next litter id. Input gates take 0..n as singleton litters, so fresh ids
     // start at n and never collide with them.
     pub(super) next_litter: u64,
@@ -440,8 +348,6 @@ pub struct Mixer {
     // pool targeting the same stubborn gate is drawn repeatedly, which would
     // write a characteristic displacement into the circuit.
     pub(super) db_seed_home: Option<(u32, u32)>,
-    // Set for the duration of one COMP attempt drawn as g57-only.
-    pub(super) db_g57_only: bool,
     // Whether the CURRENT db_attempt drew the pair geometry: arms the
     // candidate reorder ban and the pair splice counter.
     pub(super) db_pair_round: bool,
@@ -484,10 +390,6 @@ pub struct Mixer {
     // rung), with a running failure count so the fraction is O(1).
     pub(super) canary: VecDeque<bool>,
     pub(super) canary_failures: usize,
-    // Min-dgen cross-shot pool (p_mincross): the K least-split lineages at
-    // the last rebuild, consumed on draw so no single laggard is hammered.
-    pub(crate) cross_pool: Vec<u32>,
-    pub(crate) cross_pool_due: u64,
     // ---- piecewise rounds (mix/piecewise.rs) ----
     // Size-normalised work done under MixParams::eff_budget.
     pub(crate) eff_done: f64,
@@ -548,8 +450,8 @@ pub struct GenStats {
     /// Cap-eligible gates in total.
     pub elig: u64,
     /// Wide (cap-ineligible) gates below gen_target: invisible to the DB
-    /// channel until some other move narrows or splits them (their pieces
-    /// get parent + 1, so the walk lifts them).
+    /// channel (only a window that already contains them, or a bridge, can
+    /// re-spell them).
     pub wlag: u64,
     /// Minimum gen over ALL linked gates (GEN_FRESH when nothing lags).
     pub min: u32,
@@ -592,8 +494,7 @@ impl Mixer {
         // The ingest/paid channels were once missing here, which yielded an
         // empty store and a run that reported zero re-encoding as if it were a
         // result; they are gone now, but the invariant remains.
-        let db = if params.p_comp > 0.0
-            || params.p_db > 0.0
+        let db = if params.p_db > 0.0
             // Bridge is its own slot and reaches the store independently of
             // p_db; p_pair is subordinate to p_db (it only picks the geometry
             // inside a slot-2 round) so it needs no entry here.
@@ -627,23 +528,16 @@ impl Mixer {
     pub fn new_with_shared_db(
         gates: Vec<XGate>,
         num_wires: usize,
-        mut params: MixParams,
+        params: MixParams,
         db: Arc<FrozenDb>,
     ) -> Mixer {
         let n = gates.len();
-        if params.target_size == 0 {
-            params.target_size = n;
-        }
-        if params.temp <= 0.0 {
-            params.temp = (params.target_size as f64 / 100.0).max(64.0);
-        }
         let num_wires = num_wires.max(crate::circuit::xgate::max_wire(&gates) as usize + 1);
         let mut rng = StdRng::seed_from_u64(params.seed);
         let metrics_rng = StdRng::seed_from_u64(params.seed ^ 0x5EED_517A75);
         let meta = (0..n)
             .map(|i| Meta {
                 origin: i as u32,
-                event: 0,
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
                 dgen: 0,
                 // Input gates are singleton litters, as in ssg: they were not
@@ -683,13 +577,6 @@ impl Mixer {
             bits[t / 64] |= 1u64 << (t % 64);
             anc0.insert(gi as u64, bits);
         }
-        let mut index: FxHashMap<u64, Vec<u32>> = FxHashMap::default();
-        let mut index_pos = vec![NIL; n];
-        for (i, g) in gates.iter().enumerate() {
-            let bucket = index.entry(key_of(g)).or_default();
-            index_pos[i] = bucket.len() as u32;
-            bucket.push(i as u32);
-        }
         let db_budget = {
             let mut b = XPolyBudget::default();
             if params.db_wire_terms > 0 {
@@ -706,13 +593,7 @@ impl Mixer {
             params,
             counters: MixCounters::default(),
             meta,
-            index,
-            index_pos,
-            indexed_count: n,
             solve_memo: FxHashMap::default(),
-            journal: VecDeque::new(),
-            tabu: VecDeque::new(),
-            next_event: 1,
             next_litter: n as u64,
             anc: anc0,
             anc_words: anc_words0,
@@ -736,7 +617,6 @@ impl Mixer {
             db_last_sampler: DbSample::Contiguous,
             db_last_len: 0,
             db_seed_home: None,
-            db_g57_only: false,
             db_pair_round: false,
             db_mode_cur: db_mode0,
             stable_led_added: 0,
@@ -756,8 +636,6 @@ impl Mixer {
             canary_failures: 0,
             pool_scan_due: 0,
             prof: None,
-            cross_pool: Vec::new(),
-            cross_pool_due: 0,
             eff_done: 0.0,
             quiet: false,
         };
