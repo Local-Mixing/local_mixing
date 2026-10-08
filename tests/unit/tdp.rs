@@ -78,7 +78,7 @@ fn nonlinear_capacity_is_validated_before_launch() {
 #[test]
 fn every_public_tuning_value_maps_to_a_separate_script_argument() {
     let raw = parse(
-        "source.wires = 64\nrun.directory = \"runs/with spaces;$(literal)\"\nsource.gates = 900\ndb_mixing.target_size_factor = 2.5\ndb_mixing.hold_work_units = 4.5\ncrossing.target_size_factor = 2.25\ncrossing.width_penalty_base = 4\ncrossing.width_penalty_threshold = 2\ncrossing.size_tolerance_divisor = 20\ncrossing.move_attempts = 1234\nrun.stop_after_stage = 5\nrun.rerun_from_stage = 3\nparallel.pieces = 4\nparallel.threads = 6\ndatabase.allow_no_database_for_tests = true",
+        "source.wires = 64\nrun.directory = \"runs/with spaces;$(literal)\"\nsource.gates = 900\ndb_mixing.target_size_factor = 2.5\ndb_mixing.hold_work_units = 4.5\nrun.stop_after_stage = 3\nrun.rerun_from_stage = 2\nparallel.pieces = 4\nparallel.threads = 6\ndatabase.allow_no_database_for_tests = true",
     );
     let resolved = resolve_for_test(&raw).unwrap();
     let args = script_args(&resolved);
@@ -96,20 +96,10 @@ fn every_public_tuning_value_maps_to_a_separate_script_argument() {
         "2.5",
         "--db-mixing-hold-work-units",
         "4.5",
-        "--crossing-target-size-factor",
-        "2.25",
-        "--crossing-width-penalty-base",
-        "4",
-        "--crossing-width-penalty-threshold",
-        "2",
-        "--crossing-size-tolerance-divisor",
-        "20",
-        "--crossing-move-attempts",
-        "1234",
         "--run-stop-after-stage",
-        "5",
-        "--run-rerun-from-stage",
         "3",
+        "--run-rerun-from-stage",
+        "2",
         "--parallel-pieces",
         "--parallel-threads",
         "6",
@@ -257,11 +247,16 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "db_mixing.target_size_factor = nan",
         "db_mixing.target_size_factor = 1",
         "db_mixing.hold_work_units = -1",
-        "crossing.size_tolerance_divisor = 0",
         "run.stop_after_stage = 6",
         "run.rerun_from_stage = 6",
+        "run.stop_after_stage = 5",
+        "run.rerun_from_stage = 5",
         "run.stop_after_stage = 4",
         "run.rerun_from_stage = 4",
+        "run.stop_after_stage = 7",
+        "crossing.size_tolerance_divisor = 25",
+        "crossing.move_attempts = 1234",
+        "[crossing]",
         "preprocessing.mode = \"invented\"",
         "run.build_binaries = \"yes\"",
         "database.lookup_miss_filter = \"maybe\"",
@@ -275,6 +270,16 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         let result = parse_config(&format!("config_version = 1\n{body}"))
             .and_then(|raw| resolve_for_test(&raw));
         assert!(result.is_err(), "unexpectedly accepted {body}");
+    }
+    // The historic stages and the crossing walk's settings point at the archive.
+    for body in ["run.stop_after_stage = 5", "[crossing]\nmove_attempts = 1"] {
+        let Err(error) = parse_config(&format!("config_version = 1\n{body}"))
+            .and_then(|raw| resolve_for_test(&raw))
+        else {
+            panic!("unexpectedly accepted {body}");
+        };
+        assert!(error.contains("historic"), "{error}");
+        assert!(error.contains("ran/archive/curated-and-postmix"), "{error}");
     }
 }
 
@@ -362,7 +367,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
     assert!(expected.contains("script_tdp_gen_xxh3=00000000000000000000000000000004"));
 
     let explicit_defaults = resolve_for_test(&parse(
-        "run.directory = \"runs/manifest-test\"\ndb_mixing.target_size_factor = 2.0\ndb_mixing.hold_work_units = 2.7e1\ncrossing.target_size_factor = 2e0\ncrossing.width_penalty_base = 3.0\ncrossing.width_penalty_threshold = 1\ncrossing.size_tolerance_divisor = 25\nparallel.pieces = 1\nrun.stop_after_stage = 2\ndatabase.allow_no_database_for_tests = true",
+        "run.directory = \"runs/manifest-test\"\ndb_mixing.target_size_factor = 2.0\ndb_mixing.hold_work_units = 2.7e1\nparallel.pieces = 1\nrun.stop_after_stage = 2\ndatabase.allow_no_database_for_tests = true",
     ))
     .unwrap();
     assert_eq!(
@@ -388,7 +393,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
     lifecycle.calibration_seed = Some("987654321".to_owned());
     lifecycle.build_release = false;
     lifecycle.build_target_dir = PathBuf::from("/different/target");
-    lifecycle.stop_after = Some("5".to_owned());
+    lifecycle.stop_after = Some("3".to_owned());
     lifecycle.force_from = Some("3".to_owned());
     lifecycle.frozen_filter = FrozenFilter::Off;
     assert_eq!(expected, recipe_manifest(&lifecycle, &fingerprints, 4));
@@ -796,7 +801,7 @@ fn supported_toml_aliases_normalize_and_reject_duplicates() {
 
 #[test]
 fn canonical_recipe_preserves_normalized_values_and_flag_values() {
-    let recipe = "config_version = 1\nrun.directory = \"runs/naming-test\"\ndb_mixing.target_size_factor = 3.0\ndb_mixing.hold_work_units = 7.0\nparallel.target_piece_gates = 10000\nparallel.threads = 4\npreprocessing.mask_pair_wires = 4\nleakage_repair.enabled = true\nleakage_repair.seed = 99\ncrossing.move_attempts = 42";
+    let recipe = "config_version = 1\nrun.directory = \"runs/naming-test\"\ndb_mixing.target_size_factor = 3.0\ndb_mixing.hold_work_units = 7.0\nparallel.target_piece_gates = 10000\nparallel.threads = 4\npreprocessing.mask_pair_wires = 4\nleakage_repair.enabled = true\nleakage_repair.seed = 99";
     let mut config = resolve_for_test(&parse_config(recipe).unwrap()).unwrap();
     // Preserve argument values even when they have the same spelling as an option.
     config.run_dir = PathBuf::from("-n");
@@ -977,8 +982,8 @@ fn current_manifest_records_default_shuffling_deterministically() {
     let expected = concat!(
         "tdp_command_recipe=9\nn=4\nfrozen_db_dir=unset\npreprocessing_mode=embedded-masking\n",
         "production_preset=not-applicable\npost_fragment=not-applicable\n",
-        "mcd=derived\nexpand=2\nhold=27\nxr=2\nxb=3\nxc=1\nxtdiv=25\n",
-        "xmoves=6*target\npieces=1\nallow_empty_store=false\ncalibration_only=false\n",
+        "mcd=derived\nexpand=2\nhold=27\n",
+        "pieces=1\nallow_empty_store=false\ncalibration_only=false\n",
         "pinned_recipe=canon512/200000-cache256/1024/2048-native-regular\n",
         "sandwich_variant=classic\npreprocessing_mask_pair_wires=2\n",
         "preprocessing_max_open_masks=3\npreprocessing_min_open_masks=2\n",

@@ -16,7 +16,7 @@ G=$(head -1 "$R/tdp.mpmct1" | awk '{print $3}')
 MOVES=$(python3 -c "print(int($G*2*2*1.3))")
 FROZEN_DB_DIR=$HOME/code/local_mixing/frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
   target/release/circuit_mixer --input "$R/tdp.mpmct1" --output "$R/s3.mpmct1" --tdp --db-mixing \
-  --profile 2,2,2,2,2 --moves "$MOVES" --p-db 1.0 --p-comp 1.0 --p-any 0.1 \
+  --profile 2,2,2,2,2 --moves "$MOVES" --p-db 1.0 \
   --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
   --no-local-verify --seed "$MSEED" > "$R/s3.log" 2>&1
 cd "$RD"

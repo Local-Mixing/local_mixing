@@ -258,11 +258,6 @@ pub(crate) fn canonical_script_flag(flag: &str) -> &str {
         "--mcd" => "--source-gates",
         "--expand" => "--db-mixing-target-size-factor",
         "--hold" => "--db-mixing-hold-work-units",
-        "--xr" => "--crossing-target-size-factor",
-        "--xb" => "--crossing-width-penalty-base",
-        "--xc" => "--crossing-width-penalty-threshold",
-        "--xtdiv" => "--crossing-size-tolerance-divisor",
-        "--xmoves" => "--crossing-move-attempts",
         "--stop-after" => "--run-stop-after-stage",
         "--force-from" => "--run-rerun-from-stage",
         "--pieces" => "--parallel-pieces",
@@ -284,11 +279,6 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     push_optional_arg(&mut args, "--mcd", config.mcd.as_deref());
     push_optional_arg(&mut args, "--expand", config.expand.as_deref());
     push_optional_arg(&mut args, "--hold", config.hold.as_deref());
-    push_optional_arg(&mut args, "--xr", config.xr.as_deref());
-    push_optional_arg(&mut args, "--xb", config.xb.as_deref());
-    push_optional_arg(&mut args, "--xc", config.xc.as_deref());
-    push_optional_arg(&mut args, "--xtdiv", config.xtdiv.as_deref());
-    push_optional_arg(&mut args, "--xmoves", config.xmoves.as_deref());
     push_optional_arg(&mut args, "--stop-after", config.stop_after.as_deref());
     push_optional_arg(&mut args, "--force-from", config.force_from.as_deref());
     push_optional_arg(&mut args, "--pieces", config.pieces.as_deref());
@@ -470,16 +460,8 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         );
     }
     println!(
-        "[tdp_gen] crossing (stage 5): target_size_factor={} width_penalty_base={} width_penalty_threshold={} size_tolerance_divisor={} move_attempts={}",
-        config.xr.as_deref().unwrap_or("2"),
-        config.xb.as_deref().unwrap_or("3"),
-        config.xc.as_deref().unwrap_or("1"),
-        config.xtdiv.as_deref().unwrap_or("25"),
-        config.xmoves.as_deref().unwrap_or("6*target")
-    );
-    println!(
         "[tdp_gen] lifecycle: stop_after_stage={} rerun_from_stage={} build_binaries={}",
-        config.stop_after.as_deref().unwrap_or("5"),
+        config.stop_after.as_deref().unwrap_or("3"),
         config.force_from.as_deref().unwrap_or("none"),
         config.build_release
     );
@@ -490,17 +472,6 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     if config.allow_empty_store {
         eprintln!(
             "[tdp_gen] WARNING: database.allow_no_database_for_tests=true; no-database db_mixing is armed for plumbing tests only"
-        );
-    }
-    let stop_after = config
-        .stop_after
-        .as_deref()
-        .unwrap_or("5")
-        .parse::<u64>()
-        .expect("validated stop_after");
-    if stop_after >= 5 {
-        eprintln!(
-            "[tdp_gen] WARNING: stage 5 is enabled; its current numerical defaults remain calibration material until deliverable-promotion policy is recorded"
         );
     }
 }

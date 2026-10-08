@@ -188,11 +188,6 @@ pub(crate) fn recipe_manifest(
             "mcd={}\n",
             "expand={}\n",
             "hold={}\n",
-            "xr={}\n",
-            "xb={}\n",
-            "xc={}\n",
-            "xtdiv={}\n",
-            "xmoves={}\n",
             "pieces={}\n",
             "allow_empty_store={}\n",
             "calibration_only={}\n",
@@ -208,11 +203,6 @@ pub(crate) fn recipe_manifest(
         config.mcd.as_deref().unwrap_or("derived"),
         config.expand.as_deref().unwrap_or("2"),
         config.hold.as_deref().unwrap_or("30"),
-        config.xr.as_deref().unwrap_or("2"),
-        config.xb.as_deref().unwrap_or("3"),
-        config.xc.as_deref().unwrap_or("1"),
-        config.xtdiv.as_deref().unwrap_or("25"),
-        config.xmoves.as_deref().unwrap_or("6*target"),
         if config.min_block_size.is_some() {
             "auto"
         } else {

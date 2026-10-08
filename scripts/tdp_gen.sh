@@ -12,11 +12,9 @@
 #        (no compression leg since 2026-08-17: it only simplified the
 #        circuit). Stage 3 runs piecewise-parallel under --parallel-pieces
 #        P > 1: docs/tdp_pipeline.md; P = 1 is the serial run, unchanged.
-#   5    circuit_mixer the crossing walk (resumes the stage-3 state;
-#        numerical defaults reflect the X-panel, but deliverable-promotion
-#        status remains unresolved — see the manual)
-#   (the old stages 4, split, and 6, fcompress, are historic: branch
-#   ran/archive/curated-and-postmix)
+#   (stage 4, packing, is not driven from here yet: Python prototypes under
+#   scripts/windowed_delivery/. The old stages 4 (split), 5 (crossing walk)
+#   and 6 (fcompress) are historic: branch ran/archive/curated-and-postmix)
 #
 # Every stage writes its artifact + log into the run dir and is skipped when
 # the artifact already exists (rerun with --run-rerun-from-stage K). bash only — do not
@@ -64,19 +62,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                  db_mixing target gate-count multiplier          [2]
   --db-mixing-hold-work-units E
                  db_mixing hold duration in effective work units            [27 -> profile 3,30,30,2,2]
-  --crossing-target-size-factor R
-                 stage-5 crossing target factor           [2; 2.5 = max-spread point]
-  --crossing-width-penalty-base B
-                 stage-5 width-damper base                [3   — X-panel calibrated]
-  --crossing-width-penalty-threshold C
-                 stage-5 width-damper threshold           [1   — X-panel calibrated]
-  --crossing-size-tolerance-divisor D
-                 stage-5 temperature = target/D           [25]
-  --crossing-move-attempts M
-                 stage-5 move budget (default 6 x target: STOP AT ARRIVAL —
-                 median spread peaks there and the hold erodes it)
-  --run-stop-after-stage K stop after stage K (2, 3 or 5)            [5]
-  --run-rerun-from-stage K rebuild from stage K (2, 3 or 5) even if
+  --run-stop-after-stage K stop after stage K (2 or 3)               [3]
+  --run-rerun-from-stage K rebuild from stage K (2 or 3) even if
                  artifacts exist                                  [unset]
   --parallel-pieces P
                  stage-3 piecewise-parallel mixing: cut the circuit into
@@ -109,8 +96,7 @@ N=""; RUN=""; SEED=""; EXPAND=2; HOLD=27; MCD=0
 PREPROCESSING_MODE=embedded-masking
 EMBEDDED_MASKING_K_ARG=""; EMBEDDED_MASKING_MAX_OPEN_ARG=""; EMBEDDED_MASKING_BALANCED_ARG=""; EMBEDDED_MASKING_MIN_OPEN_ARG=""
 EMBEDDED_MASKING_SHUFFLING_ARG=""; EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG=""
-XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
-STOP_AFTER=5; FORCE_FROM=99
+STOP_AFTER=3; FORCE_FROM=99
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""
 declare -A PREPROCESSING_FLAGS_SEEN=()
 while [ $# -gt 0 ]; do
@@ -122,11 +108,6 @@ while [ $# -gt 0 ]; do
     --mcd) set -- --source-gates "${@:2}" ;;
     --expand) set -- --db-mixing-target-size-factor "${@:2}" ;;
     --hold) set -- --db-mixing-hold-work-units "${@:2}" ;;
-    --xr) set -- --crossing-target-size-factor "${@:2}" ;;
-    --xb) set -- --crossing-width-penalty-base "${@:2}" ;;
-    --xc) set -- --crossing-width-penalty-threshold "${@:2}" ;;
-    --xtdiv) set -- --crossing-size-tolerance-divisor "${@:2}" ;;
-    --xmoves) set -- --crossing-move-attempts "${@:2}" ;;
     --stop-after) set -- --run-stop-after-stage "${@:2}" ;;
     --force-from) set -- --run-rerun-from-stage "${@:2}" ;;
     --pieces) set -- --parallel-pieces "${@:2}" ;;
@@ -134,6 +115,10 @@ while [ $# -gt 0 ]; do
     --piece-threads) set -- --parallel-threads "${@:2}" ;;
   esac
   case "$1" in
+    --crossing-*|--xr|--xb|--xc|--xtdiv|--xmoves)
+      echo "FATAL: $1 configured the crossing walk (old stage 5), which is historic; see branch ran/archive/curated-and-postmix" >&2
+      exit 2
+      ;;
     --preprocessing-*)
       if [ "${PREPROCESSING_FLAGS_SEEN[$1]+present}" ]; then
         echo "FATAL: duplicate preprocessing setting $1" >&2
@@ -143,7 +128,7 @@ while [ $# -gt 0 ]; do
       ;;
   esac
   case "$1" in
-    --source-wires|--run-directory|--calibration-seed|--source-gates|--preprocessing-mode|--preprocessing-mask-pair-wires|--preprocessing-max-open-masks|--preprocessing-balanced-masks|--preprocessing-min-open-masks|--preprocessing-shuffling-segments|--preprocessing-shuffling-return-home|--db-mixing-target-size-factor|--db-mixing-hold-work-units|--crossing-target-size-factor|--crossing-width-penalty-base|--crossing-width-penalty-threshold|--crossing-size-tolerance-divisor|--crossing-move-attempts|--run-stop-after-stage|--run-rerun-from-stage|--parallel-pieces|--parallel-target-piece-gates|--parallel-threads)
+    --source-wires|--run-directory|--calibration-seed|--source-gates|--preprocessing-mode|--preprocessing-mask-pair-wires|--preprocessing-max-open-masks|--preprocessing-balanced-masks|--preprocessing-min-open-masks|--preprocessing-shuffling-segments|--preprocessing-shuffling-return-home|--db-mixing-target-size-factor|--db-mixing-hold-work-units|--run-stop-after-stage|--run-rerun-from-stage|--parallel-pieces|--parallel-target-piece-gates|--parallel-threads)
       if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then
         echo "FATAL: $1 requires an argument" >&2
         exit 2
@@ -164,11 +149,6 @@ while [ $# -gt 0 ]; do
     --preprocessing-shuffling-return-home) EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG=$2; shift 2 ;;
     --db-mixing-target-size-factor) EXPAND=$2; shift 2 ;;
     --db-mixing-hold-work-units) HOLD=$2; shift 2 ;;
-    --crossing-target-size-factor) XR=$2; shift 2 ;;
-    --crossing-width-penalty-base) XB=$2; shift 2 ;;
-    --crossing-width-penalty-threshold) XC=$2; shift 2 ;;
-    --crossing-size-tolerance-divisor) XTDIV=$2; shift 2 ;;
-    --crossing-move-attempts) XMOVES=$2; shift 2 ;;
     --run-stop-after-stage) STOP_AFTER=$2; shift 2 ;;
     --run-rerun-from-stage) FORCE_FROM=$2; shift 2 ;;
     --parallel-pieces) PIECES=$2; PIECES_SET=1; shift 2 ;;
@@ -220,13 +200,18 @@ bounded_uint() {
   return 2
 }
 N=$(bounded_uint --source-wires "$N" 3 4095)
-STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 5)
-[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 5)
-# Stage 4 (split) is historic: it has no artifact, so it is no valid stop or rerun point.
-if [ "$STOP_AFTER" = 4 ] || [ "$FORCE_FROM" = 4 ]; then
-  echo "FATAL: stage 4 (split) is historic; use 2, 3 or 5 (see branch ran/archive/curated-and-postmix)" >&2
-  exit 2
-fi
+# The old stages 4 (split), 5 (crossing walk) and 6 (fcompress) are historic:
+# the driver ends at stage 3, so they are no valid stop or rerun point.
+for stage_arg in "$STOP_AFTER" "$FORCE_FROM"; do
+  case "$stage_arg" in
+    4|5|6)
+      echo "FATAL: stage $stage_arg (old split/crossing/fcompress) is historic; use 2 or 3 (see branch ran/archive/curated-and-postmix)" >&2
+      exit 2
+      ;;
+  esac
+done
+STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 3)
+[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 3)
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   [ "$PIECES_SET" -eq 0 ] || {
@@ -408,16 +393,14 @@ if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
   done
 fi
 gates_of() { python3 -I -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
-state_moves() { awk '$1=="moves"{print $2; exit}' "$1"; }
 
-note "run=$RUN n=$N preprocessing_mode=$PREPROCESSING_MODE |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV) $PIECE_DESCRIPTION${PIECE_THREADS:+ piece_threads=$PIECE_THREADS}"
+note "run=$RUN n=$N preprocessing_mode=$PREPROCESSING_MODE |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs $PIECE_DESCRIPTION${PIECE_THREADS:+ piece_threads=$PIECE_THREADS}"
 # The seed goes to the run dir, NOT to the shared narrative log: it is the
 # secret that regenerates C.
 note "seed source: $SEED_SRC (value in $RUN/SEED)"
 umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 
 DB_MIXING=$RUN/db_mixing.mpmct1
-CROSSING=$RUN/crossing.mpmct1
 
 # ---- stages 1+2: sandwich + selected gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
@@ -449,7 +432,7 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
 import sys
 r1, hold, g = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 # No compression leg (2026-08-17): it only simplified the circuit. It made
-# sense when db_mixing was the whole pipeline; with the later stages following, the run
+# sense when db_mixing was the whole pipeline; with packing following, the run
 # ends at the held size (N2 = N1, R2 = R1 — a zero-length leg is valid,
 # prof_target never enters the interpolation branch).
 n0 = 3.0
@@ -480,12 +463,12 @@ EOF
   fi
   export MIXER_STOP_FLAG=$RUN/stage3.stop MIXER_DUMP_FLAG=$RUN/stage3.dump
   rm -f "$MIXER_STOP_FLAG"
-  # Plumbing-test mode: circuit_mixer hard-requires the store whenever any DB channel
-  # is armed, so the bypass must zero all three coins (a true null plant —
-  # the profile still walks its eff schedule, no re-encoding happens).
-  DBFLAGS=(--p-db 1.0 --p-comp 1.0 --p-any 0.1)
+  # Plumbing-test mode: circuit_mixer hard-requires the store whenever the DB
+  # move is armed, so the bypass zeroes it (a true null plant — the profile
+  # still walks its eff schedule, no re-encoding happens).
+  DBFLAGS=(--p-db 1.0)
   if [ -z "${FROZEN_DB_DIR:-}" ]; then
-    DBFLAGS=(--p-db 0 --p-comp 0 --p-any 0)
+    DBFLAGS=(--p-db 0)
     note "WARNING: empty-store plumbing mode — db_mixing performs NO re-encoding"
   fi
   QCFLAGS=()
@@ -508,34 +491,4 @@ EOF
 else
   note "stage 3: $DB_MIXING exists, skipping"
 fi
-[ "$STOP_AFTER" -le 3 ] && { note "stopped after stage 3"; exit 0; }
-
-# ---- stage 5: crossing walk (X-panel defaults; promotion status unresolved) ----
-if [ "$FORCE_FROM" -le 5 ] || [ ! -s "$CROSSING" ]; then
-  G_S=$(gates_of "$DB_MIXING")
-  read -r X_TGT X_TEMP X_MOVES_ABS <<< "$(python3 -I - "$G_S" "$XR" "$XTDIV" "${XMOVES:-0}" "$(state_moves "$RUN/db_mixing.state")" <<'EOF'
-import sys
-g, xr, tdiv, xmoves, done = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
-tgt = round(g * xr)
-temp = max(64, round(tgt / tdiv))
-# STOP AT ARRIVAL (X-panel 2026-08-05): median descendants AND median span
-# peak when size reaches its damped equilibrium (~2-5 moves/target gate)
-# and the hold then ERODES them; 6x covers arrival across r with only mild
-# post-peak decay.
-budget = xmoves if xmoves > 0 else 6 * tgt
-print(tgt, temp, done + budget)   # --moves is ABSOLUTE on a resume
-EOF
-)"
-  note "stage 5: crossing walk (resume) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves(abs)=$X_MOVES_ABS — calibrated defaults; promotion status unresolved, see manual"
-  export MIXER_STOP_FLAG=$RUN/stage5.stop MIXER_DUMP_FLAG=$RUN/stage5.dump
-  rm -f "$MIXER_STOP_FLAG"
-  "$BIN/circuit_mixer" --resume "$RUN/db_mixing.state" \
-      --target-size "$X_TGT" --temp "$X_TEMP" --split-base "$XB" --split-damp "$XC" \
-      --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 \
-      --moves "$X_MOVES_ABS" --report-every 500000 \
-      --state-out "$RUN/crossing.state" --output "$CROSSING" > "$RUN/stage5.log" 2>&1
-  note "stage 5 done: $(gates_of "$CROSSING") gates"
-else
-  note "stage 5: $CROSSING exists, skipping"
-fi
-note "PIPELINE COMPLETE: $CROSSING"
+note "PIPELINE COMPLETE: $DB_MIXING"

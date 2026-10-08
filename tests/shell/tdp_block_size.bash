@@ -32,9 +32,14 @@ reject --parallel-pieces 2 --parallel-threads 999999999999999999999999999999
 reject --parallel-target-piece-gates 2 --parallel-pieces 1
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 reject --parallel-threads 2
-# Stage 4 (split) is historic: neither a stop nor a rerun point.
-reject --run-stop-after-stage 4
-reject --run-rerun-from-stage 4
+# The old stages 4-6 (split, crossing walk, fcompress) are historic: neither
+# stop nor rerun points, and the crossing walk's flags are refused.
+for stage in 4 5 6; do
+  reject --run-stop-after-stage "$stage"
+  reject --run-rerun-from-stage "$stage"
+done
+reject --crossing-target-size-factor 2
+reject --xmoves 100
 reject --parallel-target-piece-gates 2 --parallel-threads 0
 for flag in --parallel-target-piece-gates --parallel-pieces --parallel-threads; do
   reject "$flag"
@@ -80,11 +85,13 @@ import sys
 root = Path(sys.argv[1])
 for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical'):
     lines = (root / f'{mode}.calls').read_text().splitlines()
-    assert len(lines) == 3, lines
+    # Stages 1+2 and stage 3 only: the driver ends at db_mixing.
+    assert len(lines) == 2, lines
     assert '--db-mixing' in lines[1], lines
-    # Stage 5 resumes the stage-3 state now that stage 4 (split) is historic.
-    stage5 = lines[2].split()
-    assert stage5[stage5.index('--resume') + 1].endswith('/db_mixing.state'), lines
+    stage3 = lines[1].split()
+    assert stage3[stage3.index('--p-db') + 1] == '0', lines  # empty-store plumbing mode
+    assert not any(a in stage3 for a in ('--p-comp', '--p-any', '--resume')), lines
+    assert 'PIPELINE COMPLETE' in (root / mode / 'tdp_gen.log').read_text()
     assert (root / mode / 'db_mixing.mpmct1').is_file()
     assert (root / mode / 'db_mixing.state').is_file()
     for i, line in enumerate(lines):

@@ -170,36 +170,6 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "string",
     ),
     (
-        "crossing.target_size_factor",
-        "crossing.target_factor",
-        "xr",
-        "number",
-    ),
-    (
-        "crossing.width_penalty_base",
-        "crossing.width_base",
-        "xb",
-        "number",
-    ),
-    (
-        "crossing.width_penalty_threshold",
-        "crossing.width_threshold",
-        "xc",
-        "integer",
-    ),
-    (
-        "crossing.size_tolerance_divisor",
-        "crossing.temperature_divisor",
-        "xtdiv",
-        "integer",
-    ),
-    (
-        "crossing.move_attempts",
-        "crossing.moves",
-        "xmoves",
-        "integer",
-    ),
-    (
         "calibration.enabled",
         "calibration.enabled",
         "calibration_only",
@@ -233,6 +203,12 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
     for (section, item) in doc.iter() {
         if section == "config_version" {
             continue;
+        }
+        if section == "crossing" {
+            return Err(
+                "the [crossing] section configured the crossing walk (old stage 5), which is historic; remove it (see branch ran/archive/curated-and-postmix)"
+                    .into(),
+            );
         }
         let table = item
             .as_table()
@@ -286,7 +262,6 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                 "parallel",
                 "quality_control",
                 "leakage_repair",
-                "crossing",
                 "calibration",
             ]
             .contains(&section)

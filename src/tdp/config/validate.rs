@@ -183,21 +183,6 @@ where
     )?;
     // The shell's hold is 27 (profile 3,30,30); lock the resolved default.
     let hold = Some(hold.unwrap_or_else(|| "27".into()));
-    let xr = parse_optional_f64(
-        raw,
-        "xr",
-        |value| (1.0..=16.0).contains(&value),
-        "must be in 1..=16",
-    )?;
-    let xb = parse_optional_f64(
-        raw,
-        "xb",
-        |value| (1.0..=1_000_000.0).contains(&value),
-        "must be in 1..=1000000",
-    )?;
-    let xc = parse_optional_u64(raw, "xc", 0, 1_000_000_000)?;
-    let xtdiv = parse_optional_u64(raw, "xtdiv", 1, 1_000_000_000)?;
-    let xmoves = parse_optional_u64(raw, "xmoves", 1, 1_000_000_000_000)?;
     let stop_after = parse_optional_stage(raw, "stop_after")?;
     let force_from = parse_optional_stage(raw, "force_from")?;
     let pieces = parse_optional_u64(raw, "pieces", 1, 64)?;
@@ -262,11 +247,6 @@ where
         mcd,
         expand,
         hold,
-        xr,
-        xb,
-        xc,
-        xtdiv,
-        xmoves,
         stop_after,
         force_from,
         allow_empty_store,
@@ -300,15 +280,18 @@ pub(crate) fn parse_usize(
     Ok(parsed)
 }
 
-/// A pipeline stage number: 2, 3 or 5. Stage 4 (split) is historic and
-/// has no artifact any more; stage 5 resumes the stage-3 state.
+/// A pipeline stage number: 2 or 3. The old stages 4 (split), 5 (crossing
+/// walk) and 6 (fcompress) are historic and get a pointer to the archive.
 fn parse_optional_stage(raw: &RawConfig, key: &str) -> Result<Option<String>, String> {
-    let stage = parse_optional_u64(raw, key, 2, 5)?;
-    if stage.as_deref() == Some("4") {
+    let stage = parse_optional_u64(raw, key, 2, 6)?;
+    if stage
+        .as_deref()
+        .is_some_and(|stage| stage != "2" && stage != "3")
+    {
         return Err(config_error(
             raw,
             key,
-            "stage 4 (split) is historic; use 2, 3 or 5 (see branch ran/archive/curated-and-postmix)",
+            "stages 4-6 (split, crossing walk, fcompress) are historic; use 2 or 3 (see branch ran/archive/curated-and-postmix)",
         ));
     }
     Ok(stage)
