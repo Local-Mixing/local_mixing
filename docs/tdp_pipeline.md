@@ -1,15 +1,19 @@
 # The TDP Pipeline
 
-The `tdp_gen` command constructs the current TDP pipeline. We start with a reversible circuit $C$
-on $n$ wires and pass it through four steps, numbered 1, 2, 3 and 5. The first
-two build the representation we want to mix. The other two change its local
-structure. (The former step 4, splitting, and step 6, compress and pack with
-`fcompress`, are historic: they remain on branch
-`ran/archive/curated-and-postmix`.)
+The TDP pipeline has four stages: sandwich (1), preprocessing (2), mixing
+(3) and packing (4). We start with a reversible circuit $C$ on $n$ wires. The
+first two stages build the representation we want to mix; stage 3 changes its
+local structure with the frozen database. The `tdp_gen` command drives stages
+1-3 and ends at `db_mixing.mpmct1`. Stage 4, packing, is not yet driven by
+`tdp_gen`: it exists as Python prototypes under
+[scripts/windowed_delivery/](../scripts/windowed_delivery/) (design:
+[windowed_delivery_design.md](windowed_delivery_design.md)). The former
+split, crossing-walk and `fcompress` stages are historic: they remain on branch
+`ran/archive/curated-and-postmix`.
 
 ```text
-C → sliced sandwich → gadgetization → DB mixing → crossing → crossing.mpmct1
-        step 1           step 2         step 3      step 5        output
+C → sliced sandwich → gadgetization → DB mixing → db_mixing.mpmct1 → (packing)
+        stage 1           stage 2        stage 3       driver output      stage 4
 ```
 
 This is a guide to the current code. For commands and configuration, start
@@ -67,8 +71,8 @@ from the repository root, not from the config file's directory.
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
 | `run.build_binaries` | bool, `true` | Build the stage executables (`gen_sandwich_gadget`, `circuit_mixer`) for a fresh run. `false` requires them to exist under the resolved build directory. Managed continuation always reuses matching binaries and skips rebuilding. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory. Stage binaries are selected from its host-target `release/` directory; changing this can affect whether the saved binary fingerprints can be matched. |
-| `run.stop_after_stage` | integer, `5` | Last stage to reach: `2`, `3` or `5`. Stages 1 and 2 run together; `2` is the shortest run. Stage 4 (split) is historic and rejected. |
-| `run.rerun_from_stage` | integer, unset | Recompute this stage and later stages reached by this invocation, `2`, `3` or `5`, even if their outputs exist. It does not authorize changing a saved recipe or make earlier stages run again. |
+| `run.stop_after_stage` | integer, `3` | Last stage to reach: `2` or `3`. Stages 1 and 2 run together; `2` is the shortest run. The historic old stages 4-6 (split, crossing walk, fcompress) are rejected. |
+| `run.rerun_from_stage` | integer, unset | Recompute this stage and later stages reached by this invocation, `2` or `3`, even if their outputs exist. It does not authorize changing a saved recipe or make earlier stages run again. |
 | `run.adopt_unverified_run` | bool, `false` | Retired compatibility field. `true` is rejected: existing runs need a valid current managed manifest. Leave this omitted or false. |
 
 Run lifecycle options such as the stop stage and worker count do not change
@@ -161,7 +165,8 @@ These are scheduling targets and limits, not promises of an exact output size.
 Piecewise execution alternates contiguous partitions with shifted seams and
 shares immutable stores across workers. Worker-count changes preserve the
 partitioned schedule's seed assignment; a partitioned run is a different
-walk from a serial run. Stage 5 resumes the combined stage-3 checkpoint.
+walk from a serial run. The combined stage-3 checkpoint is written to
+`db_mixing.state`.
 
 ### Leakage audit and repair
 
@@ -180,15 +185,8 @@ recipe but cannot change its repair settings. The standalone `circuit_mixer`
 also exposes additional low-level leakage-analysis budgets and thresholds;
 they are not extra TOML fields accepted by `tdp_gen`.
 
-### Crossing
-
-| Setting | Type and default | What it changes and constraints |
-| --- | --- | --- |
-| `crossing.target_size_factor` | number, `2.0` | Stage-5 target relative to the stage-3 output size, in `1..16`: `target=round(db_mixing_gates * factor)`. |
-| `crossing.width_penalty_base` | number, `3.0` | Base `B` of the wide-split acceptance penalty, in `1..1_000_000`. A relevant parent/control width `c` above threshold `d` is allowed with probability `B^(-(c-d))`; `B=1` disables this damping. |
-| `crossing.width_penalty_threshold` | integer, `1` | Width `d` below which this penalty does not apply, in `0..1_000_000_000`. Larger values permit wider splitting more readily. This is a width bias, not a maximum legal gate width. |
-| `crossing.size_tolerance_divisor` | integer, `25` | Sets size-controller temperature to `max(64, round(target / divisor))`, in `1..1_000_000_000`. Larger divisors tighten tolerance until the floor of 64 is reached. |
-| `crossing.move_attempts` | integer, `6 * target` | Additional stage-5 attempt budget, in `1..1_000_000_000_000`. The driver adds the move counter from `db_mixing.state` because the standalone mixer's resumed `--moves` ceiling is absolute. |
+A `[crossing]` section, which configured the historic crossing walk, is
+rejected with a pointer to the archive branch.
 
 ### Calibration
 
@@ -226,11 +224,6 @@ This map shows the equivalent direct-driver flags for the recipe values.
 | `parallel.pieces` | `--parallel-pieces P` |
 | `parallel.target_piece_gates` | `--parallel-target-piece-gates B` |
 | `parallel.threads` | `--parallel-threads T` |
-| `crossing.target_size_factor` | `--crossing-target-size-factor R` |
-| `crossing.width_penalty_base` | `--crossing-width-penalty-base B` |
-| `crossing.width_penalty_threshold` | `--crossing-width-penalty-threshold C` |
-| `crossing.size_tolerance_divisor` | `--crossing-size-tolerance-divisor D` |
-| `crossing.move_attempts` | `--crossing-move-attempts M` |
 | Contents of `calibration.seed_file` | `--calibration-seed SEED` (calibration only) |
 
 The driver's `-h`/`--help` lists these flags and its environment interface.
@@ -331,28 +324,24 @@ for lookup and candidate selection.
 [frozen DB](frozen_database.md) and
 [canonicalization](polynomial_canonicalization.md) guides explain these parts.
 
-## 4. (historic) Split the remaining complemented gates
+## 4. Pack the result (prototype)
 
-The former split stage, which split every complemented g57 gate and joined
-the pieces with absorbed-NOT twists, is historic. Its code and tests remain on
-branch `ran/archive/curated-and-postmix`; runs that stopped at stage 4 need that
-branch to continue.
+Packing is the fourth stage of the design. It is not yet part of `tdp_gen`;
+the current Python prototypes live under
+[scripts/windowed_delivery/](../scripts/windowed_delivery/), and the design is
+in [windowed_delivery_design.md](windowed_delivery_design.md). A Rust port is
+planned.
 
-## 5. Run the crossing walk
+## Historic stages
 
-Now we move fragments toward collisions and rewrite the colliding gates so
-their pieces can cross. These moves can introduce wider conjunctions than the
-original r57 gates. Undo and merge moves remove compatible fragments again,
-while the size target and width penalty control growth.
-
-This step resumes `db_mixing.state`. It writes `crossing.mpmct1`,
-`crossing.state`, and `stage5.log`. The current default target is twice the
-stage-3 circuit's size, with six times that target as the move-attempt budget.
-
-Read `cross_move_on`, `undo_move`, and `merge_move` in
-[src/stages/post-processing/crossing.rs](../src/stages/post-processing/crossing.rs).
-The scheduler and acceptance logic are in
-[src/engine/mixer/scheduling.rs](../src/engine/mixer/scheduling.rs).
+The former stages 4 (split every remaining complemented gate), 5 (the
+crossing walk: shoot fragments to collisions, rewrite them so they cross, and
+contract with undo/merge moves under a size thermostat) and 6 (`fcompress`)
+are historic. Their code and tests remain on branch
+`ran/archive/curated-and-postmix`; runs that reached them need that branch to
+continue. Within the mixer, the crossing walk was slot 3 of `Mixer::run`;
+stage 3 runs every non-twist round as a DB move (`--p-db 1.0`), so slot 3 never
+ran there and its removal left stage-3 output unchanged.
 
 ## The shared pieces
 
@@ -364,7 +353,8 @@ The mutable gate tape used by `circuit_mixer` is in
 I/O, and reporting live together in [src/engine/mixer/](../src/engine/mixer/).
 
 Use these current module paths directly. The old top-level `preprocessing`,
-`db_mixing` and `postprocessing` wrappers have been removed. Files named
+`db_mixing` and `postprocessing` wrappers have been removed, as has the
+`stages/post-processing` module of the historic stages. Files named
 `environment.rs` read settings that the current TDP driver pins for the run;
 they still support the current cache and mixing behavior.
 

@@ -16,15 +16,15 @@
 //! the reverses. That leaves the wire EXACTLY affine in band wires for the
 //! window between the reverses and the undo; the undo is a write pinned only by
 //! the wire's next read, so every reordering stage of the pipeline (DB
-//! re-encoding, circuit_mixer's final float, the crossing walk) stretches the window to
+//! re-encoding, circuit_mixer's final float, the historic crossing walk) stretches the window to
 //! the operand's idle interval -- measured as the C-vs-G affine ridge (~6k exact
 //! relations, rho 1.00 through the whole pipeline). QUAD-FIRE never linearises:
 //! the operand is the ANF polynomial `w ^ sum_(x,y) (1 ^ y ^ x&y)` over its open
 //! pairs (topped up to `max_open` fresh quadratic pairs, undone after the fire)
 //! and the fire is the polynomial product (degree <= 4 at K=2). No read ever
 //! leaves a wire affine, so there is no window to stretch: relations stay at
-//! the public I/O fringe (~150-500) through db_mixing, split, crossing and
-//! compression, and the gadget is ~12% smaller (no linearise/undo gates).
+//! the public I/O fringe (~150-500) through db_mixing and the (now historic)
+//! split, crossing and compression stages, and the gadget is ~12% smaller (no linearise/undo gates).
 //! `quad_fire = false` (env `EMBEDDED_MASKING_QUAD_FIRE=0`) keeps the legacy linear read.
 //!
 //! CO-SAMPLED build (RC, 2026-09-04): the LGI masks, the rerand gates, and the

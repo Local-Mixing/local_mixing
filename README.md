@@ -2,10 +2,13 @@
 
 We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
-compute. TDP is the current end-to-end pipeline. It constructs a sliced
-sandwich, applies gadgetization, mixes with the frozen database, then runs
-crossing. The final circuit is `crossing.mpmct1`. (The old split stage 4 and
-the old final compression stage, `fcompress`, are historic: branch
+compute. TDP is the current end-to-end pipeline. It has four stages: it
+constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
+(2), mixes with the frozen database (3), and packs the result (4). The
+`tdp_gen` driver runs stages 1-3 and ends at `db_mixing.mpmct1`; packing is
+still a set of Python prototypes under
+[`scripts/windowed_delivery/`](scripts/windowed_delivery/). (The old split,
+crossing-walk and `fcompress` stages are historic: branch
 `ran/archive/curated-and-postmix`.)
 
 ## Setup
@@ -52,7 +55,7 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
 The dry run resolves and validates the recipe without creating a run or
-starting the stages. A normal fresh run builds the three stage executables
+starting the stages. A normal fresh run builds the two stage executables
 and writes a timestamped directory under `runs/`. Database files are separate
 from the source checkout; building the project does not generate them.
 
@@ -86,8 +89,6 @@ The settings we usually change are:
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
-- `crossing.target_size_factor`: defaults to `2.0`. The template also exposes
-  the width penalty, size tolerance and optional move limit.
 
 Optional leakage repair is configured under `[leakage_repair]`. For a plumbing
 test without a database, clear the DB paths and set
@@ -100,18 +101,16 @@ test without a database, clear the DB paths and set
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Gadgetization / preprocessing | `tdp.mpmct1` |
 | 3. Database mixing | `db_mixing.mpmct1`, `db_mixing.state` |
-| 4. (historic: splitting) | none |
-| 5. Crossing | `crossing.mpmct1`, `crossing.state` |
 
-`tdp_gen.log` records overall progress; `stage12.log`, `stage3.log` and
-`stage5.log` hold stage output. The
+`tdp_gen.log` records overall progress; `stage12.log` and `stage3.log` hold
+stage output. The
 [TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
 
 To continue a run, set `run.directory` to its directory and invoke the same
 command again. Completed stage outputs are skipped. Set `run.stop_after_stage`
-to `2` or `3` to stop early (`5`, the default, runs every stage; stage 4 is
-historic and rejected); stages 1 and 2 execute together.
+to `2` to stop after preprocessing (`3`, the default, runs every driven stage;
+the historic old stages 4-6 are rejected); stages 1 and 2 execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
@@ -140,7 +139,7 @@ We must distinguish the source from the public TDP circuit. With default
 embedded masking, an $n$-wire source becomes a $4n$-wire circuit. To compute
 $C(x)$, place $x$ on wires `0..n`, set the remaining input wires to zero, and
 read output wires `n..2n`. Other outputs can contain junk. Thus, comparing the
-source directly with `crossing.mpmct1` using the full-function command above is
+source directly with `db_mixing.mpmct1` using the full-function command above is
 not the TDP payload check. See [Gadgetization](docs/gadgetization.md) for the
 slice contract.
 
@@ -164,7 +163,7 @@ slice contract.
 [`scripts/tdp_gen.sh`](scripts/tdp_gen.sh) runs the stage executables;
 [`src/programs/`](src/programs/) contains each stage executable's `main.rs`
 alongside its argument handling and artifact I/O. `circuit_mixer` is the
-shared executable for database mixing and crossing; `tdp_gen` is
+database-mixing executable (stage 3); `tdp_gen` is
 the complete managed pipeline command.
 The benchmark launchers live directly under `benchmarks/`. Python's
 `__pycache__/` directories are generated locally and ignored by Git.

@@ -607,7 +607,7 @@ impl Mixer {
 
         // Splice: insert the replacement after the node left of the window, then
         // unlink/free every window node (bumping stamps, which invalidates any
-        // journal undo entry that referenced them).
+        // (id, stamp) reference held to them).
         let cursor = self.arena.neighbor(ids[0], Dir::L);
         // Origin: keep the shared ancestor if the whole window agrees, else mark
         // the rewritten material synthetic (a DB block spans mixed lineage).
@@ -682,8 +682,8 @@ impl Mixer {
             );
             placed.push(c);
         }
-        // Products ride their assigned direction outward, exactly as split
-        // pieces do. Float-only, so the function is preserved by construction;
+        // Products ride their assigned direction outward, exactly as
+        // twist-g57 bracket words do. Float-only, so the function is preserved by construction;
         // it also scatters the litter, which makes a later window less likely
         // to be exactly this replacement.
         if self.params.db_advance {

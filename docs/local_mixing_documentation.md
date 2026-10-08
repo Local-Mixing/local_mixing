@@ -34,7 +34,7 @@ establish indistinguishability obfuscation or preimage hardness.
 - [Embedded masking](#embedded-masking)
 - [Optional preprocessing shuffling](#preprocessing-shuffling)
 - [Database mixing and its schedule](#generation-mixing)
-- [Splitting, crossing, and compression](#fragmentation)
+- [Packing and the historic fragmentation stages](#fragmentation)
 - [Implementation and optimizations](#implementation)
 - [Running the method and interpreting results](#running-the-method)
 - [References](#references)
@@ -454,10 +454,12 @@ band differs from the full pipeline's input-derived band. The carried-layout
 arm decodes through its final layout map. Results from these observation
 policies must be reported separately.
 
-The gauntlet's optional mixing is a database-free in-process walk, using
-crossing moves and twists. Its database-move probability is zero.
-It is not a run of the managed database-mixing and crossing sequence. A gauntlet result must therefore be labeled as an
-isolated gadget experiment even when its `--mix` option is enabled.
+The gauntlet's optional mixing is an in-process database walk: every round
+not taken by a twist is a database re-spelling at the TDP profile's MIX
+settings, plus swap-family twists, so `--mix` needs the regular frozen store.
+It has no size profile and is not a run of the managed stage-3 recipe. A
+gauntlet result must therefore be labeled as an isolated gadget experiment
+even when its `--mix` option is enabled.
 
 The driver accepts a list of mixer seeds so the same source/gadget instances
 can be compared under multiple paired mixing trajectories. Fixing only one
@@ -493,8 +495,8 @@ Carrier transfers change which physical target receives each term and add
 temporary masks and routing deltas. Their layout algebra guarantees correct
 decoding; it does not establish that source values leave every whole-trace
 span. A shuffle is itself a public circuit operation. Whether subsequent
-database mixing and fragmentation obscure the resulting relations is an
-attack question requiring measurements of that exact construction.
+database mixing obscures the resulting relations is an attack question
+requiring measurements of that exact construction.
 
 Historical embedded-masking gauntlets found whole-trace recoveries despite
 no hits in several smaller feature families. Those exact circuits, policies,
@@ -646,21 +648,16 @@ The stages are:
 | 1 | Source $C$ to a sliced sandwich on $2n$ wires | Separates the answer from unconstrained junk and defines forward/reverse slices. |
 | 2 | Embedded masking on $4n$ wires | Computes through balanced nonlinear masks, refreshes the band, and optionally moves physical carriers. |
 | 3 | Database mixing | Replaces local windows by different equivalent circuits and repeatedly overlaps replacements. |
-| 4 | (historic) Splitting | Removed; it split every complemented gate and coupled distant locations with absorbed changes of wire frame. |
-| 5 | Crossing | Moves fragments through true colliders by exact case splits, with contraction controlling growth. |
+| 4 | Packing | Prototype only (Python, `scripts/windowed_delivery/`); not yet run by `tdp_gen`. |
 
 ```text
-C -> sliced sandwich -> embedded masking -> database mixing
-  -> crossing -> crossing.mpmct1
+C -> sliced sandwich -> embedded masking -> database mixing -> db_mixing.mpmct1
+  -> (packing)
 ```
 
-The former stages 4 (splitting) and 6 (compression and packing with
-`fcompress`) are historic; they remain on branch
-`ran/archive/curated-and-postmix`.
-
-Database mixing comes before fragmentation because the database returns r57
-circuits. Putting it after the crossing walk would repeatedly reintroduce the
-gate form fragmentation is intended to remove.
+The former post-processing stages -- splitting, the crossing walk, and
+compression and packing with `fcompress` -- are historic; they remain on
+branch `ran/archive/curated-and-postmix`.
 
 The [pipeline guide](tdp_pipeline.md) contains the complete configuration and
 shell-flag reference. [Gadgetization](gadgetization.md) explains the first two
@@ -1767,8 +1764,10 @@ the following database move:
 
 If a lookup fails, that round simply makes no replacement. It does not fall
 through to a different kind of move. This keeps database mixing focused on
-repeated database re-spelling rather than turning it into the [fragmentation
-walk which comes later](#crossing-walk).
+repeated database re-spelling. (The mixer once had a fourth slot, the
+[historic crossing walk](#crossing-walk), which received the rounds the
+database move did not take; stage 3 gives every such round to the database
+move, so that slot never ran there and has been removed.)
 
 For a small example, suppose part of the circuit is
 
@@ -1816,8 +1815,7 @@ The [complete mixing method](#current-mixing-method) uses only the first
 two periods here. We grow toward twice the incoming gate count over three
 work units, then hold that size for another 27. One work unit represents
 roughly one mixing round per gate, counting the circuit's changing
-size as we go. There is no shrinking period at this stage; the crossing walk
-that follows has its own contraction moves.
+size as we go. There is no shrinking period at this stage.
 
 The schedule controls the balance between MIX and COMP on every round. During
 expansion it favors MIX, during the hold it balances the two so that growth and
@@ -1885,168 +1883,43 @@ size, rather than treating one attempt as one whole-circuit pass.
 
 <a id="fragmentation"></a>
 
-## Splitting, crossing, and compression
+## Packing and the historic fragmentation stages
 
-The [SAT encoding](#sat-solvers) assigns more clauses to gates with
-more controls. The retained encoder's direct $k$-control gate contributes
-$2k+2$ clauses. We therefore do not
-want to make every gate wider just for the sake of making the formula larger.
-At the same time, staying entirely in r57 leaves every gate in the same
-complemented two-control form. We need a way to increase the variety of gate
-shapes while also continuing to mix where their effects live.
+Stage 4, packing, is the last stage of the current design. It is still a set
+of Python prototypes under `scripts/windowed_delivery/` (design:
+[windowed_delivery_design.md](windowed_delivery_design.md)); `tdp_gen` ends at
+`db_mixing.mpmct1`.
 
-The exact r57 split replaces
-$a\mathrel{\oplus{=}}b\vee\neg c$ by either
-
-$$
-\{a\mathrel{\oplus{=}}b,\quad
-  a\mathrel{\oplus{=}}\neg b\wedge\neg c\}
-$$
-
-or
-
-$$
-\{a\mathrel{\oplus{=}}\neg c,\quad
-  a\mathrel{\oplus{=}}b\wedge c\}.
-$$
-
-In either case the two firing regions are disjoint and their XOR equals the
-parent's firing condition, preserving the complete function.
-The important new
-freedom is that these fragments are plain conjunctions. Two plain conjunctions
-with opposite polarities on a shared control have disjoint firing regions and
-can commute, even when their parent gates could not. The initial split itself
-does not create gates wider than r57. The three-control and wider gates appear
-later, when conjunction fragments are split again while crossing colliders.
+Earlier versions of the pipeline followed database mixing with three
+fragmentation stages. They are historic; their code, tests and full
+description remain on branch `ran/archive/curated-and-postmix`:
 
 <a id="fragmentation-splitting"></a>
 
-### Splitting (historic)
-
-The former split stage applied the randomized r57 split to every complemented
-gate and joined selected fragments to distant brackets on the same target wire
-through absorbed NOT twists. It is historic; its description and code remain on
-branch `ran/archive/curated-and-postmix`.
+- **Splitting** replaced every complemented r57 gate
+  $a\mathrel{\oplus{=}}b\vee\neg c$ by two disjoint plain conjunctions and
+  joined fragments to distant brackets through absorbed NOT twists.
 
 <a id="crossing-walk"></a>
-
-### The crossing walk
-
-The crossing walk begins directly from the database-mixing output; an r57
-gate it needs to move or cross is first split exactly as above. A
-fragment first moves through every gate with which it commutes. When it reaches
-a true collider, we use one of three exact case-split rules. In R1 the collider
-writes a control of the moving fragment, so the moving fragment splits and its
-pieces cross. In R2 the moving fragment writes a control of the collider, so the
-collider splits instead. In R3 each gate reads the other's target, so one
-restricted residue stays behind while the remaining residues cross. Each rule
-divides the collision into disjoint firing cases, just as the original r57 split
-did, and therefore preserves the function exactly.
-
-The new fragments usually inherit the direction of the gate sent into the
-collision, immediately advance through most of their next free commuting run,
-and continue walking. A declined or blocked crossing retreats instead of
-leaving the gate parked at the collision. Repeating this lets pieces of gates
-which originally collided move into, and sometimes past, one another. It also
-produces conjunctions with different polarities and with three, four, or more
-controls. Thus, later algebraic attacks can no longer assume that the circuit
-consists only of the degree-two r57 polynomial shape.
-
-Since each extra control also raises the SAT clause cost, the walk uses a width
-damper. Before a crossing which requires a split, the damper is applied to the
-gate being split. A gate at or below the chosen threshold is admitted outright;
-above it, acceptance falls exponentially with its control count. A separate
-hard width cap rejects any rewrite whose emitted residue would be too wide.
-Together, these two checks let the vocabulary grow without allowing wide gates
-to take over the circuit.
-
 <a id="fragmentation-contraction"></a>
 
-### Contraction during the crossing walk
-
-Every successful crossing can replace
-one or two gates with several fragments, so a walk which only moved forward
-would continue growing. We instead hold the gate count near a chosen target with
-a thermostat. While the circuit is below that target, another forward crossing
-is more likely. As it approaches and moves above the target, contraction becomes
-more likely. This is probabilistic rather than a hard boundary, so crossings and
-contractions remain interleaved throughout the walk.
-
-One contraction option uses the record made by an earlier crossing. It first
-checks that every fragment produced by that crossing still exists and has not
-been changed by another rewrite. It then floats those pieces back around the
-recorded pivot and restores the original pair. If even one fragment has already
-taken part in another move, the record is no longer usable. Thus, this operation
-removes crossings which remained isolated, while crossings whose pieces fed
-later work cannot simply be taken back.
-
-The other contraction option looks for two compatible gates with the same
-active wire, meaning the same target. Since both gates XOR into that target
-without reading it, they commute with one another, and their combined firing
-condition is the XOR of their two conjunctions. In a few exact cases this XOR
-has a smaller form. For example,
-
-$$
-a \mathrel{{\oplus}{=}} bc,
-\qquad
-a \mathrel{{\oplus}{=}} (\neg b)c
-$$
-
-can be replaced by
-
-$$
-a \mathrel{{\oplus}{=}} c.
-$$
-
-This works because exactly one of the first two gates fires whenever $c=1$.
-The complete merge catalogue can cancel identical gates, turn a conjunction
-paired with its complemented form into a NOT, drop the only literal whose
-polarity differs, simplify a pair where one control set is the other plus one
-literal, and absorb a bare NOT into a complemented gate.
-
-The same target alone is not enough. The pair must have one of these exact
-relationships, must lie within the search distance, and must be able to commute
-to a common position. The first gate is floated toward the second and then the
-second toward the first. We do not fragment intervening blockers to force this
-contraction: if another gate prevents the pair from becoming adjacent, the
-attempt fails. Newly created siblings are also protected for a short period, so
-a split cannot be undone or merged away immediately.
-
-Finally, the online merge refuses any pair whose result would be a complemented
-conjunction. In particular, the two pieces of an r57 split are not allowed to
-rejoin into the r57 gate from which they came. Contraction can therefore control
-the size without steadily rebuilding the uniform gate form which fragmentation
-was meant to remove. This online pairwise contraction was separate from the
-stronger final compression pass of the historic `fcompress` stage.
+- **The crossing walk** shot fragments to their first true collider and
+  rewrote each collision by one of three exact case-split rules (R1-R3), so
+  pieces of colliding gates could move past one another. A thermostat held
+  the size near a target with two contraction channels: exact undo of
+  isolated crossings from a journal, and a pairwise merge catalogue over
+  same-target gates (with a short tabu period for fresh siblings). Within the
+  mixer it was the fourth scheduling slot.
 
 <a id="fcompress"></a>
 
-### Compressing fragments (historic)
+- **`fcompress`** gathered commutable same-target gates, reduced each
+  group's ESOP (and, for small supports, its ANF) and packed each run into one
+  generalized gate (`esop1`).
 
-The former stage 6, `fcompress`, gathered commutable same-target gates,
-reduced each group's ESOP (and, for small supports, its ANF), re-emitted the
-survivors and finally packed each same-target run into one generalized gate
-(`esop1`). It is historic: the code and its documentation remain on branch
-`ran/archive/curated-and-postmix`.
-
-At the end of each fragmentation stage, we make one final positional float.
-Every gate is moved to a uniformly chosen position inside its current two-sided
-commutation interval. This changes neither the gates nor the circuit's function,
-and it never moves a gate through a true collider. It only removes positional
-structure which does not need to remain at the stage boundary.
-
-The crossing walk splits r57 gates as it meets them, spreads the fragments, creates a wider range of
-conjunction polynomials, and uses its two contraction paths to keep that growth
-under control. This does not by itself prove that the SAT problem is harder; we
-have not isolated gate variety as a SAT variable. It does remove the restriction
-that every gate, every local polynomial, and every gate encoding must have the
-same r57 form.
-
-The frozen table emits r57 circuits, so all database mixing is completed before
-the crossing walk. Otherwise, each successful replacement would reintroduce the
-structure we had just removed. There is no need to return to pure r57 after the
-fragmentation stages. The [attack section](#attacks) compares the questions these constructions
-are intended to address.
+The stages were motivated by gate variety: they removed the restriction that
+every gate has the r57 form, at the cost of wider conjunctions. Since the
+frozen table emits r57 circuits, they had to follow all database mixing.
 
 ### Packed formats
 
@@ -2057,12 +1930,6 @@ expand into the equivalent controlled-XOR tape. Evaluators must use the
 format's group semantics. A text `mpmct1` gate count, an ESOP group count, and
 a file's byte size are different measurements and should be reported
 separately.
-
-The crossing target defaults to twice the incoming database-mixing gate count.
-Its width-penalty base is 3 with threshold 1, and the size tolerance uses
-$\max(64,\mathrm{round}(\mathrm{target}/25))$. The default additional
-move budget is six times the crossing target. These are managed-recipe
-defaults, not security parameters with proven lower bounds.
 
 <a id="implementation"></a>
 
@@ -2082,7 +1949,6 @@ boundaries are:
 | [`src/stages/sandwich/`](../src/stages/sandwich/) | Slice blocks, classic/balanced sandwich assembly, and copy-gate scattering. |
 | [`src/stages/preprocessing/`](../src/stages/preprocessing/) | Embedded masking, optional carrier shuffling, and construction diagnostics. |
 | [`src/stages/db_mixing/`](../src/stages/db_mixing/) | Window selection, candidate policy, mapping, and exact replacement verification. |
-| [`src/stages/post-processing/`](../src/stages/post-processing/) | Crossing behavior. |
 | [`src/programs/`](../src/programs/) | Stage executable adapters and argument parsing. |
 | [`src/tdp/`](../src/tdp/) and [`scripts/tdp_gen.sh`](../scripts/tdp_gen.sh) | Typed recipe, resume checks, and stage orchestration. |
 
@@ -2175,7 +2041,6 @@ minimum of two. The main adjustable defaults are:
 | `preprocessing.shuffling_return_home` | `true` | Required for the complete sandwich when shuffling is enabled. |
 | `db_mixing.target_size_factor` | `2.0` | Stage-3 target relative to its incoming gate count. |
 | `db_mixing.hold_work_units` | `27.0` | Holding work after three growth work units. |
-| `crossing.target_size_factor` | `2.0` | Stage-5 target relative to its database-mixing input. |
 | `leakage_repair.enabled` | `false` | Optional sampled leakage audit and equivalent DB repair after stage 3. |
 
 Optional leakage repair is distinct from preprocessing shuffling. It uses a
