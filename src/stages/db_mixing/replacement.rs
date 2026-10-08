@@ -322,7 +322,10 @@ pub fn qc_candidates(
     result
 }
 
-/// In-memory store seam for QC experiments and deterministic fixtures.
+/// In-memory store seam for deterministic QC fixtures. Test-only since its
+/// non-test callers (greedy_walk, inflate_gates) became historic in the
+/// four-stage cleanup (archive branch ran/archive/curated-and-postmix).
+#[cfg(test)]
 pub fn qc_candidates_with<F>(
     window: &[XGate],
     num_wires: usize,

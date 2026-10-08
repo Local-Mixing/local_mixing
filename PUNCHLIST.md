@@ -91,6 +91,10 @@ move them to Done when resolved.
 2. **A curated lookup gives no way to tell which returned candidates are
    "meaningfully different" from the looked-up window `w`.** (2026-09-27)
 
+   HISTORIC on this branch (2026-10-08): the curated DB and every file named
+   below were removed by the four-stage cleanup; they exist only on the
+   archive branch `ran/archive/curated-and-postmix`.
+
    The store's difference-by-construction argument (see the routing comment at
    `curated_armed_for` in `src/stages/db_mixing/replacement.rs`) guarantees
    that a candidate `Q⁻¹` is meaningfully different from *its own complement*
@@ -117,6 +121,10 @@ move them to Done when resolved.
 3. **Recover or rebuild the curated frozen store
    (`frozen_curated_m1_m11_native`) — the canonical copy is likely lost.**
    (2026-09-27)
+
+   HISTORIC on this branch (2026-10-08): the curated DB and every file named
+   below were removed by the four-stage cleanup; they exist only on the
+   archive branch `ran/archive/curated-and-postmix`.
 
    The store (3.4 GiB, 256 shards, ~32M entries, native convention) lived at
    `/home/cc/frozen_curated_m1_m11_native` on Chameleon bare-metal leases

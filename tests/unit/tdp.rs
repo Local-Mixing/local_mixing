@@ -441,7 +441,16 @@ fn configured_child_environment_scrubs_hidden_overrides_and_pins_recipe() {
             )
         })
         .collect();
-    for key in ["BASH_ENV", "PROD_K", "SAT_HARDEN", "MIXER_DUMP_OUT"] {
+    for key in [
+        "BASH_ENV",
+        "PROD_K",
+        "SAT_HARDEN",
+        "MIXER_DUMP_OUT",
+        "FROZEN_CURATED_DIR",
+        "FROZEN_CURATED_KEY",
+        "FROZEN_CURATED_VALUE_CONVENTION",
+        "FROZEN_REF_DIR",
+    ] {
         assert_eq!(environment.get(key), Some(&None), "{key} was not scrubbed");
     }
     assert_eq!(

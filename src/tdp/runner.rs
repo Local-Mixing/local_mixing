@@ -76,6 +76,12 @@ pub(crate) const SCRUBBED_ENV: &[&str] = &[
     "TWIST_G57_NO_RETRY",
     "TWIST_G57_NO_SLIDE",
     "VERIFY_DB_HITS",
+    // Historic curated-store controls (circuit_mixer warns and ignores them);
+    // removed so a stale shell export never reaches stage 3.
+    "FROZEN_CURATED_DIR",
+    "FROZEN_CURATED_KEY",
+    "FROZEN_CURATED_VALUE_CONVENTION",
+    "FROZEN_REF_DIR",
     "SymmetricCD",
     "SymmetricG",
     "BASH_ENV",

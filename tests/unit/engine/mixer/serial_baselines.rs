@@ -113,7 +113,10 @@ fn golden_stage3_fixture_walk_is_stable() {
     let mut mx = Mixer::new_with_db(gates, 16, stage3_fixture_params(), g57_fixture_store());
     mx.run();
     let c = &mx.counters;
-    assert!(c.db_agn_hits > 0 && c.db_comp_hits > 0, "both DB branches must hit");
+    assert!(
+        c.db_agn_hits > 0 && c.db_comp_hits > 0,
+        "both DB branches must hit"
+    );
     assert!(c.scatters > 0, "db_advance must move births");
     assert!(c.twist_relabels > 0, "twists must fire");
     mx.global_check();

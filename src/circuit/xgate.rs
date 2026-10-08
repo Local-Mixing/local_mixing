@@ -5,8 +5,10 @@
 //   effect:  x[target] ^= fires(x)
 //
 // A g57 [a, x, y] (a ^= x OR NOT y) is comp=1 with monomial (NOT x AND y).
-// All residues produced by the splitting rules are pure conjunctions (comp=0),
-// so comp=1 marks an original, never-split g57.
+// comp=1 marks a g57-form gate (input g57s, and those inserted by DB splices
+// and twist-g57 brackets via XGate::from_g57). The historic split/crossing
+// rules (archive branch ran/archive/curated-and-postmix) only produced pure
+// conjunctions (comp=0).
 use smallvec::SmallVec;
 
 pub type Lits = SmallVec<[(u16, bool); 6]>;

@@ -212,15 +212,15 @@ pub struct MixParams {
     pub db_verify: bool,
     // Measurement mode: sample windows and record the DB match count via
     // --db-record but NEVER splice (the circuit stays stationary). With
-    // p_db = 1.0 and all other weights 0 this makes circuit_mixer a pure match-rate
-    // sampler over the input circuit.
+    // p_db = 1.0 and the other move rates (p_twist, shuffle_rate, p_bridge) at 0
+    // this makes circuit_mixer a pure match-rate sampler over the input circuit.
     pub db_dry_run: bool,
     // Degree pre-filter for DB lookups: a window whose function degree exceeds
     // db_max_degree (the max ANF degree any stored circuit has) cannot match, so
-    // it is skipped before the expensive canonicalization. 0 = off. This is the
-    // guard that keeps the DB move cheap on the high-width windows the walk
-    // produces (which almost always miss). db_degree_probes random subcubes are
-    // tested per direction.
+    // it is skipped before the expensive canonicalization. 0 = off. This keeps
+    // the DB move cheap on high-width windows (which almost always miss; they
+    // were common under the historic crossing walk). db_degree_probes random
+    // subcubes are tested per direction.
     pub db_max_degree: usize,
     pub db_degree_probes: usize,
     // Span pre-filter for DB lookups: a window touching more distinct wires

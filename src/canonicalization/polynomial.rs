@@ -34,6 +34,10 @@ pub fn normalize_polynomial(poly: &mut Polynomial) {
     poly.truncate(write);
 }
 
+// Test-only since the four-stage cleanup: its production caller (the curated
+// single-negation window canonicalizer) is historic, see the archive branch
+// ran/archive/curated-and-postmix. Kept as a tested algebraic helper.
+#[cfg(test)]
 pub fn substitute_input_negation(poly: &mut Polynomial, w: usize) {
     // Substituting x_w -> x_w + 1 toggles, for every monomial containing x_w,
     // the same monomial with x_w cleared. The rests are pairwise distinct
@@ -66,6 +70,8 @@ pub(super) fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
     }
 }
 
+// Test-only, like substitute_input_negation (its sole non-test caller).
+#[cfg(test)]
 pub(super) fn poly_xor_assign(poly: &mut Polynomial, terms: Polynomial) {
     let old = std::mem::take(poly);
     let mut merged = Vec::with_capacity(old.len().max(terms.len()));
