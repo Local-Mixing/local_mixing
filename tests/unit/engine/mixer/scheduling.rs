@@ -165,7 +165,17 @@ fn db_walk_splices_real_hits_and_preserves_function() {
         "DB walk barely spliced: {}",
         c.db_slot2_hits
     );
-    assert!(c.db_agn_hits + c.db_comp_hits > 0);
+    // Re-spelling, not only contraction: the size-agnostic (MIX) branch of
+    // the p_mix coin must hit and pay for longer spellings.
+    assert!(c.db_agn_hits > 0, "no MIX re-spelling hit: {}", c.db_agn_hits);
+    assert!(c.db_gates_added > 0, "no splice added gates");
+    // db_advance (forced on by --tdp): splice products get the birth advance.
+    assert!(
+        c.scatters > 0 && c.scatter_steps >= c.scatters,
+        "db_advance never advanced a birth: {} scatters / {} steps",
+        c.scatters,
+        c.scatter_steps
+    );
     assert!(
         mx.gens_in_order().iter().any(|&g| g > 0 && g != GEN_FRESH),
         "splices must stamp generations"

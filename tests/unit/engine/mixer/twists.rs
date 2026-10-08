@@ -132,9 +132,11 @@ fn g57_census_splits_structure_from_twist_polarity() {
     // The swap family flips control polarity only through its negation coins
     // (3/4 of twists carry a negation), so same_pol is a twist odometer:
     // twists ON drive it up, OFF leaves it at zero, while shaped (structure)
-    // partitions correctly in both. p_db = 0 here, so nothing injects fresh
-    // opposite-polarity material -- the only mover is the twist (rounds no
-    // slot takes are idle).
+    // partitions correctly in both. Both runs really mix: every round no twist
+    // takes is a stage-3 DB move against the fixture store, which spells g57
+    // words only (opposite polarity), so the DB path rewrites the circuit
+    // heavily without ever creating a same-polarity gate -- the only source
+    // of same_pol is the twist.
     let base = |p_twist: f64| MixParams {
         k_max: 5,
         moves: 5_000,
@@ -143,11 +145,21 @@ fn g57_census_splits_structure_from_twist_polarity() {
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 5,
-        ..MixParams::default()
+        ..db_walk_params()
     };
     let run = |p_twist| {
-        let mut mx = Mixer::new(random_g57_circuit(17, 16, 400), 16, base(p_twist));
+        let mut mx = Mixer::new_with_db(
+            random_g57_circuit(17, 16, 400),
+            16,
+            base(p_twist),
+            g57_fixture_store(),
+        );
         mx.run();
+        assert!(
+            mx.counters.db_slot2_hits > 200,
+            "the DB path barely mixed (p_twist {p_twist}): {} hits",
+            mx.counters.db_slot2_hits
+        );
         let cen = mx.g57_census();
         // The partition identity, and agreement with the aggregate accessor.
         assert_eq!(
@@ -172,16 +184,15 @@ fn g57_census_splits_structure_from_twist_polarity() {
     assert_eq!(off_rel, 0, "twists-off relabeled a gate: {off_rel}");
     assert!(on_rel > 0, "twists-on never relabeled a gate: {on_rel}");
 
-    // Twists off: no polarity flips and no fresh material, so every shaped
-    // gate stays a true g57. This is the load-bearing half -- it proves
+    // Twists off: thousands of DB splices but no polarity flips, so every
+    // shaped gate stays a true g57. This is the load-bearing half -- it proves
     // same_pol tracks the twist, not mixing in general.
     assert_eq!(off.same_pol, 0, "twists-off flipped polarity: {off:?}");
     assert_eq!(off.pol_flipped(), 0.0);
 
-    // Twists on: the negation coins flip it, on the same circuit. No upper
-    // bound -- with p_db = 0 the small width-2 population can saturate at
-    // 1.0; the sub-1/2 equilibrium seen in production comes from DB splices
-    // this test deliberately does not have.
+    // Twists on: the negation coins flip it, on the same circuit, while the
+    // DB splices keep re-spelling windows back into true g57 words (the
+    // sub-1/2 equilibrium seen in production). No upper bound is asserted.
     assert!(
         on.shaped > 0 && off.shaped > 0,
         "no width-2 population: {on:?} {off:?}"

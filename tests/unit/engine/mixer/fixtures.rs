@@ -204,14 +204,16 @@ fn g57_fixture_store() -> FrozenDb {
 // The stage-3 driver for tests: every round not taken by a twist, shuffle or
 // bridge is a DB move against the fixture store, descending from four-gate
 // windows, with the layer-2 MIX/COMP coin at p_mix = 0.3 so growth (MIX pays
-// for longer spellings) and compression roughly balance: a 300-gate g57
-// circuit ends near 470 gates after 20k moves with heavy lineage mixing.
+// for longer spellings) and compression roughly balance, with heavy lineage
+// mixing. `db_advance` is on, as `circuit_mixer --tdp` forces it: every DB
+// splice product gets the directional birth advance production runs.
 fn db_walk_params() -> MixParams {
     MixParams {
         p_db: 1.0,
         s_db: 4,
         db_prefixes: true,
         p_mix: 0.3,
+        db_advance: true,
         ..MixParams::default()
     }
 }
