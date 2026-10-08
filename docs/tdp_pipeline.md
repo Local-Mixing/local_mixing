@@ -1,13 +1,14 @@
 # The TDP Pipeline
 
 The `tdp_gen` command constructs the current TDP pipeline. We start with a reversible circuit $C$
-on $n$ wires and pass it through six steps. The first two build the
-representation we want to mix. The next three change its local structure, and
-the last step removes redundancy and packs the circuit.
+on $n$ wires and pass it through five steps. The first two build the
+representation we want to mix. The next three change its local structure.
+(The former step 6, compress and pack with `fcompress`, is historic: it remains
+on branch `ran/archive/curated-and-postmix`.)
 
 ```text
-C → sliced sandwich → gadgetization → DB mixing → splitting → crossing → compress and pack → final.esop1
-        step 1           step 2         step 3       step 4      step 5         step 6           output
+C → sliced sandwich → gadgetization → DB mixing → splitting → crossing → crossing.mpmct1
+        step 1           step 2         step 3       step 4      step 5        output
 ```
 
 This is a guide to the current code. For commands and configuration, start
@@ -21,10 +22,10 @@ The `tdp_gen` command enters through [src/main.rs](../src/main.rs) and
 [src/tdp/runner.rs](../src/tdp/runner.rs) prepares the run, checks any saved
 manifest, and selects the stage binaries.
 
-Then [scripts/tdp_gen.sh](../scripts/tdp_gen.sh) runs the six steps below.
+Then [scripts/tdp_gen.sh](../scripts/tdp_gen.sh) runs the five steps below.
 This is the easiest file to read when we want to see the exact stage order,
 arguments, or output names. Steps 1 and 2 share one generator process;
-`circuit_mixer` runs steps 3–5, and `fcompress` runs step 6. Each executable's
+`circuit_mixer` runs steps 3–5. Each executable's
 `main.rs` and command implementation live together under `src/programs/`.
 
 ## Configuration reference
@@ -63,10 +64,10 @@ from the repository root, not from the config file's directory.
 | --- | --- | --- |
 | `config_version` | integer, required `1` | TOML schema identifier. This is separate from saved execution recipe v9. |
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
-| `run.build_binaries` | bool, `true` | Build the three stage executables for a fresh run. `false` requires them to exist under the resolved build directory. Managed continuation always reuses matching binaries and skips rebuilding. |
+| `run.build_binaries` | bool, `true` | Build the stage executables (`gen_sandwich_gadget`, `circuit_mixer`) for a fresh run. `false` requires them to exist under the resolved build directory. Managed continuation always reuses matching binaries and skips rebuilding. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory. Stage binaries are selected from its host-target `release/` directory; changing this can affect whether the saved binary fingerprints can be matched. |
-| `run.stop_after_stage` | integer, `6` | Last stage to reach, in `2..6`. Stages 1 and 2 run together; `2` is the shortest run. |
-| `run.rerun_from_stage` | integer, unset | Recompute this stage and later stages reached by this invocation, in `2..6`, even if their outputs exist. It does not authorize changing a saved recipe or make earlier stages run again. |
+| `run.stop_after_stage` | integer, `5` | Last stage to reach, in `2..5`. Stages 1 and 2 run together; `2` is the shortest run. |
+| `run.rerun_from_stage` | integer, unset | Recompute this stage and later stages reached by this invocation, in `2..5`, even if their outputs exist. It does not authorize changing a saved recipe or make earlier stages run again. |
 | `run.adopt_unverified_run` | bool, `false` | Retired compatibility field. `true` is rejected: existing runs need a valid current managed manifest. Leave this omitted or false. |
 
 Run lifecycle options such as the stop stage and worker count do not change
@@ -178,7 +179,7 @@ recipe but cannot change its repair settings. The standalone `circuit_mixer`
 also exposes additional low-level leakage-analysis budgets and thresholds;
 they are not extra TOML fields accepted by `tdp_gen`.
 
-### Crossing and final compression
+### Crossing
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
@@ -188,9 +189,7 @@ they are not extra TOML fields accepted by `tdp_gen`.
 | `crossing.size_tolerance_divisor` | integer, `25` | Sets size-controller temperature to `max(64, round(target / divisor))`, in `1..1_000_000_000`. Larger divisors tighten tolerance until the floor of 64 is reached. |
 | `crossing.move_attempts` | integer, `6 * target` | Additional stage-5 attempt budget, in `1..1_000_000_000_000`. The driver adds the move counter from `split.state` because the standalone mixer's resumed `--moves` ceiling is absolute. |
 
-Stage 6 uses the managed compression preset and a derived seed. There is no
-`[compression]` TOML section or adjustable splitting section in the current
-schema. Stop stage, rerun stage and the parallel settings still control the
+There is no adjustable splitting section in the current schema. Stop stage, rerun stage and the parallel settings still control the
 relevant lifecycle and stage-4 execution.
 
 ### Calibration
@@ -253,7 +252,6 @@ verification cadence, or extra leakage thresholds, inspect:
 
 ```bash
 cargo run --release --locked --bin circuit_mixer -- --help
-cargo run --release --locked --bin fcompress -- --help
 bash scripts/tdp_gen.sh --help
 ```
 
@@ -372,23 +370,6 @@ Read `cross_move_on`, `undo_move`, and `merge_move` in
 [src/stages/post-processing/crossing.rs](../src/stages/post-processing/crossing.rs).
 The scheduler and acceptance logic are in
 [src/engine/mixer/scheduling.rs](../src/engine/mixer/scheduling.rs).
-
-## 6. Compress and pack
-
-Finally, we gather compatible gates with the same target and simplify their
-combined firing function. We repeat this with transport and reduction passes,
-then pack each consecutive same-target run into a generalized gate. Its
-activation function is reduced through ANF and a deterministic ESOP spelling.
-
-The final file is `final.esop1`, with `stage6.log`. A packed-gate count and an
-expanded cube count measure different things, so keep both in mind when
-reading the compression log.
-
-Read [src/programs/fcompress/mod.rs](../src/programs/fcompress/mod.rs), then
-`compress_anc` in
-[src/stages/post-processing/compression/mod.rs](../src/stages/post-processing/compression/mod.rs).
-The same directory separates transport, reduction, and
-[packing](../src/stages/post-processing/compression/packing.rs).
 
 ## The shared pieces
 

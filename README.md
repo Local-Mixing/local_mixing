@@ -4,7 +4,9 @@ We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
 compute. TDP is the current end-to-end pipeline. It constructs a sliced
 sandwich, applies gadgetization, mixes with the frozen database, then runs
-splitting, crossing and final compression. The final circuit is `final.esop1`.
+splitting and crossing. The final circuit is `crossing.mpmct1`. (The old final
+compression stage, `fcompress`, is historic: branch
+`ran/archive/curated-and-postmix`.)
 
 ## Setup
 
@@ -100,20 +102,19 @@ test without a database, clear the DB paths and set
 | 3. Database mixing | `db_mixing.mpmct1`, `db_mixing.state` |
 | 4. Splitting | `split.mpmct1`, `split.state` |
 | 5. Crossing | `crossing.mpmct1`, `crossing.state` |
-| 6. Compression and packing | `final.esop1` |
 
 `tdp_gen.log` records overall progress; `stage12.log` and `stage3.log` through
-`stage6.log` hold stage output. The
-[TDP Pipeline](docs/tdp_pipeline.md) explains these six steps and where to find
+`stage5.log` hold stage output. The
+[TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
 
 To continue a run, set `run.directory` to its directory and invoke the same
 command again. Completed stage outputs are skipped. Set `run.stop_after_stage`
-to `2`, `3`, `4`, `5` or `6` to stop early; stages 1 and 2 execute together.
+to `2`, `3` or `4` to stop early (`5`, the default, runs every stage); stages 1 and 2 execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
-New runs record recipe v8 in `tdp_command.conf`, including source hashes and
+New runs record recipe v9 in `tdp_command.conf`, including source hashes and
 driver/executable fingerprints. Managed continuation reuses the exact
 recorded stage binaries and skips rebuilding them. Preserve their build
 directory; use a fresh run directory after changing recipe settings or stage
@@ -138,7 +139,7 @@ We must distinguish the source from the public TDP circuit. With default
 embedded masking, an $n$-wire source becomes a $4n$-wire circuit. To compute
 $C(x)$, place $x$ on wires `0..n`, set the remaining input wires to zero, and
 read output wires `n..2n`. Other outputs can contain junk. Thus, comparing the
-source directly with `final.esop1` using the full-function command above is
+source directly with `crossing.mpmct1` using the full-function command above is
 not the TDP payload check. See [Gadgetization](docs/gadgetization.md) for the
 slice contract.
 
@@ -149,7 +150,7 @@ slice contract.
 | [`configs/`](configs/) | One annotated default recipe, plus your ignored local configuration |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Builds and tests on GitHub pushes and pull requests; not required for local TDP runs |
 | [`src/tdp/`](src/tdp/) | Recipe parsing, validation, run management and manifests |
-| [`src/stages/`](src/stages/) | The six pipeline steps |
+| [`src/stages/`](src/stages/) | The pipeline steps |
 | [`src/engine/`](src/engine/) | Mixer state, moves, scheduling and checkpoints |
 | [`src/circuit/`](src/circuit/) | Gates, file formats and evaluation |
 | [`src/canonicalization/`](src/canonicalization/) | Polynomial composition, canonical forms and keys |

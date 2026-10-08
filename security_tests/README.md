@@ -1,7 +1,7 @@
 # Security analysis tools
 
 This directory contains reusable circuit experiments: ordinary and affine
-heatmaps, the gadget gauntlet, a SAT preimage workflow, and two demixing probes.
+heatmaps, the gadget gauntlet and a SAT preimage workflow.
 Each experiment takes explicit inputs and writes its results to a directory you
 choose. Run the commands below from the repository root. Keep generated results
 under `target/` or outside the checkout.
@@ -11,7 +11,6 @@ under `target/` or outside the checkout.
 | [heatmaps/](heatmaps/) | Prefix distance, affine reconstruction, statistical prediction, cumulative trace analysis, and their renderers. |
 | [gauntlet/](gauntlet/) | Generate gadget comparisons, collect traces, run six attack families, and render witnesses. |
 | [sat_solve/](sat_solve/) | Encode a zero-slice preimage problem as DIMACS, run an external solver, and independently verify its model. |
-| [demixing/](demixing/) | Output-cone pruning and inverse crossing reductions using only the supplied circuit. |
 | [preprocessing/](preprocessing/) | Standalone embedded-masking generation for controlled experiments. |
 | [gadgetization/](gadgetization/) | Python nonlinear gadget references and template exporters shared with the gauntlet and correctness tests. |
 | [python/](python/) | Rust implementation of the optional `local_mixing` Python heatmap extension. |
@@ -28,8 +27,7 @@ you want explicitly:
 ```bash
 cargo build --release --features security-tools \
   --bin hmap --bin hmap_affine --bin hmap_stat --bin hmap_trace_affine \
-  --bin gauntlet_gen --bin gauntlet_audit \
-  --bin output_cone --bin crossing_downhill
+  --bin gauntlet_gen --bin gauntlet_audit
 ```
 
 Use Python 3.10 or later. NumPy and Matplotlib are needed for plotting and the
@@ -251,26 +249,9 @@ pipeline output is packed ESOP, supply the equivalent expanded `mpmct1` tape.
 
 ## Demixing probes
 
-These tools use the circuit alone, without its generator seed or provenance.
-
-```bash
-target/release/crossing_downhill --input mixed.mpmct1 --top 20
-target/release/crossing_downhill --input mixed.mpmct1 --passes 3 \
-  --output target/security-demo/reduced.mpmct1 --verify-rounds 16
-
-target/release/output_cone --input mixed.mpmct1 --live-start 8 \
-  --max-moves 100000 --output target/security-demo/cone.mpmct1
-```
-
-`crossing_downhill` searches inverse crossing substitutions that shrink
-same-target ESOP groups. Its scan-only mode reports opportunities; `--passes`
-applies them. Rewrites preserve the full circuit function and applied runs
-perform sampled all-wire checks.
-
-`output_cone` moves gates affecting discarded outputs toward the end and
-prunes them using backward liveness. `--live-start 8` preserves output wires
-`[8,width)` and allows outputs `[0,8)` to change. Select that range according to
-the observation model; its output is a projection-preserving circuit.
+The demixing probes `crossing_downhill` and `output_cone` depended on the old
+compression stage (fcompress) and are historic: they remain on branch
+`ran/archive/curated-and-postmix`.
 
 ## Fixtures and checks
 

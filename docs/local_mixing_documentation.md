@@ -594,26 +594,12 @@ algorithm will fail.
 
 ### Compression and demixing
 
-The final fragment compressor is available to an attacker. It gathers
-commutable same-target gates, reduces their ESOP, and repeats while it can
-shrink the tape. The relevant size is the size after this pass, accompanied
-by its parameters. A circuit that resists this compressor may still admit
-another reduction algorithm.
-
-Two retained probes use only the supplied circuit:
-
-- `crossing_downhill` searches inverse crossing substitutions that shrink
-  same-target ESOP groups. Applied rewrites preserve the whole function and
-  are followed by sampled all-wire checks.
-- `output_cone` uses legal movement and backward liveness to remove work
-  irrelevant to selected outputs. This preserves a declared output
-  projection, allowing discarded outputs to change. A comparison must use
-  the actual application answer range.
-
-The first asks whether crossing left locally recoverable expansion. The
-second asks how much of the published material is needed for its visible
-output. Neither requires access to generator seeds or provenance. Neither
-by itself recovers the secret source representation or solves a preimage.
+A final fragment compressor (`fcompress`, the old stage 6) and two demixing
+probes built on it (`crossing_downhill`, `output_cone`) are historic: they
+remain on branch `ran/archive/curated-and-postmix`. The attack question they
+asked still applies: a published size is honest only relative to the
+reductions an attacker can compute, and a circuit that resists one compressor
+may still admit another reduction algorithm.
 
 ### What to record for a comparison
 
@@ -653,7 +639,7 @@ allow anyone to reverse $G$, but the target does not include its junk outputs.
 This removes an immediate complete-output inversion, not every possible way
 to solve the projected problem.
 
-The six stages are:
+The five stages are:
 
 | Stage | Transformation | Purpose |
 |---|---|---|
@@ -662,17 +648,18 @@ The six stages are:
 | 3 | Database mixing | Replaces local windows by different equivalent circuits and repeatedly overlaps replacements. |
 | 4 | Splitting | Removes complemented gate forms and couples distant locations with absorbed changes of wire frame. |
 | 5 | Crossing | Moves fragments through true colliders by exact case splits, with contraction controlling growth. |
-| 6 | Compression and packing | Removes recoverable redundancy and writes the final grouped ESOP representation. |
 
 ```text
 C -> sliced sandwich -> embedded masking -> database mixing
-  -> splitting -> crossing -> compress and pack -> final.esop1
+  -> splitting -> crossing -> crossing.mpmct1
 ```
+
+The former stage 6 (compression and packing with `fcompress`) is historic; it
+remains on branch `ran/archive/curated-and-postmix`.
 
 Database mixing comes before fragmentation because the database returns r57
 circuits. Putting it after splitting would repeatedly reintroduce the gate
-form splitting is intended to remove. Final compression makes the published
-size reflect the redundancy our own attacker-computable compressor can remove.
+form splitting is intended to remove.
 
 The [pipeline guide](tdp_pipeline.md) contains the complete configuration and
 shell-flag reference. [Gadgetization](gadgetization.md) explains the first two
@@ -2054,55 +2041,18 @@ Finally, the online merge refuses any pair whose result would be a complemented
 conjunction. In particular, the two pieces of an r57 split are not allowed to
 rejoin into the r57 gate from which they came. Contraction can therefore control
 the size without steadily rebuilding the uniform gate form which fragmentation
-was meant to remove. This online pairwise contraction is separate from the
-stronger final compression pass described next.
+was meant to remove. This online pairwise contraction was separate from the
+stronger final compression pass of the historic `fcompress` stage.
 
 <a id="fcompress"></a>
 
-### Compressing fragments
+### Compressing fragments (historic)
 
-The frozen-database mixer is built
-to move in both directions. It can expand or re-spell a window to create new
-structure, and it can later compress a window to control the size. The
-compression direction also acts as an attacker test: if our own compressor can
-immediately undo an expansion, we should assume that an attacker can do the
-same. We use this same idea after leaving r57. Splitting and crossing provide
-the expansion side for fragments, while our fragment compressor provides the corresponding
-fragment-aware compression side.
-
-The key observation is that several gates with the same active wire all XOR
-into the same target. If those gates can commute to one common position, then
-together they have the form
-
-$$
-t \mathrel{{\oplus}{=}} f_1 \oplus f_2 \oplus \cdots \oplus f_k,
-$$
-
-where each $f_i$ is one mixed-polarity conjunction. This is an exclusive
-OR of products, or ESOP, so the compressor can simplify the complete group instead of only looking at adjacent
-pairs.
-
-The pass repeats three steps. First, it **gathers** compatible gates in one
-forward sweep, keeping an open group for each target. Reading a target closes
-that target's group, because the reader pins the value accumulated so far.
-Writing to any control used by the group also closes it, because the control
-values may not change while the gates are being moved. These two rules ensure
-that every member of the group can legally commute to the point where the group
-is closed. Second, it **reduces** the gathered ESOP. It applies the same exact
-pairwise identities used above until none remain. When the group's total wire
-support is small enough, it also expands the group into algebraic normal form (ANF), an XOR of
-square-free monomials, cancels duplicate monomials, and keeps that spelling only when it is smaller. Third, it
-**re-emits** the surviving conjunction gates together at the closing point. The
-whole gather, reduce, and re-emit process repeats until the gate count stops
-shrinking or the iteration limit is reached.
-
-This is stronger than the online contraction used during the crossing walk.
-The walk can undo one intact crossing or merge one nearby compatible pair;
-our fragment compressor can gather and reduce a larger same-target group after the mixing is
-finished. It is deterministic and attacker-computable, so the size left after
-this pass is the honest effective size of the fragmented circuit. Any structure
-which this compressor removes is structure that we assume an attacker can remove as
-well.
+The former stage 6, `fcompress`, gathered commutable same-target gates,
+reduced each group's ESOP (and, for small supports, its ANF), re-emitted the
+survivors and finally packed each same-target run into one generalized gate
+(`esop1`). It is historic: the code and its documentation remain on branch
+`ran/archive/curated-and-postmix`.
 
 At the end of each fragmentation stage, we make one final positional float.
 Every gate is moved to a uniformly chosen position inside its current two-sided
@@ -2125,13 +2075,15 @@ structure we had just removed. There is no need to return to pure r57 after the
 fragmentation stages. The [attack section](#attacks) compares the questions these constructions
 are intended to address.
 
-### Packed output
+### Packed formats
 
-The final `esop1` output stores gathered target updates as XORs of conjunction
-terms. Packing is a representation change after functional compression; its
-groups expand into the equivalent controlled-XOR tape. Evaluators must use the
-format's group semantics. A text `mpmct1` gate count, an ESOP group count, and a
-file's byte size are different measurements and should be reported separately.
+The `esop1` and `anf1` formats store gathered target updates as XORs of
+conjunction terms. The pipeline no longer emits them, but the circuit
+utilities still read them. Packing is a representation change; its groups
+expand into the equivalent controlled-XOR tape. Evaluators must use the
+format's group semantics. A text `mpmct1` gate count, an ESOP group count, and
+a file's byte size are different measurements and should be reported
+separately.
 
 The crossing target defaults to twice the incoming split-stage gate count.
 Its width-penalty base is 3 with threshold 1, and the size tolerance uses
@@ -2157,9 +2109,9 @@ boundaries are:
 | [`src/stages/sandwich/`](../src/stages/sandwich/) | Slice blocks, classic/balanced sandwich assembly, and copy-gate scattering. |
 | [`src/stages/preprocessing/`](../src/stages/preprocessing/) | Embedded masking, optional carrier shuffling, and construction diagnostics. |
 | [`src/stages/db_mixing/`](../src/stages/db_mixing/) | Window selection, candidate policy, mapping, and exact replacement verification. |
-| [`src/stages/post-processing/`](../src/stages/post-processing/) | Splitting/crossing behavior and fragment compression. |
+| [`src/stages/post-processing/`](../src/stages/post-processing/) | Splitting/crossing behavior. |
 | [`src/programs/`](../src/programs/) | Stage executable adapters and argument parsing. |
-| [`src/tdp/`](../src/tdp/) and [`scripts/tdp_gen.sh`](../scripts/tdp_gen.sh) | Typed recipe, resume checks, and six-stage orchestration. |
+| [`src/tdp/`](../src/tdp/) and [`scripts/tdp_gen.sh`](../scripts/tdp_gen.sh) | Typed recipe, resume checks, and stage orchestration. |
 
 ### Local algebra instead of global expansion
 
