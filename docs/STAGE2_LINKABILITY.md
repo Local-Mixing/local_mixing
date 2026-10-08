@@ -148,9 +148,32 @@ Levers tested and dropped (n=64, G=512 unless noted):
 
 ## 5. Validation (replicates)
 
-*Pending: two new seeds per configuration per scale (A and L8 at n=64 and
-n=128), each run end to end (gen → mix → pack G=512 → repair), with the
-serialized deliverable (`deliverable.bin`, gzip/xz) and evaluation timing.*
+Three seeds per configuration per scale (the runs in §4 plus two new seeds
+each), every one run end to end with `scripts/windowed_delivery/waist/val_chain.sh`
+(gen → mix → pack G=512 → repair → serialize). All twelve: forward and reverse
+verification pass; the repaired circuit is functionally equivalent to the mixed
+one; no window exceeds 65,536 monomials; the C-view is at the exact floor; the
+span check is zero at every sampled stage-2 cut; and the end-to-end check
+`verify_zero_slice` (C(x) against the final circuit's payload wires, 512 random
+honest-slice inputs) passes.
+
+| | exposed | linkable | sightings | linkable froth | anchors | `deliverable.bin` | xz | eval (ms/input) |
+|---|---|---|---|---|---|---|---|---|
+| n=64 A (×3) | 15.4k | 6.0–6.1k | 73.2–73.8k | 373–409 | 315–321 | 26.0–27.0 MB | 2.81–2.86 MB | 0.66–0.85 |
+| n=64 L8 (×3) | 11.7k | 5.27–5.37k | 58.5–58.9k | 1,110–1,126 | 185–200 | 30.2–32.8 MB | 3.05–3.10 MB | 0.79–1.00 |
+| n=128 A (×3) | 54.3–54.7k | 18.5–18.6k | 250–252k | 2,219–2,318 | 987–995 | 104.7–106.9 MB | 9.71–9.81 MB | 1.81–2.04 |
+| n=128 L8 (×3) | 34.5–35.0k | 16.06–16.11k | 187–188k | 5,544–5,765 | 701–718 | 102.8–106.8 MB | 9.50–9.62 MB | 1.83–1.99 |
+
+Replicates agree within 1–2% on every metric. L8 vs A (means, n=64 / n=128):
+linkable −12% / −13%, sightings −20% / −25%, exposed −24% / −36%, anchors
+−39% / −28%; linkable froth ×2.8 / ×2.4 (almost all seen exactly twice);
+serialized size +20% / 0% (xz +9% / −2%). Evaluation timings are from the
+Python reference evaluator (1,024-lane batched, ANF form).
+
+The validation found one bug in the prototype repair: the slide step
+re-located the breaker after moving the completer and picked up the moved gate.
+It is fixed in `order_repair.py`; all replicates were re-repaired with the
+fixed code (identical results except vL128a, which now reaches the floor).
 
 ## 6. Recommended configuration
 
