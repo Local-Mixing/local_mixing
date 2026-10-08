@@ -160,14 +160,15 @@ def run_fix(seq, wit_path, exp_path):
         if comp_i is not None:
             new = slide(seq, comp_i, +1)
             moved += new != comp_i
-        gpos = [i for i, x in enumerate(seq) if x is not None]
+            # The completer moved from comp_i to new < brk_i: the pop and the
+            # insert cancel for every index past `new`, so brk_i still points
+            # at the breaker. If the completer passed the breaker (same-target
+            # writes commute), the relation is already broken.
+            if brk_i is not None and new >= brk_i:
+                brk_i = None
         if brk_i is not None:
-            # breaker index may have shifted by the completer move: re-find the
-            # first write to S after the (unchanged) cut index
-            brk_i = min((gi for gi in gpos[cut:] if seq[gi][0] in sset), default=None)
-            if brk_i is not None:
-                new = slide(seq, brk_i, -1)
-                moved += new != brk_i
+            new = slide(seq, brk_i, -1)
+            moved += new != brk_i
         print(f'  C gate {cg}: support {sup} completer/breaker slid')
     return seq, moved
 

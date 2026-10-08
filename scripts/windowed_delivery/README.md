@@ -18,5 +18,10 @@ Delivery path (post stage 3):
 Censuses / attacks: `boundary_cluster.py`, `waist/link_census.py` (linkable
 values, sightings, froth), `waist/mult_census.py`, `wire_balance.py`, plus
 the diagnostic scripts in `waist/` (leak tracing, C structure, births).
-Drivers: `run_stage3.sh`, `waist/run_ret3.sh` (full chain: gen -> mix ->
-pack -> scans), `waist/score_arm.sh`, `waist/auto_score2.sh`.
+Drivers: `waist/val_chain.sh` (validation run of the four-stage pipeline:
+gen -> stage-3 mix -> pack G=512 + `repair.sh` -> serialized deliverable),
+`waist/run_ret3.sh` (full chain: gen -> mix -> pack -> scans),
+`waist/score_arm.sh`, `waist/auto_score2.sh`. The drivers call
+`circuit_mixer` with the stage-3 flags (`--p-db 1.0`, regular frozen store);
+the retired `--p-comp`/`--p-any` flags are gone (they acted only in the
+historic crossing walk, branch `ran/archive/curated-and-postmix`).
