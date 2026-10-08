@@ -14,6 +14,9 @@ The historical narrative below predates the optional carrier-shuffling update
 of September 16, 2026. Its embedded-masking section describes fixed physical
 carriers. The [dated implementation update](#embedded-masking-shuffling-update)
 records the addition while preserving the earlier discussion and results.
+The [update of October 8, 2026](#four-stage-update) records the move to a
+four-stage pipeline, which retired the curated store and the post-mixing
+stages described below.
 
 The following document details the ideas and experiments of Ran Canetti, Nicholas Ho, and other collaborators. The document is written by Nicholas Ho.
 
@@ -41,7 +44,7 @@ what an attacker can still recover.
 - [The trapdoor permutation challenge](#trapdoor-permutation-challenge) and [SAT solvers](#sat-solvers)
 - [Slicing and fragmentation](#making-the-solver-struggle)
 - [The complete mixing method](#current-mixing-method)
-- [Conclusion](#conclusion) and [references](#references)
+- [Conclusion](#conclusion), the dated updates ([carrier shuffling](#embedded-masking-shuffling-update), [four stages](#four-stage-update)), and [references](#references)
 
 <a id="introduction"></a>
 
@@ -4560,6 +4563,58 @@ and gauntlet counts above are not measurements of this new transform. See
 for its equations and invariants, and the
 [attack methodology](local_mixing_documentation.md#attacks)
 for the distinctions a new comparison must preserve.
+
+<a id="four-stage-update"></a>
+
+## October 8, 2026: Four stages; the curated store and post-mixing stages retired
+
+The pipeline now has four stages: the sliced sandwich, embedded masking,
+database mixing with the regular frozen store, and packing. The curated store
+and the three post-mixing stages described in
+[Slicing and fragmentation](#making-the-solver-struggle) (splitting, the
+crossing walk, and `fcompress`) are no longer part of the method. Their code
+remains on the branch `ran/archive/curated-and-postmix`, and
+[the archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) lists what it holds.
+
+Two lines of measurement led to this. First, the curated store did not help
+the mixing. On random circuits we removed it, restricted it to the
+expanding rounds, and, in the strongest form, let it supply every expanding
+replacement at a matched number of replacements. The depth of the affine
+ridge between the preprocessed and the mixed circuit did not change beyond
+seed noise in any of these arms, and the curated-only arm was slightly worse.
+The regular table covered the replacements the curated store had supplied.
+The store was also large, very skewed, and slow to select from.
+
+Second, we measured how much each post-mixing stage hid. Splitting moved
+visibility into small parities but erased nothing. The crossing walk was the
+only stage that erased exposed values, three to five points of visibility,
+and `fcompress` refunded part of that. The crossing walk also inflated the
+circuit about 3.5 times and lengthened its dependency intervals about four
+times. That destroyed the freedom to reorder, which a different approach
+needed.
+
+That approach is windowed delivery. We reorder the mixed circuit along
+commutations, cut it into windows, and publish each window as its algebraic
+normal form, so that an observer sees wire values only at window boundaries.
+A single windowing pass hid 58 to 72 percent of the carried values, an order
+of magnitude more than the crossing walk, and windowing the raw mixed circuit
+did strictly better than windowing the crossed one. In parallel, the
+preprocessing was redesigned to limit what any boundary can expose:
+carriers migrate between wires, every data wire is masked before the
+computation starts, and the band seed avoids $C$'s first-layer control pairs.
+A repair pass after packing removes the remaining exposures, with the target
+that no interior value of $C$ is an affine function of a boundary state; in
+the validation runs only the outputs of $C$ remained visible.
+
+So the stages divide the work differently. Preprocessing decides which values
+ever exist in the clear; database mixing respells and dilutes; packing
+decides where anything can be observed at all. Packing is still a set of
+Python prototypes, and a Rust port is planned. The measurements are in
+[ANF window delivery](ANF_WINDOW_DELIVERY.md) and
+[the stage-2 linkability report](STAGE2_LINKABILITY.md); the pipeline is
+described in [the TDP pipeline guide](tdp_pipeline.md). As with the earlier
+update, the heatmaps, SAT timings and compression ratios above describe the
+earlier pipeline and its parameters, not this one.
 
 <a id="references"></a>
 

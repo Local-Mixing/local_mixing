@@ -120,7 +120,7 @@ The managed command has these flags:
 | `--dry-run` | Parse, resolve and validate the recipe, paths and resume fingerprints; print the planned stages without building or creating a run. A fresh default build need not already exist; disabling builds or resuming requires the recorded binaries. |
 | `-h`, `--help` | Show command help. `cargo run --release --locked -- tdp_gen --help` prints it. |
 
-There are **36 recognized section settings plus `config_version`**. The
+There are **29 recognized section settings plus `config_version`**. The
 following tables cover all of them. “Default” means the behavior when the
 field is omitted, including defaults computed by the stage driver. In TOML,
 `number` accepts an integer or a finite float, `integer` requires an integer,

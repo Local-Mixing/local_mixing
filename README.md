@@ -7,9 +7,13 @@ constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
 (2), mixes with the frozen database (3), and packs the result (4). The
 `tdp_gen` driver runs stages 1-3 and ends at `db_mixing.mpmct1`; packing is
 still a set of Python prototypes under
-[`scripts/windowed_delivery/`](scripts/windowed_delivery/). (The old split,
-crossing-walk and `fcompress` stages are historic: branch
-`ran/archive/curated-and-postmix`.)
+[`scripts/windowed_delivery/`](scripts/windowed_delivery/) (Rust port
+planned). The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run
+all four stages, and
+[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md) is the full
+reference. (The curated database and the old split, crossing-walk and
+`fcompress` stages are historic: branch `ran/archive/curated-and-postmix`; see
+[the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
 
 ## Setup
 
@@ -101,6 +105,7 @@ test without a database, clear the DB paths and set
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Gadgetization / preprocessing | `tdp.mpmct1` |
 | 3. Database mixing | `db_mixing.mpmct1`, `db_mixing.state` |
+| 4. Packing | not run by `tdp_gen`; see [Stage 4: packing](docs/tdp_pipeline.md#stage-4-packing) |
 
 `tdp_gen.log` records overall progress; `stage12.log` and `stage3.log` hold
 stage output. The
