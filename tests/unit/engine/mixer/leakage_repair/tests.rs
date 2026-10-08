@@ -1,6 +1,6 @@
 use super::*;
 use crate::database::frozen::FrozenDb;
-use crate::engine::mixer::{Meta, MixParams, ORIGIN_SYNTH, Tap, UndoEntry};
+use crate::engine::mixer::{Meta, MixParams, ORIGIN_SYNTH, UndoEntry};
 use rand::Rng;
 
 fn mixer(gates: Vec<XGate>) -> Mixer {
@@ -102,7 +102,7 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
         support: 2,
     };
     let fresh = XGate::from_g57([0, 1, 2]);
-    // Two identity pairs add material as well as exercising side indexes.
+    // Two identity pairs add material as well as exercising the merge index.
     let replacement = vec![fresh.clone(); 4];
     mx.apply_quality_repair(&plan, replacement.clone()).unwrap();
     let expected = [vec![prefix], replacement, vec![middle, suffix]].concat();
@@ -155,11 +155,6 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
     for &id in &after {
         let key = super::super::key_of(mx.arena.gate(id));
         assert_eq!(mx.index[&key][mx.index_pos[id as usize] as usize], id);
-        assert_eq!(mx.comp_pos[id as usize] != NIL, mx.arena.gate(id).comp);
-        assert_eq!(
-            mx.wt_pos[id as usize] != NIL,
-            mx.arena.gate(id).comp || mx.arena.gate(id).ctrls.len() == 1
-        );
     }
     mx.global_check();
 
@@ -244,17 +239,9 @@ fn quality_repair_rejects_invalid_gather_and_replacement_atomically() {
 }
 
 #[test]
-fn quality_repair_keeps_whole_circuit_tap_anchors_live() {
+fn quality_repair_replaces_a_whole_circuit_block() {
     let gate = XGate::cnot(0, 1);
     let mut mx = mixer(vec![gate.clone(), gate]);
-    let ids = mx.arena.ids_in_order();
-    mx.taps.push(Tap {
-        anchor: ids[1],
-        wire: 0,
-        orig_permille: 500,
-        flips: 3,
-    });
-    mx.tap_at.insert(ids[1], vec![0]);
     let plan = ConvexBlock {
         span: 0..2,
         selected: vec![0, 1],
@@ -265,11 +252,6 @@ fn quality_repair_keeps_whole_circuit_tap_anchors_live() {
     assert!(mx.apply_quality_repair(&plan, vec![]).is_err());
     mx.apply_quality_repair(&plan, vec![XGate::x_gate(2); 4])
         .unwrap();
-    assert!(mx.arena.is_linked(mx.taps[0].anchor));
-    assert_eq!(mx.tap_at[&mx.taps[0].anchor], vec![0]);
-    assert_eq!(
-        (mx.taps[0].wire, mx.taps[0].orig_permille, mx.taps[0].flips),
-        (0, 500, 3)
-    );
+    assert_eq!(mx.arena.to_vec(), vec![XGate::x_gate(2); 4]);
     mx.global_check();
 }

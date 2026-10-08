@@ -25,12 +25,12 @@ fn golden_hash(mx: &Mixer) -> u64 {
     h.finish()
 }
 
-// Re-baselined 2026-10-08 when the two curated counters left the counters
-// line; the gate/meta trajectory was verified unchanged against the previous
-// constants by re-inserting the two (zero) fields.
-const GOLDEN_PROFILE_NULL_PLANT: u64 = 0x8624858b7434eace;
-const GOLDEN_SPLIT_STOP: u64 = 0x32684402a67eeea0;
-const GOLDEN_THERMOSTAT_WALK: u64 = 0x60a50a097a564f19;
+// Re-baselined 2026-10-08 (twice): when the two curated counters and then
+// the eight split-stage counters left the counters line. Each time the
+// gate/meta trajectory was verified unchanged against the previous constants
+// by re-inserting the retired (zero) fields.
+const GOLDEN_PROFILE_NULL_PLANT: u64 = 0xc277215de595bf62;
+const GOLDEN_THERMOSTAT_WALK: u64 = 0x85489b717f732b6e;
 
 #[test]
 fn golden_profile_null_plant_is_stable() {
@@ -60,30 +60,6 @@ fn golden_profile_null_plant_is_stable() {
     assert_eq!(
         h, GOLDEN_PROFILE_NULL_PLANT,
         "serial profile trajectory drifted: got {h:#018x}"
-    );
-}
-
-#[test]
-fn golden_split_stop_is_stable() {
-    let gates = random_mixed_circuit(11, 16, 400);
-    let params = MixParams {
-        k_max: 8,
-        moves: 200_000,
-        split: true,
-        split_stop: true,
-        split_canaries: 32,
-        report_every: u64::MAX,
-        verify_every: 1_000,
-        seed: 5,
-        ..MixParams::default()
-    };
-    let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
-    let stop = mx.run();
-    assert!(matches!(stop, MixStop::SplitDone));
-    let h = golden_hash(&mx);
-    assert_eq!(
-        h, GOLDEN_SPLIT_STOP,
-        "serial split-stage trajectory drifted: got {h:#018x}"
     );
 }
 

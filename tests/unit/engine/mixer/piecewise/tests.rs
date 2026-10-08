@@ -178,8 +178,8 @@ fn counters_fold_is_field_wise() {
     let mut b = MixCounters::default();
     a.db_comp_hits = 3;
     b.db_comp_hits = 4;
-    a.split_span_hist[2] = 5;
-    b.split_span_hist[2] = 6;
+    a.width_hist[2] = 5;
+    b.width_hist[2] = 6;
     b.pair_box_max = 9;
     a.pair_box_max = 4;
     b.len_attempts = vec![1, 2, 3];
@@ -189,7 +189,7 @@ fn counters_fold_is_field_wise() {
     a.moves = 5;
     a += &b;
     assert_eq!(a.db_comp_hits, 7);
-    assert_eq!(a.split_span_hist[2], 11);
+    assert_eq!(a.width_hist[2], 11);
     assert_eq!(a.pair_box_max, 9);
     assert_eq!(a.len_attempts, vec![11, 2, 3]);
     assert_eq!(a.splice_sizes, vec![vec![1, 1], vec![2]]);

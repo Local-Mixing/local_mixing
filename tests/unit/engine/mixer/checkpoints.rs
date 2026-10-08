@@ -4,76 +4,26 @@ fn counters_line_tolerates_missing_trailing_fields() {
     c.moves = 7;
     c.tg_consumed = 3;
     c.tg_emitted = 9;
-    c.split_prims = 11;
-    c.tap_flips = 13;
-    c.split_span_sum = 17;
     c.cross_pool_shots = 19;
     let line = c.to_line();
     let full = MixCounters::from_line(&line).expect("roundtrip");
     assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
-    assert_eq!((full.split_prims, full.tap_flips), (11, 13));
-    assert_eq!((full.split_span_sum, full.cross_pool_shots), (17, 19));
+    assert_eq!(full.cross_pool_shots, 19);
     let fields: Vec<&str> = line.split_whitespace().collect();
-    // Dropping the seven split counters, span sum and pool shots must
-    // default those fields to zero while preserving the tg pair.
-    let truncated = fields[..fields.len() - 9].join(" ");
+    // Dropping the pool-shot counter must default it to zero while
+    // preserving the tg pair.
+    let truncated = fields[..fields.len() - 1].join(" ");
     let parsed =
-        MixCounters::from_line(&truncated).expect("state without split counters must load");
+        MixCounters::from_line(&truncated).expect("state without pool shots must load");
     assert_eq!(parsed.moves, 7);
     assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (3, 9));
-    assert_eq!((parsed.split_prims, parsed.cross_pool_shots), (0, 0));
+    assert_eq!(parsed.cross_pool_shots, 0);
     // Dropping the tg pair as well defaults all trailing fields.
-    let truncated = fields[..fields.len() - 11].join(" ");
+    let truncated = fields[..fields.len() - 3].join(" ");
     let parsed = MixCounters::from_line(&truncated).expect("state without tg counters must load");
     assert_eq!(parsed.moves, 7);
     assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
-    assert_eq!((parsed.split_prims, parsed.tap_flips), (0, 0));
-}
-
-// State roundtrip mid-stage: the live flag, the failure streak and the
-// canaries all ride the checkpoint; the resumed run finishes the stage
-// and still verifies.
-#[test]
-fn split_stage_state_roundtrip() {
-    let gates = random_mixed_circuit(13, 16, 300);
-    let params = MixParams {
-        k_max: 8,
-        moves: 4,
-        split: true,
-        split_canaries: 16,
-        report_every: u64::MAX,
-        verify_every: u64::MAX,
-        seed: 9,
-        ..MixParams::default()
-    };
-    let mut mx = Mixer::new_with_db(gates, 16, params.clone(), FrozenDb::empty());
-    let stop = mx.run();
-    assert!(matches!(stop, MixStop::MovesBudget));
-    let taps0 = mx.taps.len();
-    assert!(taps0 > 0, "canaries plant on the first stage move");
-    let path = std::env::temp_dir().join("circuit_mixer_split_state_roundtrip.txt");
-    let path = path.to_str().unwrap().to_string();
-    mx.save_state(&path).expect("save state");
-    let params2 = MixParams {
-        moves: 200_000,
-        split_stop: true,
-        ..params
-    };
-    let mut mx2 = Mixer::resume_state(&path, params2, FrozenDb::empty()).expect("resume");
-    assert!(mx2.split_on, "live stage flag must survive the checkpoint");
-    assert_eq!(
-        mx2.taps.len(),
-        taps0,
-        "canaries must survive the checkpoint"
-    );
-    let stop = mx2.run();
-    assert!(
-        matches!(stop, MixStop::SplitDone),
-        "resumed stage must finish"
-    );
-    assert_eq!(mx2.remaining_g57(), 0);
-    mx2.global_check();
-    let _ = std::fs::remove_file(&path);
+    assert_eq!(parsed.cross_pool_shots, 0);
 }
 
 // Checkpoint round-trip: a resumed chain must continue rather than restart.
@@ -237,37 +187,23 @@ fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
     original.save_state(path.to_str().unwrap()).unwrap();
     let serialized = std::fs::read_to_string(&path).unwrap();
     assert!(serialized.starts_with(&format!("circuit-mixer-state {STATE_VERSION}\n")));
-    // Optional sections may be absent: no staps section and the short
-    // (three-field) split line still load and continue.
-    let mut compact = String::new();
-    for line in serialized.lines() {
-        if line.starts_with("staps ") {
-            break;
-        }
-        if line.starts_with("split ") {
-            compact.push_str(
-                &line
-                    .split_whitespace()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-            compact.push('\n');
-        } else {
-            compact.push_str(line);
-            compact.push('\n');
-        }
-    }
-    std::fs::write(&path, &compact).unwrap();
+    // The historic split stage left no trace in the format.
+    assert!(
+        !serialized
+            .lines()
+            .any(|l| l.starts_with("split ") || l.starts_with("staps "))
+    );
+    // The optional anctracers section is absent here (no sampled ancestry):
+    // the minimal state loads and continues.
     let mut resumed =
         Mixer::resume_state(path.to_str().unwrap(), params.clone(), FrozenDb::empty()).unwrap();
     assert_eq!(resumed.arena.to_vec(), original.arena.to_vec());
     resumed.run();
     resumed.global_check();
     assert!(resumed.moves_done > 0);
-    // Older versions carry the retired curated counters and are refused.
-    for version in [1, 2] {
-        let old = compact.replacen(
+    // Older versions carry retired curated or split fields and are refused.
+    for version in [1, 2, 3] {
+        let old = serialized.replacen(
             &format!("circuit-mixer-state {STATE_VERSION}\n"),
             &format!("circuit-mixer-state {version}\n"),
             1,

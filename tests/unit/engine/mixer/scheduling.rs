@@ -322,3 +322,58 @@ fn tabu_age_semantics() {
     let _ = mx.fresh_event(); // push triggers eviction of expired entries
     assert!(mx.tabu.len() <= 2, "expired tabu entries must be evicted");
 }
+
+// Min-dgen cross-shot bias: armed, the walk still preserves function and
+// the pool actually supplies shots; off, the constructor path draws no
+// extra RNG so the trajectory is byte-identical to the same seeded chain.
+#[test]
+fn mincross_pool_supplies_shots_and_preserves_function() {
+    let gates = random_mixed_circuit(17, 16, 400);
+    let params = MixParams {
+        k_max: 8,
+        moves: 60_000,
+        p_mincross: 0.9,
+        cross_pool_k: 500,
+        cross_rescan: 2_000,
+        report_every: u64::MAX,
+        verify_every: 10_000,
+        seed: 21,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new_with_db(gates.clone(), 16, params, FrozenDb::empty());
+    mx.run();
+    assert!(
+        mx.counters.cross_pool_shots > 1_000,
+        "the pool must actually supply shots"
+    );
+    mx.global_check();
+
+    // Off = identical trajectory: same seed, with and without the (inert)
+    // pool knobs, ends in the same circuit.
+    let base = MixParams {
+        k_max: 8,
+        moves: 30_000,
+        report_every: u64::MAX,
+        verify_every: u64::MAX,
+        seed: 22,
+        ..MixParams::default()
+    };
+    let mut a = Mixer::new_with_db(gates.clone(), 16, base.clone(), FrozenDb::empty());
+    let mut b = Mixer::new_with_db(
+        gates,
+        16,
+        MixParams {
+            cross_pool_k: 7,
+            cross_rescan: 55,
+            ..base
+        },
+        FrozenDb::empty(),
+    );
+    a.run();
+    b.run();
+    assert_eq!(
+        a.arena.to_vec(),
+        b.arena.to_vec(),
+        "p_mincross 0 must not perturb the walk"
+    );
+}

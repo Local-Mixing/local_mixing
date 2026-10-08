@@ -37,80 +37,6 @@ fn piecewise_profile_null_plant_reaches_phase_4() {
     w.global_check();
 }
 
-// The split policy: pieces split to their own exhaustion, rounds repeat
-// until the merged circuit has no g57 left, the canaries planted once on
-// the whole circuit survive the slicing, and the merged state resumes
-// into a stage-5-style thermostat walk unchanged.
-#[test]
-fn piecewise_split_stage_exhausts_g57s_and_resumes() {
-    let gates = random_mixed_circuit(11, 16, 1200);
-    let comp0 = gates.iter().filter(|g| g.comp).count();
-    assert!(comp0 > 30, "test input must carry g57s, got {comp0}");
-    let params = MixParams {
-        k_max: 8,
-        moves: 400_000,
-        split: true,
-        split_stop: true,
-        split_canaries: 32,
-        report_every: u64::MAX,
-        verify_every: 1_000,
-        seed: 5,
-        ..MixParams::default()
-    };
-    let mut w = Mixer::new_with_db(gates, 16, params.clone(), FrozenDb::empty());
-    let stop = run_piecewise(&mut w, &piece_cfg(3, false, 0));
-    assert!(
-        matches!(stop, MixStop::SplitDone),
-        "stage boundary ends the run"
-    );
-    assert_eq!(
-        w.remaining_g57(),
-        0,
-        "global exhaustion: no comp gate survives"
-    );
-    let splits =
-        (w.counters.split_prims + w.counters.split_hsplits + w.counters.split_segs) as usize;
-    assert!(
-        splits >= comp0,
-        "every input g57 splits: {splits} < {comp0}"
-    );
-    assert!(w.counters.split_joins > 0, "p_join 0.8 must land twists");
-    assert_eq!(w.taps.len(), 32, "canaries planted once on W and carried");
-    assert!(w.split_done && !w.split_on);
-    assert_eq!(w.split_end_reason, Some("g57 pool exhausted"));
-    w.global_check();
-
-    let path = std::env::temp_dir().join("circuit_mixer_piecewise_split.state");
-    let path = path.to_str().unwrap();
-    w.save_state(path).expect("save");
-    let resume_params = MixParams {
-        split: false,
-        split_stop: false,
-        ..params
-    };
-    let mut rs = Mixer::resume_state(path, resume_params, FrozenDb::empty()).expect("resume");
-    assert_eq!(
-        rs.arena.to_vec(),
-        w.arena.to_vec(),
-        "circuit survives verbatim"
-    );
-    assert_eq!(meta_snapshot(&rs), meta_snapshot(&w), "provenance survives");
-    assert_eq!(
-        rs.moves_done, w.moves_done,
-        "the merged move clock is the resume baseline"
-    );
-    assert!(rs.split_done && !rs.split_on, "phase 2 never re-arms");
-    assert_eq!(rs.taps.len(), 32);
-    rs.global_check();
-    rs.params.moves = rs.moves_done + 5_000;
-    rs.params.target_size = rs.arena.len() * 2;
-    rs.params.temp = 64.0;
-    let st = rs.run();
-    assert!(matches!(st, MixStop::MovesBudget));
-    rs.global_check();
-    let _ = std::fs::remove_file(path);
-}
-
 // Output is a function of (input, params, seed) only: sequential pieces,
 // a 2-thread pool and a 5-thread pool produce identical circuits,
 // provenance, counters and clocks; a different seed does not.
@@ -203,7 +129,7 @@ fn piecewise_auto_matches_fixed_when_count_stays_constant() {
 }
 
 #[test]
-fn piecewise_auto_one_block_completes_profile_and_split() {
+fn piecewise_auto_one_block_completes_profile() {
     let gates = random_mixed_circuit(11, 8, 160);
     let cfg = PieceCfg {
         min_block_size: Some(1_000),
@@ -220,21 +146,8 @@ fn piecewise_auto_one_block_completes_profile_and_split() {
         seed: 3,
         ..MixParams::default()
     };
-    let mut w = Mixer::new_with_db(gates.clone(), 8, profile, FrozenDb::empty());
+    let mut w = Mixer::new_with_db(gates, 8, profile, FrozenDb::empty());
     assert!(matches!(run_piecewise(&mut w, &cfg), MixStop::ProfileDone));
-    w.global_check();
-    let split = MixParams {
-        moves: 20_000,
-        split: true,
-        split_stop: true,
-        report_every: u64::MAX,
-        seed: 5,
-        ..MixParams::default()
-    };
-    let mut w = Mixer::new_with_db(gates, 8, split, FrozenDb::empty());
-    assert!(w.remaining_g57() > 0);
-    assert!(matches!(run_piecewise(&mut w, &cfg), MixStop::SplitDone));
-    assert_eq!(w.remaining_g57(), 0);
     w.global_check();
 }
 
@@ -288,8 +201,8 @@ fn piecewise_auto_empty_circuits_terminate() {
 }
 
 // Slicing a mixer into pieces and concatenating them back without any
-// moves is an identity on the gates, every Meta field, the canaries, the
-// live tabu ring and the merge index; the undo journal keeps every entry
+// moves is an identity on the gates, every Meta field, the live tabu ring
+// and the merge index; the undo journal keeps every entry
 // that lies wholly inside a piece.
 #[test]
 fn piece_transport_round_trip_is_an_identity() {
@@ -301,7 +214,6 @@ fn piece_transport_round_trip_is_an_identity() {
         temp: 20.0,
         p_twist: 0.05,
         w_twist_neg: 1.0,
-        split_canaries: 16,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 11,
@@ -309,18 +221,11 @@ fn piece_transport_round_trip_is_an_identity() {
     };
     let mut w = Mixer::new_with_db(gates, 16, params.clone(), FrozenDb::empty());
     w.run();
-    w.plant_taps();
-    assert_eq!(w.taps.len(), 16);
     assert!(
         !w.journal.is_empty(),
         "the walk must have journalled crossings"
     );
-    let (ids, pos_of) = w.pos_map();
-    let taps_before: Vec<(u16, u16, u64, u32)> = w
-        .taps
-        .iter()
-        .map(|t| (t.wire, t.orig_permille, t.flips, pos_of[&t.anchor]))
-        .collect();
+    let (ids, _) = w.pos_map();
     let live_tabu: Vec<(u64, u64)> = w
         .tabu
         .iter()
@@ -359,19 +264,6 @@ fn piece_transport_round_trip_is_an_identity() {
     assert_eq!(seams, cuts);
     assert_eq!(w.arena.to_vec(), gates_before);
     assert_eq!(meta_snapshot(&w), metas_before);
-    let (_, pos_after) = w.pos_map();
-    // Canaries come back grouped by piece (position order); the order of
-    // the tap list is not a contract, the set of (wire, origin, flips,
-    // position) is.
-    let mut taps_after: Vec<(u16, u16, u64, u32)> = w
-        .taps
-        .iter()
-        .map(|t| (t.wire, t.orig_permille, t.flips, pos_after[&t.anchor]))
-        .collect();
-    taps_after.sort_unstable();
-    let mut taps_before = taps_before;
-    taps_before.sort_unstable();
-    assert_eq!(taps_after, taps_before);
     let tabu_after: Vec<(u64, u64)> = w.tabu.iter().copied().collect();
     assert_eq!(tabu_after, live_tabu);
     assert_eq!(w.journal.len(), inside_count);

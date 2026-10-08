@@ -649,12 +649,7 @@ impl Mixer {
     /// Install per-gate and positional state on a freshly built arena whose
     /// ids are 0..n-1 in circuit order (the `resume_state` install sequence,
     /// in memory).
-    fn install_parts(
-        &mut self,
-        metas: Vec<Meta>,
-        journal: Vec<JournalRec>,
-        tabu: Vec<(u64, u64)>,
-    ) {
+    fn install_parts(&mut self, metas: Vec<Meta>, journal: Vec<JournalRec>, tabu: Vec<(u64, u64)>) {
         for (i, m) in metas.into_iter().enumerate() {
             self.set_meta(i as u32, m);
         }

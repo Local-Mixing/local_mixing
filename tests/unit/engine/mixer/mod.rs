@@ -9,7 +9,6 @@ include!("piecewise_rounds.rs");
 include!("scheduling.rs");
 include!("gate_algebra.rs");
 include!("twists.rs");
-include!("splitting.rs");
 include!("database_policy.rs");
 include!("generations.rs");
 include!("ancestry.rs");
