@@ -75,10 +75,13 @@ this same representation, which lets the replacement code use the decoded
 values without knowing how they were compressed.
 
 The *regular* table comes from enumerating circuits and collecting equivalent
-forms. An earlier *curated* table, built by splitting identities ($I=AB$
-implies $A=B^{-1}$) to supply structurally different replacements, is
-historic: it and its builders live on the branch
-`ran/archive/curated-and-postmix`. Stage 3 uses the regular store only.
+forms. Stage 3 uses this regular store only. An earlier *curated* table,
+built by splitting identities ($I=AB$ implies $A=B^{-1}$) to supply
+structurally different replacements, is historic: the table, its builders,
+its runtime cascade and its analysis tools live on the branch
+`ran/archive/curated-and-postmix`. The
+[archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) lists them and explains
+why they were retired.
 
 The contents depend on which source tables and construction bounds we used.
 In particular, a directory name such as `frozen_m1_m11` does not by itself
@@ -171,7 +174,7 @@ a current store has a low match rate.
 
 ## Using an existing store
 
-Set the directories in the `[database]` section of your TDP recipe:
+Set the store directory in the `[database]` section of your TDP recipe:
 
 ```toml
 [database]
