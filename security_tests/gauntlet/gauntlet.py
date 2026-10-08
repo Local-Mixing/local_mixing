@@ -5,6 +5,11 @@ The pipeline builds source chains, gadgetizes them, optionally mixes them,
 records bit-sliced traces, runs exact/correlation audits, and renders witness
 heatmaps.  Run ``python security_tests/gauntlet/gauntlet.py --help`` from any directory
 for the command-line interface.
+
+Mixed cells (``--mix on`` or the default ``--mix both``) run the stage-3 DB
+mixing path, so generating them needs the regular frozen store: export
+``FROZEN_DB_DIR`` (for example ``frozen_db/frozen_m1_m11``), or pass
+``--mix off``.
 """
 
 from __future__ import annotations
@@ -921,7 +926,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=N_WIRES,
         help="logical wires of the source chain (at least 6)",
     )
-    parser.add_argument("--mix", choices=("both", "on", "off"), default="both")
+    parser.add_argument(
+        "--mix", choices=("both", "on", "off"), default="both",
+        help="mixed cells use the stage-3 DB path and need FROZEN_DB_DIR "
+        "(the regular frozen store); 'off' runs without a store",
+    )
     parser.add_argument(
         "--mix-seeds", default="777",
         help="comma-separated mixer seeds, paired across arms; unmixed cells run once",
@@ -1040,6 +1049,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             f"missing {gen_binary}; run `cargo build --release --features security-tools --bin gauntlet_gen --bin gauntlet_audit`"
         )
+    if args.cmd in ("all", "gen") and True in mix_modes:
+        store = os.environ.get("FROZEN_DB_DIR", "")
+        if not store or not Path(store).is_dir():
+            parser.error(
+                "mixed cells run the stage-3 DB path and need the regular frozen "
+                "store: export FROZEN_DB_DIR=<store directory> "
+                f"(currently {store or 'unset'!s}), or pass --mix off"
+            )
     if args.cmd in ("all", "audit") and not audit_binary.is_file():
         parser.error(
             f"missing {audit_binary}; run `cargo build --release --features security-tools --bin gauntlet_gen --bin gauntlet_audit`"

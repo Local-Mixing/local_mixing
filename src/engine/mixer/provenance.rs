@@ -771,7 +771,7 @@ impl Mixer {
     }
 
     /// Install per-gate litter ids (circuit order) from an external stage —
-    /// e.g. the SGDB substitution, where each replaced gate's block becomes
+    /// e.g. the historic SGDB substitution, where each replaced gate's block becomes
     /// one litter. litter_size is recomputed per id; next_litter continues
     /// above the max.
     pub fn load_litters(&mut self, ids: &[u64]) {

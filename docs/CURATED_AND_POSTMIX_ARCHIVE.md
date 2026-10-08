@@ -23,7 +23,7 @@ To browse or build the whole archive side by side:
 git worktree add ../lm-curated-postmix ran/archive/curated-and-postmix
 ```
 
-**Old runs.** The current build refuses TDP runs that record `tdp_command_recipe=8` (or older) and mixer states with `STATE_VERSION` 1-4; the current versions are recipe 9 and state 5. Resume such runs, or rerun old stages 4-6, with a build of the archive branch. The archive's `tdp_gen.sh` still runs six stages and defaults to `stop_after_stage = 6`.
+**Old runs.** The current build refuses TDP runs that record `tdp_command_recipe=8` (or older) and mixer states with `STATE_VERSION` 1-4; the current versions are recipe 9 and state 5. Resume v2 states and recipe-v8 runs, or rerun old stages 4-6, with a build of the archive branch (it reads state v2 only). States v3 and v4 were written only by intermediate commits of the cleanup branch; neither the archive nor the current build reads them, so rerun those from the stage-3 input. The archive's `tdp_gen.sh` still runs six stages and defaults to `stop_after_stage = 6`.
 
 ## Curated database
 
@@ -105,7 +105,7 @@ The crossing walk shot fragments to their first true collider and rewrote each c
 | Tests: 22 compression tests | `tests/unit/stages/post-processing/compression/compress_tests.rs` | Gone |
 | Demixing probes `crossing_downhill` (downhill on crossed circuits), `output_cone` (liveness prune plus crossing rules) | `security_tests/demixing/` | Gone |
 | Benchmark `pairfloat_exp` (uses the crossing rules and presplit) | `benchmarks/mixing/pairfloat_exp.rs` | Gone |
-| Formats `esop1`, `anf1`, packed | `src/circuit/formats.rs` | **Kept**: the circuit utilities still read and write them |
+| Formats `esop1`, `anf1`, packed | `src/circuit/formats.rs` | **Kept**: the circuit utilities still read them (`read_mpmct` dispatch); the writers are kept with a round-trip unit test but have no production caller |
 
 ## Why they were retired
 
@@ -114,7 +114,7 @@ The crossing walk shot fragments to their first true collider and rewrote each c
 - **The curated store adds nothing measurable to mixing.** In four ablations on random material (2026-10-02/03, run tree `runs/ncdb_random_20261001/RESULTS.md`), removing the curated store or restricting it to MIX rounds left affine ridge depth unchanged within seed noise (for example 0.3784 / 0.3768 / 0.3776 for full / MIX-only / none at eff 30; the regular store covered the missing splices). The strong form, curated-only MIX rounds at a matched splice budget, was slightly worse (0.3832 vs 0.3784) and narrowed the choice entropy per splice (0.288 to about 0.21 bits).
 - **The curated store was expensive and fragile.** The v2 store was extremely skewed (one 1-gate key held 7.7M circuits), a builder bug dropped same-length spellings, and curated-first runs crawled because candidate selection was linear in the candidate count (mean 327k per choice). The rebuilt circuit-keyed stores ran about 50× faster but still did not separate from each other or from regular-only mixing (`docs/notes/ncdb_ab_20261001_RESULTS.md`). An exported `FROZEN_CURATED_DIR` silently switched stage 3 to curated-first, an operational hazard.
 - **Stages 4-6 bought little and cost a lot.** In the stage-wise exposure study (2026-10-03), split was visibility-neutral and added carriers, the crossing walk was the only eraser (−3 to −5 points of visibility), and `fcompress` refunded 1-3 points. At TDP scale stage-2-view visibility was flat across stages 3-6 (26.5 → 26.5 → 25.6 → 27.2%), and the C-view floor is owned by stage 2. Crossing also inflated the circuit about 3.5× and stretched the median dependency interval from 6 to 26 gates, which destroys the reordering that windowing relies on: windowing the stage-3 output hides 69.6% of carried values at W=20, against 46.9% after crossing. A single windowing pass hides 58-72% of carried values (G=128-256). See `docs/ANF_WINDOW_DELIVERY.md` §3.
-- **Division of labour now.** Stage 2 decides which values ever exist in the clear, stage 3 respells and dilutes, and stage 4 decides where anything is observable at all. `docs/STAGE2_LINKABILITY.md` and `docs/TDP_FOUR_STAGE_PIPELINE.md` describe the current pipeline.
+- **Division of labour now.** Stage 2 decides which values ever exist in the clear, stage 3 respells and dilutes, and stage 4 decides where anything is observable at all. `docs/tdp_pipeline.md` and `docs/STAGE2_LINKABILITY.md` describe the current pipeline (a full reference, `docs/TDP_FOUR_STAGE_PIPELINE.md`, is in preparation and not yet on this branch).
 
 ## Porting notes
 
@@ -125,6 +125,6 @@ Nothing here is scheduled for revival. If an experiment needs a piece:
 | A curated-tool analysis on the regular store | `db_gen/analysis/`, adapting to `FrozenDb::open(dir)` and single-key lookups | Small |
 | `crossing_downhill` / `output_cone` as demixing probes | `security_tests/`, together with the crossing rules they call | Medium (needs `rules::cross`, presplit, compression downhill) |
 | The crossing walk or split as a separate post-mix tool | A new executable outside `circuit_mixer`; the mixer no longer has the merge index, journal, tabu or events | Large |
-| Reading an old (state v2-v4, recipe v8) run | Build the archive branch; do not port the old formats | None |
+| Reading an old (state v2, recipe v8) run | Build the archive branch (it reads state v2 only; the transient v3/v4 states of the cleanup's intermediate commits are unreadable by both builds); do not port the old formats | None |
 
 For each port: copy from the archive with `git show ran/archive/curated-and-postmix:<path>`, adapt to the current module paths and signatures, build with the relevant `--features`, and cite the archive commit (`ea2e516f`) in the commit message.

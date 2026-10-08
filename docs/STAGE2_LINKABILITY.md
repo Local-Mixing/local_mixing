@@ -163,9 +163,12 @@ EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8
 ```
 
 Stage 3: `circuit_mixer --tdp --db-mixing --profile 2,2,2,2,2 --moves
-2·2·|G|·1.3 --p-db 1.0 --p-comp 1.0 --p-any 0.1 --db-max-degree 9
+2·2·|G|·1.3 --p-db 1.0 --db-max-degree 9
 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048
---no-local-verify` (regular store; `FROZEN_CURATED_DIR` unset).
+--no-local-verify` (regular frozen store). The validation runs also passed
+`--p-comp 1.0 --p-any 0.1`; those flags fed only the crossing walk's slot-3
+thermostat, which never fires at `--p-db 1.0`, and they are retired (the
+current build rejects them; the output is byte-identical without them).
 
 Stage 4: `window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`
 (pair cancellation, leak slides, merge/split fallback), then ANF emission.

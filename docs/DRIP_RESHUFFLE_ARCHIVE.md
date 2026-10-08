@@ -53,15 +53,15 @@ The blinded-V5 construction itself survived: quad-fire, balanced masks, `min_ope
 
 ## Post-processing, DB generation, experiments
 
-fcompress (transport + `esop1` packing), crossing and splitting all moved to `src/stages/post-processing/`. The losses here are mostly small binaries and the store-convention fix.
+fcompress (transport + `esop1` packing), crossing and splitting all moved to `src/stages/post-processing/` on `main`; that module, the pool-swap code and the SGDB/MGDB tools have since become historic as well (four-stage cleanup, 2026-10-08: branch `ran/archive/curated-and-postmix`, inventory in [CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md)). The losses here are mostly small binaries and the store-convention fix.
 
 | Feature | Archive location | On `main` |
 | --- | --- | --- |
-| Explicit value convention for pool swaps (`pool_swap_conv`, legacy-swapped vs native stores) | `src/db_generation/frozen_build.rs` (WIP) | Missing; `db_gen/frozen_build.rs` has the older version |
+| Explicit value convention for pool swaps (`pool_swap_conv`, legacy-swapped vs native stores) | `src/db_generation/frozen_build.rs` (WIP) | Missing; the older version (`pool_swap` in `db_gen/frozen_build.rs`) is now historic too, on `ran/archive/curated-and-postmix` |
 | `python-heatmap` feature gate (pyo3 optional so ordinary binaries link without a libpython shim) | `Cargo.toml`, `src/lib.rs` (WIP) | Solved on `main` differently (feature `python-extension`) |
 | Identity minting: `extract_identities`, `mint_long_identities`, `db_unit_synth` | `experimental/db_generation/` | Missing |
-| MGDB / SGDB build, `frozen_census`, `frozen_find_small` as `src/bin` binaries | `src/bin/`, `experimental/db_generation/` | Moved to `db_gen/analysis/` (renamed copies exist) |
-| Legacy compress, `fsplit`, `fsplit_trace` | `src/postprocessing/compress.rs`, `experimental/postprocessing/` | Superseded by `stages/post-processing/` |
+| MGDB / SGDB build, `frozen_census`, `frozen_find_small` as `src/bin` binaries | `src/bin/`, `experimental/db_generation/` | `frozen_census`, `frozen_find_small` in `db_gen/analysis/`; the MGDB/SGDB builders are historic (`ran/archive/curated-and-postmix`) |
+| Legacy compress, `fsplit`, `fsplit_trace` | `src/postprocessing/compress.rs`, `experimental/postprocessing/` | Superseded by `stages/post-processing/`, itself historic since the four-stage cleanup (`ran/archive/curated-and-postmix`) |
 | Small experiment probes: `flip_match`, `float_histogram`, `window_span_stats`, `sandwich_compare`, `fragment_wide`, `shuffle_mpmct` | `experimental/` | Gone (`shuffle_mpmct` moved to `security_tests/fixtures`) |
 | Challenge circuits: block cipher, Newton–Feistel, point function, polynomial canonicalization | `challenges/` | Gone |
 | Poly-canon graph experiment + its 3 tests | `src/experimental/poly_canon_graph.rs`, `tests/poly_canon_*.rs` | Gone |
@@ -109,7 +109,7 @@ Port the WIP first: it is the only newer-than-`main` work, and it is small (abou
 | --- | --- | --- | --- |
 | 1 | Shared production band fill for modules 2/4 | `src/stages/preprocessing/construct.rs` / `embedded_masking.rs`, `src/programs/gen_sandwich_gadget` | Small |
 | 1 | Kill-list, depth-seeking and depth-balancing samplers (+ flags) | `src/engine/mixer/sampling.rs`, `params.rs`; `src/programs/circuit_mixer/cli.rs` | Medium (~600 lines) |
-| 1 | `pool_swap_conv` store convention | `db_gen/frozen_build.rs`, `db_gen/analysis/frozen_pool_swap.rs` | Small |
+| 1 | `pool_swap_conv` store convention (pool swaps are historic on this line; port only together with the archived `pool_swap` from `ran/archive/curated-and-postmix`) | `db_gen/frozen_build.rs`, a restored `db_gen/analysis/frozen_pool_swap.rs` | Small |
 | 2 | Leakage probes used in current work: `segment_stats`, `collision_blocks`, `fire_corr`, `segment_deduce`, `invariant_classify` | `security_tests/leakage/` behind `security-tools` | Small each; mostly self-contained |
 | 2 | `plot_hmap_ridge.py`, `pr_identity/` | `security_tests/heatmaps/`, a new `tools/` or `db_gen/` Python package | Copy as-is |
 | 3 | Drip gadgetizer, balanced sliced sandwich, product-share / Gray fold | `src/stages/preprocessing/` | Large; only if revived |

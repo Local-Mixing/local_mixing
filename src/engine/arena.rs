@@ -296,15 +296,6 @@ impl Arena {
         self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
     }
 
-    // Mark a linked node as touched without changing it: bumps the stamp so
-    // anything holding (id, stamp) sees the node as modified even though the
-    // gate itself does not change. (Its one caller, the historic crossing
-    // walk's undo journal, is gone; kept as a primitive of the stamp contract.)
-    pub fn touch(&mut self, id: u32) {
-        debug_assert!(self.linked[id as usize]);
-        self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
-    }
-
     // Free an unlinked node's slot for reuse.
     pub fn free_node(&mut self, id: u32) {
         debug_assert!(!self.linked[id as usize]);

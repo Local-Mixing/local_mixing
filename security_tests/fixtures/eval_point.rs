@@ -29,8 +29,9 @@ fn main() {
             (g, w)
         }
         "mpmct1" => {
-            // The crossing stage writes a bogus "mpmct1 1 N" header, so never
-            // trust the header's wire count below what the gates themselves use.
+            // The historic crossing stage wrote a bogus "mpmct1 1 N" header, and
+            // its outputs may still be evaluated, so never trust the header's
+            // wire count below what the gates themselves use.
             let (g, w) = read_mpmct(&a[1]).expect("read mpmct1");
             let w = w.max(max_wire(&g) as usize + 1);
             (g, w)

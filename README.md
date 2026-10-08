@@ -9,9 +9,8 @@ constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
 still a set of Python prototypes under
 [`scripts/windowed_delivery/`](scripts/windowed_delivery/) (Rust port
 planned). The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run
-all four stages, and
-[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md) is the full
-reference. (The curated database and the old split, crossing-walk and
+all four stages; a full reference, `docs/TDP_FOUR_STAGE_PIPELINE.md`, is in
+preparation and not yet on this branch. (The curated database and the old split, crossing-walk and
 `fcompress` stages are historic: branch `ran/archive/curated-and-postmix`; see
 [the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
 
@@ -238,11 +237,14 @@ the `python-extension` feature, preserving `import local_mixing`.
 
 The detailed current-method reference is
 [Local Mixing Documentation](docs/local_mixing_documentation.md)
-([PDF](docs/local_mixing_documentation.pdf)). It explains the implemented
+([PDF, stale](docs/local_mixing_documentation.pdf)). It explains the implemented
 construction, shuffling, mixing stages, optimizations, and attacks. The
 research narrative and historical experiments are preserved in
 [Local Mixing History](docs/local_mixing_history.md)
-([PDF](docs/local_mixing_history.pdf)). Install Pandoc, XeLaTeX and
+([PDF, stale](docs/local_mixing_history.pdf)). The committed PDFs were built
+on 2026-09-16, before the four-stage cleanup, and still describe the curated
+database and the six-stage pipeline; the Markdown files are authoritative
+until the PDFs are rebuilt. Install Pandoc, XeLaTeX and
 `rsvg-convert` (the `librsvg2-bin` package on Debian/Ubuntu), then rebuild both
 PDFs with the checked-in helper:
 

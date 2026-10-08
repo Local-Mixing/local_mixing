@@ -30,9 +30,9 @@ was retired, how to retrieve it, and why.
 
 Further reading:
 
-- [TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md): the full
-  reference for the four stages (construction details, parameters, measured
-  behaviour, pass criteria, open issues).
+- `TDP_FOUR_STAGE_PIPELINE.md` (in preparation, not yet on this branch): the
+  full reference for the four stages (construction details, parameters,
+  measured behaviour, pass criteria, open issues).
 - [STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md): the stage-2 redesign and
   the linkable-exposure metrics that the recommended configuration is chosen
   by.
@@ -62,8 +62,8 @@ profile `2,2,2,2,2`, then packing at G=512, repair and serialization. The
 managed driver cannot express this configuration yet: it refuses persistent
 migration, does not pass the `PREMASK`/`SEED_AVOID_C1`/`CHAIN*` controls, and
 fixes the profile shape. Closing that gap is part of the Rust port of stage 4.
-The gap analysis is in [TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md)
-(Appendix A).
+The gap analysis will be in the full reference, `TDP_FOUR_STAGE_PIPELINE.md`
+(in preparation).
 
 ## Quick start (stages 1-3)
 
@@ -209,8 +209,8 @@ and decodes outputs through the recorded final role-to-physical layout.
 The existing balanced arm remains unshuffled. Shuffling is disabled by default
 in the managed recipe; improved write distribution does not establish a
 Gauntlet pass. (The meaning of the carried-layout arm under persistent
-migration is an open question; see
-[TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md) §2c.13.)
+migration is an open question, to be covered in the full reference
+`TDP_FOUR_STAGE_PIPELINE.md`, in preparation.)
 
 ### Database mixing schedule
 
@@ -457,8 +457,8 @@ split budget inside `repair.sh`. Notes:
   count in `rep512.cview.log` equals n (only the outputs of $C$ are
   visible), the last split pass reports `0 splits added` with no
   `WARNING: no exposure-free split`, and both `verify_equiv.py` checks print
-  `EQUIVALENT`. The full checklist is in
-  [TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md) §6.7.
+  `EQUIVALENT`. The full checklist will be in the full reference
+  `TDP_FOUR_STAGE_PIPELINE.md` (in preparation).
 - **No `set -e`.** `repair.sh` and `val_chain.sh` keep going after a failed
   step, so read every log. Never run two repairs in the same `TAG`
   directory, and never edit a driver while it runs.

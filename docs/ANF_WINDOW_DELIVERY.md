@@ -178,7 +178,9 @@ carrier shuffling dose 8 with **persistent migration**
 are identical: `--tdp --db-mixing --profile 2,2,2,2,2 --p-db 1.0
 --p-comp 1.0 --p-any 0.1 --db-max-degree 9 --db-max-span 30
 --db-wire-terms 1024 --db-total-terms 2048`, regular frozen store
-`frozen_m1_m11`, moves = ⌈2·2·1.3·(stage-2 gates)⌉. Packing and
+`frozen_m1_m11` (`--p-comp`/`--p-any` are retired since the four-stage
+cleanup: they were inert at `--p-db 1.0`, and current builds reject them),
+moves = ⌈2·2·1.3·(stage-2 gates)⌉. Packing and
 emission are identical: `W_cap` 128, `G` 128 (hard 256), `B_mono`
 6,144 (hard 12,288 in a burst; ¾ pre-burst guard), `span_cap` 3,000,
 contagion threshold 24, pad 4; emission budget 16,384

@@ -94,19 +94,6 @@ impl XGate {
         self.ctrls.iter().any(|&(cw, _)| cw == w)
     }
 
-    pub fn lit_on(&self, w: u16) -> Option<bool> {
-        self.ctrls.iter().find(|&&(cw, _)| cw == w).map(|&(_, p)| p)
-    }
-
-    // Literal set minus the literal on wire `w`.
-    pub fn ctrls_without(&self, w: u16) -> Lits {
-        self.ctrls
-            .iter()
-            .copied()
-            .filter(|&(cw, _)| cw != w)
-            .collect()
-    }
-
     // Two gates collide iff either one's target is read by the other AND no
     // shared control wire separates their firing supports. Equal targets alone
     // do NOT collide (toggles on one wire commute).

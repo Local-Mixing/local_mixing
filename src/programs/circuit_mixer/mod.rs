@@ -194,6 +194,28 @@ pub fn run(matches: clap::ArgMatches) {
         unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
     }
 
+    // The curated store is historic (branch ran/archive/curated-and-postmix).
+    // Before the cleanup, `--tdp` with FROZEN_CURATED_DIR exported ran the
+    // curated-first cascade; this build ignores those variables. Say so, so an
+    // old curated command line is never silently re-run as regular-only.
+    let historic_env: Vec<&str> = [
+        "FROZEN_CURATED_DIR",
+        "FROZEN_CURATED_KEY",
+        "FROZEN_CURATED_VALUE_CONVENTION",
+        "FROZEN_REF_DIR",
+    ]
+    .into_iter()
+    .filter(|name| std::env::var_os(name).is_some())
+    .collect();
+    if !historic_env.is_empty() {
+        eprintln!(
+            "[circuit_mixer] WARNING: {} set but IGNORED: the curated store is historic and this \
+             build mixes with the regular frozen store only. To reproduce a curated run, build \
+             branch ran/archive/curated-and-postmix.",
+            historic_env.join(", ")
+        );
+    }
+
     // Parse the size profile and enforce single size authority.
     let profile: Option<([f64; 3], [f64; 2])> = if args.profile.is_empty() {
         None
@@ -612,8 +634,9 @@ pub fn run(matches: clap::ArgMatches) {
             None => make_mixer(gates, num_wires, params),
         },
     };
-    // External litter assignment (e.g. the SGDB substitution's sidecar: every
-    // replaced gate's block is one litter, so --litter-ban covers the INITIAL
+    // External litter assignment (e.g. the sidecar of the historic SGDB
+    // substitution, now on ran/archive/curated-and-postmix: every replaced
+    // gate's block is one litter, so --litter-ban covers the INITIAL
     // replacements too, not only the walk's own splices).
     if let Some(p) = &args.litter_in {
         let ids: Vec<u64> = std::fs::read_to_string(p)

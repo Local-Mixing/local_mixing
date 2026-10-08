@@ -174,7 +174,9 @@ controls), carrier shuffling dose 8 with \textbf{persistent migration}
 Stage-3 flags are identical: \code{--tdp --db-mixing --profile 2,2,2,2,2
 --p-db 1.0 --p-comp 1.0 --p-any 0.1 --db-max-degree 9 --db-max-span 30
 --db-wire-terms 1024 --db-total-terms 2048}, regular frozen store
-\code{frozen\_m1\_m11}, moves $= \lceil 2\cdot 2\cdot 1.3\cdot
+\code{frozen\_m1\_m11} (\code{--p-comp}/\code{--p-any} are retired since
+the four-stage cleanup: they were inert at \code{--p-db 1.0}, and current
+builds reject them), moves $= \lceil 2\cdot 2\cdot 1.3\cdot
 (\text{stage-2 gates})\rceil$. Packing and emission are identical:
 \code{W\_cap} 128, $G$ 128 (hard 256), \code{B\_mono} 6{,}144 (hard
 12{,}288 in a burst; $\tfrac34$ pre-burst guard), \code{span\_cap}
