@@ -99,8 +99,6 @@ fn prefix_descent_terminates_when_every_lookup_misses() {
     let params = MixParams {
         k_max: 6,
         moves: 5_000,
-        target_size: 300,
-        temp: 20.0,
         p_db: 1.0,
         db_prefixes: true,
         s_db: 9,
@@ -323,8 +321,6 @@ fn geometry_is_drawn_before_the_length_and_bounds_it() {
     let gates = random_mixed_circuit(31, 16, 400);
     let base = MixParams {
         moves: 4_000,
-        target_size: 400,
-        temp: 20.0,
         p_db: 0.0, // store-free: exercise the sampler, not the store
         s_db: 9,
         db_min_window: 0,
@@ -464,8 +460,6 @@ fn failed_db_attempts_restore_seed_without_breaking_function() {
     let params = MixParams {
         k_max: 6,
         moves: 20_000,
-        target_size: 400,
-        temp: 20.0,
         p_db: 1.0, // every round is a slot-2 attempt
         db_mode: DbMode::Mix,
         p_convex: 0.5,
@@ -497,7 +491,6 @@ fn pair_geometry_preserves_function_on_misses() {
         p_pair: 1.0,
         s_db: 5,
         moves: 30_000,
-        temp: 20.0,
         report_every: u64::MAX,
         verify_every: 5_000,
         seed: 11,

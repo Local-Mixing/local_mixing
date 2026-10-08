@@ -88,45 +88,36 @@ fn twist_conjugation_units() {
     }
 }
 
-// The chain with twist moves enabled at high weight keeps the function
-// (run() global-checks internally), erodes rather than grows fossils, and
-// actually relabels interior gates. Also exercises the journal-stamp
-// interaction: undo entries over relabeled pieces must die, not fire.
-// Target above input: twists add gates without catalogue-invertible bulk,
-// so at target the thermostat pegs near-full contraction and would starve
-// the expansion channel this test is exercising.
+// Twist rounds interleaved with the stage-3 DB walk keep the function
+// (run() global-checks internally) and actually relabel interior gates while
+// the DB move keeps re-spelling the material around the brackets. (The fossil
+// count is no longer monotone: the store spells g57 words, so DB splices
+// mint comp gates; only the historic crossing walk eroded them.)
 #[test]
 fn mixer_twists_preserve_function() {
-    let gates = random_mixed_circuit(17, 16, 300);
-    let comp0 = gates.iter().filter(|g| g.comp).count();
+    let gates = random_g57_circuit(17, 16, 300);
     let params = MixParams {
         k_max: 5,
         moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
-        p_twist: 0.2, // slot 1 owns twists now; the w_* are type ratios
-        w_twist_neg: 0.10,
-        w_twist_swap: 0.10,
+        p_twist: 0.02, // slot 1: one swap-family twist per ~50 rounds
         twist_min_len: 4,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 5,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates, 16, params);
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
-    // Rate calibration: twist packets are hard for the catalogue to dig
-    // out (brackets are wall-blocked by their own window), so at these
-    // weights the thermostat pegs near-full contraction and expansions
-    // run at ~2% of moves — expect twist counts near 50, not hundreds.
     let twists = mx.counters.twist_swaps + mx.counters.twist_negs + mx.counters.twist_cnots;
     assert!(twists > 30, "swap-family twists barely ran: {twists}");
     assert!(
         mx.counters.twist_relabels > 0,
         "twists never relabeled a gate"
     );
-    assert!(mx.remaining_g57() <= comp0, "fossil count increased");
-    assert!(mx.counters.merges() > 0, "no merges alongside twists");
+    assert!(
+        mx.counters.db_slot2_hits > 0,
+        "no DB splices alongside twists"
+    );
     mx.global_check();
 }
 
@@ -142,12 +133,11 @@ fn g57_census_splits_structure_from_twist_polarity() {
     // (3/4 of twists carry a negation), so same_pol is a twist odometer:
     // twists ON drive it up, OFF leaves it at zero, while shaped (structure)
     // partitions correctly in both. p_db = 0 here, so nothing injects fresh
-    // opposite-polarity material -- the only mover is the twist.
+    // opposite-polarity material -- the only mover is the twist (rounds no
+    // slot takes are idle).
     let base = |p_twist: f64| MixParams {
         k_max: 5,
-        moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
+        moves: 5_000,
         p_twist,
         twist_min_len: 4,
         verify_every: 1_000,
@@ -208,9 +198,7 @@ fn mixer_g57_twists_preserve_function_and_absorb() {
     let gates = random_mixed_circuit(29, 16, 300);
     let params = MixParams {
         k_max: 6,
-        moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
+        moves: 5_000,
         p_twist: 0.3,
         twist_min_len: 4,
         twist_g57: true,
@@ -218,9 +206,9 @@ fn mixer_g57_twists_preserve_function_and_absorb() {
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 7,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates, 16, params);
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
     assert!(
         mx.counters.twist_swaps > 100,
@@ -256,19 +244,15 @@ fn twist_left_truncated_windows_preserve_function() {
     let gates = random_mixed_circuit(23, 16, 300);
     let params = MixParams {
         k_max: 5,
-        moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
-        p_twist: 0.2, // slot 1 owns twists now; the w_* are type ratios
-        w_twist_neg: 0.10,
-        w_twist_swap: 0.10,
+        moves: 2_000,
+        p_twist: 0.2,
         twist_min_len: usize::MAX, // clamped to circuit size -> len == n
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 11,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates, 16, params);
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
     let twists = mx.counters.twist_swaps + mx.counters.twist_negs + mx.counters.twist_cnots;
     assert!(twists > 50, "twists barely ran: {twists}");
@@ -278,25 +262,22 @@ fn twist_left_truncated_windows_preserve_function() {
 // The negate-both variant is a genuine involution (T^2 = id) like the pure
 // swap, whereas negate-one is not (T^2 = negate-both); this test drives the
 // family hard so all three variants -- and the non-involutive closing
-// bracket P^-1 -- get exercised, keeps the function through thousands of
-// twists, and never grows fossils. All three variant counters must fire.
+// bracket P^-1 -- get exercised, and keeps the function through hundreds of
+// twists alongside the DB walk. All three variant counters must fire.
 #[test]
 fn mixer_swap_family_twists_preserve_function() {
-    let gates = random_mixed_circuit(19, 16, 300);
-    let comp0 = gates.iter().filter(|g| g.comp).count();
+    let gates = random_g57_circuit(19, 16, 300);
     let params = MixParams {
         k_max: 6,
-        moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
+        moves: 3_000,
         p_twist: 0.3,
         twist_min_len: 4,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 7,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates, 16, params);
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
     // The (alpha, beta) coins are 1/4 : 1/2 : 1/4, so at this rate all three
     // variants fire many times.
@@ -319,8 +300,10 @@ fn mixer_swap_family_twists_preserve_function() {
         mx.counters.twist_relabels > 0,
         "twists never relabeled a gate"
     );
-    assert!(mx.remaining_g57() <= comp0, "fossil count increased");
-    assert!(mx.counters.merges() > 0, "no merges alongside twists");
+    assert!(
+        mx.counters.db_slot2_hits > 0,
+        "no DB splices alongside twists"
+    );
     mx.global_check();
 }
 
@@ -333,18 +316,21 @@ fn mixer_swap_family_twists_preserve_function() {
 fn twist_neg_p_zero_is_pure_swap() {
     let params = MixParams {
         k_max: 5,
-        moves: 20_000,
-        target_size: 600,
-        temp: 20.0,
+        moves: 3_000,
         p_twist: 0.3,
         twist_neg_p: 0.0,
         twist_min_len: 4,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 7,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(random_g57_circuit(17, 16, 400), 16, params);
+    let mut mx = Mixer::new_with_db(
+        random_g57_circuit(17, 16, 400),
+        16,
+        params,
+        g57_fixture_store(),
+    );
     mx.run();
     assert!(
         mx.counters.twist_swaps > 20,
@@ -364,24 +350,22 @@ fn twist_neg_p_zero_is_pure_swap() {
     mx.global_check();
 }
 
-// With twist weights at zero no twist path may ever be taken — not even a
-// skipped attempt from floating-point dust in the weight subtractions —
-// so per-move RNG consumption (and hence every seed's trajectory) matches
-// the pre-twist chain exactly.
+// With the twist rate at zero no twist path may ever be taken — not even a
+// skipped attempt — so per-move RNG consumption (and hence every seed's
+// trajectory) matches the twist-free chain exactly.
 #[test]
-fn twist_weights_zero_is_inert() {
-    let gates = random_mixed_circuit(3, 16, 300);
+fn twist_rate_zero_is_inert() {
+    let gates = random_g57_circuit(3, 16, 300);
     let params = MixParams {
         k_max: 5,
         moves: 10_000,
-        target_size: 300,
-        temp: 20.0,
+        p_twist: 0.0,
         verify_every: 5_000,
         report_every: u64::MAX,
         seed: 5,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut a = Mixer::new(gates, 16, params);
+    let mut a = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     a.run();
     assert_eq!(
         a.counters.twist_negs

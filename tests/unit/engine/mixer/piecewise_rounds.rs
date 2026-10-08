@@ -9,10 +9,7 @@ fn piecewise_profile_null_plant_reaches_phase_4() {
     let params = MixParams {
         k_max: 6,
         moves: 4_000_000,
-        temp: 20.0,
         p_db: 1.0,
-        p_comp: 1.0,
-        p_any: 0.1,
         s_db: 5,
         p_convex: 0.5,
         mix_pay_random: true,
@@ -39,21 +36,19 @@ fn piecewise_profile_null_plant_reaches_phase_4() {
 
 // Output is a function of (input, params, seed) only: sequential pieces,
 // a 2-thread pool and a 5-thread pool produce identical circuits,
-// provenance, counters and clocks; a different seed does not.
+// provenance, counters and clocks; a different seed does not. Driven by the
+// stage-3 DB walk with real store hits inside the pieces.
 #[test]
 fn piecewise_result_is_independent_of_thread_count() {
-    let gates = random_mixed_circuit(23, 16, 1500);
+    let gates = random_g57_circuit(23, 16, 1500);
     let params = MixParams {
         k_max: 5,
         moves: 30_000,
-        target_size: 1800,
-        temp: 40.0,
         p_twist: 0.02,
-        w_twist_neg: 1.0,
         verify_every: 10_000,
         report_every: u64::MAX,
         seed: 9,
-        ..MixParams::default()
+        ..db_walk_params()
     };
     let run = |seed: u64, sequential: bool, threads: usize| {
         let mut w = Mixer::new_with_db(
@@ -63,7 +58,7 @@ fn piecewise_result_is_independent_of_thread_count() {
                 seed,
                 ..params.clone()
             },
-            FrozenDb::empty(),
+            g57_fixture_store(),
         );
         let cfg = PieceCfg {
             pieces: 3,
@@ -79,8 +74,8 @@ fn piecewise_result_is_independent_of_thread_count() {
             w.arena.to_vec(),
             meta_snapshot(&w),
             w.counters.to_line(),
+            w.counters.db_slot2_hits,
             w.moves_done,
-            w.next_event,
             w.next_litter,
         )
     };
@@ -89,7 +84,8 @@ fn piecewise_result_is_independent_of_thread_count() {
     let c = run(9, false, 5);
     assert!(a == b, "sequential vs 2 threads differ");
     assert!(a == c, "sequential vs 5 threads differ");
-    assert!(a.3 >= 30_000, "the moves budget is spent: {}", a.3);
+    assert!(a.3 > 1_000, "the pieces must splice: {}", a.3);
+    assert!(a.4 >= 30_000, "the moves budget is spent: {}", a.4);
     let d = run(10, true, 0);
     assert!(a.0 != d.0, "a different seed must walk differently");
 }
@@ -173,24 +169,19 @@ fn piecewise_auto_empty_circuits_terminate() {
         w.global_check();
     }
     // An actual cancelling walk reaches zero inside a round, so the
-    // next round must also terminate instead of scheduling zero jobs.
+    // next round must also terminate instead of scheduling zero jobs. The
+    // compressing DB move contracts every [g, g] window to nothing.
     let params = MixParams {
         moves: 5_000,
-        target_size: 1,
-        temp: 1.0,
-        w_cross: 0.0,
-        w_fresh: 0.0,
-        w_unsub: 0.0,
-        w_insert: 0.0,
+        db_mode: DbMode::Compressing,
         p_twist: 0.0,
         shuffle_rate: 0.0,
-        undo_frac: 0.0,
         report_every: u64::MAX,
         seed: 7,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let gates = vec![XGate::conj(0, []).unwrap(); 64];
-    let mut w = Mixer::new_with_db(gates, 6, params, FrozenDb::empty());
+    let gates = vec![XGate::from_g57([0, 1, 2]); 64];
+    let mut w = Mixer::new_with_db(gates, 6, params, g57_fixture_store());
     assert!(matches!(run_piecewise(&mut w, &cfg), MixStop::CircuitEmpty));
     assert_eq!(
         w.arena.len(),
@@ -201,60 +192,44 @@ fn piecewise_auto_empty_circuits_terminate() {
 }
 
 // Slicing a mixer into pieces and concatenating them back without any
-// moves is an identity on the gates, every Meta field, the live tabu ring
-// and the merge index; the undo journal keeps every entry
-// that lies wholly inside a piece.
+// moves is an identity on the gates and every Meta field, and the litter
+// counter lands on the highest piece band.
 #[test]
 fn piece_transport_round_trip_is_an_identity() {
-    let gates = random_mixed_circuit(37, 16, 600);
+    let gates = random_g57_circuit(37, 16, 600);
     let params = MixParams {
         k_max: 5,
         moves: 3_000,
-        target_size: 700,
-        temp: 20.0,
         p_twist: 0.05,
-        w_twist_neg: 1.0,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 11,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut w = Mixer::new_with_db(gates, 16, params.clone(), FrozenDb::empty());
+    let mut w = Mixer::new_with_db(gates, 16, params.clone(), g57_fixture_store());
     w.run();
     assert!(
-        !w.journal.is_empty(),
-        "the walk must have journalled crossings"
+        w.counters.db_slot2_hits > 0,
+        "the walk must have spliced, so the metadata is not all input-fresh"
     );
-    let (ids, _) = w.pos_map();
-    let live_tabu: Vec<(u64, u64)> = w
-        .tabu
-        .iter()
-        .copied()
-        .filter(|&(_, mv)| mv + w.params.tabu_moves > w.moves_done)
-        .collect();
     let gates_before = w.arena.to_vec();
     let metas_before = meta_snapshot(&w);
-    let n = ids.len();
+    let n = gates_before.len();
     let cuts = vec![n / 3, (2 * n) / 3];
     let parts = w.export_slices(&cuts);
     assert_eq!(parts.len(), 3);
-    let inside_count: usize = parts.iter().map(|p| p.journal.len()).sum();
-    assert!(inside_count <= w.journal.len());
     let db = w.shared_db();
     let m = w.moves_done;
-    let (be, bl) = (w.next_event, w.next_litter);
+    let bl = w.next_litter;
     let outs: Vec<PieceParts> = parts
         .into_iter()
         .enumerate()
         .map(|(i, mut p)| {
-            let eb = be + ((i as u64) << 32);
             let lb = bl + ((i as u64) << 32);
-            p.event_base = eb;
             p.litter_base = lb;
-            let mut mx = Mixer::from_parts(p, 16, params.clone(), Arc::clone(&db), m, eb, lb, true);
+            let mut mx = Mixer::from_parts(p, 16, params.clone(), Arc::clone(&db), m, lb, true);
             mx.global_check();
             let mut o = mx.export_parts();
-            o.event_base = eb;
             o.litter_base = lb;
             o.moves_start = m;
             o
@@ -264,19 +239,10 @@ fn piece_transport_round_trip_is_an_identity() {
     assert_eq!(seams, cuts);
     assert_eq!(w.arena.to_vec(), gates_before);
     assert_eq!(meta_snapshot(&w), metas_before);
-    let tabu_after: Vec<(u64, u64)> = w.tabu.iter().copied().collect();
-    assert_eq!(tabu_after, live_tabu);
-    assert_eq!(w.journal.len(), inside_count);
-    assert!(w.journal.iter().all(|e| {
-        e.after
-            .iter()
-            .all(|&(id, st)| w.arena.is_linked(id) && w.arena.stamp(id) == st)
-    }));
     assert_eq!(w.moves_done, m);
-    assert_eq!(w.next_event, be + (2u64 << 32));
+    assert_eq!(w.next_litter, bl + (2u64 << 32));
     w.global_check();
-    // The merge index is exact after the rebuild (global_check asserts
-    // indexed_count == arena.len()); the walk can continue.
+    // The rebuilt mixer keeps walking.
     w.params.moves = w.moves_done + 1_000;
     w.run();
     w.global_check();
@@ -289,10 +255,7 @@ fn resolved_runtime_phase_stop_survives_piecewise_reassembly() {
         let params = MixParams {
             k_max: 6,
             moves: 4_000_000,
-            temp: 20.0,
             p_db: 1.0,
-            p_comp: 1.0,
-            p_any: 0.1,
             s_db: 5,
             p_convex: 0.5,
             mix_pay_random: true,

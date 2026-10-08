@@ -1,6 +1,6 @@
 use super::*;
 use crate::database::frozen::FrozenDb;
-use crate::engine::mixer::{Meta, MixParams, ORIGIN_SYNTH, UndoEntry};
+use crate::engine::mixer::{Meta, MixParams, ORIGIN_SYNTH};
 use rand::Rng;
 
 fn mixer(gates: Vec<XGate>) -> Mixer {
@@ -18,32 +18,14 @@ fn mixer(gates: Vec<XGate>) -> Mixer {
     )
 }
 
-fn meta_tuple(meta: Meta) -> (u32, u64, Dir, u32, u64, u16) {
+fn meta_tuple(meta: Meta) -> (u32, Dir, u32, u64, u16) {
     (
         meta.origin,
-        meta.event,
         meta.dir,
         meta.dgen,
         meta.litter,
         meta.litter_size,
     )
-}
-
-fn journal_pair(mx: &Mixer, ids: [u32; 2]) -> UndoEntry {
-    let first = mx.meta_of(ids[0]);
-    let second = mx.meta_of(ids[1]);
-    UndoEntry {
-        before: ids.map(|id| mx.arena.gate(id).clone()),
-        dir: Dir::R,
-        pivot: ids[0],
-        after: ids.iter().map(|&id| (id, mx.arena.stamp(id))).collect(),
-        event: 42,
-        origins: [first.origin, second.origin],
-        gens: [first.dgen, second.dgen],
-        litters: [first.litter, second.litter],
-        litter_sizes: [first.litter_size, second.litter_size],
-        misses: 0,
-    }
 }
 
 #[test]
@@ -82,8 +64,6 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
     mx.band_led_round = true;
     mx.band_led = 5;
     mx.pool = vec![ids[0], ids[2], ids[4]];
-    mx.journal.push_back(journal_pair(&mx, [ids[1], ids[3]]));
-    mx.journal.push_back(journal_pair(&mx, [ids[0], ids[4]]));
     let untouched: Vec<_> = [ids[0], ids[2], ids[4]]
         .into_iter()
         .map(|id| (id, mx.arena.stamp(id), meta_tuple(mx.meta_of(id))))
@@ -91,7 +71,6 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
     let counters = mx.counters.to_line();
     let len_hits = mx.counters.len_hits.clone();
     let pool = mx.pool.clone();
-    let next_event = mx.next_event;
     let mut expected_rng = mx.rng.clone();
     let mut expected_metrics_rng = mx.metrics_rng.clone();
     let plan = ConvexBlock {
@@ -102,7 +81,7 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
         support: 2,
     };
     let fresh = XGate::from_g57([0, 1, 2]);
-    // Two identity pairs add material as well as exercising the merge index.
+    // Two identity pairs add material.
     let replacement = vec![fresh.clone(); 4];
     mx.apply_quality_repair(&plan, replacement.clone()).unwrap();
     let expected = [vec![prefix], replacement, vec![middle, suffix]].concat();
@@ -110,7 +89,6 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
     assert_eq!(mx.quality_reference(), original);
     assert_eq!(mx.quality_num_wires(), 8);
     assert_eq!(mx.moves_done, 81);
-    assert_eq!(mx.next_event, next_event);
     assert_eq!(mx.counters.to_line(), counters);
     assert_eq!(mx.counters.len_hits, len_hits);
     assert_eq!(mx.pool, pool);
@@ -133,28 +111,10 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
         let meta = mx.meta_of(id);
         assert_eq!(meta.dgen, 8);
         assert_eq!(meta.origin, ORIGIN_SYNTH);
-        assert_eq!((meta.litter, meta.litter_size, meta.event), (litter, 4, 0));
+        assert_eq!((meta.litter, meta.litter_size), (litter, 4));
         let mut ancestry = vec![0; mx.anc_words];
         mx.anc_or_into(meta.litter, &mut ancestry);
         assert_eq!(ancestry, vec![(1 << 1) | (1 << 3)]);
-    }
-    assert_eq!(mx.journal.len(), 2);
-    assert!(
-        mx.journal[0]
-            .after
-            .iter()
-            .any(|&(id, stamp)| mx.arena.stamp(id) != stamp)
-    );
-    assert!(
-        mx.journal[1]
-            .after
-            .iter()
-            .all(|&(id, stamp)| mx.arena.stamp(id) == stamp)
-    );
-    assert_eq!(mx.indexed_count, mx.arena.len());
-    for &id in &after {
-        let key = super::super::key_of(mx.arena.gate(id));
-        assert_eq!(mx.index[&key][mx.index_pos[id as usize] as usize], id);
     }
     mx.global_check();
 
@@ -171,11 +131,6 @@ fn quality_repair_preserves_live_metadata_random_stream_and_sampling_state() {
     assert_eq!(resumed.arena.to_vec(), expected);
     assert_eq!(resumed.moves_done, mx.moves_done);
     assert_eq!(resumed.counters.to_line(), mx.counters.to_line());
-    assert_eq!(
-        resumed.journal.len(),
-        1,
-        "only the untouched entry survives"
-    );
     for (before, after) in mx
         .arena
         .ids_in_order_iter()

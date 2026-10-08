@@ -29,6 +29,7 @@ fn qc_cached_lookup_copies_only_requested_records_and_preserves_sampler_cache() 
         .insert(key, std::sync::Arc::new(value.clone()));
     let db = FrozenDb {
         regular: Some(store),
+        memory: None,
     };
     assert_eq!(db.get_regular_qc(&key, 2, 8), Ok(Some(value[..8].to_vec())));
     assert_eq!(
@@ -338,6 +339,7 @@ fn explicit_lookup_caches_keep_distinct_store_values_separate() {
             .insert(key, std::sync::Arc::new(value));
         FrozenDb {
             regular: Some(store),
+            memory: None,
         }
     };
     let first = build(vec![3, 0, 1, 2]);

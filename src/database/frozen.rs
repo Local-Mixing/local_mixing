@@ -1071,6 +1071,13 @@ impl FilterSetting {
 /// database replacements.
 pub struct FrozenDb {
     regular: Option<Frozen>,
+    /// Test-only in-memory regular store (key -> value bytes), consulted
+    /// instead of `regular` when set. It lets unit tests drive the stage-3 DB
+    /// move with real hits without the 1.3 GB shard-offset allocation of a
+    /// file store; lookups through it bypass the process-wide lookup cache, so
+    /// it cannot leak values into (or read values from) other stores' tests.
+    #[cfg(test)]
+    memory: Option<std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u8>>>>,
 }
 
 impl FrozenDb {
@@ -1106,12 +1113,37 @@ impl FrozenDb {
             "[frozen] value convention: regular={}",
             regular_convention.as_str()
         );
-        Self { regular }
+        Self {
+            regular,
+            #[cfg(test)]
+            memory: None,
+        }
     }
 
     /// A handle with no store: every lookup misses.
     pub fn empty() -> Self {
-        Self { regular: None }
+        Self {
+            regular: None,
+            #[cfg(test)]
+            memory: None,
+        }
+    }
+
+    /// Test-only: a handle over an in-memory regular store.
+    #[cfg(test)]
+    pub(crate) fn from_memory(
+        map: std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u8>>>,
+    ) -> Self {
+        Self {
+            regular: None,
+            memory: Some(map),
+        }
+    }
+
+    /// Test-only: whether this handle reads the in-memory store.
+    #[cfg(test)]
+    pub(crate) fn is_memory(&self) -> bool {
+        self.memory.is_some()
     }
 
     /// Open the store named by `FROZEN_DB_DIR` (required).
@@ -1132,6 +1164,10 @@ impl FrozenDb {
 
     #[inline]
     pub fn get_regular(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            return memory.get(key).cloned();
+        }
         self.regular.as_ref()?.get(key)
     }
 
@@ -1147,6 +1183,10 @@ impl FrozenDb {
         max_candidates: usize,
         max_bucket_bytes: usize,
     ) -> Result<Option<Vec<u8>>, QcLookupLimit> {
+        #[cfg(test)]
+        if let Some(memory) = &self.memory {
+            return Ok(memory.get(key).cloned());
+        }
         match &self.regular {
             Some(store) => store.get_qc(key, max_candidates, max_bucket_bytes),
             None => Ok(None),

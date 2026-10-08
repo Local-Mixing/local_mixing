@@ -36,7 +36,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
 
     // The reducible window: a conjunction-control gate applied twice. p;p is the
     // identity, so the store maps this window's key to a ZERO-gate friend — a
-    // strict contraction the merge/undo catalogue is tried after, not before.
+    // strict contraction.
     let p = XGate::conj(0, [(1, true), (2, false)]).unwrap();
     let window = [p.clone(), p.clone()];
 
@@ -90,8 +90,8 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         Some(&value[..])
     );
 
-    // --- drive a real Mixer with the DB move as the only contraction that can
-    // remove this material. Input = 3 anchor gates on disjoint wires {3,4,5}
+    // --- drive a real Mixer with the stage-3 DB move (slot 2, p_db = 1.0),
+    // the only channel that can remove this material. Input = 3 anchor gates on disjoint wires {3,4,5}
     // (a non-identity the store can't shorten, so the circuit never collapses)
     // plus 30 [p,p] blocks on {0,1,2} that DB windows collapse to nothing. ---
     let n_wires = 6;
@@ -115,15 +115,8 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         .collect();
 
     let base_params = || MixParams {
-        target_size: 1,
         moves: 20_000,
-        w_cross: 0.0,
-        w_fresh: 0.0,
-        w_unsub: 0.0,
-        w_insert: 0.0,
-        w_twist_neg: 0.0,
-        w_twist_swap: 0.0,
-        w_twist_cnot: 0.0,
+        p_db: 1.0,
         // Start every DB probe at exactly two contiguous gates. Prefix descent
         // may inspect a one-gate suffix only after a two-gate miss, so every
         // successful replacement in this synthetic store is the intended
@@ -131,7 +124,6 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         s_db: 2,
         p_convex: 0.0,
         db_prefixes: true,
-        undo_frac: 0.0,
         verify_every: 1_000,
         report_every: 1_000_000,
         local_verify: true,
@@ -150,7 +142,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
     // --- (1) COMPRESSING move, verification OFF, with attempt recording ---
     let rec_path = base.join("attempts.log");
     let params = MixParams {
-        p_comp: 1.0, // every contraction tries the compressing DB channel first
+        db_mode: DbMode::Compressing, // every round is a compressing DB attempt
         db_verify: false,
         ..base_params()
     };
@@ -183,10 +175,9 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         "record missing the replacing subcircuit line"
     );
 
-    // --- (2) SIZE-AGNOSTIC move (top-level p_db), verification ON ---
+    // --- (2) SIZE-AGNOSTIC move, verification ON ---
     let params = MixParams {
-        p_db: 1.0, // every round is a size-agnostic DB attempt
-        db_mode: DbMode::SizeAgnostic,
+        db_mode: DbMode::SizeAgnostic, // every round is a size-agnostic DB attempt
         db_verify: true,
         ..base_params()
     };
@@ -203,7 +194,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
     // the concatenation stays equivalent to the input through every round
     // (the whole-circuit mixer verifies it after each one). ---
     let params = MixParams {
-        p_comp: 1.0,
+        db_mode: DbMode::Compressing,
         db_verify: true,
         moves: 4_000,
         ..base_params()

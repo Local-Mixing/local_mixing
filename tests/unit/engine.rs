@@ -1,46 +1,13 @@
 use super::arena::Arena;
-use super::moves::rules::{self, Outcome, Role};
+use super::moves::rules;
 use crate::circuit::Gate;
-use crate::circuit::xgate::{XGate, eval_lanes};
+use crate::circuit::xgate::XGate;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 fn rng() -> StdRng {
     StdRng::seed_from_u64(0xf5197)
-}
-
-// Exhaustive functional equality of two gate sequences over wires 0..n (n <= 16).
-fn eq_exhaustive(a: &[XGate], b: &[XGate], n: usize) -> bool {
-    let total: u64 = 1 << n;
-    let mut v = 0u64;
-    while v < total {
-        let mut st_a = vec![0u64; n];
-        for (i, w) in st_a.iter_mut().enumerate() {
-            let mut acc = 0u64;
-            for l in 0..64u64 {
-                if ((v + l) >> i) & 1 == 1 {
-                    acc |= 1 << l;
-                }
-            }
-            *w = acc;
-        }
-        let mut st_b = st_a.clone();
-        eval_lanes(a, &mut st_a);
-        eval_lanes(b, &mut st_b);
-        let valid: u64 = if total - v >= 64 {
-            !0
-        } else {
-            (1u64 << (total - v)) - 1
-        };
-        for i in 0..n {
-            if (st_a[i] ^ st_b[i]) & valid != 0 {
-                return false;
-            }
-        }
-        v += 64;
-    }
-    true
 }
 
 fn random_g57(n: u16, rng: &mut impl Rng) -> [u16; 3] {
@@ -58,20 +25,6 @@ fn random_circuit(n: u16, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
     (0..m)
         .map(|_| XGate::from_g57(random_g57(n, rng)))
         .collect()
-}
-
-// Random conjunction gate with `w` controls on wires 0..n, avoiding `target`.
-fn random_conj(target: u16, w: usize, n: u16, rng: &mut impl Rng) -> XGate {
-    let mut wires: Vec<u16> = (0..n).filter(|&x| x != target).collect();
-    for i in 0..wires.len() {
-        let j = rng.random_range(i..wires.len());
-        wires.swap(i, j);
-    }
-    XGate::conj(
-        target,
-        wires[..w].iter().map(|&x| (x, rng.random_bool(0.5))),
-    )
-    .unwrap()
 }
 
 // The g57 firing convention must match the G57 evaluator bit for bit.
@@ -98,95 +51,6 @@ fn xgate_eval_matches_g57() {
     }
 }
 
-// Pre-split: function equality AND exclusivity (exactly one piece fires when the
-// parent fires, none otherwise).
-#[test]
-fn presplit_exhaustive() {
-    let mut r = rng();
-    for _ in 0..200 {
-        let g = XGate::from_g57(random_g57(6, &mut r));
-        let pieces = rules::presplit(&g, &mut r);
-        assert!(eq_exhaustive(&[g.clone()], &pieces, 6));
-        for v in 0..(1u64 << 6) {
-            let fires = |x: &XGate| -> bool {
-                let mut acc = true;
-                for &(w, p) in &x.ctrls {
-                    acc &= ((v >> w) & 1 == 1) == p;
-                }
-                acc ^ x.comp
-            };
-            let parent = fires(&g);
-            let count = pieces.iter().filter(|p| fires(p)).count();
-            assert_eq!(count, usize::from(parent), "exclusivity broken at {v:b}");
-        }
-    }
-}
-
-// Random conjunction/g57 pairs through cross(): every Rewrite must be exactly
-// functionally equal to [g, h] (verify_rewrite is itself exhaustive over the
-// support, but check independently over all wires here).
-#[test]
-fn cross_random_pairs() {
-    let n: u16 = 8;
-    let mut r = rng();
-    let mut seen = [0usize; 3];
-    for i in 0..4000 {
-        let a = r.random_range(0..n);
-        let g = random_conj(a, r.random_range(1..=3), n, &mut r);
-        let h = if i % 2 == 0 {
-            let mut hb;
-            loop {
-                hb = random_g57(n, &mut r);
-                if hb[0] != a {
-                    break;
-                }
-            }
-            XGate::from_g57(hb)
-        } else {
-            let mut b;
-            loop {
-                b = r.random_range(0..n);
-                if b != a {
-                    break;
-                }
-            }
-            random_conj(b, r.random_range(1..=3), n, &mut r)
-        };
-        match rules::cross(&g, &h, 16, &mut r) {
-            Outcome::Rewrite { seq, kind, .. } => {
-                seen[match kind {
-                    rules::RuleKind::R1 => 0,
-                    rules::RuleKind::R2 => 1,
-                    rules::RuleKind::R3 => 2,
-                }] += 1;
-                let after: Vec<XGate> = seq.iter().map(|(x, _)| x.clone()).collect();
-                assert!(
-                    eq_exhaustive(&[g.clone(), h.clone()], &after, n as usize),
-                    "{kind:?} wrong: {g:?} x {h:?} -> {after:?}"
-                );
-                assert!(rules::verify_rewrite(&[g.clone(), h.clone()], &after));
-                // Leftward form: [h, g] = reversed sequence.
-                let rev: Vec<XGate> = seq.iter().rev().map(|(x, _)| x.clone()).collect();
-                assert!(
-                    eq_exhaustive(&[h.clone(), g.clone()], &rev, n as usize),
-                    "{kind:?} leftward wrong: {h:?} then {g:?}"
-                );
-            }
-            Outcome::PresplitColliding => {
-                assert!(h.comp && h.reads(a) && !g.reads(h.target));
-            }
-            Outcome::R0Swap => {
-                assert!(!XGate::collides(&g, &h));
-            }
-            Outcome::Blocked(_) => {}
-        }
-    }
-    assert!(
-        seen.iter().all(|&c| c > 100),
-        "rule coverage too thin: {seen:?}"
-    );
-}
-
 // verify_rewrite must reject a wrong rewrite (negative control).
 #[test]
 fn verify_rejects_bad_rewrite() {
@@ -198,52 +62,6 @@ fn verify_rejects_bad_rewrite() {
         &[h.clone(), g.clone()]
     ));
     assert!(rules::verify_rewrite(&[g.clone(), h.clone()], &[g, h]));
-}
-
-// The note's Fig. 12 identity: [a,b,q] x [b,a,v] (both g57) via presplit + R3.
-// [a,b,q]·[b,a,v] = T(b,v→a)·T(¬b,¬q,v→a) · [b,a,v] · T(¬b,¬v→a)·T(b,¬q,¬v→a)
-#[test]
-fn fig12_regression() {
-    let (a, b, q, v) = (0u16, 1u16, 2u16, 3u16);
-    let g = XGate::from_g57([a, b, q]);
-    let h = XGate::from_g57([b, a, v]);
-    let expected = vec![
-        XGate::conj(a, [(b, true), (v, true)]).unwrap(),
-        XGate::conj(a, [(b, false), (q, false), (v, true)]).unwrap(),
-        h.clone(),
-        XGate::conj(a, [(b, false), (v, false)]).unwrap(),
-        XGate::conj(a, [(b, true), (q, false), (v, false)]).unwrap(),
-    ];
-    assert!(eq_exhaustive(&[g.clone(), h.clone()], &expected, 4));
-
-    // Cross the note's pre-split pieces (the presplit's ladder order is a free
-    // randomized choice, so build the note's decomposition explicitly here;
-    // presplit_exhaustive covers the presplit itself).
-    let mut r = rng();
-    let pieces = vec![
-        XGate::conj(a, [(b, true)]).unwrap(),
-        XGate::conj(a, [(b, false), (q, false)]).unwrap(),
-    ];
-    assert!(rules::verify_rewrite(std::slice::from_ref(&g), &pieces));
-    let mut produced: Vec<XGate> = Vec::new();
-    for p in &pieces {
-        match rules::cross(p, &h, 16, &mut r) {
-            Outcome::Rewrite { seq, kind, .. } => {
-                assert_eq!(kind, rules::RuleKind::R3);
-                for (x, role) in seq {
-                    if role != Role::CollidingIntact {
-                        produced.push(x);
-                    }
-                }
-            }
-            other => panic!("expected R3 rewrite, got {other:?}"),
-        }
-    }
-    let mut want: Vec<XGate> = expected.iter().filter(|x| **x != h).cloned().collect();
-    let key = |x: &XGate| format!("{x:?}");
-    produced.sort_by_key(key);
-    want.sort_by_key(key);
-    assert_eq!(produced, want, "residue multiset differs from the note");
 }
 
 #[test]

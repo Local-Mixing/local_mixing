@@ -10,27 +10,20 @@ fn golden_hash(mx: &Mixer) -> u64 {
     for id in mx.arena.ids_in_order() {
         mx.arena.gate(id).hash(&mut h);
         let m = mx.meta_of(id);
-        (
-            m.origin,
-            m.event,
-            m.dir == Dir::R,
-            m.dgen,
-            m.litter,
-            m.litter_size,
-        )
-            .hash(&mut h);
+        (m.origin, m.dir == Dir::R, m.dgen, m.litter, m.litter_size).hash(&mut h);
     }
     mx.counters.to_line().hash(&mut h);
     mx.moves_done.hash(&mut h);
     h.finish()
 }
 
-// Re-baselined 2026-10-08 (twice): when the two curated counters and then
-// the eight split-stage counters left the counters line. Each time the
-// gate/meta trajectory was verified unchanged against the previous constants
-// by re-inserting the retired (zero) fields.
-const GOLDEN_PROFILE_NULL_PLANT: u64 = 0xc277215de595bf62;
-const GOLDEN_THERMOSTAT_WALK: u64 = 0x85489b717f732b6e;
+// Re-baselined 2026-10-08 (three times): when the two curated counters,
+// then the eight split-stage counters, then the crossing-walk counters and
+// the per-gate event field left the hashed state. Each time the gate/meta/
+// counter trajectory was verified unchanged against the previous constant by
+// re-inserting the retired fields as zeros (step 4: old 0xc277215de595bf62
+// reproduced exactly). The thermostat-walk golden is gone with the walk.
+const GOLDEN_PROFILE_NULL_PLANT: u64 = 0xaed23f37b193b604;
 
 #[test]
 fn golden_profile_null_plant_is_stable() {
@@ -38,10 +31,7 @@ fn golden_profile_null_plant_is_stable() {
     let params = MixParams {
         k_max: 6,
         moves: 4_000_000,
-        temp: 20.0,
         p_db: 1.0,
-        p_comp: 1.0,
-        p_any: 0.1,
         s_db: 5,
         p_convex: 0.5,
         mix_pay_random: true,
@@ -60,31 +50,5 @@ fn golden_profile_null_plant_is_stable() {
     assert_eq!(
         h, GOLDEN_PROFILE_NULL_PLANT,
         "serial profile trajectory drifted: got {h:#018x}"
-    );
-}
-
-#[test]
-fn golden_thermostat_walk_is_stable() {
-    let gates = random_mixed_circuit(37, 16, 200);
-    let params = MixParams {
-        k_max: 5,
-        moves: 4_000,
-        target_size: 260,
-        temp: 20.0,
-        p_twist: 0.05,
-        w_twist_neg: 1.0,
-        gen_target: 3,
-        verify_every: 1_000,
-        report_every: u64::MAX,
-        seed: 11,
-        ..MixParams::default()
-    };
-    let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
-    let stop = mx.run();
-    assert!(matches!(stop, MixStop::MovesBudget));
-    let h = golden_hash(&mx);
-    assert_eq!(
-        h, GOLDEN_THERMOSTAT_WALK,
-        "serial thermostat trajectory drifted: got {h:#018x}"
     );
 }

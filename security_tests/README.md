@@ -174,7 +174,11 @@ result is always relative to the stated feature family and sampling policy.
 ## Gadget gauntlet
 
 The gauntlet creates its own small source chains, generates gadget arms,
-optionally mixes them, audits traces, and writes witness heatmaps and a report:
+optionally mixes them, audits traces, and writes witness heatmaps and a report.
+Mixed cells run the engine mixer on the stage-3 DB path (DB re-spelling every
+round plus swap-family twists), so `--mix on|both` needs the regular frozen
+store in `FROZEN_DB_DIR`; the store-free crossing-walk churn it used before is
+historic (branch `ran/archive/curated-and-postmix`):
 
 ```bash
 python security_tests/gauntlet/gauntlet.py all \

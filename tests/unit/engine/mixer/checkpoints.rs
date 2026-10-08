@@ -2,52 +2,45 @@
 fn counters_line_tolerates_missing_trailing_fields() {
     let mut c = MixCounters::default();
     c.moves = 7;
+    c.scatter_steps = 5;
     c.tg_consumed = 3;
     c.tg_emitted = 9;
-    c.cross_pool_shots = 19;
     let line = c.to_line();
     let full = MixCounters::from_line(&line).expect("roundtrip");
     assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
-    assert_eq!(full.cross_pool_shots, 19);
+    assert_eq!(full.scatter_steps, 5);
     let fields: Vec<&str> = line.split_whitespace().collect();
-    // Dropping the pool-shot counter must default it to zero while
-    // preserving the tg pair.
-    let truncated = fields[..fields.len() - 1].join(" ");
-    let parsed =
-        MixCounters::from_line(&truncated).expect("state without pool shots must load");
-    assert_eq!(parsed.moves, 7);
-    assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (3, 9));
-    assert_eq!(parsed.cross_pool_shots, 0);
-    // Dropping the tg pair as well defaults all trailing fields.
-    let truncated = fields[..fields.len() - 3].join(" ");
+    // Dropping the trailing tg pair defaults both to zero while preserving
+    // every field before it.
+    let truncated = fields[..fields.len() - 2].join(" ");
     let parsed = MixCounters::from_line(&truncated).expect("state without tg counters must load");
     assert_eq!(parsed.moves, 7);
+    assert_eq!(parsed.scatter_steps, 5);
     assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
-    assert_eq!(parsed.cross_pool_shots, 0);
+    // A line cut inside the mandatory fields is refused.
+    let truncated = fields[..fields.len() - 3].join(" ");
+    assert!(MixCounters::from_line(&truncated).is_none());
 }
 
 // Checkpoint round-trip: a resumed chain must continue rather than restart.
-// The circuit file alone cannot do this -- directions, generations, litters,
-// the journal and the original are all outside it -- so the test checks the
+// The circuit file alone cannot do this -- directions, generations, litters
+// and the original are all outside it -- so the test checks the
 // state that has no other home, and that the resumed run still verifies
 // against the TRUE original rather than against its own resume point.
 #[test]
 fn checkpoint_round_trip_preserves_chain_state() {
-    let gates = random_mixed_circuit(37, 16, 200);
+    let gates = random_g57_circuit(37, 16, 200);
     let params = MixParams {
         k_max: 5,
         moves: 4_000,
-        target_size: 260,
-        temp: 20.0,
         p_twist: 0.05,
-        w_twist_neg: 1.0,
         gen_target: 3,
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 11,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates.clone(), 16, params.clone());
+    let mut mx = Mixer::new_with_db(gates.clone(), 16, params.clone(), g57_fixture_store());
     mx.run();
     let before_gates = mx.arena.to_vec();
     let before_meta: Vec<(u32, u32, u64)> = mx
@@ -72,7 +65,7 @@ fn checkpoint_round_trip_preserves_chain_state() {
     let path = path.to_str().unwrap();
     mx.save_state(path).expect("save");
 
-    let mut rs = Mixer::resume_state(path, params, FrozenDb::empty()).expect("resume");
+    let mut rs = Mixer::resume_state(path, params, g57_fixture_store()).expect("resume");
     assert_eq!(
         rs.arena.to_vec(),
         before_gates,
@@ -123,18 +116,16 @@ fn checkpoint_round_trip_preserves_chain_state() {
 // so only the explicit anctracers section can reproduce it.
 #[test]
 fn state_round_trips_imported_tracers() {
-    let gates = random_mixed_circuit(53, 16, 150);
+    let gates = random_g57_circuit(53, 16, 150);
     let params = MixParams {
         k_max: 6,
         moves: 3_000,
-        target_size: 3 * gates.len(),
-        temp: 20.0,
         anc_samples: 24,
         report_every: u64::MAX,
         seed: 9,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx = Mixer::new(gates, 16, params);
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
     let anc_path = std::env::temp_dir().join("circuit_mixer_anc_state_test.anc");
     let anc_path = anc_path.to_str().unwrap().to_string();
@@ -146,12 +137,11 @@ fn state_round_trips_imported_tracers() {
     let params2 = MixParams {
         k_max: 6,
         moves: 2_000,
-        temp: 20.0,
         report_every: u64::MAX,
         seed: 10,
-        ..MixParams::default()
+        ..db_walk_params()
     };
-    let mut mx2 = Mixer::new(out_gates, 16, params2.clone());
+    let mut mx2 = Mixer::new_with_db(out_gates, 16, params2.clone(), g57_fixture_store());
     mx2.import_ancestry(Mixer::read_anc_sidecar(&anc_path).expect("read sidecar"));
     mx2.run();
     let want_tracers = mx2.anc_tracers.clone();
@@ -161,7 +151,7 @@ fn state_round_trips_imported_tracers() {
     let st_path = st_path.to_str().unwrap().to_string();
     mx2.save_state(&st_path).expect("save state");
     // Resume without any ancestry flags: the stored section must arm it.
-    let rs = Mixer::resume_state(&st_path, params2, FrozenDb::empty()).expect("resume");
+    let rs = Mixer::resume_state(&st_path, params2, g57_fixture_store()).expect("resume");
     assert!(rs.anc_sampled, "stored anctracers must re-arm sampled mode");
     assert_eq!(
         rs.anc_tracers, want_tracers,
@@ -187,12 +177,20 @@ fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
     original.save_state(path.to_str().unwrap()).unwrap();
     let serialized = std::fs::read_to_string(&path).unwrap();
     assert!(serialized.starts_with(&format!("circuit-mixer-state {STATE_VERSION}\n")));
-    // The historic split stage left no trace in the format.
-    assert!(
-        !serialized
-            .lines()
-            .any(|l| l.starts_with("split ") || l.starts_with("staps "))
-    );
+    // The historic split stage and crossing walk left no trace in the
+    // format: no split/staps lines, no next_event scalar, no tabu or journal
+    // sections, and five meta fields per gate.
+    assert!(!serialized.lines().any(|l| {
+        ["split ", "staps ", "next_event ", "tabu ", "journal "]
+            .iter()
+            .any(|p| l.starts_with(p))
+    }));
+    let gate_line = serialized
+        .lines()
+        .skip_while(|l| !l.starts_with("gates "))
+        .nth(1)
+        .expect("a gate line");
+    assert_eq!(gate_line.split(" | ").nth(1).unwrap().split_whitespace().count(), 5);
     // The optional anctracers section is absent here (no sampled ancestry):
     // the minimal state loads and continues.
     let mut resumed =
@@ -201,8 +199,9 @@ fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
     resumed.run();
     resumed.global_check();
     assert!(resumed.moves_done > 0);
-    // Older versions carry retired curated or split fields and are refused.
-    for version in [1, 2, 3] {
+    // Older versions carry retired curated, split or crossing fields and are
+    // refused.
+    for version in [1, 2, 3, 4] {
         let old = serialized.replacen(
             &format!("circuit-mixer-state {STATE_VERSION}\n"),
             &format!("circuit-mixer-state {version}\n"),

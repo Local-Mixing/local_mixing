@@ -64,6 +64,12 @@ fn cached_db_get_using(
     let Some(cache) = cache else {
         return raw_db_get(db, key);
     };
+    // The process-wide cache is keyed by the lookup key alone, so a test-only
+    // in-memory store must neither fill it nor read from it.
+    #[cfg(test)]
+    if db.is_memory() {
+        return raw_db_get(db, key);
+    }
     LOOKUP_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
     if let Some(entry) = cache.get(key) {
         LOOKUP_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
