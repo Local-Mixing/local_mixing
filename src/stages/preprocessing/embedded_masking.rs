@@ -619,7 +619,8 @@ fn product_fire(
     let mut droppable: Vec<(usize, u16)> = Vec::new();
     match ops.len() {
         0 => {
-            if comp {
+            // 0 controls: fire = comp ^ AND(empty) = !comp (as in masked_fire)
+            if !comp {
                 units.push(vec![XGate::x_gate(t)]);
             }
         }

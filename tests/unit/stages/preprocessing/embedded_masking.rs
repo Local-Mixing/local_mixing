@@ -102,6 +102,53 @@ fn gadget_computes_a_exhaustively_in_both_read_modes() {
     }
 }
 
+// Zero-control source gates (a NOT, comp=false; and the never-firing comp=true
+// gate) must be lowered to the same function in both read modes. Generated
+// sources never contain them (three distinct wires per g57 gate), but a
+// supplied TDP_SOURCE_C with a degenerate g57 gate [a, x, x] decodes to one.
+#[test]
+fn zero_control_source_gates_compute_a_in_both_read_modes() {
+    let np = 6usize;
+    let mut rng = StdRng::seed_from_u64(0x0C07_7011);
+    let mut a = random_a(np as u16, 12, &mut rng);
+    a.insert(3, XGate::x_gate(1));
+    a.insert(7, XGate::from_g57([4, 2, 2]));
+    a.push(XGate {
+        target: 5,
+        comp: true,
+        ctrls: Default::default(),
+    });
+    for quad_fire in [true, false] {
+        for seed in 0..3u64 {
+            let p = EmbeddedMaskingParams {
+                quad_fire,
+                ..EmbeddedMaskingParams::production(200 + seed)
+            };
+            let out = preprocess_embedded_masking(&a, np, &p);
+            for data in 0..(1u64 << np) {
+                let mut expect = data;
+                for g in &a {
+                    expect = g.apply_u64(expect);
+                }
+                let mut st = data;
+                for g in out
+                    .pre_gates
+                    .iter()
+                    .chain(&out.gates)
+                    .chain(&out.post_gates)
+                {
+                    st = g.apply_u64(st);
+                }
+                assert_eq!(
+                    st & ((1u64 << np) - 1),
+                    expect,
+                    "quad_fire={quad_fire} seed {seed} data {data:#x}"
+                );
+            }
+        }
+    }
+}
+
 fn assert_shuffling_layout(output: &EmbeddedMaskingOutput, np: usize, return_home: bool) {
     assert_eq!(output.final_layout.len(), output.num_wires);
     let mut destinations = output.final_layout.clone();
@@ -499,9 +546,9 @@ fn preprocessing_shuffling_matches_all_wires_on_4096_dirty_states_and_every_one_
 fn preprocessing_shuffling_preserves_existing_zero_control_lowering() {
     use crate::circuit::eval_lanes4;
 
-    // Quadratic-fire and linear-read emitters use different zero-control
-    // complement conventions. This test checks that shuffling preserves each
-    // emitter's output.
+    // Zero-control source gates in both read modes: shuffling must preserve
+    // each emitter's output (correctness against the source is checked by
+    // zero_control_source_gates_compute_a_in_both_read_modes).
     let source = vec![
         XGate::x_gate(0),
         XGate {
