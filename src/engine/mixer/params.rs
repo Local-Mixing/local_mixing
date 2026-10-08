@@ -143,24 +143,6 @@ pub struct MixParams {
     /// never what they are, so it is function-preserving by construction --
     /// every step is a commutation.
     pub shuffle_rate: f64,
-    /// Two-pass store routing: exhaust the curated store over EVERY window
-    /// length before the regular store is consulted at any length. Only
-    /// affects the prefix descent (there is no "every length" without one)
-    /// and only while curated is armed for the mode -- expansion always,
-    /// compression when `curated_in_comp` arms it too.
-    pub curated_exhaust: bool,
-    /// Arm the curated store for COMPRESSION too. Off by contract: uneven
-    /// splits of a minimal identity give unequal halves, so the store holds
-    /// longer-than-minimal spellings, and curated's lexicographic priority in
-    /// `choose_ref` compounds that. On, curated joins the compression pool and
-    /// the size rule keeps only what is strictly shorter than the window --
-    /// the shorter halves, which are the ones worth having here.
-    pub curated_in_comp: bool,
-    /// EXPERIMENT ARM: non-COMP DB rounds consult ONLY the curated store; a
-    /// curated miss declines the round outright (no regular fallback, the
-    /// move ends and the next move draws a fresh window). Compression keeps
-    /// its full cascade exactly as configured. Needs curated armed.
-    pub curated_only_mix: bool,
     // twist_g57: spell twist brackets as all-g57 words instead of 3-CNOT
     // packets, siting each bracket adaptively so it absorbs neighborhood
     // gates (the hidden-SAMF mechanism, XGate-native). Pure swap only: the
@@ -360,13 +342,6 @@ pub struct MixParams {
     // Refuse a round whose interior holds more colliders than this (each
     // collider costs one or two correction gates).
     pub bridge_max_colliders: usize,
-    // curated: also probe the curated store (FROZEN_CURATED_DIR) and prefer a
-    // non-identical curated match over a regular one regardless of size. The
-    // curated store holds circuits every strict subcircuit of which is
-    // shortest, so a curated replacement is one whose pieces are not locally
-    // compressible -- a route fcompress cannot partially undo. Compressing mode
-    // ignores it (shrinking is that branch's job).
-    pub curated: bool,
     // ancestors: track, per litter, the SET of original input gates that
     // contributed to it -- the union of the sets of the litters the outgoing
     // window drew on. Unlike the single `origin` label (which a mixed-lineage
@@ -623,9 +598,6 @@ impl Default for MixParams {
             w_twist_cnot: 0.0,
             twist_neg_p: 0.5,
             shuffle_rate: 2.0,
-            curated_exhaust: false,
-            curated_in_comp: false,
-            curated_only_mix: false,
             twist_g57: false,
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
@@ -633,8 +605,7 @@ impl Default for MixParams {
             // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the circuit_mixer
             // CLI, where a run that wants the store asks for it -- as of
             // 2026-08-03 that means s_db 9, p_convex 0.4, s_db_comp 12,
-            // p_convex_comp 0.9, db_prefixes/curated/curated_exhaust/
-            // curated_in_comp all ON. The values below stay the store-free
+            // p_convex_comp 0.9, db_prefixes ON. The values below stay the store-free
             // test baseline on purpose; do not "sync" them to the CLI.
             p_comp: 0.0,
             p_any: 0.0,
@@ -678,7 +649,6 @@ impl Default for MixParams {
             bridge_min_span: 16,
             bridge_max_span: 512,
             bridge_max_colliders: 8,
-            curated: false,
             ancestors: false,
             anc_samples: 0,
             anc_sample_seed: 0,
@@ -728,7 +698,7 @@ impl Default for MixParams {
     }
 }
 
-/// Resolved twist, phase-stop and reference-store controls. Database-backed
+/// Resolved twist and phase-stop controls. Database-backed
 /// walks retain their default replacement/cache policy. These options replace
 /// the corresponding environment overrides and are deliberately not part
 /// of the versioned checkpoint format; supply them again when resuming.
@@ -741,7 +711,6 @@ pub struct MixRuntimeOptions {
     /// reach this count (checked every move, so the stop is exact). For
     /// matched-splice-budget comparisons across arms.
     pub stop_at_splices: Option<u64>,
-    pub reference_db: Option<Arc<FrozenDb>>,
 }
 
 impl Default for MixRuntimeOptions {
@@ -751,7 +720,6 @@ impl Default for MixRuntimeOptions {
             twist_g57_retry: true,
             stop_at_phase: None,
             stop_at_splices: None,
-            reference_db: None,
         }
     }
 }

@@ -159,18 +159,6 @@ impl Mixer {
     }
 
     /// Non-zero cells of the splice size histogram, as `out->in:count`.
-    pub fn splice_size_line_curated(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        for (o, row) in self.counters.splice_sizes_curated.iter().enumerate() {
-            for (i, &c) in row.iter().enumerate() {
-                if c > 0 {
-                    parts.push(format!("{o}->{i}:{c}"));
-                }
-            }
-        }
-        parts.join(" ")
-    }
-
     pub fn splice_size_line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for (o, row) in self.counters.splice_sizes.iter().enumerate() {
@@ -226,7 +214,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[circuit_mixer] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} sled={}/{} m123={} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[circuit_mixer] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} g57only={}/{} sled={}/{} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -267,13 +255,10 @@ impl Mixer {
             c.db_span_skips,
             c.db_build_aborts,
             c.db_identity_skips,
-            c.db_curated_hits,
-            c.db_curated_rejected,
             c.db_g57_hits,
             c.db_g57_rounds,
             self.stable_led_added,
             self.stable_led_removed,
-            self.bigpool_hits,
             self.band_led,
             c.cross_r1,
             c.cross_r2,
@@ -393,20 +378,6 @@ impl Mixer {
             crate::stages::db_mixing::replacement::REORDER_IDENTITY_SKIPS
                 .load(std::sync::atomic::Ordering::Relaxed)
         );
-        let ms: Vec<String> = self
-            .m123_class_hist
-            .iter()
-            .enumerate()
-            .filter(|&(_, &c)| c > 0)
-            .map(|(l, &c)| format!("M{l}:{c}"))
-            .collect();
-        if !ms.is_empty() {
-            println!(
-                "[circuit_mixer] m123class mv={} {}",
-                self.moves_done,
-                ms.join(" ")
-            );
-        }
         if self.geo_attempts[0] + self.geo_attempts[1] > 0 {
             let rate = |h: u64, a: u64| {
                 if a > 0 {
@@ -472,10 +443,6 @@ impl Mixer {
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {
             println!("[circuit_mixer] splice sizes out->in: {sizes}");
-        }
-        let csizes = self.splice_size_line_curated();
-        if !csizes.is_empty() {
-            println!("[circuit_mixer] splice sizes (curated) out->in: {csizes}");
         }
         if let Some(p) = &self.prof {
             let s_star = prof_target(self.params.prof_n, self.params.prof_r, p.s_in, p.eff);

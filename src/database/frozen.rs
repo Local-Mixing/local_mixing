@@ -3,7 +3,6 @@
 //!
 //! Runtime configuration is environment-driven:
 //!   FROZEN_DB_DIR=<dir>       serve regular-shard lookups from <dir>
-//!   FROZEN_CURATED_DIR=<dir>  serve curated-shard lookups from <dir>
 //!   FROZEN_FILTER=1           also load <dir>/filters.bin (~25.5 GB RAM;
 //!                             makes misses ~0.5us instead of one disk read)
 //!
@@ -392,20 +391,20 @@ struct Frozen {
     shards: Vec<FrozenShard>,
     tables: Tables,
     filters: Option<Vec<BinaryFuse8>>,
-    // Decoded-value cache for BIG-POOL keys (values with > 20 candidates —
-    // only the M1/M2/M3 pool-swap entries qualify). Those ~1.7K hot keys are
-    // hit constantly and their Huffman decode dominates lookup cost
-    // (~40ms/move measured against ~7ms with the bounded store); caching the
-    // decoded bytes once per key removes it. Bounded, never evicts (the
-    // qualifying key population is small by construction).
+    // Decoded-value cache for BIG-POOL keys (values with > 20 candidates).
+    // The bounded regular store caps entries at 20 friends, so it never
+    // qualifies; historical pool-swapped stores had ~1.7K such hot keys whose
+    // Huffman decode dominated lookup cost. Caching the decoded bytes once per
+    // key removes it. Bounded, never evicts (the qualifying key population is
+    // small by construction).
     big_cache: std::sync::Mutex<std::collections::HashMap<[u8; 16], std::sync::Arc<Vec<u8>>>>,
     // Value convention: when true, every decoded gate triple [t, c1, c2] has
     // its two controls swapped (bytes 1 and 2) before the value is returned.
-    // The historical pre-2ed0222a curated store used the swapped-controls
-    // convention (its keys were canonicalized with the b/c-swapped polynomial
-    // of pre-2ed0222a, so its values read back swapped relative to native) —
+    // Historical pre-2ed0222a stores used the swapped-controls convention
+    // (their keys were canonicalized with the b/c-swapped polynomial of
+    // pre-2ed0222a, so their values read back swapped relative to native) —
     // current native builds do not need this. This is the store-side half
-    // of FROZEN_*_VALUE_CONVENTION for historical store compatibility.
+    // of FROZEN_REGULAR_VALUE_CONVENTION for historical store compatibility.
     swap_ctrls: bool,
 }
 
@@ -1047,7 +1046,6 @@ impl ValueConvention {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrozenOpenOptions {
     pub regular_convention: ValueConvention,
-    pub curated_convention: ValueConvention,
     pub load_filters: bool,
 }
 
@@ -1066,54 +1064,36 @@ impl FilterSetting {
     }
 }
 
-/// Native runtime handle for the immutable replacement stores.
+/// Native runtime handle for the immutable regular replacement store.
 ///
-/// `open`/`from_env` require the regular store. The curated store is optional
-/// so commands that only compress against the regular table do not need to
-/// open it. `FrozenDb::empty()` supplies an all-miss handle for isolated tests
-/// and mixing operations that do not use database replacements.
+/// `open`/`from_env` require the regular store. `FrozenDb::empty()` supplies an
+/// all-miss handle for isolated tests and mixing operations that do not use
+/// database replacements.
 pub struct FrozenDb {
     regular: Option<Frozen>,
-    curated: Option<Frozen>,
 }
 
 impl FrozenDb {
-    /// Open explicit directories with environment overrides.
+    /// Open an explicit directory with environment overrides.
     /// See `open_with_options` for a fully resolved storage boundary.
-    pub fn open(regular_dir: &str, curated_dir: Option<&str>) -> Self {
+    pub fn open(regular_dir: &str) -> Self {
         let regular_convention =
             super::environment::value_convention("FROZEN_REGULAR_VALUE_CONVENTION");
-        let curated_convention =
-            super::environment::value_convention("FROZEN_CURATED_VALUE_CONVENTION");
-        Self::open_resolved(
-            regular_dir,
-            curated_dir,
-            regular_convention,
-            curated_convention,
-            FilterSetting::Environment,
-        )
+        Self::open_resolved(regular_dir, regular_convention, FilterSetting::Environment)
     }
 
-    /// Open immutable stores without consulting environment configuration.
-    pub fn open_with_options(
-        regular_dir: &str,
-        curated_dir: Option<&str>,
-        options: FrozenOpenOptions,
-    ) -> Self {
+    /// Open the immutable store without consulting environment configuration.
+    pub fn open_with_options(regular_dir: &str, options: FrozenOpenOptions) -> Self {
         Self::open_resolved(
             regular_dir,
-            curated_dir,
             options.regular_convention,
-            options.curated_convention,
             FilterSetting::Resolved(options.load_filters),
         )
     }
 
     fn open_resolved(
         regular_dir: &str,
-        curated_dir: Option<&str>,
         regular_convention: ValueConvention,
-        curated_convention: ValueConvention,
         filters: FilterSetting,
     ) -> Self {
         let regular = Some(Self::open_store(
@@ -1122,36 +1102,21 @@ impl FrozenDb {
             regular_convention == ValueConvention::LegacySwappedControls,
             filters,
         ));
-        let curated = curated_dir.map(|dir| {
-            Self::open_store(
-                "curated",
-                dir,
-                curated_convention == ValueConvention::LegacySwappedControls,
-                filters,
-            )
-        });
-        let reg_name = regular_convention.as_str();
-        let cur_name = curated_convention.as_str();
         eprintln!(
-            "[frozen] value conventions: regular={reg_name}, curated={}",
-            if curated.is_some() { cur_name } else { "-" }
+            "[frozen] value convention: regular={}",
+            regular_convention.as_str()
         );
-        Self { regular, curated }
+        Self { regular }
     }
 
-    /// A handle with no stores: every lookup misses.
+    /// A handle with no store: every lookup misses.
     pub fn empty() -> Self {
-        Self {
-            regular: None,
-            curated: None,
-        }
+        Self { regular: None }
     }
 
-    /// Open stores from `FROZEN_DB_DIR` and optional `FROZEN_CURATED_DIR`.
-    /// The regular store is required.
+    /// Open the store named by `FROZEN_DB_DIR` (required).
     pub fn from_env() -> Self {
-        let (regular, curated) = super::environment::frozen_directories();
-        Self::open(&regular, curated.as_deref())
+        Self::open(&super::environment::frozen_directory())
     }
 
     fn open_store(label: &str, dir: &str, swap_ctrls: bool, filters: FilterSetting) -> Frozen {
@@ -1170,11 +1135,6 @@ impl FrozenDb {
         self.regular.as_ref()?.get(key)
     }
 
-    #[inline]
-    pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        self.curated.as_ref()?.get(key)
-    }
-
     /// QC-only prefix lookup. Bounds both the compressed bucket allocation and
     /// decoded legacy bytes examined (including predecessor values) by
     /// `max_bucket_bytes`. Returns at most `max_candidates` complete records,
@@ -1191,23 +1151,6 @@ impl FrozenDb {
             Some(store) => store.get_qc(key, max_candidates, max_bucket_bytes),
             None => Ok(None),
         }
-    }
-
-    /// The curated-store counterpart to [`Self::get_regular_qc`].
-    pub fn get_curated_qc(
-        &self,
-        key: &[u8; 16],
-        max_candidates: usize,
-        max_bucket_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, QcLookupLimit> {
-        match &self.curated {
-            Some(store) => store.get_qc(key, max_candidates, max_bucket_bytes),
-            None => Ok(None),
-        }
-    }
-
-    pub fn has_curated(&self) -> bool {
-        self.curated.is_some()
     }
 }
 

@@ -15,7 +15,6 @@ impl MixCounters {
             self.db_hard_rounds,
             self.db_hard_added,
             self.db_identity_skips,
-            self.db_curated_hits,
             self.merges_absorb,
             self.db_g57_rounds,
             self.db_g57_hits,
@@ -27,7 +26,6 @@ impl MixCounters {
             self.canary_fallthrough,
             self.litter_banned,
             self.twist_placed,
-            self.db_curated_rejected,
             self.twist_place_fallback,
             self.dmin_windows,
             self.dmin_shorter,
@@ -121,7 +119,6 @@ impl MixCounters {
             db_hard_rounds: next_u64(&mut it)?,
             db_hard_added: next_u64(&mut it)?,
             db_identity_skips: next_u64(&mut it)?,
-            db_curated_hits: next_u64(&mut it)?,
             merges_absorb: next_u64(&mut it)?,
             db_g57_rounds: next_u64(&mut it)?,
             db_g57_hits: next_u64(&mut it)?,
@@ -133,7 +130,6 @@ impl MixCounters {
             canary_fallthrough: next_u64(&mut it)?,
             litter_banned: next_u64(&mut it)?,
             twist_placed: next_u64(&mut it)?,
-            db_curated_rejected: next_u64(&mut it)?,
             twist_place_fallback: next_u64(&mut it)?,
             dmin_windows: next_u64(&mut it)?,
             dmin_shorter: next_u64(&mut it)?,
@@ -228,7 +224,6 @@ impl MixCounters {
             db_cmp_added: 0,
             db_cmp_removed: 0,
             splice_sizes: Vec::new(),
-            splice_sizes_curated: Vec::new(),
             pair_rounds: 0,
             pair_boxes_empty: 0,
             pair_scan_truncs: 0,
@@ -255,9 +250,11 @@ impl MixCounters {
         })
     }
 }
-// v2 (2026-08-05): the split-stage scalar line and the staps (canary) section
-// The reader still accepts v1, defaulting both.
-pub const STATE_VERSION: u32 = 2;
+// v2 (2026-08-05): the split-stage scalar line and the staps (canary) section.
+// v3 (2026-10-08): the curated-store counters left the counters line. Older
+// states are refused; resume them with the archive branch
+// ran/archive/curated-and-postmix.
+pub const STATE_VERSION: u32 = 3;
 
 impl Mixer {
     /// Write everything a resumed run needs and the circuit file does not
@@ -477,9 +474,9 @@ impl Mixer {
             .next()
             .and_then(|x| x.parse().ok())
             .ok_or_else(|| bad("bad version"))?;
-        // v1 is a strict prefix of v2 (split line and staps section absent),
-        // so old states load with the split stage off and no canaries.
-        if v != 1 && v != STATE_VERSION {
+        // v1/v2 counters lines carry the retired curated counters, so their
+        // fields cannot be reinterpreted here.
+        if v != STATE_VERSION {
             return Err(bad(&format!(
                 "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
             )));

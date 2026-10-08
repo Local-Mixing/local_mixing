@@ -11,20 +11,6 @@ pub(crate) fn tg_retry_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("TWIST_G57_NO_RETRY").is_none())
 }
 
-/// Read-only reference store for class attribution (FROZEN_REF_DIR): opened
-/// once, queried as a REGULAR store — only spelling LENGTHS are read, and
-/// those are convention-independent.
-pub(crate) fn reference_db() -> Option<&'static crate::database::frozen::FrozenDb> {
-    static REF: std::sync::OnceLock<Option<crate::database::frozen::FrozenDb>> =
-        std::sync::OnceLock::new();
-    REF.get_or_init(|| {
-        let dir = std::env::var("FROZEN_REF_DIR").ok()?;
-        println!("[circuit_mixer] class-attribution reference store: {dir}");
-        Some(crate::database::frozen::FrozenDb::open(&dir, None))
-    })
-    .as_ref()
-}
-
 pub(crate) fn stop_at_phase() -> Option<u32> {
     static STOP_AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *STOP_AT.get_or_init(|| {

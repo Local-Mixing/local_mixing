@@ -55,21 +55,11 @@ pub fn run(matches: clap::ArgMatches) {
     if args.no_db_prefixes {
         args.db_prefixes = false;
     }
-    if args.no_curated {
-        args.curated = false;
-    }
-    if args.no_curated_exhaust {
-        args.curated_exhaust = false;
-    }
-    if args.no_curated_in_comp {
-        args.curated_in_comp = false;
-    }
 
     // LAYER-2 db_mixing preset: fill the db_mixing default block for any knob the
-    // user did not pass explicitly. Explicit flags always win. (curated and
-    // p_convex used to be set here; both are covered by the 2026-08-03
-    // shipped defaults -- curated ON, p_convex 0.4 -- so db_mixing now just
-    // inherits them.)
+    // user did not pass explicitly. Explicit flags always win. (p_convex used
+    // to be set here; it is covered by the 2026-08-03 shipped default
+    // p_convex 0.4, so db_mixing now just inherits it.)
     if args.db_mixing {
         if !given("twist_g57") {
             args.twist_g57 = true;
@@ -86,25 +76,19 @@ pub fn run(matches: clap::ArgMatches) {
         // Its DB opinions (p_mingen 0.6 / p_mingen_comp 0) live in
         // DbLayer::db_mixing(), applied with the rest of the stack below.
         println!(
-            "[circuit_mixer] db_mixing preset ON: twist-g57={} p_twist={} db-advance={} curated={} mix-pay-random={} (DB knobs settled below)",
-            args.twist_g57, args.p_twist, args.db_advance, args.curated, args.mix_pay_random
+            "[circuit_mixer] db_mixing preset ON: twist-g57={} p_twist={} db-advance={} mix-pay-random={} (DB knobs settled below)",
+            args.twist_g57, args.p_twist, args.db_advance, args.mix_pay_random
         );
     }
 
     // TDP profile: the non-DB half (its DB block is DbLayer::tdp()).
     if args.tdp {
-        if !given("curated") {
-            args.curated = true;
-        }
-        if !given("curated_in_comp") {
-            args.curated_in_comp = true;
-        }
         if !given("db_advance") {
             args.db_advance = true;
         }
         println!(
-            "[circuit_mixer] TDP profile ON: curated={} db-advance={} | p_mix NOT set (layer-2 owns it) | DB knobs settled below",
-            args.curated, args.db_advance
+            "[circuit_mixer] TDP profile ON: db-advance={} | p_mix NOT set (layer-2 owns it) | DB knobs settled below",
+            args.db_advance
         );
     }
 
@@ -206,46 +190,8 @@ pub fn run(matches: clap::ArgMatches) {
         }
     }
 
-    // Resolve the curated store BEFORE any banner mentions it, so the
-    // printouts below describe what will actually run.
     if let Some(d) = &args.frozen_db_dir {
         unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
-    }
-    if let Some(d) = &args.frozen_curated_dir {
-        unsafe { std::env::set_var("FROZEN_CURATED_DIR", d) };
-    }
-    if args.curated && std::env::var("FROZEN_CURATED_DIR").is_err() {
-        assert!(
-            !given("curated"),
-            "--curated needs FROZEN_CURATED_DIR; refusing to run, because \
-             degrading silently to regular-only would look like a measurement"
-        );
-        // curated is only a DEFAULT here, so degrade -- but say so loudly.
-        println!(
-            "[circuit_mixer] WARNING: curated-first is the shipped default but FROZEN_CURATED_DIR is \
-             unset -> curated OFF for this run (regular store only). Export FROZEN_CURATED_DIR \
-             (or pass --frozen-curated-dir); pass --curated explicitly to make this an error."
-        );
-        args.curated = false;
-    }
-    if args.curated {
-        assert!(
-            !args.no_db_verify,
-            "--curated with --no-db-verify is refused: the curated store has already been \
-             observed returning a non-equivalent replacement (forward/reverse key confusion), \
-             and the per-splice check is what caught it"
-        );
-    }
-    if args.curated_only_mix {
-        assert!(
-            args.curated,
-            "--curated-only-mix needs the curated store armed (curated is off or \
-             FROZEN_CURATED_DIR is unset); with no fallback, every non-COMP round would miss"
-        );
-        println!(
-            "[circuit_mixer] curated-only-mix ON: non-COMP DB rounds are curated-or-nothing \
-             (a miss declines the round); COMP keeps its full cascade"
-        );
     }
 
     assert!(
@@ -367,27 +313,6 @@ pub fn run(matches: clap::ArgMatches) {
             args.p_twist
         );
     }
-    if args.curated && args.curated_in_comp {
-        println!(
-            "[circuit_mixer] curated-in-comp ON: COMPRESSION probes the curated store too (the size rule keeps only curated spellings shorter than the window, i.e. the shorter halves of identity splits)"
-        );
-    }
-    if args.curated_exhaust {
-        if args.curated {
-            println!(
-                "[circuit_mixer] curated-exhaust ON: the prefix descent runs CURATED-ONLY over every window length, and falls back to the regular store only if that whole pass missed ({})",
-                if args.curated_in_comp {
-                    "MIX and COMP alike"
-                } else {
-                    "expansion only; compression stays regular-only"
-                }
-            );
-        } else if given("curated_exhaust") {
-            println!(
-                "[circuit_mixer] WARNING: --curated-exhaust without a curated store -- it has no effect"
-            );
-        }
-    }
     if args.shuffle_rate > 0.0 {
         println!(
             "[circuit_mixer] global re-randomisation ON: shuffle_rate={} (per-round p = {}/|circuit|, i.e. one expected whole-circuit reshuffle per |circuit|/{} rounds; semantics- and size-preserving)",
@@ -425,15 +350,14 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
         println!(
-            "[circuit_mixer] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
+            "[circuit_mixer] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} w_window={} w_pool={} verify={} (FROZEN_DB_DIR required)",
             args.p_db,
             args.db_mode,
             args.p_comp,
             args.p_any,
             args.w_window,
             args.w_pool,
-            !args.no_db_verify,
-            args.curated
+            !args.no_db_verify
         );
         // Print what each mode will ACTUALLY use, resolved by the SAME code the
         // mixer runs (MixParams::db_knobs) rather than a second copy of the
@@ -475,16 +399,6 @@ pub fn run(matches: clap::ArgMatches) {
                 args.p_comp_g57, args.s_db_g57
             );
         }
-    }
-    if args.curated {
-        println!(
-            "[circuit_mixer] curated ON: ordinary expansion probes the CURATED store only (forward key, any size); compression {}",
-            if args.curated_in_comp {
-                "probes it too (--curated-in-comp)"
-            } else {
-                "stays regular-only"
-            }
-        );
     }
     if args.db_advance {
         println!(
@@ -564,9 +478,6 @@ pub fn run(matches: clap::ArgMatches) {
         p_db: args.p_db,
         p_twist: args.p_twist,
         shuffle_rate: args.shuffle_rate,
-        curated_exhaust: args.curated_exhaust,
-        curated_in_comp: args.curated_in_comp,
-        curated_only_mix: args.curated_only_mix,
         s_db: args.s_db,
         db_min_window: args.db_min_window,
         w_window: args.w_window,
@@ -597,7 +508,6 @@ pub fn run(matches: clap::ArgMatches) {
         db_prefixes_mix: args.db_prefixes_mix,
         db_prefixes_comp: args.db_prefixes_comp,
         p_mingen_comp: args.p_mingen_comp,
-        curated: args.curated,
         ancestors: args.ancestors,
         anc_samples: args.anc_samples,
         anc_sample_seed: args.anc_sample_seed,

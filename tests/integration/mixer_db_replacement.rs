@@ -86,7 +86,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
     stage_validate(&source, fd);
 
     // Sanity: the real store round-trips the key to the friend bytes.
-    let db = FrozenDb::open(fd, None);
+    let db = FrozenDb::open(fd);
     assert_eq!(
         db.get_regular(&key_of(&window, false)).as_deref(),
         Some(&value[..])
@@ -156,7 +156,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         db_verify: false,
         ..base_params()
     };
-    let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd, None));
+    let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd));
     mixer.enable_db_record(rec_path.to_str().unwrap());
     mixer.run(); // global_check runs internally; panics if equivalence ever breaks
     assert!(
@@ -192,7 +192,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
         db_verify: true,
         ..base_params()
     };
-    let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd, None));
+    let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd));
     mixer.run();
     assert!(
         mixer.counters.db_agn_hits > 0,
@@ -235,7 +235,7 @@ fn mixer_db_replacement_fires_and_preserves_equivalence() {
             input.clone(),
             n_wires,
             params.clone(),
-            FrozenDb::open(fd, None),
+            FrozenDb::open(fd),
         );
         let stop = run_piecewise(&mut w, &cfg);
         assert!(

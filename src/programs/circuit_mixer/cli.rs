@@ -122,9 +122,8 @@ pub struct Args {
     pub(super) twist_min_len: usize,
     /// LAYER-2 db_mixing preset: sets the db_mixing default block (--twist-g57
     /// --p-twist 0.0005 --db-advance --p-mingen 0.6 --mix-pay-random, COMP
-    /// p_mingen 0) unless individually overridden. curated and p_convex are
-    /// no longer set here: the 2026-08-03 shipped defaults (curated ON,
-    /// p_convex 0.4) already cover them.
+    /// p_mingen 0) unless individually overridden. p_convex is no longer set
+    /// here: the 2026-08-03 shipped default (p_convex 0.4) already covers it.
     #[arg(long = "db-mixing", alias = "phase-a", default_value_t = false)]
     pub(super) db_mixing: bool,
     /// Pay-random MIX selection: when only larger spellings exist, pick a
@@ -244,40 +243,6 @@ pub struct Args {
     /// walk-RNG stream at equal seed, so it is an A/B arm, not a live toggle.
     #[arg(long, default_value_t = 0.0)]
     pub(super) shuffle_rate: f64,
-    /// Two-pass store routing, ON BY DEFAULT (2026-08-03): the descent runs
-    /// curated-only over every window length first, and consults the regular
-    /// store only if that whole pass came up empty. (The old one-pass cascade
-    /// probed curated then regular at EACH length before shortening, so a
-    /// regular hit at length p beat a curated hit at length p-1.) Needs
-    /// --curated; applies to compression too while --curated-in-comp is on
-    /// (also the default). Disable with --no-curated-exhaust.
-    #[arg(long, default_value_t = true)]
-    pub(super) curated_exhaust: bool,
-    /// Turn --curated-exhaust off (single-pass curated-then-regular at each
-    /// window length).
-    #[arg(long, default_value_t = false)]
-    pub(super) no_curated_exhaust: bool,
-    /// Arm the curated store for COMPRESSION as well, ON BY DEFAULT
-    /// (2026-08-03): COMP first walks the whole cascade against curated, then
-    /// against regular, same as MIX. The old off-by-contract rationale: an
-    /// uneven split of a minimal identity gives two functionally inverse
-    /// circuits of unequal length, so the store holds longer-than-minimal
-    /// spellings, and curated's lexicographic priority in the selection rule
-    /// compounds the bias toward growth. Under compression the size rule keeps
-    /// only the spellings strictly shorter than the window -- the shorter
-    /// halves. Needs --curated. Disable with --no-curated-in-comp.
-    #[arg(long, default_value_t = true)]
-    pub(super) curated_in_comp: bool,
-    /// Turn --curated-in-comp off (compression goes regular-only, the old
-    /// contract).
-    #[arg(long, default_value_t = false)]
-    pub(super) no_curated_in_comp: bool,
-    /// EXPERIMENT ARM: non-COMP DB rounds consult ONLY the curated store --
-    /// a curated miss declines the round (no regular fallback; the next move
-    /// draws a fresh window). Compression keeps its full cascade exactly as
-    /// otherwise configured. Needs curated armed; no preset touches this.
-    #[arg(long, default_value_t = false)]
-    pub(super) curated_only_mix: bool,
     /// Window length the descent STARTS from, in MIX mode (COMP has its own,
     /// --s-db-comp). The descent visits every shorter length down to 1, so
     /// there is no separate minimum.
@@ -451,7 +416,7 @@ pub struct Args {
     #[arg(long)]
     pub(super) db_prefixes_comp: Option<bool>,
     /// TDP profile: the DB settings for running circuit_mixer on a gadgetized sliced
-    /// sandwich. Curated on; COMP = descent on, p_mingen 0, convex 95% at
+    /// sandwich. COMP = descent on, p_mingen 0, convex 95% at
     /// s_db 12 / contiguous 5% at s_db 6; MIX = descent off, p_mingen 0.5,
     /// convex 50% / contiguous 50%, s_db 6 for both. Explicit flags win.
     ///
@@ -462,22 +427,6 @@ pub struct Args {
     /// breaking g57 form is a separate concern from this profile's job.
     #[arg(long, default_value_t = false)]
     pub(super) tdp: bool,
-    /// Also probe the curated store (FROZEN_CURATED_DIR) and prefer a
-    /// non-identical curated match over a regular one REGARDLESS OF SIZE. The
-    /// curated store holds circuits every strict subcircuit of which is
-    /// shortest, so its replacements are routes fcompress cannot partially
-    /// undo -- but it is built from splits of minimal identities and so holds
-    /// the longer halves of uneven identity splits, and curated's lexicographic priority compounds it.
-    /// Compression probes it too while --curated-in-comp is on (the default).
-    /// ON BY DEFAULT (2026-08-03). If FROZEN_CURATED_DIR is unset the default
-    /// degrades to regular-only WITH A WARNING; passing --curated explicitly
-    /// makes the missing store a hard error instead. Disable with
-    /// --no-curated.
-    #[arg(long, default_value_t = true)]
-    pub(super) curated: bool,
-    /// Turn --curated off (regular store only, both modes).
-    #[arg(long, default_value_t = false)]
-    pub(super) no_curated: bool,
     /// Track, per litter, the SET of original input gates that contributed to
     /// it (the union of the sets its outgoing window drew on). Reports anc=
     /// (mean set size: what a mixed gate is made of) and ancspan= (mean
@@ -520,9 +469,6 @@ pub struct Args {
     /// in no rc file -- detached runs that miss it abort instantly.
     #[arg(long)]
     pub(super) frozen_db_dir: Option<String>,
-    /// Curated store directory. Overrides FROZEN_CURATED_DIR.
-    #[arg(long)]
-    pub(super) frozen_curated_dir: Option<String>,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
     /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;

@@ -80,7 +80,7 @@ fn main() {
         }
     }
 
-    let db = FrozenDb::open(&dir, None);
+    let db = FrozenDb::open(&dir);
     let budget = XPolyBudget::default();
     let guard = DegreeGuard {
         max_degree: 9,

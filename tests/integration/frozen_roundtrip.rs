@@ -154,7 +154,7 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
     stage_validate(&source, od); // exits nonzero on any mismatch
 
     // --- every stored key returns the identical bytes; absent keys miss ---
-    let db = FrozenDb::open(od, None);
+    let db = FrozenDb::open(od);
     for (key, value) in &entries {
         assert_eq!(
             db.get_regular(key).as_deref(),

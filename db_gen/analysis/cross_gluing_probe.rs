@@ -153,7 +153,7 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .cloned();
 
-    let db = FrozenDb::open(dir, None);
+    let db = FrozenDb::open(dir);
     let composite: Option<rocksdb::DB> = partner_composite.as_deref().map(|path| {
         let mut options = rocksdb::Options::default();
         options.create_if_missing(false);

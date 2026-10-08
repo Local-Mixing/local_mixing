@@ -237,159 +237,19 @@ impl Mixer {
             let k = seed
                 .and_then(|sd| ids.iter().position(|&x| x == sd))
                 .unwrap_or(0);
-            // Store-routing schedule for this descent.
-            //
-            // ONE-PASS CASCADE: at each window length, probe curated, then
-            // fall back to regular before shortening. So a regular hit at
-            // length p wins over a curated hit at length p-1 -- the descent
-            // can never see the shorter curated rung.
-            //
-            // --curated-exhaust (two passes): pass 0 walks EVERY length against
-            // curated alone; only a descent that came up completely empty runs
-            // pass 1 against the regular store. Curated material is preferred
-            // at any length over regular material at a longer one. The price is
-            // that a full curated miss re-canonicalizes the whole descent, and
-            // db_attempts counts both passes -- both are real costs of the
-            // policy, so neither is hidden from the counters.
-            let cur_ok =
-                self.params.curated && (mode != DbMode::Compressing || self.params.curated_in_comp);
-            let passes: &[(bool, bool)] =
-                if self.params.curated_only_mix && mode != DbMode::Compressing {
-                    // Experiment arm: non-COMP rounds are curated-or-nothing. A
-                    // miss ends the round; COMP below keeps its full cascade.
-                    if cur_ok { &[(true, false)] } else { &[] }
-                } else if self.params.curated_exhaust && cur_ok {
-                    &[(true, false), (false, true)]
-                } else {
-                    &[(cur_ok, true)]
-                };
-            for &(cur_armed, reg_fb) in passes {
-                let (mut lo, mut hi) = (0usize, window.len() - 1);
-                loop {
-                    let p = hi - lo + 1;
-                    if p < wmin {
-                        break;
-                    }
-                    let prefix = &window[lo..=hi];
-                    // Full-litter ban: this rung is exactly the set some earlier
-                    // replacement emitted, so it is where the store is most likely
-                    // to hand that spelling straight back. Descending past it is
-                    // free -- a shorter rung is no longer a complete litter.
-                    if self.params.litter_ban && self.litter_census(&ids[lo..=hi]).1 {
-                        self.counters.litter_banned += 1;
-                        if p == wmin {
-                            break;
-                        }
-                        if k.saturating_sub(lo) >= hi.saturating_sub(k) {
-                            lo += 1;
-                        } else {
-                            hi -= 1;
-                        }
-                        continue;
-                    }
-                    self.counters.db_attempts += 1;
-                    if self.params.db_max_span > 0
-                        && crate::canonicalization::xgate::xgate_used_wires_len(prefix)
-                            > self.params.db_max_span
-                    {
-                        self.counters.db_span_skips += 1;
-                        self.record_db_attempt(prefix, 0, None);
-                        self.count_db_miss(mode);
-                        // The descent must SHRINK on every exit path. Falling
-                        // through to `continue` without moving lo/hi respins the
-                        // identical prefix forever -- and since a store miss is
-                        // the common case, that hangs the run before it completes
-                        // a single move.
-                        if p == wmin {
-                            break;
-                        }
-                        if k.saturating_sub(lo) >= hi.saturating_sub(k) {
-                            lo += 1;
-                        } else {
-                            hi -= 1;
-                        }
-                        continue;
-                    }
-                    let res = db_replace(
-                        prefix,
-                        self.num_wires,
-                        &self.db,
-                        self.db_budget,
-                        mode,
-                        guard,
-                        cur_armed,
-                        self.params.curated_in_comp,
-                        reg_fb,
-                        self.params.mix_pay_random,
-                        self.db_pair_round,
-                        &mut self.rng,
-                    );
-                    self.counters.db_identity_skips += res.identity_skipped as u64;
-                    self.counters.pair_perm_skips += res.permutation_skipped as u64;
-                    if res.chosen.is_some() && res.chosen_curated {
-                        self.counters.db_curated_hits += 1;
-                    }
-                    if res.chosen.is_some() {
-                        self.note_choice(res.choice_count);
-                    }
-                    if let Some(ml) = res.min_match_len {
-                        self.counters.dmin_windows += 1;
-                        if ml < prefix.len() {
-                            self.counters.dmin_shorter += 1;
-                        }
-                    }
-                    if res.degree_skipped {
-                        self.counters.db_degree_skips += 1;
-                        let k = self.db_last_len;
-                        Self::bump_len(&mut self.counters.len_deg_skip, k, 1);
-                    }
-                    let Some(replacement) = res.chosen else {
-                        self.record_db_attempt(prefix, res.match_count, None);
-                        self.count_db_miss(mode);
-                        // The descent must SHRINK on every exit path. Falling
-                        // through to `continue` without moving lo/hi respins the
-                        // identical prefix forever -- and since a store miss is
-                        // the common case, that hangs the run before it completes
-                        // a single move.
-                        if p == wmin {
-                            break;
-                        }
-                        if k.saturating_sub(lo) >= hi.saturating_sub(k) {
-                            lo += 1;
-                        } else {
-                            hi -= 1;
-                        }
-                        continue;
-                    };
-                    if self.params.db_dry_run {
-                        self.record_db_attempt(prefix, res.match_count, None);
-                        self.count_db_hit(mode);
-                        // The descent must SHRINK on every exit path. Falling
-                        // through to `continue` without moving lo/hi respins the
-                        // identical prefix forever -- and since a store miss is
-                        // the common case, that hangs the run before it completes
-                        // a single move.
-                        if p == wmin {
-                            break;
-                        }
-                        if k.saturating_sub(lo) >= hi.saturating_sub(k) {
-                            lo += 1;
-                        } else {
-                            hi -= 1;
-                        }
-                        continue;
-                    }
-                    if self.try_db_splice_curated(
-                        res.chosen_curated,
-                        &ids[lo..=hi],
-                        g1dir,
-                        prefix,
-                        replacement,
-                        res.match_count,
-                        mode,
-                    ) {
-                        return true;
-                    }
+            let (mut lo, mut hi) = (0usize, window.len() - 1);
+            loop {
+                let p = hi - lo + 1;
+                if p < wmin {
+                    break;
+                }
+                let prefix = &window[lo..=hi];
+                // Full-litter ban: this rung is exactly the set some earlier
+                // replacement emitted, so it is where the store is most likely
+                // to hand that spelling straight back. Descending past it is
+                // free -- a shorter rung is no longer a complete litter.
+                if self.params.litter_ban && self.litter_census(&ids[lo..=hi]).1 {
+                    self.counters.litter_banned += 1;
                     if p == wmin {
                         break;
                     }
@@ -398,6 +258,111 @@ impl Mixer {
                     } else {
                         hi -= 1;
                     }
+                    continue;
+                }
+                self.counters.db_attempts += 1;
+                if self.params.db_max_span > 0
+                    && crate::canonicalization::xgate::xgate_used_wires_len(prefix)
+                        > self.params.db_max_span
+                {
+                    self.counters.db_span_skips += 1;
+                    self.record_db_attempt(prefix, 0, None);
+                    self.count_db_miss(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
+                    continue;
+                }
+                let res = db_replace(
+                    prefix,
+                    self.num_wires,
+                    &self.db,
+                    self.db_budget,
+                    mode,
+                    guard,
+                    self.params.mix_pay_random,
+                    self.db_pair_round,
+                    &mut self.rng,
+                );
+                self.counters.db_identity_skips += res.identity_skipped as u64;
+                self.counters.pair_perm_skips += res.permutation_skipped as u64;
+                if res.chosen.is_some() {
+                    self.note_choice(res.choice_count);
+                }
+                if let Some(ml) = res.min_match_len {
+                    self.counters.dmin_windows += 1;
+                    if ml < prefix.len() {
+                        self.counters.dmin_shorter += 1;
+                    }
+                }
+                if res.degree_skipped {
+                    self.counters.db_degree_skips += 1;
+                    let k = self.db_last_len;
+                    Self::bump_len(&mut self.counters.len_deg_skip, k, 1);
+                }
+                let Some(replacement) = res.chosen else {
+                    self.record_db_attempt(prefix, res.match_count, None);
+                    self.count_db_miss(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
+                    continue;
+                };
+                if self.params.db_dry_run {
+                    self.record_db_attempt(prefix, res.match_count, None);
+                    self.count_db_hit(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
+                    continue;
+                }
+                if self.try_db_splice(
+                    &ids[lo..=hi],
+                    g1dir,
+                    prefix,
+                    replacement,
+                    res.match_count,
+                    mode,
+                ) {
+                    return true;
+                }
+                if p == wmin {
+                    break;
+                }
+                if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                    lo += 1;
+                } else {
+                    hi -= 1;
                 }
             }
             return false;
@@ -443,9 +408,6 @@ impl Mixer {
             self.db_budget,
             mode,
             guard,
-            self.params.curated,
-            self.params.curated_in_comp,
-            !(self.params.curated_only_mix && mode != DbMode::Compressing),
             self.params.mix_pay_random,
             self.db_pair_round,
             &mut self.rng,
@@ -460,9 +422,6 @@ impl Mixer {
             if ml < window.len() {
                 self.counters.dmin_shorter += 1;
             }
-        }
-        if res.chosen.is_some() && res.chosen_curated {
-            self.counters.db_curated_hits += 1;
         }
         let match_count = res.match_count;
         if res.degree_skipped {
@@ -504,46 +463,15 @@ impl Mixer {
             return false;
         }
 
-        let curated_pick = res.chosen_curated;
         let mlen = res.min_match_len;
-        let res_fwd_key = res.fwd_key;
         let Some(replacement) = res.chosen else {
             self.record_db_attempt(&window, match_count, None);
             self.count_db_miss(mode);
             return false;
         };
-        let fwd_key = res_fwd_key;
-        let hit = self.try_db_splice_curated(
-            curated_pick,
-            &ids,
-            g1dir,
-            &window,
-            replacement,
-            match_count,
-            mode,
-        );
+        let hit = self.try_db_splice(&ids, g1dir, &window, replacement, match_count, mode);
         if hit {
             self.geo_hits[matches!(self.db_last_sampler, DbSample::Convex) as usize] += 1;
-            // True class of a big-pool conversion, via the reference store.
-            if curated_pick && match_count > 20 {
-                if let (Some(db), Some(k)) = (self.runtime.reference_db(), fwd_key) {
-                    if let Some(v) = db.get_regular(&k) {
-                        let mut mn = usize::MAX;
-                        let mut pos = 0usize;
-                        while pos < v.len() {
-                            let l = v[pos] as usize;
-                            if l == 0 || l % 3 != 0 || pos + 1 + l > v.len() {
-                                break;
-                            }
-                            mn = mn.min(l / 3);
-                            pos += 1 + l;
-                        }
-                        if mn != usize::MAX {
-                            self.m123_class_hist[mn.min(31)] += 1;
-                        }
-                    }
-                }
-            }
             // Complexity of the converted permutation: the store's minimal
             // matching spelling for this window (the operational "smallest
             // number of gates that computes it").
@@ -601,9 +529,8 @@ impl Mixer {
     // nodes `ids` (whose gates are `window`). Returns false only when the
     // combined support exceeds verify_rewrite's 24-wire cap with verification
     // on — declined rather than spliced unchecked, recorded as a miss.
-    pub(super) fn try_db_splice_curated(
+    pub(super) fn try_db_splice(
         &mut self,
-        from_curated: bool,
         ids: &[u32],
         g1dir: Dir,
         window: &[XGate],
@@ -631,7 +558,7 @@ impl Mixer {
             // so this is a comparison where the exhaustive check would have
             // been 16.7M evaluations. Only an UNDECIDED result (support > 64
             // wires, or a budget hit) still declines.
-            let _vok = if support.len() > 24 {
+            let verified = if support.len() > 24 {
                 match crate::stages::db_mixing::replacement::polys_equivalent(
                     window,
                     &replacement,
@@ -655,25 +582,12 @@ impl Mixer {
                 _vt.elapsed().as_nanos() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
-            if !_vok {
-                // A CURATED replacement that fails verification is refused and
-                // counted, not fatal. Curated entries are halves of split
-                // minimal identities, and a half need not restore the helper
-                // wires it borrows -- the observed failures write a wire the
-                // window never touched. Until that invariant is pinned down,
-                // treat curated as best-effort and let the run continue on the
-                // regular store. A REGULAR failure stays fatal: there it would
-                // mean the store or the canonicalisation is wrong, which is not
-                // something to paper over.
-                assert!(
-                    from_curated,
-                    "DB replacement verification failed: {window:?} -> {replacement:?}"
-                );
-                self.counters.db_curated_rejected += 1;
-                self.record_db_attempt(window, match_count, None);
-                self.count_db_miss(mode);
-                return false;
-            }
+            // A failure would mean the store or the canonicalisation is
+            // wrong, which is not something to paper over.
+            assert!(
+                verified,
+                "DB replacement verification failed: {window:?} -> {replacement:?}"
+            );
         }
 
         self.record_db_attempt(window, match_count, Some(&replacement));
@@ -692,11 +606,6 @@ impl Mixer {
         // band-ledger drift accounting (signed, over every band conversion).
         if self.band_led_round {
             self.band_led += new as i64 - old as i64;
-        }
-        // Big-pool (M1/M2/M3) usage: only the swapped pools carry more than
-        // the bounded contract's 20 candidates, so this count is exact.
-        if from_curated && match_count > 20 {
-            self.bigpool_hits += 1;
         }
         if new <= old {
             Self::bump_len(&mut self.counters.len_removed, old, (old - new) as u64);
@@ -778,13 +687,6 @@ impl Mixer {
                     vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
             }
             self.counters.splice_sizes[o][i] += 1;
-            if from_curated {
-                if self.counters.splice_sizes_curated.is_empty() {
-                    self.counters.splice_sizes_curated =
-                        vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
-                }
-                self.counters.splice_sizes_curated[o][i] += 1;
-            }
         }
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);

@@ -1,7 +1,7 @@
 //! Shared immutable-store cache and canonical lookup direction policy.
 
 use super::environment::lookup_cache_cap_bytes;
-pub(crate) use super::environment::{curated_key_mode, min_dir_lookup_mode};
+pub(crate) use super::environment::min_dir_lookup_mode;
 use crate::database::frozen::FrozenDb;
 use dashmap::DashMap;
 use std::sync::OnceLock;
@@ -23,13 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // wholesale — an epoch reset is cheaper and simpler than LRU bookkeeping and
 // the working set refills within seconds.
 // ---------------------------------------------------------------------------
-// Cache keys are namespaced: byte 0 distinguishes which logical database the
-// lookup targeted (shard vs curated); the same 16-byte canonical hash may
-// exist in both with different values.
-type LookupCacheMap = DashMap<[u8; 17], Option<std::sync::Arc<[u8]>>, rustc_hash::FxBuildHasher>;
-
-pub(crate) const LOOKUP_NS_SHARD: u8 = 0;
-pub(crate) const LOOKUP_NS_CURATED: u8 = 1;
+type LookupCacheMap = DashMap<[u8; 16], Option<std::sync::Arc<[u8]>>, rustc_hash::FxBuildHasher>;
 
 static LOOKUP_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
 pub static LOOKUP_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -42,27 +36,17 @@ fn lookup_cache() -> Option<&'static LookupCacheMap> {
         .as_ref()
 }
 
-/// Fetch one namespaced key from the immutable frozen database.
-fn raw_db_get(db: &FrozenDb, namespace: u8, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
-    let value = if namespace == LOOKUP_NS_CURATED {
-        db.get_curated(key)
-    } else {
-        db.get_regular(key)
-    };
-    value.map(std::sync::Arc::from)
+/// Fetch one key from the immutable frozen (regular) database.
+fn raw_db_get(db: &FrozenDb, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
+    db.get_regular(key).map(std::sync::Arc::from)
 }
 
 /// Point lookup with an exact process-wide cache in front. Returns the value
 /// bytes (shared, immutable) or None when the key is absent — byte-identical
 /// to the uncached lookup on a read-only environment.
-pub(crate) fn cached_db_get(
-    db: &FrozenDb,
-    namespace: u8,
-    key: &[u8; 16],
-) -> Option<std::sync::Arc<[u8]>> {
+pub(crate) fn cached_db_get(db: &FrozenDb, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
     cached_db_get_using(
         db,
-        namespace,
         key,
         lookup_cache(),
         &LOOKUP_CACHE_BYTES,
@@ -72,40 +56,26 @@ pub(crate) fn cached_db_get(
 
 fn cached_db_get_using(
     db: &FrozenDb,
-    namespace: u8,
     key: &[u8; 16],
     cache: Option<&LookupCacheMap>,
     bytes: &AtomicU64,
     cap_bytes: impl Fn() -> u64,
 ) -> Option<std::sync::Arc<[u8]>> {
     let Some(cache) = cache else {
-        return raw_db_get(db, namespace, key);
+        return raw_db_get(db, key);
     };
-    let mut ns_key = [0u8; 17];
-    ns_key[0] = namespace;
-    ns_key[1..].copy_from_slice(key);
     LOOKUP_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
-    if let Some(entry) = cache.get(&ns_key) {
+    if let Some(entry) = cache.get(key) {
         LOOKUP_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
         return entry.clone();
     }
-    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(db, namespace, key);
-    // A complete curated value can contain hundreds of thousands of
-    // candidates and occupy many megabytes (the historical worst case was
-    // multi-megabyte, and one historical shard exceeded a gigabyte). Keep exact
-    // curated misses in the cache, but do not pin a positive full value there:
-    // callers already hold it during selection, and retaining it would let a
-    // few hot full-coverage keys evict the regular working set or exhaust the
-    // process. Regular positives remain cached; their friend lists are small.
-    if namespace == LOOKUP_NS_CURATED && result.is_some() {
-        return result;
-    }
-    let entry_bytes = 17 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
+    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(db, key);
+    let entry_bytes = 16 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
     if bytes.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes > cap_bytes() {
         cache.clear();
         bytes.store(entry_bytes, Ordering::Relaxed);
     }
-    cache.insert(ns_key, result.clone());
+    cache.insert(*key, result.clone());
     result
 }
 
@@ -138,21 +108,6 @@ pub enum MinDirLookup {
 pub static MIN_DIR_VALIDATE_PROBES: AtomicU64 = AtomicU64::new(0);
 pub static MIN_DIR_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
 
-// ---------------------------------------------------------------------------
-// FROZEN_CURATED_KEY=circuit -> curated lookups key by the hash of the
-//                               window's CANONICAL g57 CIRCUIT blob, matching
-//                               the v3 true-friend (ncdb) stores.
-// unset / "function"         -> curated lookups key by canonical polynomials,
-//                               matching the v2-era function-keyed stores
-//                               (default).
-// ---------------------------------------------------------------------------
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CuratedKeyMode {
-    #[default]
-    Function,
-    Circuit,
-}
-
 /// An exact cache bound to one immutable database handle. Configuration and
 /// cache lifetime belong to the caller, so neither can leak between stores.
 pub struct LookupCache<'db> {
@@ -174,15 +129,8 @@ impl<'db> LookupCache<'db> {
         }
     }
     pub fn get_regular(&self, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
-        self.get(LOOKUP_NS_SHARD, key)
-    }
-    pub fn get_curated(&self, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
-        self.get(LOOKUP_NS_CURATED, key)
-    }
-    fn get(&self, namespace: u8, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
         cached_db_get_using(
             self.db,
-            namespace,
             key,
             self.map.as_ref(),
             &self.bytes,

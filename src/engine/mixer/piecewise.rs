@@ -199,8 +199,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
             db_hard_rounds,
             db_hard_added,
             db_identity_skips,
-            db_curated_hits,
-            db_curated_rejected,
             merges_absorb,
             db_g57_rounds,
             db_g57_hits,
@@ -216,7 +214,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
             twist_placed,
             twist_place_fallback,
             splice_sizes,
-            splice_sizes_curated,
             litter_windows,
             litter_distinct_sum,
             litter_full_spliced,
@@ -335,8 +332,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
         self.db_hard_rounds += db_hard_rounds;
         self.db_hard_added += db_hard_added;
         self.db_identity_skips += db_identity_skips;
-        self.db_curated_hits += db_curated_hits;
-        self.db_curated_rejected += db_curated_rejected;
         self.merges_absorb += merges_absorb;
         self.db_g57_rounds += db_g57_rounds;
         self.db_g57_hits += db_g57_hits;
@@ -352,7 +347,6 @@ impl std::ops::AddAssign<&MixCounters> for MixCounters {
         self.twist_placed += twist_placed;
         self.twist_place_fallback += twist_place_fallback;
         add_vv(&mut self.splice_sizes, splice_sizes);
-        add_vv(&mut self.splice_sizes_curated, splice_sizes_curated);
         self.litter_windows += litter_windows;
         self.litter_distinct_sum += litter_distinct_sum;
         self.litter_full_spliced += litter_full_spliced;

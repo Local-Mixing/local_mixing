@@ -36,65 +36,6 @@ pub fn db_g57_to_xgate(t: [u16; 3]) -> XGate {
     XGate::from_g57(t)
 }
 
-/// Encode an XGate back into the store's g57 triple, or None when the gate is
-/// not exactly a stored-form g57 gate. Verified by round-tripping through
-/// [`db_g57_to_xgate`], so any convention drift fails closed (a miss) rather
-/// than mis-keying.
-fn xgate_to_db_g57(gate: &XGate) -> Option<[u16; 3]> {
-    if gate.ctrls.len() != 2 {
-        return None;
-    }
-    let (w0, p0) = gate.ctrls[0];
-    let (w1, p1) = gate.ctrls[1];
-    let (x, y) = match (p0, p1) {
-        (false, true) => (w0, w1),
-        (true, false) => (w1, w0),
-        _ => return None,
-    };
-    let triple = [gate.target, x, y];
-    (db_g57_to_xgate(triple) == *gate).then_some(triple)
-}
-
-/// The circuit-keyed curated key: xxh3-128 over the window's canonical g57
-/// blob -- the wire frame of its own function canonicalization and canonical
-/// gate order -- byte-identical to the v3 true-friend builder's key (the
-/// prefix framing of `derive_identity_candidates_where` plus `checked_blob`'s
-/// one-byte-per-wire encoding). None when a gate is not g57-encodable, the
-/// canonicalization is skipped, or a canonical wire index exceeds a byte.
-pub fn circuit_key_of_window(window: &[XGate]) -> Option<[u8; 16]> {
-    if window.is_empty() {
-        return None;
-    }
-    let mut gates = Vec::with_capacity(window.len());
-    for gate in window {
-        gates.push(xgate_to_db_g57(gate)?);
-    }
-    let circuit = CircuitSeq { gates };
-    let (key, permutation, used) = circuit.canonicalize_polys_single_hashed(false);
-    key?;
-    let inverse = permutation.invert();
-    let used_map: std::collections::HashMap<u16, u16> = used
-        .iter()
-        .enumerate()
-        .map(|(dense, &original)| (original, inverse.data[dense] as u16))
-        .collect();
-    let mut canonical = CircuitSeq {
-        gates: circuit
-            .gates
-            .iter()
-            .map(|&[t, a, b]| [used_map[&t], used_map[&a], used_map[&b]])
-            .collect(),
-    };
-    canonical.canonicalize();
-    let mut blob = Vec::with_capacity(canonical.gates.len() * 3);
-    for gate in &canonical.gates {
-        for &wire in gate {
-            blob.push(u8::try_from(wire).ok()?);
-        }
-    }
-    Some(xxh3_128(&blob).to_le_bytes())
-}
-
 /// Candidates the identity guard rejected only because they equal the window
 /// in canonical gate order (a commuting re-spelling), not verbatim.
 pub static REORDER_IDENTITY_SKIPS: std::sync::atomic::AtomicU64 =
@@ -272,8 +213,7 @@ fn friend_to_xgates(
 }
 
 /// Diagnostic: return EVERY candidate the store decodes for `window`, each
-/// tagged with whether it came from the curated store and which canonical
-/// direction matched. No identity filtering, no mode selection, no scratch-wire
+/// tagged with which canonical direction matched. No identity filtering, no mode selection, no scratch-wire
 /// refusal -- this is for asking whether the STORE's answers are equivalent to
 /// the window at all, which the normal path only ever answers for the one
 /// candidate it happens to pick.
@@ -283,31 +223,26 @@ pub fn db_probe(
     db: &FrozenDb,
     budget: XPolyBudget,
     rng: &mut impl Rng,
-) -> Vec<(Vec<XGate>, bool, bool)> {
+) -> Vec<(Vec<XGate>, bool)> {
     let mut out = Vec::new();
     for reversed in [false, true] {
         let Ok(canonical) = canonicalize_xgates_single(window, reversed, budget) else {
             continue;
         };
         let key = key_of(&canonical);
-        for from_curated in [true, false] {
-            let value = if from_curated {
-                db.get_curated(&key)
-            } else {
-                db.get_regular(&key)
-            };
-            let Some(value) = value else { continue };
-            for friend in decode_value(&value) {
-                if let Some(g) = friend_to_xgates(
-                    friend,
-                    reversed,
-                    &canonical.order,
-                    &canonical.used_wires,
-                    num_wires,
-                    rng,
-                ) {
-                    out.push((g, from_curated, reversed));
-                }
+        let Some(value) = db.get_regular(&key) else {
+            continue;
+        };
+        for friend in decode_value(&value) {
+            if let Some(g) = friend_to_xgates(
+                friend,
+                reversed,
+                &canonical.order,
+                &canonical.used_wires,
+                num_wires,
+                rng,
+            ) {
+                out.push((g, reversed));
             }
         }
     }
@@ -318,8 +253,7 @@ pub fn db_probe(
 /// All caps are hard limits; zero does not disable a limit.
 #[derive(Clone, Copy, Debug)]
 pub struct QcCandidateLimits {
-    /// Maximum encoded candidate records examined across both stores and both
-    /// directions, including rejected and duplicate records.
+    /// Maximum encoded candidate records examined across both directions, including rejected and duplicate records.
     pub max_candidates: usize,
     pub max_gates: usize,
     pub max_support: usize,
@@ -333,7 +267,6 @@ pub const QC_MAX_BUCKET_BYTES: usize = 16 * 1024 * 1024;
 pub struct QcCandidate {
     /// Every returned candidate has passed exact polynomial equivalence.
     pub gates: Vec<XGate>,
-    pub from_curated: bool,
     pub reversed: bool,
 }
 
@@ -349,8 +282,8 @@ pub struct QcCandidates {
     pub truncated: bool,
     /// `(reversed, error)` for each direction that could not be keyed.
     pub canonicalization_errors: Vec<(bool, XPolyError)>,
-    /// `(curated, reason)` for bounded store reads that could not be completed.
-    pub lookup_limits: Vec<(bool, QcLookupLimit)>,
+    /// Bounded store reads that could not be completed.
+    pub lookup_limits: Vec<QcLookupLimit>,
     pub malformed_values: usize,
     pub unplaceable: usize,
     pub identity_skipped: usize,
@@ -361,15 +294,9 @@ pub struct QcCandidates {
 }
 
 /// Enumerate a bounded QC candidate set without changing normal DB selection
-/// or its sampling distribution. Both canonical directions and both stores are
-/// considered, round-robin, so a large curated value cannot starve regular
-/// candidates while the examination budget remains. Identity spellings are
-/// skipped and every returned circuit is proved equivalent before exposure.
-/// Curated probes follow `FROZEN_CURATED_KEY`, exactly like the ordinary
-/// replacement path: function keys for the v2-era stores, canonical-circuit
-/// keys for the v3 true-friend stores (with the reversed direction keyed by
-/// the reversed window -- reversal is inversion for the store's involutive
-/// gates). The regular store stays function-keyed in both modes.
+/// or its sampling distribution. Both canonical directions are considered,
+/// round-robin. Identity spellings are skipped and every returned circuit is
+/// proved equivalent before exposure.
 pub fn qc_candidates(
     window: &[XGate],
     num_wires: usize,
@@ -379,38 +306,23 @@ pub fn qc_candidates(
     rng: &mut impl Rng,
 ) -> QcCandidates {
     let mut lookup_limits = Vec::new();
-    let key_mode = crate::database::lookup_cache::curated_key_mode();
-    let mut result = qc_candidates_with_value(
-        window,
-        num_wires,
-        budget,
-        limits,
-        rng,
-        |key, curated| {
-            // One extra record makes the global enumeration's truncation signal
-            // exact even when this value alone consumes the entire cap.
-            let cap = limits.max_candidates.saturating_add(1);
-            let value = if curated {
-                db.get_curated_qc(key, cap, QC_MAX_BUCKET_BYTES)
-            } else {
-                db.get_regular_qc(key, cap, QC_MAX_BUCKET_BYTES)
-            };
-            match value {
-                Ok(value) => value,
-                Err(reason) => {
-                    lookup_limits.push((curated, reason));
-                    None
-                }
+    let mut result = qc_candidates_with_value(window, num_wires, budget, limits, rng, |key| {
+        // One extra record makes the global enumeration's truncation signal
+        // exact even when this value alone consumes the entire cap.
+        let cap = limits.max_candidates.saturating_add(1);
+        match db.get_regular_qc(key, cap, QC_MAX_BUCKET_BYTES) {
+            Ok(value) => value,
+            Err(reason) => {
+                lookup_limits.push(reason);
+                None
             }
-        },
-        key_mode,
-    );
+        }
+    });
     result.lookup_limits = lookup_limits;
     result
 }
 
-/// In-memory store seam for QC experiments and deterministic fixtures. The
-/// curated key mode comes from the environment, as in production.
+/// In-memory store seam for QC experiments and deterministic fixtures.
 pub fn qc_candidates_with<F>(
     window: &[XGate],
     num_wires: usize,
@@ -420,27 +332,9 @@ pub fn qc_candidates_with<F>(
     lookup: F,
 ) -> QcCandidates
 where
-    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
+    F: FnMut(&[u8; 16]) -> Option<Vec<u8>>,
 {
-    let key_mode = crate::database::lookup_cache::curated_key_mode();
-    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup, key_mode)
-}
-
-/// As [`qc_candidates_with`], with the curated key mode injected explicitly
-/// (tests must not depend on process-wide environment state).
-pub fn qc_candidates_with_key_mode<F>(
-    window: &[XGate],
-    num_wires: usize,
-    budget: XPolyBudget,
-    limits: QcCandidateLimits,
-    rng: &mut impl Rng,
-    lookup: F,
-    key_mode: crate::database::lookup_cache::CuratedKeyMode,
-) -> QcCandidates
-where
-    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
-{
-    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup, key_mode)
+    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup)
 }
 
 fn qc_candidates_with_value<F, V>(
@@ -450,18 +344,15 @@ fn qc_candidates_with_value<F, V>(
     limits: QcCandidateLimits,
     rng: &mut impl Rng,
     mut lookup: F,
-    key_mode: crate::database::lookup_cache::CuratedKeyMode,
 ) -> QcCandidates
 where
-    F: FnMut(&[u8; 16], bool) -> Option<V>,
+    F: FnMut(&[u8; 16]) -> Option<V>,
     V: AsRef<[u8]>,
 {
-    use crate::database::lookup_cache::CuratedKeyMode;
     struct Cursor<V> {
         value: V,
         position: usize,
         canonical: CanonicalXPolys,
-        curated: bool,
         reversed: bool,
     }
     let mut result = QcCandidates::default();
@@ -469,8 +360,7 @@ where
         result.truncated = true;
         return result;
     }
-    let mut cursors = Vec::with_capacity(4);
-    let mut reversed_window: Option<Vec<XGate>> = None;
+    let mut cursors = Vec::with_capacity(2);
     for reversed in [false, true] {
         let canonical = match canonicalize_xgates_single(window, reversed, budget) {
             Ok(canonical) => canonical,
@@ -479,41 +369,16 @@ where
                 continue;
             }
         };
-        let function_key = key_of(&canonical);
-        // Circuit-keyed curated stores key each DIRECTION by the canonical
-        // circuit of the directed window (reversal = inversion for the
-        // involutive gate set, matching how the builder framed reverse arcs).
-        // A window with non-g57 gates has no circuit key: skip that curated
-        // probe rather than mis-key it.
-        let curated_key = match key_mode {
-            CuratedKeyMode::Function => Some(function_key),
-            CuratedKeyMode::Circuit => {
-                let directed: &[XGate] = if reversed {
-                    reversed_window.get_or_insert_with(|| window.iter().rev().cloned().collect())
-                } else {
-                    window
-                };
-                circuit_key_of_window(directed)
-            }
-        };
-        for curated in [true, false] {
-            let key = if curated {
-                curated_key
-            } else {
-                Some(function_key)
-            };
-            let Some(key) = key else { continue };
-            result.lookups += 1;
-            if let Some(value) = lookup(&key, curated) {
-                result.entries_found += 1;
-                cursors.push(Cursor {
-                    value,
-                    position: 0,
-                    canonical: canonical.clone(),
-                    curated,
-                    reversed,
-                });
-            }
+        let key = key_of(&canonical);
+        result.lookups += 1;
+        if let Some(value) = lookup(&key) {
+            result.entries_found += 1;
+            cursors.push(Cursor {
+                value,
+                position: 0,
+                canonical,
+                reversed,
+            });
         }
     }
     // Identity and duplicates are judged in canonical gate order: a candidate
@@ -583,7 +448,6 @@ where
             match polys_equivalent(window, &gates, budget) {
                 Some(true) => result.candidates.push(QcCandidate {
                     gates,
-                    from_curated: cursor.curated,
                     reversed: cursor.reversed,
                 }),
                 Some(false) => result.non_equivalent += 1,
@@ -695,10 +559,6 @@ pub struct DbResult {
     /// pathology, which the gate-for-gate guard above cannot see. Armed only
     /// for pair-geometry windows; zero everywhere else.
     pub permutation_skipped: usize,
-    /// Of the surviving candidates, how many came from the curated store.
-    pub curated_matches: usize,
-    /// Whether the selected replacement came from the curated store.
-    pub chosen_curated: bool,
     /// SELECTION ENTROPY, per successful splice: the size of the eligible
     /// set the winner was actually drawn from, i.e. the candidates the
     /// mode's size rule admitted (not `match_count`, which is everything
@@ -717,11 +577,6 @@ pub struct DbResult {
     /// True when BOTH directions were skipped by the degree guard (a certain
     /// miss reached without any canonicalization or store lookup).
     pub degree_skipped: bool,
-    /// The FORWARD canonical key of this window, when it was computed. Lets a
-    /// caller re-query another store for the same permutation — e.g. to read
-    /// the true complexity class of a big-pool hit from a reference store
-    /// whose small spellings the pool swap replaced.
-    pub fwd_key: Option<[u8; 16]>,
 }
 
 /// Degree pre-filter configuration for a DB lookup.
@@ -748,7 +603,6 @@ impl DegreeGuard {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReplacementOptions {
     pub direction: crate::database::lookup_cache::MinDirLookup,
-    pub curated_key: crate::database::lookup_cache::CuratedKeyMode,
     pub incoming_length_band: Option<(usize, usize)>,
     pub canonicalization: crate::canonicalization::CanonicalizationOptions,
 }
@@ -780,6 +634,7 @@ fn canonicalize_replacement(
 ///
 /// Correctness is NOT assumed from the DB: the caller may still verify the
 /// returned gates are equivalent to `window` before splicing.
+#[allow(clippy::too_many_arguments)]
 pub fn db_replace(
     window: &[XGate],
     num_wires: usize,
@@ -787,94 +642,29 @@ pub fn db_replace(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated: bool,
-    curated_in_comp: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    let armed = curated_armed_for(curated, mode, curated_in_comp);
     db_replace_with_value(
         window,
         num_wires,
         budget,
         mode,
         guard,
-        armed,
-        regular_fallback,
         pay_random,
         ban_reorder,
         rng,
-        |key, want_curated| {
+        |key| {
             // Every probe goes through the exact process-wide lookup cache
             // in database::lookup_cache: the store is immutable, so cached hits
             // and misses are byte-identical to raw probes.
-            use crate::database::lookup_cache::{
-                LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, cached_db_get,
-            };
-            if want_curated {
-                if curated {
-                    cached_db_get(db, LOOKUP_NS_CURATED, key)
-                } else {
-                    None
-                }
-            } else {
-                cached_db_get(db, LOOKUP_NS_SHARD, key)
-            }
+            crate::database::lookup_cache::cached_db_get(db, key)
         },
     )
 }
 
-/// THE ROUTING RULE, and its override. Compression does not probe the curated
-/// store by default.
-///
-/// WHY THE CURATED STORE EXISTS. Not length -- difference. A conversion is
-/// only worth its cost if the incoming circuit is MEANINGFULLY different from
-/// the outgoing one, and the curated store is built to raise the probability
-/// that it is. Split a minimal identity `C = A.B`: then `perm(A) =
-/// perm(B)^-1`, so B^-1 is an alternative spelling of A's function -- and
-/// because C is a MINIMAL identity, A and B^-1 cannot be closely related by
-/// local rewriting, or C would have reduced. Every portion of a minimal
-/// identity is meaningfully different from its complement, so swapping one for
-/// the other is a good conversion by construction.
-///
-/// Two consequences worth keeping straight:
-///
-/// (a) Size is a side effect, not the point. An uneven split gives halves of
-///     unequal length, so the store holds longer-than-minimal spellings, and
-///     `choose_ref` compounds that by giving curated lexicographic priority --
-///     a free (non-growing) regular candidate is discarded unseen whenever
-///     curated answers. Growth is the price of difference, not a goal.
-///
-/// (b) `bits/splice` UNDER-STATES this store. That measure is the entropy of
-///     the eligible set, which treats a trivial respelling and a
-///     minimal-identity complement as equally good alternatives. Curated
-///     candidates are different by construction; regular ones need not be. The
-///     measured 3.4x on curated-exhaust is therefore a lower bound on what the
-///     store buys.
-///
-/// (Tempting but false: "every split piece is minimal, else a shorter piece
-/// would give a shorter identity". The shorter piece can be B^-1 itself, and
-/// B^-1.B is a trivial identity, so nothing is contradicted.)
-///
-/// `curated_in_comp` arms curated for compression, where the size rule keeps
-/// only the spellings strictly shorter than the window -- the shorter halves.
-///
-/// This lives in the policy wrapper, not in `db_replace_with`: the mechanism
-/// takes `curated_armed` to mean "probe curated for THIS call", full stop, so
-/// the rule is stated once and can be overridden without threading a mode
-/// exception through the lookup path.
-pub fn curated_armed_for(curated: bool, mode: DbMode, curated_in_comp: bool) -> bool {
-    curated && (mode != DbMode::Compressing || curated_in_comp)
-}
-
-/// Testable core: `lookup` stands in for the frozen store. `curated_armed`
-/// means "probe curated for THIS call", regardless of mode — the caller owns
-/// the mode rule (`curated_armed_for`: expansion always, Compressing only
-/// when `curated_in_comp` arms it). An armed call probes the CURATED store
-/// first (forward key only) and consults regular only per
-/// `regular_fallback`; unarmed calls use regular for everything.
+/// Testable core: `lookup` stands in for the frozen store.
 #[allow(clippy::too_many_arguments)]
 pub fn db_replace_with<F>(
     window: &[XGate],
@@ -882,15 +672,13 @@ pub fn db_replace_with<F>(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated_armed: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
     lookup: F,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
+    F: FnMut(&[u8; 16]) -> Option<Vec<u8>>,
 {
     db_replace_with_value(
         window,
@@ -898,8 +686,6 @@ where
         budget,
         mode,
         guard,
-        curated_armed,
-        regular_fallback,
         pay_random,
         ban_reorder,
         rng,
@@ -917,15 +703,13 @@ fn db_replace_with_value<F, V>(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated_armed: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
     lookup: F,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16], bool) -> Option<V>,
+    F: FnMut(&[u8; 16]) -> Option<V>,
     V: AsRef<[u8]>,
 {
     db_replace_with_value_options(
@@ -934,8 +718,6 @@ where
         budget,
         mode,
         guard,
-        curated_armed,
-        regular_fallback,
         pay_random,
         ban_reorder,
         rng,
@@ -953,8 +735,6 @@ pub fn db_replace_with_options<F, V>(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated_armed: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
@@ -962,7 +742,7 @@ pub fn db_replace_with_options<F, V>(
     options: &ReplacementOptions,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16], bool) -> Option<V>,
+    F: FnMut(&[u8; 16]) -> Option<V>,
     V: AsRef<[u8]>,
 {
     db_replace_with_value_options(
@@ -971,8 +751,6 @@ where
         budget,
         mode,
         guard,
-        curated_armed,
-        regular_fallback,
         pay_random,
         ban_reorder,
         rng,
@@ -991,33 +769,21 @@ pub fn db_replace_options(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated: bool,
-    curated_in_comp: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
     options: &ReplacementOptions,
 ) -> DbResult {
-    let armed = curated_armed_for(curated, mode, curated_in_comp);
     db_replace_with_options(
         window,
         num_wires,
         budget,
         mode,
         guard,
-        armed,
-        regular_fallback,
         pay_random,
         ban_reorder,
         rng,
-        |key, want_curated| {
-            if want_curated {
-                if curated { db.get_curated(key) } else { None }
-            } else {
-                db.get_regular(key)
-            }
-        },
+        |key| db.get_regular(key),
         options,
     )
 }
@@ -1029,8 +795,6 @@ fn db_replace_with_value_options<F, V>(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
-    curated_armed: bool,
-    regular_fallback: bool,
     pay_random: bool,
     ban_reorder: bool,
     rng: &mut impl Rng,
@@ -1038,31 +802,17 @@ fn db_replace_with_value_options<F, V>(
     options: Option<&ReplacementOptions>,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16], bool) -> Option<V>,
+    F: FnMut(&[u8; 16]) -> Option<V>,
     V: AsRef<[u8]>,
 {
-    // Cascade routing (2026-07-30 selection rule): expansion probes the
-    // CURATED store first (forward key only); only on a complete curated
-    // miss does it fall back to the REGULAR store (forward + reverse keys).
-    // The mode's size rule then applies within whichever store answered —
-    // for Mix: random among no-larger spellings, else random among the
-    // minimal ones. Compression (and unarmed processes) go straight to
-    // regular. Reverse canonicalization is computed only if the regular
-    // stage runs, so the curated fast path never pays for it.
-    // The caller owns the mode rule (see `db_replace`): `curated_armed` means
-    // "probe curated for THIS call", full stop.
-    let curated_first = curated_armed;
     let miss = |degree_skipped| DbResult {
         match_count: 0,
         chosen: None,
         degree_skipped,
         identity_skipped: 0,
         permutation_skipped: 0,
-        curated_matches: 0,
-        chosen_curated: false,
         choice_count: 0,
         min_match_len: None,
-        fwd_key: None,
     };
     let window_len = window.len();
     if window_len == 0 {
@@ -1077,9 +827,8 @@ where
     // that cost 17x the polynomial it guarded and never fired in production.
     let mut degree_skipped = false;
 
-    // Canonicalize the forward direction now; the reverse (regular-only, a
-    // window shorter under its inverse still keys the way the builder
-    // recorded it) is deferred to the regular stage below.
+    // Canonicalize the forward direction, then the reverse (a window shorter
+    // under its inverse still keys the way the builder recorded it).
     let mut directions: Vec<(bool, CanonicalXPolys)> = Vec::with_capacity(2);
     match canonicalize_replacement(window, false, budget, guard.max_degree, options) {
         Ok(c) => directions.push((false, c)),
@@ -1087,49 +836,36 @@ where
         Err(_) => {}
     }
 
-    // Every placeable equivalent circuit across both distinct keys, ANY length,
-    // from both stores. Each candidate carries whether it came from the curated
-    // store, because curated-ness is a lexicographic first key in `choose`.
+    // Every placeable equivalent circuit across both distinct keys, ANY length.
     // Catalogue candidates WITHOUT decoding them. The stored value is a flat
     // [len][len bytes] sequence, so gate counts -- everything the selection
-    // rules need -- can be read by walking offsets. Decoding was the whole cost
-    // of curated: one window there offered 430,568 candidates against the
-    // regular store's 6, and friend_to_xgates builds an occupancy vector and a
-    // shuffled availability list PER CANDIDATE, so a single lookup did roughly
-    // 70,000x the work of a regular one and curated runs never reached their
-    // first checkpoint. Only the chosen candidate is decoded now.
+    // rules need -- can be read by walking offsets. friend_to_xgates builds an
+    // occupancy vector and a shuffled availability list PER CANDIDATE, so only
+    // the chosen candidate is decoded.
     struct CandRef {
         vi: usize,
         off: usize,
         nbytes: usize,
         gates: usize,
-        curated: bool,
         dir_ix: usize,
     }
     impl CandLen for CandRef {
         fn gate_count(&self) -> usize {
             self.gates
         }
-        fn curated(&self) -> bool {
-            self.curated
-        }
     }
     fn catalogue<V: AsRef<[u8]>>(
         value: V,
-        from_curated: bool,
         dir_ix: usize,
         values: &mut Vec<V>,
         refs: &mut Vec<CandRef>,
-        curated_matches: &mut usize,
         min_match_len: &mut Option<usize>,
     ) {
         let vi = values.len();
         let bytes = value.as_ref();
-        // A full-coverage curated value can hold hundreds of thousands of
-        // candidates; growing `refs` from empty re-copied it ~19 times on the
-        // way up. Each candidate costs at least 4 bytes here (a length byte
-        // plus a 3-byte gate), so this is an estimate, not a bound -- capacity
-        // only, so an over- or under-shoot changes nothing but allocator work.
+        // Each candidate costs at least 4 bytes here (a length byte plus a
+        // 3-byte gate), so this is an estimate, not a bound -- capacity only,
+        // so an over- or under-shoot changes nothing but allocator work.
         refs.reserve(bytes.len() / 4);
         let mut pos = 0usize;
         while pos < bytes.len() {
@@ -1144,10 +880,8 @@ where
                 off: pos,
                 nbytes: len,
                 gates,
-                curated: from_curated,
                 dir_ix,
             });
-            *curated_matches += usize::from(from_curated);
             *min_match_len = Some(min_match_len.map_or(gates, |min| min.min(gates)));
             pos += len;
         }
@@ -1156,150 +890,67 @@ where
 
     let mut values: Vec<V> = Vec::new();
     let mut refs: Vec<CandRef> = Vec::new();
-    let mut curated_matches = 0usize;
     let mut min_match_len = None;
     let mut identity_skipped = 0usize;
     let mut permutation_skipped = 0usize;
-    // Forward canonical key, exposed on DbResult so a caller can re-query
-    // another store for the same permutation (class attribution).
-    let mut fwd_key: Option<[u8; 16]> = directions
-        .iter()
-        .find(|(rev, _)| !rev)
-        .map(|(_, c)| key_of(c));
-
-    // Stage A: the curated store, FORWARD KEY ONLY. The store docs say so
-    // outright: "curated lookup itself uses the forward canonical form; the
-    // regular fallback may also try the reversed form." Probing curated with
-    // the reverse key returns entries belonging to a different permutation --
-    // measured at 430,568 candidates for one window, none of them equivalent.
-    if curated_first {
-        if let Some((dir_ix, (_, canonical))) =
-            directions.iter().enumerate().find(|(_, (rev, _))| !rev)
-        {
-            // Function-keyed stores (v2 era) key by the canonical polynomials;
-            // circuit-keyed (v3 true-friend) stores key by the hash of the
-            // window's canonical g57 blob, so different spellings of one
-            // function have different entries. Decode is identical either
-            // way: stored friends live in the window function's canonical
-            // frame, which `canonical` describes.
-            use crate::database::lookup_cache::{CuratedKeyMode, curated_key_mode};
-            let curated_key = match options.map_or_else(curated_key_mode, |o| o.curated_key) {
-                CuratedKeyMode::Function => Some(key_of(canonical)),
-                CuratedKeyMode::Circuit => circuit_key_of_window(window),
-            };
-            if let Some(value) = curated_key.and_then(|key| lookup(&key, true)) {
-                catalogue(
-                    value,
-                    true,
-                    dir_ix,
-                    &mut values,
-                    &mut refs,
-                    &mut curated_matches,
-                    &mut min_match_len,
-                );
-            }
-        }
+    match canonicalize_replacement(window, true, budget, guard.max_degree, options) {
+        Ok(c) => directions.push((true, c)),
+        Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
+        Err(_) => {}
     }
-
-    // Stage B: the regular store (both keys), on a complete curated miss or
-    // whenever the cascade does not apply (compression, unarmed).
-    //
-    // `regular_fallback = false` SUPPRESSES this stage while the cascade is
-    // live, turning the call into a curated-only probe. That is what the
-    // two-pass policy needs: exhaust curated over every window length before
-    // the regular store is consulted at any length. It can never suppress
-    // the regular store when the cascade does not apply -- with no curated
-    // stage to fall back FROM, stage B is the only stage there is.
-    if refs.is_empty() && (regular_fallback || !curated_first) {
-        match canonicalize_replacement(window, true, budget, guard.max_degree, options) {
-            Ok(c) => directions.push((true, c)),
-            Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
-            Err(_) => {}
+    // The regular store is keyed by min(canon_fwd, canon_rev). When both
+    // directions compose, the default Min mode probes only the min direction — the
+    // non-min key can only exist if it equals the min key, so the candidate
+    // set is unchanged. Legacy restores the historical probe-both cascade;
+    // Validate probes the other direction on a miss and counts violations.
+    use crate::database::lookup_cache::{
+        MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS, MinDirLookup, min_dir_lookup_mode,
+    };
+    use std::sync::atomic::Ordering;
+    let fwd_idx = directions.iter().position(|(reversed, _)| !reversed);
+    let rev_idx = directions.iter().position(|(reversed, _)| *reversed);
+    let min_mode = match (fwd_idx, rev_idx) {
+        (Some(_), Some(_)) => {
+            options.map_or_else(min_dir_lookup_mode, |options| options.direction)
         }
-        // The regular store is keyed by min(canon_fwd, canon_rev). When both
-        // directions compose, the default Min mode probes only the min direction — the
-        // non-min key can only exist if it equals the min key, so the candidate
-        // set is unchanged. Legacy restores the historical probe-both cascade;
-        // Validate probes the other direction on a miss and counts violations.
-        use crate::database::lookup_cache::{
-            MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS, MinDirLookup, min_dir_lookup_mode,
-        };
-        use std::sync::atomic::Ordering;
-        let fwd_idx = directions.iter().position(|(reversed, _)| !reversed);
-        let rev_idx = directions.iter().position(|(reversed, _)| *reversed);
-        // Stage B may be the first place the forward direction exists.
-        if fwd_key.is_none() {
-            if let Some(i) = fwd_idx {
-                fwd_key = Some(key_of(&directions[i].1));
-            }
-        }
-        let min_mode = match (fwd_idx, rev_idx) {
-            (Some(_), Some(_)) => {
-                options.map_or_else(min_dir_lookup_mode, |options| options.direction)
-            }
-            _ => MinDirLookup::Legacy,
-        };
-        match min_mode {
-            MinDirLookup::Legacy => {
-                // At most two directions exist; dedup the second key against the first.
-                let mut first_key: Option<[u8; 16]> = None;
-                for (dir_ix, (_, canonical)) in directions.iter().enumerate() {
-                    let key = key_of(canonical);
-                    if first_key == Some(key) {
-                        continue;
-                    }
-                    if first_key.is_none() {
-                        first_key = Some(key);
-                    }
-                    if let Some(value) = lookup(&key, false) {
-                        catalogue(
-                            value,
-                            false,
-                            dir_ix,
-                            &mut values,
-                            &mut refs,
-                            &mut curated_matches,
-                            &mut min_match_len,
-                        );
-                    }
+        _ => MinDirLookup::Legacy,
+    };
+    match min_mode {
+        MinDirLookup::Legacy => {
+            // At most two directions exist; dedup the second key against the first.
+            let mut first_key: Option<[u8; 16]> = None;
+            for (dir_ix, (_, canonical)) in directions.iter().enumerate() {
+                let key = key_of(canonical);
+                if first_key == Some(key) {
+                    continue;
+                }
+                if first_key.is_none() {
+                    first_key = Some(key);
+                }
+                if let Some(value) = lookup(&key) {
+                    catalogue(value, dir_ix, &mut values, &mut refs, &mut min_match_len);
                 }
             }
-            mode => {
-                let fi = fwd_idx.expect("min mode requires both directions");
-                let ri = rev_idx.expect("min mode requires both directions");
-                let rev_is_min = directions[ri].1.polys < directions[fi].1.polys;
-                let (min_idx, alt_idx) = if rev_is_min { (ri, fi) } else { (fi, ri) };
-                let min_key = key_of(&directions[min_idx].1);
-                if let Some(value) = lookup(&min_key, false) {
-                    catalogue(
-                        value,
-                        false,
-                        min_idx,
-                        &mut values,
-                        &mut refs,
-                        &mut curated_matches,
-                        &mut min_match_len,
-                    );
-                } else if mode == MinDirLookup::Validate {
-                    let alt_key = key_of(&directions[alt_idx].1);
-                    if alt_key != min_key {
-                        MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
-                        if let Some(value) = lookup(&alt_key, false) {
-                            MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
-                            eprintln!(
-                                "[min-dir-violation] circuit_mixer db_replace: non-min canonical key present while min key absent (window={})",
-                                window.len()
-                            );
-                            catalogue(
-                                value,
-                                false,
-                                alt_idx,
-                                &mut values,
-                                &mut refs,
-                                &mut curated_matches,
-                                &mut min_match_len,
-                            );
-                        }
+        }
+        mode => {
+            let fi = fwd_idx.expect("min mode requires both directions");
+            let ri = rev_idx.expect("min mode requires both directions");
+            let rev_is_min = directions[ri].1.polys < directions[fi].1.polys;
+            let (min_idx, alt_idx) = if rev_is_min { (ri, fi) } else { (fi, ri) };
+            let min_key = key_of(&directions[min_idx].1);
+            if let Some(value) = lookup(&min_key) {
+                catalogue(value, min_idx, &mut values, &mut refs, &mut min_match_len);
+            } else if mode == MinDirLookup::Validate {
+                let alt_key = key_of(&directions[alt_idx].1);
+                if alt_key != min_key {
+                    MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                    if let Some(value) = lookup(&alt_key) {
+                        MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "[min-dir-violation] circuit_mixer db_replace: non-min canonical key present while min key absent (window={})",
+                            window.len()
+                        );
+                        catalogue(value, alt_idx, &mut values, &mut refs, &mut min_match_len);
                     }
                 }
             }
@@ -1313,7 +964,6 @@ where
     // dropped and the choice retried -- the identity guard still applies, it
     // just no longer costs a decode of every sibling to enforce.
     let mut chosen: Option<Vec<XGate>> = None;
-    let mut chosen_curated = false;
     let mut choice_count = 0usize;
     let mut window_canonical: Option<Vec<XGate>> = None;
     while !refs.is_empty() {
@@ -1355,13 +1005,12 @@ where
         // candidate is consumed and choose_ref re-evaluates free-vs-pay on
         // the survivors, so with both bans armed a commuting 2-gate pair has
         // no admissible same-length spelling and the splice is forced onto a
-        // genuinely different (usually paid/curated) one.
+        // genuinely different (usually paid) one.
         if ban_reorder && is_reorder(&gates, window) {
             permutation_skipped += 1;
             continue;
         }
         chosen = Some(gates);
-        chosen_curated = r.curated;
         choice_count = n_eligible;
         break;
     }
@@ -1371,11 +1020,8 @@ where
         degree_skipped,
         identity_skipped,
         permutation_skipped,
-        curated_matches,
-        chosen_curated,
         choice_count,
         min_match_len,
-        fwd_key,
     }
 }
 
@@ -1399,19 +1045,6 @@ fn is_reorder(a: &[XGate], b: &[XGate]) -> bool {
     true
 }
 
-/// Pick which candidate to decode, from gate counts alone.
-///
-/// Curated-ness is a lexicographic FIRST key: when any curated candidate
-/// survived, the mode's size rule is applied within the curated class only,
-/// regardless of size. That is deliberate, and it prefers growth two ways: the
-/// store holds the longer halves of uneven identity splits, and a free
-/// (non-growing) regular candidate is discarded unseen whenever curated
-/// answers at all. What it buys is a route whose pieces are not locally
-/// compressible by the REGULAR store. Compressing mode is exempt: its job is
-/// to shrink. Stable is deliberately NOT exempt: the stable-mixing experiment
-/// tests whether staying WITHIN curated (highly inflated) material is stable,
-/// so a curated answer with no near-size member is a miss — the same-size
-/// regular spelling stays discarded unseen, by design.
 /// Optional ABSOLUTE incoming-length band, `MIXER_DB_LEN_BAND=lo,hi` (read
 /// once): candidates outside lo..=hi are dropped before any mode logic.
 /// Experiment knob — composes with every mode (e.g. `--db-mode any` +
@@ -1436,6 +1069,7 @@ where
     choose_ref_with_options(refs, window_len, mode, pay_random, rng, None)
 }
 
+/// Pick which candidate to decode, from gate counts alone.
 fn choose_ref_with_options<R>(
     refs: &[R],
     window_len: usize,
@@ -1447,17 +1081,15 @@ fn choose_ref_with_options<R>(
 where
     R: CandLen,
 {
-    let restrict_curated = mode != DbMode::Compressing && refs.iter().any(|r| r.curated());
     let in_pool = |r: &R| {
-        (!restrict_curated || r.curated())
-            && incoming_length_band(options).is_none_or(|(blo, bhi)| {
-                let l = r.gate_count();
-                l >= blo && l <= bhi
-            })
+        incoming_length_band(options).is_none_or(|(blo, bhi)| {
+            let l = r.gate_count();
+            l >= blo && l <= bhi
+        })
     };
 
-    // First determine the rule's threshold without materialising either the
-    // curated pool or the eligible pool. The second scan counts candidates,
+    // First determine the rule's threshold without materialising the eligible
+    // pool. The second scan counts candidates,
     // and the third maps the uniformly drawn rank back to the same slice index
     // the old Vec-based implementation returned. Candidate order and the one
     // RNG call are therefore unchanged, including after swap_remove retries.
@@ -1564,10 +1196,7 @@ fn choose_ref_reference<R>(
 where
     R: CandLen,
 {
-    let restrict_curated = mode != DbMode::Compressing && refs.iter().any(|r| r.curated());
-    let mut pool: Vec<usize> = (0..refs.len())
-        .filter(|&i| !restrict_curated || refs[i].curated())
-        .collect();
+    let mut pool: Vec<usize> = (0..refs.len()).collect();
     if let Some((blo, bhi)) = incoming_length_band(None) {
         pool.retain(|&i| {
             let l = refs[i].gate_count();
@@ -1677,7 +1306,6 @@ where
 /// Just enough of a candidate to select on, so selection never decodes.
 trait CandLen {
     fn gate_count(&self) -> usize;
-    fn curated(&self) -> bool;
 }
 
 #[cfg(test)]

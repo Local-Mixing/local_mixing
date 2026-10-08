@@ -60,13 +60,8 @@ pub struct MixCounters {
     pub db_hard_hits: u64,
     pub db_hard_rounds: u64,
     pub db_hard_added: u64,
-    // Candidates refused by the identity guard, and splices whose replacement
-    // came from the curated store.
+    // Candidates refused by the identity guard.
     pub db_identity_skips: u64,
-    pub db_curated_hits: u64,
-    // Curated replacements refused because they did not verify (see
-    // try_db_splice_curated).
-    pub db_curated_rejected: u64,
     // NOT-into-comp=1 absorptions (Merge::Absorb): the channel that lets a
     // twist bracket be swallowed by a neighbouring g57 rather than paid for.
     pub merges_absorb: u64,
@@ -101,9 +96,6 @@ pub struct MixCounters {
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
     // that alternates 2->5 and 5->2 report identically.
     pub splice_sizes: Vec<Vec<u64>>,
-    // Same joint histogram, curated-store splices only (splice_sizes minus
-    // this = regular). A shape: not carried across resumes.
-    pub splice_sizes_curated: Vec<Vec<u64>>,
     // Litter census, grouped by the preserved construction origins. These are
     // observation counters, not sampling preferences. `litter_windows` and
     // `litter_distinct_sum` give
@@ -480,14 +472,6 @@ pub struct Mixer {
     // per-success histogram of the store-minimal spelling length (the
     // converted permutation's operational complexity), index = gates (cap 31)
     pub(super) dmin_success_hist: [u64; 32],
-    // TRUE complexity class of each big-pool (M1/M2/M3...) conversion, read
-    // from the REFERENCE store named by FROZEN_REF_DIR — the pool swap
-    // replaced the small spellings in the live store, so the class is only
-    // recoverable by re-querying the same key against the original.
-    pub(super) m123_class_hist: [u64; 32],
-    // successful curated splices whose candidate list exceeded the bounded
-    // contract (>20) — by construction exactly the M1/M2/M3 big-pool hits.
-    pub(super) bigpool_hits: u64,
     // SIZE LEDGER for --db-mode band-ledger: signed net gates this channel
     // has added. The size choice is skewed corrective whenever |ledger|
     // exceeds the slack, so the band's size variability is kept per splice
@@ -833,8 +817,6 @@ impl Mixer {
             stable_led_added: 0,
             stable_led_removed: 0,
             dmin_success_hist: [0; 32],
-            m123_class_hist: [0; 32],
-            bigpool_hits: 0,
             band_led: 0,
             band_led_round: false,
             geo_attempts: [0; 2],

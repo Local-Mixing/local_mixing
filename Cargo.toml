@@ -63,7 +63,7 @@ primitive-types = "0.14.0"
 uint = "0.10.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rustc-hash = "2"
-# Curated database build/import pipeline. These are optional because RocksDB
+# Offline database build/import pipeline. These are optional because RocksDB
 # is not part of the frozen-store runtime.
 rocksdb = { version = "0.24.0", optional = true }
 num_cpus = { version = "1.17.0", optional = true }
@@ -111,60 +111,12 @@ path = "tests/integration/mixer_db_replacement.rs"
 # Database generation and analysis
 
 [[bin]]
-name = "pool_census"
-path = "db_gen/analysis/pool_census.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "true_friend_probe"
-path = "db_gen/analysis/true_friend_probe.rs"
-required-features = ["db-tools"]
-
-[[bin]]
 name = "qc_scan"
 path = "db_gen/analysis/qc_scan.rs"
 
 [[bin]]
-name = "inflate_gates"
-path = "db_gen/analysis/inflate_gates.rs"
-
-[[bin]]
-name = "greedy_walk"
-path = "db_gen/analysis/greedy_walk.rs"
-
-[[bin]]
 name = "cross_gluing_probe"
 path = "db_gen/analysis/cross_gluing_probe.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_coverage_census"
-path = "db_gen/analysis/curated_coverage_census.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_key_filter"
-path = "db_gen/analysis/curated_key_filter.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_key_histogram"
-path = "db_gen/analysis/curated_key_histogram.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_key_structure"
-path = "db_gen/analysis/curated_key_structure.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_recanon_probe"
-path = "db_gen/analysis/curated_recanon_probe.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "curated_size_census"
-path = "db_gen/analysis/curated_size_census.rs"
 required-features = ["db-tools"]
 
 [[bin]]
@@ -183,11 +135,6 @@ path = "db_gen/analysis/frozen_find_small.rs"
 required-features = ["db-tools"]
 
 [[bin]]
-name = "frozen_pool_swap"
-path = "db_gen/analysis/frozen_pool_swap.rs"
-required-features = ["db-tools"]
-
-[[bin]]
 name = "identity_length_census"
 path = "db_gen/analysis/identity_length_census.rs"
 required-features = ["db-tools"]
@@ -198,11 +145,6 @@ path = "db_gen/analysis/identity_shingle_sieve.rs"
 required-features = ["db-tools"]
 
 [[bin]]
-name = "mgdb_build"
-path = "db_gen/analysis/mgdb_build.rs"
-required-features = ["db-tools"]
-
-[[bin]]
 name = "minimal_halves_probe"
 path = "db_gen/analysis/minimal_halves_probe.rs"
 required-features = ["db-tools"]
@@ -210,21 +152,6 @@ required-features = ["db-tools"]
 [[bin]]
 name = "minimal_identity_filter"
 path = "db_gen/analysis/minimal_identity_filter.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "sgdb_build"
-path = "db_gen/analysis/sgdb_build.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "sgdb_substitute"
-path = "db_gen/analysis/sgdb_substitute.rs"
-required-features = ["db-tools"]
-
-[[bin]]
-name = "build_curated_full"
-path = "db_gen/bin/build_curated_full.rs"
 required-features = ["db-tools"]
 
 [[bin]]
@@ -350,11 +277,6 @@ required-features = ["benchmark-tools"]
 [[bin]]
 name = "blocker_census"
 path = "benchmarks/db_mixing/blocker_census.rs"
-required-features = ["benchmark-tools"]
-
-[[bin]]
-name = "db_curated_probe"
-path = "benchmarks/db_mixing/db_curated_probe.rs"
 required-features = ["benchmark-tools"]
 
 [[bin]]

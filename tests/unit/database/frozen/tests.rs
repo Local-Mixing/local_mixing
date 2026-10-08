@@ -29,7 +29,6 @@ fn qc_cached_lookup_copies_only_requested_records_and_preserves_sampler_cache() 
         .insert(key, std::sync::Arc::new(value.clone()));
     let db = FrozenDb {
         regular: Some(store),
-        curated: None,
     };
     assert_eq!(db.get_regular_qc(&key, 2, 8), Ok(Some(value[..8].to_vec())));
     assert_eq!(
@@ -37,7 +36,6 @@ fn qc_cached_lookup_copies_only_requested_records_and_preserves_sampler_cache() 
         Err(QcLookupLimit::DecodeBytes { limit: 7 })
     );
     assert_eq!(db.get_regular(&key), Some(value));
-    assert_eq!(db.get_curated_qc(&key, 2, 8), Ok(None));
 }
 
 #[test]
@@ -306,7 +304,7 @@ fn bounded_raw_decode_stops_on_a_circuit_boundary() {
 }
 
 #[test]
-fn unbounded_raw_decode_returns_all_curated_candidates() {
+fn unbounded_raw_decode_returns_all_candidates() {
     let tables = Tables {
         header: rebuild_canonical(vec![(ESC, 1)]),
         gates: Vec::new(),
@@ -340,7 +338,6 @@ fn explicit_lookup_caches_keep_distinct_store_values_separate() {
             .insert(key, std::sync::Arc::new(value));
         FrozenDb {
             regular: Some(store),
-            curated: None,
         }
     };
     let first = build(vec![3, 0, 1, 2]);

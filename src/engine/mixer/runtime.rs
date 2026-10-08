@@ -32,17 +32,11 @@ impl RuntimeControls {
             Self::Resolved(options) => options.stop_at_splices,
         }
     }
-    pub(super) fn reference_db(&self) -> Option<&FrozenDb> {
-        match self {
-            Self::Environment => environment::reference_db(),
-            Self::Resolved(options) => options.reference_db.as_deref(),
-        }
-    }
 }
 
 impl Mixer {
-    /// Construct with an explicit store and resolved twist, phase-stop and
-    /// reference-store controls. Database-backed walks retain the default
+    /// Construct with an explicit store and resolved twist and phase-stop
+    /// controls. Database-backed walks retain the default
     /// replacement/cache policy; use the explicit replacement APIs when that
     /// policy must also be supplied without environment configuration.
     pub fn new_with_runtime_options(
@@ -57,7 +51,7 @@ impl Mixer {
         mixer
     }
 
-    /// Replace the twist, phase-stop and reference-store environment adapter,
+    /// Replace the twist and phase-stop environment adapter,
     /// including on a resumed mixer. Replacement/cache policy is unchanged.
     /// Piecewise rounds inherit these controls without changing the RNG stream.
     pub fn set_runtime_options(&mut self, runtime: MixRuntimeOptions) {

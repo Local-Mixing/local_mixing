@@ -1,7 +1,5 @@
-//! Immutable replacement storage, codecs, lookup caches and validation.
-pub mod codec;
+//! Immutable replacement storage and lookup caches.
 pub mod frozen;
 pub mod lookup_cache;
-pub mod validation;
 
 mod environment;

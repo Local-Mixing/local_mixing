@@ -2,12 +2,12 @@
 //! Store paths and conventions are read at open time; cache controls are cached
 //! independently when first read. Explicit options bypass these settings.
 use super::frozen::ValueConvention;
-use super::lookup_cache::{CuratedKeyMode, MinDirLookup};
+use super::lookup_cache::MinDirLookup;
 use std::sync::OnceLock;
 
-/// Per-store value convention, from `FROZEN_REGULAR_VALUE_CONVENTION` /
-/// `FROZEN_CURATED_VALUE_CONVENTION`. `native` (default) returns values as
-/// stored; `legacy-swapped-controls` swaps each gate's two controls at decode.
+/// Store value convention, from `FROZEN_REGULAR_VALUE_CONVENTION`. `native`
+/// (default) returns values as stored; `legacy-swapped-controls` swaps each
+/// gate's two controls at decode.
 pub(super) fn value_convention(var: &str) -> ValueConvention {
     match std::env::var(var).as_deref() {
         Err(_) | Ok("native") => ValueConvention::Native,
@@ -22,12 +22,10 @@ pub(super) fn filters_enabled() -> bool {
     std::env::var("FROZEN_FILTER").map(|v| v == "1") == Ok(true)
 }
 
-pub(super) fn frozen_directories() -> (String, Option<String>) {
-    let regular = std::env::var("FROZEN_DB_DIR")
-        .expect("FROZEN_DB_DIR is required; the runtime is frozen-store only");
-    let curated = std::env::var("FROZEN_CURATED_DIR").ok();
-    (regular, curated)
+pub(super) fn frozen_directory() -> String {
+    std::env::var("FROZEN_DB_DIR").expect("FROZEN_DB_DIR is required; the runtime is frozen-store only")
 }
+
 pub(super) fn lookup_cache_cap_bytes() -> u64 {
     static CAP: OnceLock<u64> = OnceLock::new();
     *CAP.get_or_init(|| {
@@ -45,18 +43,5 @@ pub(crate) fn min_dir_lookup_mode() -> MinDirLookup {
         Ok("0") => MinDirLookup::Legacy,
         Ok("validate") => MinDirLookup::Validate,
         _ => MinDirLookup::Min,
-    })
-}
-
-/// Curated key mode from `FROZEN_CURATED_KEY`: `function` (default) keys the
-/// curated lookup by the window's canonical polynomials (v2-era stores);
-/// `circuit` keys it by the canonical g57 circuit blob's hash (v3 true-friend
-/// stores). Explicit `ReplacementOptions` bypass this setting.
-pub(crate) fn curated_key_mode() -> CuratedKeyMode {
-    static MODE: OnceLock<CuratedKeyMode> = OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("FROZEN_CURATED_KEY").as_deref() {
-        Ok("circuit") => CuratedKeyMode::Circuit,
-        Err(_) | Ok("function") => CuratedKeyMode::Function,
-        Ok(other) => panic!("FROZEN_CURATED_KEY={other}: unknown key mode (function | circuit)"),
     })
 }

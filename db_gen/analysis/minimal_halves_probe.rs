@@ -146,7 +146,7 @@ fn main() {
     let shards: usize = flag(&args, "--shards", 256usize).clamp(1, 256);
     let wires: usize = flag(&args, "--wires", 32usize);
 
-    let db = FrozenDb::open(dir, None);
+    let db = FrozenDb::open(dir);
     let budget = XPolyBudget::default();
     let start = Instant::now();
     let done = std::sync::atomic::AtomicUsize::new(0);

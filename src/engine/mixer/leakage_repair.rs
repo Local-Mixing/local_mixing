@@ -150,8 +150,7 @@ impl Mixer {
         let verify = std::mem::replace(&mut self.params.db_verify, false);
         let band_round = std::mem::replace(&mut self.band_led_round, false);
         let whole_circuit = block_ids.len() == self.arena.len();
-        let applied = self.try_db_splice_curated(
-            false,
+        let applied = self.try_db_splice(
             block_ids,
             direction,
             &window,

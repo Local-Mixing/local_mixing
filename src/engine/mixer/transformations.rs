@@ -1475,9 +1475,6 @@ impl Mixer {
             self.db_budget,
             DbMode::Mix,
             guard,
-            self.params.curated,
-            self.params.curated_in_comp,
-            true,
             self.params.mix_pay_random,
             true,
             &mut self.rng,
@@ -1493,9 +1490,6 @@ impl Mixer {
             self.db_budget,
             DbMode::Mix,
             guard,
-            self.params.curated,
-            self.params.curated_in_comp,
-            true,
             self.params.mix_pay_random,
             true,
             &mut self.rng,
@@ -1519,16 +1513,12 @@ impl Mixer {
             self.db_budget,
             DbMode::Mix,
             guard,
-            self.params.curated,
-            self.params.curated_in_comp,
-            true,
             self.params.mix_pay_random,
             true,
             &mut self.rng,
         );
         let ok2 = match r2.chosen {
-            Some(rep) => self.try_db_splice_curated(
-                r2.chosen_curated,
+            Some(rep) => self.try_db_splice(
                 &[u2, plan.g2],
                 d2,
                 &w2v,
@@ -1571,16 +1561,12 @@ impl Mixer {
             self.db_budget,
             DbMode::Mix,
             guard,
-            self.params.curated,
-            self.params.curated_in_comp,
-            true,
             self.params.mix_pay_random,
             true,
             &mut self.rng,
         );
         let ok1 = match r1.chosen {
-            Some(rep) => self.try_db_splice_curated(
-                r1.chosen_curated,
+            Some(rep) => self.try_db_splice(
                 &[plan.g1, u1],
                 d1,
                 &w1v,
