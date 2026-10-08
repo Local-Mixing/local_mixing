@@ -2,8 +2,9 @@
 
 *2026-10-04. Working notes from the ANF-window program (RC's design
 direction; experiments in `runs/ncdb_ab_20261001/`, summarized in that
-run's RESULTS.md). Status: measurement-backed design; nothing here is
-committed pipeline code yet.*
+run's RESULTS.md). Status: measurement-backed design, implemented as
+the stage-4 (packing) Python prototypes under `scripts/windowed_delivery/`
+since the four-stage cleanup (2026-10-08); the Rust port is pending.*
 
 ## 1. The proposal
 

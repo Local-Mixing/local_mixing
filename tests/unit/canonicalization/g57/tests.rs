@@ -695,41 +695,6 @@ fn opt_equiv_to_polynomial_scratch_reuse_matches_reference() {
     }
 }
 
-// Merge-based input negation must match the reference per-rest
-// binary-search toggles on normalized polynomials.
-#[test]
-fn opt_equiv_substitute_input_negation_matches_toggle_reference() {
-    fn reference(poly: &mut Polynomial, w: usize) {
-        let bit = 1u64 << w;
-        let rests: Vec<Monomial> = poly
-            .iter()
-            .filter(|&&m| m & bit != 0)
-            .map(|&m| m & !bit)
-            .collect();
-        for rest in rests {
-            toggle_monomial(poly, rest);
-        }
-    }
-    let mut rng = fastrand::Rng::with_seed(0x6e65_6761_7465_7331);
-    for _ in 0..500 {
-        let k = rng.usize(1..=12);
-        let terms: Vec<Monomial> = (0..rng.usize(0..=40))
-            .map(|_| rng.u64(..) & ((1u64 << k) - 1))
-            .collect();
-        let poly = polynomial_from_terms(terms);
-        let w = rng.usize(0..k);
-        let mut actual_poly = poly.clone();
-        let mut reference_poly = poly.clone();
-        substitute_input_negation(&mut actual_poly, w);
-        reference(&mut reference_poly, w);
-        assert_eq!(actual_poly, reference_poly, "k={k} w={w} poly={poly:?}");
-        // Involution sanity: substituting the same wire twice restores
-        // the input.
-        substitute_input_negation(&mut actual_poly, w);
-        assert_eq!(actual_poly, poly, "k={k} w={w}");
-    }
-}
-
 // The hashed single-direction variant must agree with the plain variant
 // on order and used wires, and its key must be exactly
 // xxh3_128(polys_repr_blob(plain polys)) in both fresh and cached paths.
@@ -891,41 +856,6 @@ fn canonical_form_golden() {
             "canonical form changed for {}",
             tag
         );
-    }
-}
-
-#[test]
-fn substitute_input_negation_flips_that_variable() {
-    // eval a polynomial (XOR of monomials; monomial bits = AND of those input vars; 0 = const).
-    fn eval(poly: &Polynomial, x: u64) -> u8 {
-        let mut v = 0u8;
-        for &m in poly {
-            if x & m == m {
-                v ^= 1;
-            }
-        }
-        v
-    }
-    let n = 4;
-    for _ in 0..40 {
-        let c = random_circuit(n, 8);
-        let polys = c.to_polynomial(n, 0, c.gates.len());
-        for w in 0..n {
-            let mut flipped = polys.clone();
-            for p in flipped.iter_mut() {
-                substitute_input_negation(p, w);
-            }
-            // substituting x_w -> x_w+1 means flipped(x) == original(x ^ (1<<w)) for every wire.
-            for x in 0..(1u64 << n) {
-                for i in 0..n {
-                    assert_eq!(
-                        eval(&flipped[i], x),
-                        eval(&polys[i], x ^ (1u64 << w)),
-                        "w={w} x={x} wire={i}"
-                    );
-                }
-            }
-        }
     }
 }
 

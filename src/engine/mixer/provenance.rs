@@ -770,36 +770,6 @@ impl Mixer {
         l
     }
 
-    /// Install per-gate litter ids (circuit order) from an external stage —
-    /// e.g. the historic SGDB substitution, where each replaced gate's block becomes
-    /// one litter. litter_size is recomputed per id; next_litter continues
-    /// above the max.
-    pub fn load_litters(&mut self, ids: &[u64]) {
-        let order = self.arena.ids_in_order();
-        assert_eq!(
-            order.len(),
-            ids.len(),
-            "litter sidecar length != gate count"
-        );
-        let mut sizes: std::collections::HashMap<u64, u16> = std::collections::HashMap::new();
-        for &l in ids {
-            *sizes.entry(l).or_insert(0) += 1;
-        }
-        for (&id, &l) in order.iter().zip(ids.iter()) {
-            let mut m = self.meta_of(id);
-            m.litter = l;
-            m.litter_size = sizes[&l];
-            self.set_meta(id, m);
-        }
-        self.next_litter = ids.iter().copied().max().unwrap_or(0) + 1;
-        println!(
-            "[circuit_mixer] litters loaded: {} gates, {} litters, largest {}",
-            ids.len(),
-            sizes.len(),
-            sizes.values().max().copied().unwrap_or(0)
-        );
-    }
-
     pub fn origins_in_order(&self) -> Vec<u32> {
         self.arena
             .ids_in_order()

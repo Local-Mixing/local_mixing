@@ -177,9 +177,10 @@ impl MixCounters {
 // v5 (2026-10-08): the crossing walk (old stage 5) is historic: the merge,
 // undo, cross and g57-only counters, the next_event scalar, the per-gate
 // event field and the tabu and journal sections are gone.
-// Older states are refused. v2 states can be resumed with the archive branch
-// ran/archive/curated-and-postmix (which reads v2 only); v3 and v4 existed
-// only in intermediate commits of the cleanup and are readable by no build.
+// Older states are refused. v1 and v2 states can be resumed with the archive
+// branch ran/archive/curated-and-postmix (which reads both: v1 is a strict
+// prefix of v2); v3 and v4 were written only by intermediate commits of the
+// cleanup, and neither the archive nor the current build reads them.
 pub const STATE_VERSION: u32 = 5;
 
 impl Mixer {

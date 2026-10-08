@@ -634,20 +634,6 @@ pub fn run(matches: clap::ArgMatches) {
             None => make_mixer(gates, num_wires, params),
         },
     };
-    // External litter assignment (e.g. the sidecar of the historic SGDB
-    // substitution, now on ran/archive/curated-and-postmix: every replaced
-    // gate's block is one litter, so --litter-ban covers the INITIAL
-    // replacements too, not only the walk's own splices).
-    if let Some(p) = &args.litter_in {
-        let ids: Vec<u64> = std::fs::read_to_string(p)
-            .unwrap_or_else(|e| panic!("read --litter-in {p}: {e}"))
-            .lines()
-            .skip(1) // header "litter1 N"
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().parse().expect("bad litter id"))
-            .collect();
-        mixer.load_litters(&ids);
-    }
     // A resumed run has no input file, so the summary's "before" figures must
     // come from the resumed circuit or it reports 0 -> N and reads as if the
     // chain started from nothing.

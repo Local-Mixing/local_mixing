@@ -143,6 +143,10 @@ impl<'a> Fields<'a> {
 // term, terms are sorted by (size, literals), and an empty term is the
 // constant 1. Any mpmct1 reader loads both transparently (`read_mpmct`), as
 // one cube gate per term.
+//
+// Only the READ side lives here: the writers had a single producer, the
+// historic fcompress stage, and went to the archive branch with it. The
+// reader stays so that packed outputs of archive-built runs still load.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackedGate {
     pub target: u16,
@@ -152,20 +156,6 @@ pub struct PackedGate {
 }
 
 impl PackedGate {
-    pub fn term_count(&self) -> usize {
-        self.terms.len()
-    }
-
-    pub fn is_anf(&self) -> bool {
-        self.terms.iter().all(|t| t.iter().all(|l| l.1))
-    }
-
-    /// Canonical term order: by size, then the literal list.
-    pub fn sort_terms(&mut self) {
-        self.terms
-            .sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
-    }
-
     /// Exact expansion into XGates: one conjunction (or a bare X for the
     /// constant) per term, all on the target.
     pub fn expand(&self) -> Vec<XGate> {
@@ -182,65 +172,10 @@ pub fn expand_packed(packed: &[PackedGate]) -> Vec<XGate> {
     packed.iter().flat_map(PackedGate::expand).collect()
 }
 
-/// Write packed gates: `anf1` when every term is positive (asserted), else
-/// `esop1`. Returns the header word used.
-pub fn write_packed(
-    path: &str,
-    packed: &[PackedGate],
-    num_wires: usize,
-    anf: bool,
-) -> io::Result<()> {
-    let file = std::fs::File::create(path)?;
-    let mut out = BufWriter::with_capacity(1 << 20, file);
-    writeln!(
-        out,
-        "{} {} {}",
-        if anf { "anf1" } else { "esop1" },
-        num_wires,
-        packed.len()
-    )?;
-    let mut line = Vec::with_capacity(256);
-    for g in packed {
-        line.clear();
-        push_dec(&mut line, g.target as u32);
-        line.push(b' ');
-        push_dec(&mut line, g.terms.len() as u32);
-        for t in &g.terms {
-            line.push(b' ');
-            push_dec(&mut line, t.len() as u32);
-            for &(w, p) in t {
-                line.push(b' ');
-                push_dec(&mut line, w as u32);
-                if anf {
-                    assert!(p, "anf1 terms are positive monomials");
-                } else {
-                    line.push(b' ');
-                    line.push(b'0' + p as u8);
-                }
-            }
-        }
-        line.push(b'\n');
-        out.write_all(&line)?;
-    }
-    out.flush()
-}
-
-pub fn write_anf1(path: &str, packed: &[PackedGate], num_wires: usize) -> io::Result<()> {
-    write_packed(path, packed, num_wires, true)
-}
-
-pub fn write_esop1(path: &str, packed: &[PackedGate], num_wires: usize) -> io::Result<()> {
-    write_packed(path, packed, num_wires, false)
-}
-
 /// Read an anf1 or esop1 file (dispatching on the header).
 pub fn read_packed(path: &str) -> io::Result<(Vec<PackedGate>, usize)> {
     let raw = std::fs::read(path)?;
     read_packed_bytes(&raw)
-}
-
-pub fn read_anf1(path: &str) -> io::Result<(Vec<PackedGate>, usize)> {
-    read_packed(path)
 }
 
 fn read_packed_bytes(raw: &[u8]) -> io::Result<(Vec<PackedGate>, usize)> {

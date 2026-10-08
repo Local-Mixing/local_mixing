@@ -9,7 +9,7 @@ TDP now has four stages: 1 sliced sandwich, 2 preprocessing (embedded masking), 
 - **Where the archive is:** branch `ran/archive/curated-and-postmix`, tip `ea2e516f` (2026-10-08, "docs: stage-2 linkability write-up, repair pass, cleanup inventory"). It is the last commit of `ran/stage2-windowed-delivery` before the cleanup. At the time of writing it is a local branch; push it before relying on it from another machine.
 - **What the cleanup did:** five steps on `ran/cleanup-four-stage`, each ending in a summary commit: step 1 curated DB (`04973782`), step 2 `fcompress` (`2dfaaca2`), step 3 split (`c4e6c0d6`), step 4 crossing walk (`ece32ceb`), step 5 driver, CI and docs. 46 files were deleted outright (about 14.4k lines of source, tests and docs) and about 100 more were edited.
 - **What stayed byte-identical:** `gen_sandwich_gadget` output and `circuit_mixer` output for the stage-3 command (minus the inert `--p-comp`/`--p-any`), checked after every step on 300k-move A/B runs (serial, `--leakage-repair`, `--parallel-pieces 2`) against an `ea2e516f` build, plus an end-to-end `tdp_gen` run at n=16.
-- **What is archive-only:** the curated store format, builders, runtime cascade and about 20 analysis tools; the split, crossing and `fcompress` stages with their mixer machinery, CLI flags and tests; three demixing/benchmark probes; the old run formats (mixer state v2, TDP recipe v8).
+- **What is archive-only:** the curated store format, builders, runtime cascade and about 20 analysis tools; the split, crossing and `fcompress` stages with their mixer machinery, CLI flags and tests; three demixing/benchmark probes; the old run formats (mixer states v1/v2, TDP recipe v8).
 
 To get a single file back without switching branches:
 
@@ -23,7 +23,7 @@ To browse or build the whole archive side by side:
 git worktree add ../lm-curated-postmix ran/archive/curated-and-postmix
 ```
 
-**Old runs.** The current build refuses TDP runs that record `tdp_command_recipe=8` (or older) and mixer states with `STATE_VERSION` 1-4; the current versions are recipe 9 and state 5. Resume v2 states and recipe-v8 runs, or rerun old stages 4-6, with a build of the archive branch (it reads state v2 only). States v3 and v4 were written only by intermediate commits of the cleanup branch; neither the archive nor the current build reads them, so rerun those from the stage-3 input. The archive's `tdp_gen.sh` still runs six stages and defaults to `stop_after_stage = 6`.
+**Old runs.** The current build refuses TDP runs that record `tdp_command_recipe=8` (or older) and mixer states with `STATE_VERSION` 1-4; the current versions are recipe 9 and state 5. Resume v1/v2 states and recipe-v8 runs, or rerun old stages 4-6, with a build of the archive branch (it reads states v1 and v2; v1 is a strict prefix of v2). States v3 and v4 were written only by intermediate commits of the cleanup branch; neither the archive nor the current build reads them, so rerun those from the stage-3 input. The archive's `tdp_gen.sh` still runs six stages and defaults to `stop_after_stage = 6`.
 
 ## Curated database
 
@@ -37,6 +37,7 @@ The curated store was a second frozen table built by splitting (approximately) m
 | Replacement cascade: `circuit_key_of_window`, `curated_armed_for`, curated/regular-fallback arguments of `db_replace*`/`db_probe`/`qc_candidates*`, `DbResult.curated_matches`/`chosen_curated`, `ReplacementOptions.curated_key`, `QcCandidate.from_curated` | `src/stages/db_mixing/replacement.rs` | Regular path only, same order (forward, reverse, min-direction probe) |
 | Mixer: `try_db_splice_curated` (refused a failed curated verification instead of panicking), descent pass loop, counters `db_curated_hits`/`db_curated_rejected`, `splice_sizes_curated`, `m123_class_hist`, `bigpool_hits` | `src/engine/mixer/replacement.rs`, `state.rs`, `reporting.rs` | `try_db_splice`, single pass |
 | `circuit_mixer` flags `--curated`, `--no-curated`, `--curated-exhaust`, `--curated-in-comp`, `--curated-only-mix` (and `--no-` forms), `--frozen-curated-dir` | `src/programs/circuit_mixer/cli.rs`, `mod.rs` | Gone |
+| `circuit_mixer --litter-in` (per-gate litter sidecar of the input, written only by `sgdb_substitute`), `Mixer::load_litters`, the sidecar option of `shuffle_mpmct` | `src/programs/circuit_mixer/cli.rs`, `mod.rs`, `src/engine/mixer/provenance.rs`, `security_tests/fixtures/shuffle_mpmct.rs` | Gone; input gates start as singleton litters |
 | TDP: `database.curated_dir`, `database.curated_control_order`, curated manifest fields | `src/tdp/`, `configs/tdp.toml`, `scripts/tdp_gen.sh` | Keys rejected as unknown |
 | Builders: `build_curated_full` (v2/v3 identity-split stores), `db_gen/curated_full.rs`, `CompositeShards`, `require_curated_full_manifest`, pool swap | `db_gen/bin/build_curated_full.rs`, `db_gen/curated_full.rs`, `db_gen/frozen_build.rs` | Gone |
 | `frozen_from_lmdb --curated`, `--composite`, `--min-gates` | `db_gen/bin/frozen_from_lmdb.rs` | Gone; `--bands` stays |
@@ -125,6 +126,6 @@ Nothing here is scheduled for revival. If an experiment needs a piece:
 | A curated-tool analysis on the regular store | `db_gen/analysis/`, adapting to `FrozenDb::open(dir)` and single-key lookups | Small |
 | `crossing_downhill` / `output_cone` as demixing probes | `security_tests/`, together with the crossing rules they call | Medium (needs `rules::cross`, presplit, compression downhill) |
 | The crossing walk or split as a separate post-mix tool | A new executable outside `circuit_mixer`; the mixer no longer has the merge index, journal, tabu or events | Large |
-| Reading an old (state v2, recipe v8) run | Build the archive branch (it reads state v2 only; the transient v3/v4 states of the cleanup's intermediate commits are unreadable by both builds); do not port the old formats | None |
+| Reading an old (state v1/v2, recipe v8) run | Build the archive branch (it reads states v1 and v2; the transient v3/v4 states of the cleanup's intermediate commits are unreadable by both builds); do not port the old formats | None |
 
 For each port: copy from the archive with `git show ran/archive/curated-and-postmix:<path>`, adapt to the current module paths and signatures, build with the relevant `--features`, and cite the archive commit (`ea2e516f`) in the commit message.

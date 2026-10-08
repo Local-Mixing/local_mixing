@@ -105,62 +105,58 @@ fn read_mpmct_rejects_malformed_input() {
     assert!(read_str("mpmct1 16 5\n12 0 0\n", "countdrift").is_err());
 }
 
-// The packed writers (`esop1`/`anf1`) lost their production callers with the
-// historic `fcompress` stage; this pins their bytes and the round trip through
-// both readers (`read_packed` and the expanding `read_mpmct` dispatch).
+// Packed circuits (`esop1`/`anf1`) are written only by the historic fcompress
+// stage (archive branch); this pins that byte format through both readers
+// (`read_packed` and the expanding `read_mpmct` dispatch) with fixtures in
+// exactly the bytes the archive writer emitted.
 #[test]
-fn packed_writers_match_golden_bytes_and_roundtrip() {
-    let mut esop = vec![
+fn packed_fixtures_load_through_both_readers() {
+    let esop = vec![
         PackedGate {
             target: 4,
-            terms: vec![vec![(1, true), (2, false)], vec![], vec![(0, true)]],
+            terms: vec![vec![], vec![(0, true)], vec![(1, true), (2, false)]],
         },
         PackedGate {
             target: 0,
             terms: vec![vec![(3, false)]],
         },
     ];
-    for g in &mut esop {
-        g.sort_terms();
-    }
-    assert_eq!(esop[0].term_count(), 3);
-    assert_eq!(esop[0].terms[0], Vec::<(u16, bool)>::new());
-    assert!(!esop[0].is_anf());
-
     let anf = vec![PackedGate {
         target: 2,
         terms: vec![vec![(0, true)], vec![(1, true), (3, true)]],
     }];
-    assert!(anf[0].is_anf());
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();
-    for (tag, packed, is_anf, golden) in [
+    for (tag, packed, fixture) in [
         (
             "esop1",
             &esop,
-            false,
             b"esop1 5 2\n4 3 0 1 0 1 2 1 1 2 0\n0 1 1 3 0\n".as_slice(),
         ),
-        ("anf1", &anf, true, b"anf1 5 1\n2 2 1 0 2 1 3\n".as_slice()),
+        ("anf1", &anf, b"anf1 5 1\n2 2 1 0 2 1 3\n".as_slice()),
     ] {
         let path = dir.join(format!("local_mixing_packed_{tag}_{pid}.txt"));
         let path_str = path.to_str().expect("temporary path is UTF-8");
-        if is_anf {
-            write_anf1(path_str, packed, 5).unwrap();
-        } else {
-            write_esop1(path_str, packed, 5).unwrap();
-        }
-        assert_eq!(std::fs::read(&path).unwrap(), golden, "{tag} bytes");
+        std::fs::write(&path, fixture).unwrap();
 
         let (back, wires) = read_packed(path_str).unwrap();
         assert_eq!((wires, &back), (5, packed), "{tag} read_packed");
-        if is_anf {
-            assert_eq!(read_anf1(path_str).unwrap().0, *packed);
-        }
         let (expanded, wires) = read_mpmct(path_str).unwrap();
         assert_eq!(wires, 5);
         assert_eq!(expanded, expand_packed(packed), "{tag} read_mpmct");
         std::fs::remove_file(&path).ok();
     }
+
+    // A count mismatch and a polarity-less esop1 term are refused.
+    let path = dir.join(format!("local_mixing_packed_bad_{pid}.txt"));
+    let path_str = path.to_str().expect("temporary path is UTF-8");
+    for bad in [
+        b"anf1 5 2\n2 1 1 0\n".as_slice(),
+        b"esop1 5 1\n0 1 1 3\n".as_slice(),
+    ] {
+        std::fs::write(&path, bad).unwrap();
+        assert!(read_packed(path_str).is_err());
+    }
+    std::fs::remove_file(&path).ok();
 }

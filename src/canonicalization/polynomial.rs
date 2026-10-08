@@ -34,31 +34,6 @@ pub fn normalize_polynomial(poly: &mut Polynomial) {
     poly.truncate(write);
 }
 
-// Test-only since the four-stage cleanup: its production caller (the curated
-// single-negation window canonicalizer) is historic, see the archive branch
-// ran/archive/curated-and-postmix. Kept as a tested algebraic helper.
-#[cfg(test)]
-pub fn substitute_input_negation(poly: &mut Polynomial, w: usize) {
-    // Substituting x_w -> x_w + 1 toggles, for every monomial containing x_w,
-    // the same monomial with x_w cleared. The rests are pairwise distinct
-    // (rest | bit reconstructs its unique source), so the sequential
-    // binary-search toggles the old implementation performed are exactly one
-    // sorted symmetric-difference merge.
-    let bit = 1u64 << w;
-    let mut rests: Vec<Monomial> = poly
-        .iter()
-        .filter(|&&m| m & bit != 0)
-        .map(|&m| m & !bit)
-        .collect();
-    if rests.is_empty() {
-        return;
-    }
-    // Rests inherit the poly's sort order (the cleared bit is common to every
-    // source monomial); sort defensively anyway — it is a no-op then.
-    rests.sort_unstable();
-    poly_xor_assign(poly, rests);
-}
-
 pub(super) fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
     match poly.binary_search(&m) {
         Ok(pos) => {
@@ -70,7 +45,8 @@ pub(super) fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
     }
 }
 
-// Test-only, like substitute_input_negation (its sole non-test caller).
+// Test-only: the reference that the allocation-reusing `poly_xor_merge_into`
+// and the scratch-buffer `to_polynomial` pipeline are checked against.
 #[cfg(test)]
 pub(super) fn poly_xor_assign(poly: &mut Polynomial, terms: Polynomial) {
     let old = std::mem::take(poly);

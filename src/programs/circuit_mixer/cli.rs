@@ -450,12 +450,6 @@ pub struct Args {
     /// (moves, twist coverage, canary ring, brake, pool).
     #[arg(long)]
     pub(super) state_out: Option<String>,
-    /// Per-gate litter-id sidecar for the INPUT circuit (header "litter1 N",
-    /// one id per gate line), so each externally substituted block counts as a
-    /// litter for --litter-ban. Its historic producer, sgdb_substitute, is on
-    /// branch ran/archive/curated-and-postmix; no tool in this tree writes one.
-    #[arg(long)]
-    pub(super) litter_in: Option<String>,
     /// Resume from a state file instead of --input. Parameters still come from
     /// the command line, so a paused run can be re-steered; only the state
     /// VERSION must match, since field meanings would otherwise drift silently.
