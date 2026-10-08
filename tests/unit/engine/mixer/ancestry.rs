@@ -211,6 +211,11 @@ fn gen_anc_census_partitions_the_circuit() {
         );
         // Exact mode reports span per band, sampled mode must not.
         assert_eq!(line.contains("span="), label == "exact", "{label}: {line}");
+        // The born-random band is exercised, not empty.
+        assert!(
+            mx.gens_in_order().contains(&GEN_FRESH),
+            "{label}: the twists minted no GEN_FRESH material"
+        );
     }
 }
 
@@ -338,4 +343,60 @@ fn anc_sidecar_round_trips_exact_and_sampled() {
         );
         let _ = std::fs::remove_file(&path);
     }
+}
+
+// anc_prune (run at every report pass) drops the ancestor sets of litters
+// with no live gate and must leave every live gate's set untouched.
+#[test]
+fn anc_prune_drops_dead_litters_and_keeps_live_sets() {
+    let gates = random_g57_circuit(41, 16, 300);
+    let params = MixParams {
+        k_max: 6,
+        moves: 5_000,
+        p_twist: 0.05,
+        ancestors: true,
+        verify_every: u64::MAX,
+        report_every: u64::MAX,
+        seed: 19,
+        ..db_walk_params()
+    };
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+    mx.run();
+    let ancestry_of_live = |mx: &Mixer| -> Vec<Vec<u64>> {
+        let mut out = Vec::new();
+        let mut cur = mx.arena.head();
+        while cur != NIL {
+            let mut bits = vec![0u64; mx.anc_words];
+            mx.anc_or_into(mx.meta_of(cur).litter, &mut bits);
+            out.push(bits);
+            cur = mx.arena.neighbor(cur, Dir::R);
+        }
+        out
+    };
+    let live_litters: std::collections::HashSet<u64> = mx
+        .arena
+        .ids_in_order()
+        .iter()
+        .map(|&id| mx.meta_of(id).litter)
+        .collect();
+    let before = ancestry_of_live(&mx);
+    let stats_before = mx.anc_stats();
+    let entries_before = mx.anc.len();
+    assert!(
+        mx.anc.keys().any(|l| !live_litters.contains(l)),
+        "the walk left no dead litter to prune ({entries_before} entries)"
+    );
+    mx.anc_prune();
+    assert!(
+        mx.anc.keys().all(|l| live_litters.contains(l)),
+        "a dead litter survived the prune"
+    );
+    assert!(mx.anc.len() < entries_before);
+    assert_eq!(
+        ancestry_of_live(&mx),
+        before,
+        "pruning changed a live gate's ancestor set"
+    );
+    assert_eq!(mx.anc_stats(), stats_before);
+    mx.global_check();
 }

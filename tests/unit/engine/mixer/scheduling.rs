@@ -192,3 +192,32 @@ fn db_walk_splices_real_hits_and_preserves_function() {
     );
     mx.global_check();
 }
+
+// Positional mixing (the report's disp= line): early in the stage-3 walk,
+// while input gates still survive, they must have drifted from their input
+// positions. (Later every input gate has been re-spelled into synthetic
+// material and the statistic has nothing left to measure.)
+#[test]
+fn db_walk_displaces_surviving_input_gates() {
+    let gates = random_g57_circuit(5, 16, 300);
+    let params = MixParams {
+        moves: 3_000,
+        verify_every: u64::MAX,
+        report_every: u64::MAX,
+        seed: 21,
+        ..db_walk_params()
+    };
+    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+    assert_eq!(mx.origin_displacement(), 0.0, "nothing has moved yet");
+    mx.run();
+    let survivors = mx
+        .origins_in_order()
+        .iter()
+        .filter(|&&o| o != ORIGIN_SYNTH)
+        .count();
+    assert!(survivors > 0, "no input gate survived to measure");
+    assert!(mx.counters.db_slot2_hits > 0, "the walk spliced nothing");
+    let disp = mx.origin_displacement();
+    assert!(disp > 0.01, "no positional mixing at all: disp={disp}");
+    mx.global_check();
+}

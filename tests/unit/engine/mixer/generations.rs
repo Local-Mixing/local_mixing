@@ -1,3 +1,44 @@
+// Born-random material is stamped GEN_FRESH and DB splices stamp real
+// generations: both twist families mint fresh bracket material alongside the
+// stage-3 DB walk, the generation census counts every gate, and with twists
+// off (and no bridge) nothing fresh appears -- so the GEN_FRESH gates really
+// come from the twist brackets, not from some other stamp.
+#[test]
+fn twist_brackets_are_fresh_and_splices_lift_generations() {
+    let run = |p_twist: f64, twist_g57: bool| {
+        let gates = random_g57_circuit(29, 16, 300);
+        let params = MixParams {
+            k_max: 6,
+            moves: 5_000,
+            p_twist,
+            twist_min_len: 4,
+            twist_g57,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 13,
+            ..db_walk_params()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+        mx.run();
+        mx.global_check();
+        let gens = mx.gens_in_order();
+        assert_eq!(mx.gen_stats().total as usize, gens.len());
+        assert!(
+            gens.iter().any(|&g| g > 0 && g != GEN_FRESH),
+            "DB splices must lift generations above 0 (p_twist {p_twist}, g57 {twist_g57})"
+        );
+        gens.iter().filter(|&&g| g == GEN_FRESH).count()
+    };
+    let swap_family = run(0.1, false);
+    assert!(
+        swap_family > 0,
+        "swap-family twist brackets must be marked fresh"
+    );
+    let g57_family = run(0.1, true);
+    assert!(g57_family > 0, "g57 twist brackets must be marked fresh");
+    assert_eq!(run(0.0, false), 0, "no twists, no born-random material");
+}
+
 // The generation pool: with p_mingen 1.0 the seed comes from the pool
 // while one exists, and entries that got re-encoded (or freed) between
 // rebuilds are pruned at draw time.

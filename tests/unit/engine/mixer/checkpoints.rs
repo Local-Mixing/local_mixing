@@ -164,7 +164,7 @@ fn state_round_trips_imported_tracers() {
 
 #[test]
 fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
-    let gates = random_mixed_circuit(29, 8, 20);
+    let gates = random_g57_circuit(29, 8, 20);
     let params = MixParams {
         moves: 40,
         p_db: 0.0,
@@ -200,13 +200,24 @@ fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
         5
     );
     // The optional anctracers section is absent here (no sampled ancestry):
-    // the minimal state loads and continues.
+    // the minimal state loads and continues -- re-steered onto the stage-3
+    // DB walk, which must splice real hits from the resumed state.
+    let resume_params = MixParams {
+        moves: 400,
+        verify_every: u64::MAX,
+        report_every: u64::MAX,
+        ..db_walk_params()
+    };
     let mut resumed =
-        Mixer::resume_state(path.to_str().unwrap(), params.clone(), FrozenDb::empty()).unwrap();
+        Mixer::resume_state(path.to_str().unwrap(), resume_params, g57_fixture_store()).unwrap();
     assert_eq!(resumed.arena.to_vec(), original.arena.to_vec());
     resumed.run();
     resumed.global_check();
     assert!(resumed.moves_done > 0);
+    assert!(
+        resumed.counters.db_slot2_hits > 0,
+        "the resumed state drove no DB splice"
+    );
     // Older versions carry retired curated, split or crossing fields and are
     // refused.
     for version in [1, 2, 3, 4] {
