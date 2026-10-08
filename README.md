@@ -4,8 +4,8 @@ We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
 compute. TDP is the current end-to-end pipeline. It constructs a sliced
 sandwich, applies gadgetization, mixes with the frozen database, then runs
-splitting and crossing. The final circuit is `crossing.mpmct1`. (The old final
-compression stage, `fcompress`, is historic: branch
+crossing. The final circuit is `crossing.mpmct1`. (The old split stage 4 and
+the old final compression stage, `fcompress`, are historic: branch
 `ran/archive/curated-and-postmix`.)
 
 ## Setup
@@ -84,7 +84,7 @@ The settings we usually change are:
 - `db_mixing.target_size_factor` and `hold_work_units`: default to `2.0` and
   `27.0`, controlling the expansion and holding schedule.
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
-  execution for stages 3–4. Choose one; omit both for serial execution.
+  execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
 - `crossing.target_size_factor`: defaults to `2.0`. The template also exposes
   the width penalty, size tolerance and optional move limit.
@@ -100,17 +100,18 @@ test without a database, clear the DB paths and set
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Gadgetization / preprocessing | `tdp.mpmct1` |
 | 3. Database mixing | `db_mixing.mpmct1`, `db_mixing.state` |
-| 4. Splitting | `split.mpmct1`, `split.state` |
+| 4. (historic: splitting) | none |
 | 5. Crossing | `crossing.mpmct1`, `crossing.state` |
 
-`tdp_gen.log` records overall progress; `stage12.log` and `stage3.log` through
+`tdp_gen.log` records overall progress; `stage12.log`, `stage3.log` and
 `stage5.log` hold stage output. The
 [TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
 
 To continue a run, set `run.directory` to its directory and invoke the same
 command again. Completed stage outputs are skipped. Set `run.stop_after_stage`
-to `2`, `3` or `4` to stop early (`5`, the default, runs every stage); stages 1 and 2 execute together.
+to `2` or `3` to stop early (`5`, the default, runs every stage; stage 4 is
+historic and rejected); stages 1 and 2 execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
@@ -163,7 +164,7 @@ slice contract.
 [`scripts/tdp_gen.sh`](scripts/tdp_gen.sh) runs the stage executables;
 [`src/programs/`](src/programs/) contains each stage executable's `main.rs`
 alongside its argument handling and artifact I/O. `circuit_mixer` is the
-shared executable for database mixing, splitting and crossing; `tdp_gen` is
+shared executable for database mixing and crossing; `tdp_gen` is
 the complete managed pipeline command.
 The benchmark launchers live directly under `benchmarks/`. Python's
 `__pycache__/` directories are generated locally and ignored by Git.

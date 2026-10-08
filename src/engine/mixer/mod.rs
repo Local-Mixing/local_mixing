@@ -1,5 +1,5 @@
-//! Shared arena, provenance, and resumable state for database mixing, splitting,
-//! and crossing. Child modules own state, scheduling, transformations and I/O;
+//! Shared arena, provenance, and resumable state for database mixing and
+//! crossing. Child modules own state, scheduling, transformations and I/O;
 //! stage algorithms mutate this state through the existing narrow operations.
 use crate::canonicalization::xgate::XPolyBudget;
 use crate::circuit::xgate::{Lits, XGate};
