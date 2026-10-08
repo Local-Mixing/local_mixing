@@ -9,13 +9,16 @@ construction diagrams of the research document. The chronological experiments
 and superseded constructions are collected separately in
 [Local Mixing History](local_mixing_history.md).
 
-The method constructs a sliced sandwich, applies embedded masking, performs
-database replacements, and crosses the resulting gates. (The former split and
-final compression/packing stages are historic; they remain on branch
-`ran/archive/curated-and-postmix`.) Optional carrier shuffling is a part of
-embedded masking. It is implemented but disabled by default; enabling it does
-not select another masking mode. This text describes the implementation as of
-September 16, 2026.
+The method has four stages: it constructs a sliced sandwich, applies
+embedded masking, performs database replacements with the regular frozen
+store, and packs the result into windows. (The curated store and the former
+split, crossing-walk and `fcompress` stages are historic; see
+[Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md).)
+Optional carrier shuffling is a part of embedded masking. It is implemented
+but disabled by default; enabling it does not select another masking mode.
+This text describes the implementation as of September 16, 2026; the stage
+list was updated on October 8, 2026, when the curated store and the
+post-mixing stages were retired.
 
 The goal is to change the internal representation of a computation while
 preserving its required behavior. The algebraic identities below explain
@@ -598,7 +601,8 @@ algorithm will fail.
 
 A final fragment compressor (`fcompress`, the old stage 6) and two demixing
 probes built on it (`crossing_downhill`, `output_cone`) are historic: they
-remain on branch `ran/archive/curated-and-postmix`. The attack question they
+remain on branch `ran/archive/curated-and-postmix`
+([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)). The attack question they
 asked still applies: a published size is honest only relative to the
 reductions an attacker can compute, and a circuit that resists one compressor
 may still admit another reduction algorithm.
@@ -657,7 +661,9 @@ C -> sliced sandwich -> embedded masking -> database mixing -> db_mixing.mpmct1
 
 The former post-processing stages -- splitting, the crossing walk, and
 compression and packing with `fcompress` -- are historic; they remain on
-branch `ran/archive/curated-and-postmix`.
+branch `ran/archive/curated-and-postmix` (see the
+[archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) for what was retired and
+why). Windowed packing replaced them.
 
 The [pipeline guide](tdp_pipeline.md) contains the complete configuration and
 shell-flag reference. [Gadgetization](gadgetization.md) explains the first two
@@ -1186,7 +1192,9 @@ and reversal of an identity supplies a structurally different spelling of a
 window's function. Curated lookup used the forward canonical form and was
 consulted ahead of the general table. The curated table and its builders are
 historic: they were removed from the current pipeline and remain on the
-branch `ran/archive/curated-and-postmix`. The
+branch `ran/archive/curated-and-postmix`. Ablations found no measurable
+mixing benefit from it. The [archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)
+lists the retired code and the reasons; the
 [history](local_mixing_history.md) records the measurements.
 
 <a id="sliced-sandwich"></a>
@@ -1885,14 +1893,22 @@ size, rather than treating one attempt as one whole-circuit pass.
 
 ## Packing and the historic fragmentation stages
 
-Stage 4, packing, is the last stage of the current design. It is still a set
+Stage 4, packing, is the last stage of the current design. It reorders the
+mixed circuit along commutations, cuts it into windows and publishes each
+window as its sparse algebraic normal form, so that an observer sees wire
+states only at window boundaries; a commutation-aware repair pass then
+removes the remaining boundary exposures of $C$'s values. It is still a set
 of Python prototypes under `scripts/windowed_delivery/` (design:
-[windowed_delivery_design.md](windowed_delivery_design.md)); `tdp_gen` ends at
-`db_mixing.mpmct1`.
+[windowed_delivery_design.md](windowed_delivery_design.md); measurements:
+[ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
+[STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` ends at
+`db_mixing.mpmct1`, and the [pipeline guide](tdp_pipeline.md#stage-4-packing)
+shows how to run the prototypes.
 
 Earlier versions of the pipeline followed database mixing with three
 fragmentation stages. They are historic; their code, tests and full
-description remain on branch `ran/archive/curated-and-postmix`:
+description remain on branch `ran/archive/curated-and-postmix`
+([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)):
 
 <a id="fragmentation-splitting"></a>
 
