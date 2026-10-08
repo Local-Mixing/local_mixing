@@ -33,18 +33,16 @@ Replace `/path/to/frozen` in the existing `[database]` section of
 ```toml
 [database]
 regular_dir = "/path/to/frozen"
-# curated_dir = "/path/to/curated"
 lookup_miss_filter = "auto"
 allow_no_database_for_tests = false
 ```
 
-Stage 3 requires the regular frozen store. The curated store is optional and
-is consulted before the regular store when its routing policy applies. A
+Stage 3 requires the regular frozen store. (The former curated store is
+historic; it lives on the branch `ran/archive/curated-and-postmix`.) A
 frozen directory contains `tables.bin` and all 256 `shard_00.frz` through
 `shard_ff.frz` files. `filters.bin` supplies the optional miss filter. See
 [Frozen Database](docs/frozen_database.md) for the format and build tools.
-`FROZEN_DB_DIR` and `FROZEN_CURATED_DIR` supply paths when their TOML fields
-are omitted.
+`FROZEN_DB_DIR` supplies the path when the TOML field is omitted.
 
 ```sh
 cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
@@ -216,7 +214,7 @@ the native dependencies described above installed, run the checks used in CI:
 
 ```sh
 cargo test --locked --features db-tools --lib db_generation::
-cargo test --locked --features db-tools --bin local_mixing_bin --bin build_curated_full
+cargo test --locked --features db-tools --bin local_mixing_bin
 cargo test --locked --features db-tools --test frozen_roundtrip
 ```
 

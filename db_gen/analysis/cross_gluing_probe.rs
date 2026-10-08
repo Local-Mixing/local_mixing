@@ -17,18 +17,14 @@
 //! ```text
 //! cross_gluing_probe FROZEN_REGULAR_DIR [--shards N] [--max-sources M]
 //!     [--six-gate-sample S] [--partners-per-hit P]
-//!     [--partner-composite COMPOSITE_ROCKS]
 //! ```
 //!
-//! `--partner-composite` draws partners from a curated composite store
-//! instead of the regular store. Regular-store partners are mostly the
-//! source's own extension respelled, so the glue collapses; curated
-//! candidates come from unrelated identity arcs and keep their length.
+//! Partners come from the regular store; they are mostly the source's own
+//! extension respelled, so many glues collapse under simplification.
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::cancel_adjacent_duplicates;
 use local_mixing::database::frozen::{FrozenDb, scan_shard};
-use local_mixing::db_generation::curated_full::split_composite_key;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -147,21 +143,8 @@ fn main() {
     let max_sources: usize = flag(&args, "--max-sources", 2000usize);
     let six_sample: usize = flag(&args, "--six-gate-sample", 500usize);
     let partners_per_hit: usize = flag(&args, "--partners-per-hit", 4usize);
-    let partner_composite = args
-        .iter()
-        .position(|a| a == "--partner-composite")
-        .and_then(|i| args.get(i + 1))
-        .cloned();
 
     let db = FrozenDb::open(dir);
-    let composite: Option<rocksdb::DB> = partner_composite.as_deref().map(|path| {
-        let mut options = rocksdb::Options::default();
-        options.create_if_missing(false);
-        options.set_compression_type(rocksdb::DBCompressionType::Zstd);
-        options.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        rocksdb::DB::open_for_read_only(&options, path, false)
-            .expect("open partner composite store")
-    });
     let start = Instant::now();
 
     // Source reservoir: every 7-11 gate member seen, plus a sample of 6-gate
@@ -230,37 +213,9 @@ fn main() {
             let (key2, perm2, used2) = a_plus.canonicalize_polys_single_hashed(false);
             let Some(key2) = key2 else { continue };
             s.lookups += 1;
-            let raw_partners: Vec<Vec<u8>> = match &composite {
-                None => match db.get_regular(&key2) {
-                    Some(value) => class_members(&value),
-                    None => continue,
-                },
-                Some(store) => {
-                    // First 24 same-key candidates of >=4 gates in store
-                    // order; enough spread for a probe.
-                    let mut found = Vec::new();
-                    for item in store.iterator(rocksdb::IteratorMode::From(
-                        &key2,
-                        rocksdb::Direction::Forward,
-                    )) {
-                        let Ok((record, _)) = item else { break };
-                        if record.len() < 16 || record[..16] != key2[..] {
-                            break;
-                        }
-                        if let Ok((_, blob)) = split_composite_key(&record) {
-                            if blob.len() >= 12 {
-                                found.push(blob.to_vec());
-                            }
-                        }
-                        if found.len() >= 24 {
-                            break;
-                        }
-                    }
-                    if found.is_empty() {
-                        continue;
-                    }
-                    found
-                }
+            let raw_partners: Vec<Vec<u8>> = match db.get_regular(&key2) {
+                Some(value) => class_members(&value),
+                None => continue,
             };
             s.hits += 1;
             let inv2 = perm2.invert();

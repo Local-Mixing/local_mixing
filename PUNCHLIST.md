@@ -172,6 +172,11 @@ move them to Done when resolved.
    restoration, 2026-10-05, working tree; segments-per-fire-box, not yet
    literally every write).
 
+   HISTORIC (2026-10-08, four-stage TDP): the curated DB (items 2 and 3,
+   including the v3 stores and `docs/CURATED_DB_V3_SUMMARY`) was removed from
+   the pipeline; its code, builders and write-up remain on the branch
+   `ran/archive/curated-and-postmix`. Stage 3 uses the regular store only.
+
 6. **Preprocessing: avoid wire segments with too many consecutive reads —
    they are hard to mix later.** (2026-10-01)
 

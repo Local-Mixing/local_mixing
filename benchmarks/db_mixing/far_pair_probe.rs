@@ -4,15 +4,14 @@
 //! Samples far commuting pairs from a circuit the way `collect_pair` would
 //! fuse them (seed, rightward commutation-box scan to the first collider,
 //! farthest partner), keys each fused 2-gate window, and enumerates EVERY
-//! stored candidate from both stores via `db_probe`. Reports hit rates, the
+//! stored candidate from the regular store via `db_probe`. Reports hit rates, the
 //! free/pay size mix, and the ENTANGLED-candidate fraction: candidates whose
 //! wire-sharing graph connects the two gates' wire blocks, i.e. spellings
 //! that syntactically couple regions the pair never coupled functionally —
 //! the quantity that decides whether disjoint-pair fusion buys cross-block
 //! structure or only litter-union transport.
 //!
-//! Requires FROZEN_DB_DIR (and FROZEN_CURATED_DIR for the curated side),
-//! exactly as circuit_mixer does. Run it on fleet phase-A material; the store does not
+//! Requires FROZEN_DB_DIR, exactly as circuit_mixer does. Run it on fleet phase-A material; the store does not
 //! work over slow mounts.
 
 use clap::Parser;
@@ -137,7 +136,6 @@ fn main() {
     let mut windows = 0u64;
     let mut overlap_windows = 0u64;
     let mut hits = 0u64;
-    let mut hits_curated = 0u64;
     let mut cand_total = 0u64;
     let mut cand_free = 0u64;
     let mut cand_trivial = 0u64;
@@ -213,14 +211,11 @@ fn main() {
             continue;
         }
         hits += 1;
-        if found.iter().any(|(_, cur, _)| *cur) {
-            hits_curated += 1;
-        }
         if disjoint {
             disjoint_hits += 1;
         }
         let mut any_ent = false;
-        for (cand, _cur, _rev) in &found {
+        for (cand, _rev) in &found {
             cand_total += 1;
             len_hist[cand.len().min(15)] += 1;
             if cand.len() <= 2 {
@@ -251,10 +246,9 @@ fn main() {
         box_max
     );
     println!(
-        "[far_pair_probe] hits={} ({:.1}%) curated={} | disjoint windows={} ({:.1}%) hits={} any-entangled={} ({:.1}% of disjoint hits)",
+        "[far_pair_probe] hits={} ({:.1}%) | disjoint windows={} ({:.1}%) hits={} any-entangled={} ({:.1}% of disjoint hits)",
         hits,
         100.0 * hits as f64 / fused,
-        hits_curated,
         disjoint_windows,
         100.0 * disjoint_windows as f64 / fused,
         disjoint_hits,

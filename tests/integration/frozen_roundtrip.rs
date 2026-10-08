@@ -14,8 +14,6 @@ use lmdb::Transaction;
 mod frozen_build;
 use frozen_build::{LmdbShards, stage_tables, stage_validate, stage_write};
 use local_mixing::database::frozen::FrozenDb;
-#[cfg(feature = "db-tools")]
-use local_mixing::db_generation;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 

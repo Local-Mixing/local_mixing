@@ -16,8 +16,6 @@ use local_mixing::canonicalization::polys_repr_blob;
 use local_mixing::canonicalization::xgate::{XPolyBudget, canonicalize_xgates_single};
 use local_mixing::circuit::xgate::{XGate, eval_lanes};
 use local_mixing::database::frozen::FrozenDb;
-#[cfg(feature = "db-tools")]
-use local_mixing::db_generation;
 use local_mixing::engine::mixer::{MixParams, MixStop, Mixer, PieceCfg, run_piecewise};
 use local_mixing::stages::db_mixing::replacement::DbMode;
 use xxhash_rust::xxh3::xxh3_128;

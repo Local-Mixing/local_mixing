@@ -152,7 +152,7 @@ fn compressible(
                 continue;
             }
             *probes += 1;
-            for (replacement, _, _) in db_probe(window, num_wires, db, budget, rng) {
+            for (replacement, _) in db_probe(window, num_wires, db, budget, rng) {
                 if replacement.len() < len {
                     if verify_rewrite(window, &replacement) {
                         *hit = Some((len, replacement.len(), at));

@@ -7,8 +7,8 @@
 //! cross-checks that `wide_gates_for_circuit_filtered`'s class
 //! representatives reach exactly the same key set.
 //!
-//! With `FROZEN_DB_DIR` set, additionally probes the regular (and optional
-//! curated) store for every distinct key in both direction frames and
+//! With `FROZEN_DB_DIR` set, additionally probes the regular store for every
+//! distinct key in both direction frames and
 //! reports the yield: how many of these functions are NOT already reachable
 //! in the existing g57-only store. Without the var, prints keys only.
 use local_mixing::canonicalization::polys_repr_blob;
@@ -95,19 +95,15 @@ fn main() {
         let krev = key_for(rep, true, budget);
         let hit_fwd_reg = db.get_regular(k).is_some();
         let hit_rev_reg = db.get_regular(&krev).is_some();
-        let hit_fwd_cur = db.get_curated(k).is_some();
-        let hit_rev_cur = db.get_curated(&krev).is_some();
-        let hit = hit_fwd_reg || hit_rev_reg || hit_fwd_cur || hit_rev_cur;
+        let hit = hit_fwd_reg || hit_rev_reg;
         if !hit {
             new_keys += 1;
         }
         println!(
-            "  key {}  regular fwd/rev {}/{}  curated fwd/rev {}/{}  => {}",
+            "  key {}  regular fwd/rev {}/{}  => {}",
             hex(k),
             hit_fwd_reg as u8,
             hit_rev_reg as u8,
-            hit_fwd_cur as u8,
-            hit_rev_cur as u8,
             if hit { "KNOWN" } else { "NEW" }
         );
     }

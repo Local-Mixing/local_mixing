@@ -1,8 +1,9 @@
 //! Greedy structural-novelty sieve over frozen-store identities.
 //!
-//! The curated store's per-key bloat is manufactured by the split enumeration:
-//! every identity contributes one candidate per key even after orbit collapse,
-//! so hot-key size equals the number of identities kept. This measures how many
+//! A store built by splitting identities (the historic curated design; see
+//! branch ran/archive/curated-and-postmix) has per-key size equal to the number
+//! of identities kept: every identity contributes one candidate per key even
+//! after orbit collapse. This measures how many
 //! identities survive a *shingle* filter: an identity is accepted only when
 //! none of its cyclic L-gate arcs (both directions, wires relabelled by first
 //! use) has been claimed by a previously accepted identity. Accepted sets

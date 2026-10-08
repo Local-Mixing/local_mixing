@@ -25,14 +25,14 @@
 //!
 //! The lookup below follows the policy in `src/stages/db_mixing/replacement.rs`
 //! using direct store access: the shared lookup/cache helpers are crate-private
-//! and unavailable to this separate executable. It probes curated-forward,
-//! then regular forward and reverse. The regular shard DBs are keyed by
+//! and unavailable to this separate executable. It probes the regular store
+//! forward, then reverse. The regular shard DBs are keyed by
 //! min(canon_fwd, canon_rev), so probing both directions yields the same
 //! candidates as the min-direction policy. It skips the process-wide lookup
 //! cache, so probe cost is the raw store's.
 //!
 //! Example:
-//!   FROZEN_DB_DIR=... FROZEN_CURATED_DIR=... id_rewrite \
+//!   FROZEN_DB_DIR=... id_rewrite \
 //!     --input c.g57 --n 64 --output cprime.g57 --passes 10000 --seed 1
 use clap::Parser;
 use local_mixing::circuit::{CircuitSeq, Permutation};
@@ -80,18 +80,6 @@ struct Args {
     /// Largest window (gates) spliced at once
     #[arg(long, default_value_t = 4)]
     max_window: usize,
-    /// Probe the curated store (FROZEN_CURATED_DIR). Disable with --no-curated.
-    #[arg(long, default_value_t = true)]
-    curated: bool,
-    /// Turn --curated off.
-    #[arg(long, default_value_t = false)]
-    no_curated: bool,
-    /// Probe the regular store (FROZEN_DB_DIR). Disable with --no-regular.
-    #[arg(long, default_value_t = true)]
-    regular: bool,
-    /// Turn --regular off.
-    #[arg(long, default_value_t = false)]
-    no_regular: bool,
     /// Re-verify against the original every N attempts (0 = only at the end).
     /// Each check costs a full 65536-input evaluation of both circuits.
     #[arg(long, default_value_t = 0)]
@@ -110,48 +98,28 @@ struct Hit {
     used: Vec<u16>,
 }
 
-fn frozen_lookup(
-    sub: &CircuitSeq,
-    db: &FrozenDb,
-    use_curated: bool,
-    use_regular: bool,
-) -> Option<Hit> {
+fn frozen_lookup(sub: &CircuitSeq, db: &FrozenDb) -> Option<Hit> {
     // `None` here is the canonicalization skip (oversized window, monomial cap,
     // Rule-L budget) -- indistinguishable from a store miss for our purposes.
     let (fwd_key, fwd_order, used) = sub.canonicalize_polys_single_hashed(false);
     let fwd_key = fwd_key?;
 
-    if use_curated && db.has_curated() {
-        if let Some(value) = db.get_curated(&fwd_key) {
-            return Some(Hit {
-                value,
-                order: fwd_order,
-                is_reversed: false,
-                used,
-            });
-        }
+    if let Some(value) = db.get_regular(&fwd_key) {
+        return Some(Hit {
+            value,
+            order: fwd_order,
+            is_reversed: false,
+            used,
+        });
     }
-    if use_regular {
-        if let Some(value) = db.get_regular(&fwd_key) {
-            return Some(Hit {
-                value,
-                order: fwd_order,
-                is_reversed: false,
-                used,
-            });
-        }
-        let (rev_key, rev_order, _) = sub.canonicalize_polys_single_hashed(true);
-        let rev_key = rev_key?;
-        if let Some(value) = db.get_regular(&rev_key) {
-            return Some(Hit {
-                value,
-                order: rev_order,
-                is_reversed: true,
-                used,
-            });
-        }
-    }
-    None
+    let (rev_key, rev_order, _) = sub.canonicalize_polys_single_hashed(true);
+    let rev_key = rev_key?;
+    db.get_regular(&rev_key).map(|value| Hit {
+        value,
+        order: rev_order,
+        is_reversed: true,
+        used,
+    })
 }
 
 enum Rewrite {
@@ -226,20 +194,18 @@ fn random_equivalent(
     gates: &[[u16; 3]],
     n: usize,
     db: &FrozenDb,
-    use_curated: bool,
-    use_regular: bool,
     select: Select,
     rng: &mut StdRng,
 ) -> Rewrite {
     let sub = CircuitSeq {
         gates: gates.to_vec(),
     };
-    let Some(hit) = frozen_lookup(&sub, db, use_curated, use_regular) else {
+    let Some(hit) = frozen_lookup(&sub, db) else {
         return Rewrite::Miss;
     };
 
-    // Record friend spans without decoding them: a curated value can hold
-    // hundreds of thousands of friends and a uniform draw needs exactly one.
+    // Record friend spans without decoding them: a uniform draw needs
+    // exactly one.
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut pos = 0;
     while pos < hit.value.len() {
@@ -301,17 +267,7 @@ fn json_escape(s: &str) -> String {
 }
 
 fn main() {
-    let mut args = Args::parse();
-    if args.no_curated {
-        args.curated = false;
-    }
-    if args.no_regular {
-        args.regular = false;
-    }
-    if !args.curated && !args.regular {
-        eprintln!("[id_rewrite] both stores disabled; nothing could ever be spliced");
-        std::process::exit(2);
-    }
+    let args = Args::parse();
     if args.min_window == 0 || args.min_window > args.max_window {
         eprintln!(
             "[id_rewrite] bad window range {}..={}",
@@ -337,9 +293,6 @@ fn main() {
     let gates_before = orig.gates.len();
 
     let db = FrozenDb::from_env();
-    if args.curated && !db.has_curated() {
-        eprintln!("[id_rewrite] WARNING: --curated but FROZEN_CURATED_DIR is unset; regular only");
-    }
 
     let mut rng = StdRng::seed_from_u64(args.seed);
     let mut cur = orig.clone();
@@ -370,15 +323,7 @@ fn main() {
         };
         let w = rng.random_range(args.min_window..=hi);
         let at = rng.random_range(0..=cur.gates.len() - w);
-        match random_equivalent(
-            &cur.gates[at..at + w],
-            args.n,
-            &db,
-            args.curated,
-            args.regular,
-            select,
-            &mut rng,
-        ) {
+        match random_equivalent(&cur.gates[at..at + w], args.n, &db, select, &mut rng) {
             Rewrite::Miss => {}
             Rewrite::NoAlternative => {
                 hits += 1;
@@ -435,7 +380,7 @@ fn main() {
             "{{\n  \"input\": \"{}\",\n  \"output\": \"{}\",\n  \"n\": {},\n  \"seed\": {},\n  \
              \"passes\": {},\n  \"target_gates\": {},\n  \"min_window\": {},\n  \
              \"max_window\": {},\n  \
-             \"curated\": {},\n  \"regular\": {},\n  \"attempts\": {},\n  \"hits\": {},\n  \
+             \"attempts\": {},\n  \"hits\": {},\n  \
              \"splices\": {},\n  \"rejected\": {},\n  \"gates_before\": {},\n  \
              \"gates_after\": {},\n  \"elapsed_secs\": {:.3},\n  \"verify_inputs\": {},\n  \
              \"verified\": true\n}}\n",
@@ -447,8 +392,6 @@ fn main() {
             args.target_gates,
             args.min_window,
             args.max_window,
-            args.curated,
-            args.regular,
             attempts,
             hits,
             splices,

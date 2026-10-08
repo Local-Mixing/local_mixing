@@ -82,7 +82,7 @@ fn has_shorter_window(
                 continue;
             }
             *probes += 1;
-            for (replacement, _, _) in db_probe(window, num_wires, db, budget, rng) {
+            for (replacement, _) in db_probe(window, num_wires, db, budget, rng) {
                 if replacement.len() < len && verify_rewrite(window, &replacement) {
                     return true;
                 }

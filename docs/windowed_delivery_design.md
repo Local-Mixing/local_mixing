@@ -208,5 +208,5 @@ Prototype-validated, pending Rust:
 - Window width vs re-synthesis: small windows are canonically
   re-synthesizable; floor on window size, or deliberate window-size
   jitter.
-- Interaction with the curated-DB rethink and with the sliced
+- Interaction with the curated-DB rethink (moot: curated DB removed 2026-10-08) and with the sliced
   deliverable / ends program.

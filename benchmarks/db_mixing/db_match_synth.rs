@@ -124,9 +124,6 @@ fn main() {
                             guard,
                             false,
                             false,
-                            true,
-                            false,
-                            false,
                             &mut rng,
                         );
                         if res.degree_skipped {

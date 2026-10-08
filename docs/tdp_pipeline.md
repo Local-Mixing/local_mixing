@@ -61,7 +61,7 @@ from the repository root, not from the config file's directory.
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `config_version` | integer, required `1` | TOML schema identifier. This is separate from saved execution recipe v8. |
+| `config_version` | integer, required `1` | TOML schema identifier. This is separate from saved execution recipe v9. |
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
 | `run.build_binaries` | bool, `true` | Build the three stage executables for a fresh run. `false` requires them to exist under the resolved build directory. Managed continuation always reuses matching binaries and skips rebuilding. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory. Stage binaries are selected from its host-target `release/` directory; changing this can affect whether the saved binary fingerprints can be matched. |
@@ -73,7 +73,7 @@ Run lifecycle options such as the stop stage and worker count do not change
 the circuit recipe. Algorithm choices, source identity, database paths and
 piece partitioning are recorded in `tdp_command.conf`; changing a recorded
 choice requires a fresh run. The manifest starts with
-`tdp_command_recipe=8`; `stage12.recipe` uses `tdp_stage12_recipe=6`.
+`tdp_command_recipe=9`; `stage12.recipe` uses `tdp_stage12_recipe=6`.
 Earlier pipeline artifact names are explicitly rejected rather than adopted.
 
 ### Source circuit
@@ -89,13 +89,14 @@ Earlier pipeline artifact names are explicitly rejected rather than adopted.
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `database.regular_dir` | string, `FROZEN_DB_DIR` or unset | Regular frozen replacement store, required when stage 3 runs normally. A TOML path overrides the environment path. Needs nonempty `tables.bin` and all 256 shard files. |
-| `database.curated_dir` | string, `FROZEN_CURATED_DIR` or unset | Optional curated store, used ahead of regular lookup when the move's routing policy selects it. Requires the regular store; this is not a standalone replacement for `regular_dir`. |
-| `database.curated_control_order` | string, `"native"` | Interpret decoded G57 control bytes. Allowed values: `"native"`, `"legacy-swapped-controls"`. Use the latter only for a historical store known to use that convention. Regular stores use native order. |
-| `database.lookup_miss_filter` | string, `"auto"` | `"auto"` enables the in-memory miss filter at at least 60 GiB available RAM; `"on"` requires a nonempty `filters.bin` for every configured store; `"off"` avoids loading filters. Filters must belong to their exact store. |
-| `database.allow_no_database_for_tests` | bool, `false` | Allow a stage-3 plumbing run with all replacement channels disabled. To set true, clear both DB paths and their environment fallbacks. A curated-only store or a regular store combined with this mode is rejected when stage 3 runs. |
+| `database.lookup_miss_filter` | string, `"auto"` | `"auto"` enables the in-memory miss filter at at least 60 GiB available RAM; `"on"` requires a nonempty `filters.bin` in the store; `"off"` avoids loading filters. Filters must belong to their exact store. |
+| `database.allow_no_database_for_tests` | bool, `false` | Allow a stage-3 plumbing run with all replacement channels disabled. To set true, clear the DB path and its environment fallback. A regular store combined with this mode is rejected when stage 3 runs. |
 
 See [Frozen Database](frozen_database.md#constructing-and-freezing-a-store)
-for regular and curated construction, freezing and validation commands.
+for construction, freezing and validation commands. The curated store of
+earlier recipes is historic (branch `ran/archive/curated-and-postmix`); its
+TOML keys `database.curated_dir` and `database.curated_control_order` are no
+longer accepted.
 
 ### Preprocessing
 
@@ -236,13 +237,11 @@ This map shows the equivalent direct-driver flags for the recipe values.
 | Contents of `calibration.seed_file` | `--calibration-seed SEED` (calibration only) |
 
 The driver's `-h`/`--help` lists these flags and its environment interface.
-Build selection, source-file path, the mask and shuffling controls, DB paths/filter/control
-convention, test-only no-store mode and leakage repair are passed by the wrapper
+Build selection, source-file path, the mask and shuffling controls, DB path/filter, test-only no-store mode and leakage repair are passed by the wrapper
 through its controlled environment. In particular: `TDP_BIN_DIR`, `TDP_SOURCE_C`,
 `EMBEDDED_MASKING_K`, `EMBEDDED_MASKING_MAX_OPEN`, `EMBEDDED_MASKING_MIN_OPEN`, `EMBEDDED_MASKING_BALANCED`,
 `EMBEDDED_MASKING_SHUFFLING`, `EMBEDDED_MASKING_SHUFFLING_RETURN_HOME`,
-`FROZEN_DB_DIR`, `FROZEN_CURATED_DIR`, `FROZEN_FILTER`,
-`FROZEN_CURATED_VALUE_CONVENTION`, `TDP_GEN_ALLOW_EMPTY_STORE`, `DB_QC`,
+`FROZEN_DB_DIR`, `FROZEN_FILTER`, `TDP_GEN_ALLOW_EMPTY_STORE`, `DB_QC`,
 `DB_QC_SEED`, and `DB_QC_REFERENCE`. Direct script execution does not provide
 the managed command's complete manifest validation and build workflow.
 The former masking environment prefix is rejected; use `EMBEDDED_MASKING_*`.
