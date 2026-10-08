@@ -5,7 +5,10 @@ stage-2 linkability program (lab notebook: docs/notes/ncdb_ab_20261001_RESULTS.m
 Snapshot of `runs/ncdb_ab_20261001/` (top level) and its `waist/` folder.
 They are the **reference oracle for the Rust port**; paths inside are
 hard-coded to `/Users/rancanetti/code/local_mixing/runs/ncdb_ab_20261001`
-and will be made location-independent in the cleanup.
+(run them from that layout; the Rust port will remove the hard-coding).
+`waist/order_repair.py` and `waist/val_chain.sh` were refreshed from the run
+tree on 2026-10-08 (the repair slide now locates the breaker before moving
+the completer). How to run stage 4: `docs/tdp_pipeline.md`, "Stage 4: packing".
 
 Delivery path (post stage 3):
 - `window_pack3.py`  joint window packer (ANF-budget-adaptive)
