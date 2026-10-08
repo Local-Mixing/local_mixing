@@ -588,6 +588,17 @@ impl Mixer {
             // rather than up to report_every moves later. The stop-FLAG
             // file poll stays at report cadence below. An explicit stop takes
             // precedence when a piece also exhausts its round budget here.
+            if !self.stop_requested {
+                if let Some(cap) = self.runtime.stop_at_splices() {
+                    if self.counters.db_slot2_hits >= cap {
+                        println!(
+                            "[circuit_mixer] MIXER_STOP_AT_SPLICES={cap}: reached at move {} — stopping cleanly",
+                            self.moves_done
+                        );
+                        self.stop_requested = true;
+                    }
+                }
+            }
             if self.stop_requested {
                 self.global_check();
                 return MixStop::StopFlag;

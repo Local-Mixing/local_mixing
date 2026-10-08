@@ -236,6 +236,17 @@ pub fn run(matches: clap::ArgMatches) {
              and the per-splice check is what caught it"
         );
     }
+    if args.curated_only_mix {
+        assert!(
+            args.curated,
+            "--curated-only-mix needs the curated store armed (curated is off or \
+             FROZEN_CURATED_DIR is unset); with no fallback, every non-COMP round would miss"
+        );
+        println!(
+            "[circuit_mixer] curated-only-mix ON: non-COMP DB rounds are curated-or-nothing \
+             (a miss declines the round); COMP keeps its full cascade"
+        );
+    }
 
     assert!(
         !(args.split && !args.profile.is_empty()),
@@ -555,6 +566,7 @@ pub fn run(matches: clap::ArgMatches) {
         shuffle_rate: args.shuffle_rate,
         curated_exhaust: args.curated_exhaust,
         curated_in_comp: args.curated_in_comp,
+        curated_only_mix: args.curated_only_mix,
         s_db: args.s_db,
         db_min_window: args.db_min_window,
         w_window: args.w_window,

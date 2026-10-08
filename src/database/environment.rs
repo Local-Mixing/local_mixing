@@ -2,7 +2,7 @@
 //! Store paths and conventions are read at open time; cache controls are cached
 //! independently when first read. Explicit options bypass these settings.
 use super::frozen::ValueConvention;
-use super::lookup_cache::MinDirLookup;
+use super::lookup_cache::{CuratedKeyMode, MinDirLookup};
 use std::sync::OnceLock;
 
 /// Per-store value convention, from `FROZEN_REGULAR_VALUE_CONVENTION` /
@@ -45,5 +45,18 @@ pub(crate) fn min_dir_lookup_mode() -> MinDirLookup {
         Ok("0") => MinDirLookup::Legacy,
         Ok("validate") => MinDirLookup::Validate,
         _ => MinDirLookup::Min,
+    })
+}
+
+/// Curated key mode from `FROZEN_CURATED_KEY`: `function` (default) keys the
+/// curated lookup by the window's canonical polynomials (v2-era stores);
+/// `circuit` keys it by the canonical g57 circuit blob's hash (v3 true-friend
+/// stores). Explicit `ReplacementOptions` bypass this setting.
+pub(crate) fn curated_key_mode() -> CuratedKeyMode {
+    static MODE: OnceLock<CuratedKeyMode> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("FROZEN_CURATED_KEY").as_deref() {
+        Ok("circuit") => CuratedKeyMode::Circuit,
+        Err(_) | Ok("function") => CuratedKeyMode::Function,
+        Ok(other) => panic!("FROZEN_CURATED_KEY={other}: unknown key mode (function | circuit)"),
     })
 }

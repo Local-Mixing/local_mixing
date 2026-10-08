@@ -4,6 +4,7 @@ mod environment;
 mod options;
 pub use options::{CanonicalizationOptions, G57CanonicalizationOptions};
 pub mod canonicalize;
+pub mod gate_order;
 pub mod keys;
 pub mod polynomial;
 mod window;

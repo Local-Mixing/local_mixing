@@ -272,6 +272,12 @@ pub struct Args {
     /// contract).
     #[arg(long, default_value_t = false)]
     pub(super) no_curated_in_comp: bool,
+    /// EXPERIMENT ARM: non-COMP DB rounds consult ONLY the curated store --
+    /// a curated miss declines the round (no regular fallback; the next move
+    /// draws a fresh window). Compression keeps its full cascade exactly as
+    /// otherwise configured. Needs curated armed; no preset touches this.
+    #[arg(long, default_value_t = false)]
+    pub(super) curated_only_mix: bool,
     /// Window length the descent STARTS from, in MIX mode (COMP has its own,
     /// --s-db-comp). The descent visits every shorter length down to 1, so
     /// there is no separate minimum.

@@ -33,3 +33,15 @@ pub(crate) fn stop_at_phase() -> Option<u32> {
             .and_then(|v| v.parse().ok())
     })
 }
+
+/// MIXER_STOP_AT_SPLICES=<n>: finish cleanly once cumulative successful
+/// slot-2 DB splices reach n (exact: checked every move, not at report
+/// cadence). For matched-splice-budget comparisons across experiment arms.
+pub(crate) fn stop_at_splices() -> Option<u64> {
+    static STOP_AT: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *STOP_AT.get_or_init(|| {
+        std::env::var("MIXER_STOP_AT_SPLICES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    })
+}

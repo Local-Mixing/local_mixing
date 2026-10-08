@@ -15,6 +15,7 @@
 //! DB was built under. The caller may still verify each replacement for
 //! functional equivalence before splicing (optional; see the mixer's db_move).
 
+use crate::canonicalization::gate_order::xgate_canonical;
 use crate::canonicalization::polys_repr_blob;
 use crate::canonicalization::xgate::{
     CanonicalXPolys, XPolyBudget, XPolyError, canonicalize_xgates_single,
@@ -34,6 +35,70 @@ use xxhash_rust::xxh3::xxh3_128;
 pub fn db_g57_to_xgate(t: [u16; 3]) -> XGate {
     XGate::from_g57(t)
 }
+
+/// Encode an XGate back into the store's g57 triple, or None when the gate is
+/// not exactly a stored-form g57 gate. Verified by round-tripping through
+/// [`db_g57_to_xgate`], so any convention drift fails closed (a miss) rather
+/// than mis-keying.
+fn xgate_to_db_g57(gate: &XGate) -> Option<[u16; 3]> {
+    if gate.ctrls.len() != 2 {
+        return None;
+    }
+    let (w0, p0) = gate.ctrls[0];
+    let (w1, p1) = gate.ctrls[1];
+    let (x, y) = match (p0, p1) {
+        (false, true) => (w0, w1),
+        (true, false) => (w1, w0),
+        _ => return None,
+    };
+    let triple = [gate.target, x, y];
+    (db_g57_to_xgate(triple) == *gate).then_some(triple)
+}
+
+/// The circuit-keyed curated key: xxh3-128 over the window's canonical g57
+/// blob -- the wire frame of its own function canonicalization and canonical
+/// gate order -- byte-identical to the v3 true-friend builder's key (the
+/// prefix framing of `derive_identity_candidates_where` plus `checked_blob`'s
+/// one-byte-per-wire encoding). None when a gate is not g57-encodable, the
+/// canonicalization is skipped, or a canonical wire index exceeds a byte.
+pub fn circuit_key_of_window(window: &[XGate]) -> Option<[u8; 16]> {
+    if window.is_empty() {
+        return None;
+    }
+    let mut gates = Vec::with_capacity(window.len());
+    for gate in window {
+        gates.push(xgate_to_db_g57(gate)?);
+    }
+    let circuit = CircuitSeq { gates };
+    let (key, permutation, used) = circuit.canonicalize_polys_single_hashed(false);
+    key?;
+    let inverse = permutation.invert();
+    let used_map: std::collections::HashMap<u16, u16> = used
+        .iter()
+        .enumerate()
+        .map(|(dense, &original)| (original, inverse.data[dense] as u16))
+        .collect();
+    let mut canonical = CircuitSeq {
+        gates: circuit
+            .gates
+            .iter()
+            .map(|&[t, a, b]| [used_map[&t], used_map[&a], used_map[&b]])
+            .collect(),
+    };
+    canonical.canonicalize();
+    let mut blob = Vec::with_capacity(canonical.gates.len() * 3);
+    for gate in &canonical.gates {
+        for &wire in gate {
+            blob.push(u8::try_from(wire).ok()?);
+        }
+    }
+    Some(xxh3_128(&blob).to_le_bytes())
+}
+
+/// Candidates the identity guard rejected only because they equal the window
+/// in canonical gate order (a commuting re-spelling), not verbatim.
+pub static REORDER_IDENTITY_SKIPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 fn key_of(canonical: &CanonicalXPolys) -> [u8; 16] {
     xxh3_128(&polys_repr_blob(&canonical.polys)).to_le_bytes()
@@ -300,6 +365,11 @@ pub struct QcCandidates {
 /// considered, round-robin, so a large curated value cannot starve regular
 /// candidates while the examination budget remains. Identity spellings are
 /// skipped and every returned circuit is proved equivalent before exposure.
+/// Curated probes follow `FROZEN_CURATED_KEY`, exactly like the ordinary
+/// replacement path: function keys for the v2-era stores, canonical-circuit
+/// keys for the v3 true-friend stores (with the reversed direction keyed by
+/// the reversed window -- reversal is inversion for the store's involutive
+/// gates). The regular store stays function-keyed in both modes.
 pub fn qc_candidates(
     window: &[XGate],
     num_wires: usize,
@@ -309,8 +379,14 @@ pub fn qc_candidates(
     rng: &mut impl Rng,
 ) -> QcCandidates {
     let mut lookup_limits = Vec::new();
-    let mut result =
-        qc_candidates_with_value(window, num_wires, budget, limits, rng, |key, curated| {
+    let key_mode = crate::database::lookup_cache::curated_key_mode();
+    let mut result = qc_candidates_with_value(
+        window,
+        num_wires,
+        budget,
+        limits,
+        rng,
+        |key, curated| {
             // One extra record makes the global enumeration's truncation signal
             // exact even when this value alone consumes the entire cap.
             let cap = limits.max_candidates.saturating_add(1);
@@ -326,12 +402,15 @@ pub fn qc_candidates(
                     None
                 }
             }
-        });
+        },
+        key_mode,
+    );
     result.lookup_limits = lookup_limits;
     result
 }
 
-/// In-memory store seam for QC experiments and deterministic fixtures.
+/// In-memory store seam for QC experiments and deterministic fixtures. The
+/// curated key mode comes from the environment, as in production.
 pub fn qc_candidates_with<F>(
     window: &[XGate],
     num_wires: usize,
@@ -343,7 +422,25 @@ pub fn qc_candidates_with<F>(
 where
     F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
 {
-    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup)
+    let key_mode = crate::database::lookup_cache::curated_key_mode();
+    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup, key_mode)
+}
+
+/// As [`qc_candidates_with`], with the curated key mode injected explicitly
+/// (tests must not depend on process-wide environment state).
+pub fn qc_candidates_with_key_mode<F>(
+    window: &[XGate],
+    num_wires: usize,
+    budget: XPolyBudget,
+    limits: QcCandidateLimits,
+    rng: &mut impl Rng,
+    lookup: F,
+    key_mode: crate::database::lookup_cache::CuratedKeyMode,
+) -> QcCandidates
+where
+    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
+{
+    qc_candidates_with_value(window, num_wires, budget, limits, rng, lookup, key_mode)
 }
 
 fn qc_candidates_with_value<F, V>(
@@ -353,11 +450,13 @@ fn qc_candidates_with_value<F, V>(
     limits: QcCandidateLimits,
     rng: &mut impl Rng,
     mut lookup: F,
+    key_mode: crate::database::lookup_cache::CuratedKeyMode,
 ) -> QcCandidates
 where
     F: FnMut(&[u8; 16], bool) -> Option<V>,
     V: AsRef<[u8]>,
 {
+    use crate::database::lookup_cache::CuratedKeyMode;
     struct Cursor<V> {
         value: V,
         position: usize,
@@ -371,6 +470,7 @@ where
         return result;
     }
     let mut cursors = Vec::with_capacity(4);
+    let mut reversed_window: Option<Vec<XGate>> = None;
     for reversed in [false, true] {
         let canonical = match canonicalize_xgates_single(window, reversed, budget) {
             Ok(canonical) => canonical,
@@ -379,8 +479,30 @@ where
                 continue;
             }
         };
-        let key = key_of(&canonical);
+        let function_key = key_of(&canonical);
+        // Circuit-keyed curated stores key each DIRECTION by the canonical
+        // circuit of the directed window (reversal = inversion for the
+        // involutive gate set, matching how the builder framed reverse arcs).
+        // A window with non-g57 gates has no circuit key: skip that curated
+        // probe rather than mis-key it.
+        let curated_key = match key_mode {
+            CuratedKeyMode::Function => Some(function_key),
+            CuratedKeyMode::Circuit => {
+                let directed: &[XGate] = if reversed {
+                    reversed_window.get_or_insert_with(|| window.iter().rev().cloned().collect())
+                } else {
+                    window
+                };
+                circuit_key_of_window(directed)
+            }
+        };
         for curated in [true, false] {
+            let key = if curated {
+                curated_key
+            } else {
+                Some(function_key)
+            };
+            let Some(key) = key else { continue };
             result.lookups += 1;
             if let Some(value) = lookup(&key, curated) {
                 result.entries_found += 1;
@@ -394,6 +516,10 @@ where
             }
         }
     }
+    // Identity and duplicates are judged in canonical gate order: a candidate
+    // that differs from the window (or from an earlier candidate) only by
+    // commuting swaps is the same circuit.
+    let window_canonical = xgate_canonical(window);
     let mut seen = std::collections::HashSet::new();
     loop {
         let mut advanced = false;
@@ -435,11 +561,12 @@ where
                 result.unplaceable += 1;
                 continue;
             };
-            if gates == window {
+            let canonical_gates = xgate_canonical(&gates);
+            if canonical_gates == window_canonical {
                 result.identity_skipped += 1;
                 continue;
             }
-            if !seen.insert(gates.clone()) {
+            if !seen.insert(canonical_gates) {
                 result.duplicate_skipped += 1;
                 continue;
             }
@@ -621,6 +748,7 @@ impl DegreeGuard {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReplacementOptions {
     pub direction: crate::database::lookup_cache::MinDirLookup,
+    pub curated_key: crate::database::lookup_cache::CuratedKeyMode,
     pub incoming_length_band: Option<(usize, usize)>,
     pub canonicalization: crate::canonicalization::CanonicalizationOptions,
 }
@@ -1048,8 +1176,18 @@ where
         if let Some((dir_ix, (_, canonical))) =
             directions.iter().enumerate().find(|(_, (rev, _))| !rev)
         {
-            let key = key_of(canonical);
-            if let Some(value) = lookup(&key, true) {
+            // Function-keyed stores (v2 era) key by the canonical polynomials;
+            // circuit-keyed (v3 true-friend) stores key by the hash of the
+            // window's canonical g57 blob, so different spellings of one
+            // function have different entries. Decode is identical either
+            // way: stored friends live in the window function's canonical
+            // frame, which `canonical` describes.
+            use crate::database::lookup_cache::{CuratedKeyMode, curated_key_mode};
+            let curated_key = match options.map_or_else(curated_key_mode, |o| o.curated_key) {
+                CuratedKeyMode::Function => Some(key_of(canonical)),
+                CuratedKeyMode::Circuit => circuit_key_of_window(window),
+            };
+            if let Some(value) = curated_key.and_then(|key| lookup(&key, true)) {
                 catalogue(
                     value,
                     true,
@@ -1177,6 +1315,7 @@ where
     let mut chosen: Option<Vec<XGate>> = None;
     let mut chosen_curated = false;
     let mut choice_count = 0usize;
+    let mut window_canonical: Option<Vec<XGate>> = None;
     while !refs.is_empty() {
         let Some((pick, n_eligible)) =
             choose_ref_with_options(&refs, window_len, mode, pay_random, rng, options)
@@ -1197,8 +1336,17 @@ where
         ) else {
             continue;
         };
+        // Identity guard, in canonical gate order: the store holds candidates
+        // canonically ordered, so a candidate that is the window up to
+        // commuting swaps is the window itself, at every window length.
+        let window_canonical = window_canonical.get_or_insert_with(|| xgate_canonical(window));
         if gates == window {
             identity_skipped += 1;
+            continue;
+        }
+        if xgate_canonical(&gates) == *window_canonical {
+            identity_skipped += 1;
+            REORDER_IDENTITY_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         }
         // Pair-window reorder ban: a candidate that merely permutes the

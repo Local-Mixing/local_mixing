@@ -26,6 +26,12 @@ impl RuntimeControls {
             Self::Resolved(options) => options.stop_at_phase,
         }
     }
+    pub(super) fn stop_at_splices(&self) -> Option<u64> {
+        match self {
+            Self::Environment => environment::stop_at_splices(),
+            Self::Resolved(options) => options.stop_at_splices,
+        }
+    }
     pub(super) fn reference_db(&self) -> Option<&FrozenDb> {
         match self {
             Self::Environment => environment::reference_db(),

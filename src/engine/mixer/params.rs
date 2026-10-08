@@ -156,6 +156,11 @@ pub struct MixParams {
     /// the size rule keeps only what is strictly shorter than the window --
     /// the shorter halves, which are the ones worth having here.
     pub curated_in_comp: bool,
+    /// EXPERIMENT ARM: non-COMP DB rounds consult ONLY the curated store; a
+    /// curated miss declines the round outright (no regular fallback, the
+    /// move ends and the next move draws a fresh window). Compression keeps
+    /// its full cascade exactly as configured. Needs curated armed.
+    pub curated_only_mix: bool,
     // twist_g57: spell twist brackets as all-g57 words instead of 3-CNOT
     // packets, siting each bracket adaptively so it absorbs neighborhood
     // gates (the hidden-SAMF mechanism, XGate-native). Pure swap only: the
@@ -620,6 +625,7 @@ impl Default for MixParams {
             shuffle_rate: 2.0,
             curated_exhaust: false,
             curated_in_comp: false,
+            curated_only_mix: false,
             twist_g57: false,
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
@@ -731,6 +737,10 @@ pub struct MixRuntimeOptions {
     pub twist_g57_slide: bool,
     pub twist_g57_retry: bool,
     pub stop_at_phase: Option<u32>,
+    /// Finish cleanly the moment cumulative successful slot-2 DB splices
+    /// reach this count (checked every move, so the stop is exact). For
+    /// matched-splice-budget comparisons across arms.
+    pub stop_at_splices: Option<u64>,
     pub reference_db: Option<Arc<FrozenDb>>,
 }
 
@@ -740,6 +750,7 @@ impl Default for MixRuntimeOptions {
             twist_g57_slide: true,
             twist_g57_retry: true,
             stop_at_phase: None,
+            stop_at_splices: None,
             reference_db: None,
         }
     }

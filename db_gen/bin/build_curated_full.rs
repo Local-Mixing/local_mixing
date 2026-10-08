@@ -123,6 +123,22 @@ enum Command {
         #[arg(long, default_value_t = 256)]
         shards: usize,
     },
+    /// V3 pool build: the same orbit-deduplicated identity enumeration as
+    /// `from-frozen-identities-v2`, but EVERY exact-distinct arc is written --
+    /// no per-(identity, key, gate-count) collapse. That collapse's sibling
+    /// rule is false at the midpoint split, where it discarded one of the two
+    /// complementary halves (CURATED_DB_FINDINGS.md §3). V3 pools are the raw
+    /// per-function candidate sets that a later true-friend partition consumes,
+    /// so nothing is thinned at generation time. No gluing phase.
+    FromFrozenIdentitiesV3Pools {
+        frozen_regular: PathBuf,
+        output_rocks: PathBuf,
+        /// Frozen shards to process (256 = the whole store; lower values are
+        /// for smoke tests and leave the output NON-complete in coverage
+        /// terms, though its manifest is still valid).
+        #[arg(long, default_value_t = 256)]
+        shards: usize,
+    },
     /// Per-key structural-diversity sieve: keys with more candidates than
     /// --keep-all-below are reduced, shortest candidates first, to a set in
     /// which no two circuits share a contiguous --shingle-gate subword
@@ -866,6 +882,96 @@ fn from_frozen_identities_v2(
         orbits.len()
     );
     finalize_composite(&output_db, "from-frozen-identities-v2")?;
+    Ok(())
+}
+
+/// V3 pools: phase 1 of `from_frozen_identities_v2` verbatim -- same-class
+/// pair identities, dihedral-orbit dedup -- but writing through
+/// `write_identity_circuit`, which keeps every exact-distinct (key, arc)
+/// record instead of one lexicographic representative per (identity, key,
+/// gate count). The composite's key+blob dedup remains the only collapse.
+fn from_frozen_identities_v3_pools(input: &Path, output: &Path, shards: usize) -> AnyResult<()> {
+    reject_lossy_canonicalization_env()?;
+    require_fresh_output(output, "RocksDB")?;
+    let input_text = path_text(input)?.to_string();
+    let output_db = Arc::new(DB::open(&composite_options(true), path_text(output)?)?);
+    put_format_marker(&output_db)?;
+
+    let orbits = Arc::new(OrbitSeen::new());
+    let classes = AtomicU64::new(0);
+    let spellings = AtomicU64::new(0);
+    let identities_new = AtomicU64::new(0);
+    let generated = AtomicU64::new(0);
+    let written = AtomicU64::new(0);
+    let done = AtomicU64::new(0);
+
+    let shard_count = shards.clamp(1, 256);
+    (0..shard_count).into_par_iter().try_for_each(|shard| -> AnyResult<()> {
+        let mut error: Option<AnyError> = None;
+        local_mixing::database::frozen::scan_shard(&input_text, shard, &mut |value| {
+            if error.is_some() {
+                return;
+            }
+            let members = frozen_class_members(value);
+            if members.len() < 2 {
+                return;
+            }
+            classes.fetch_add(1, Ordering::Relaxed);
+            let circuits: Vec<CircuitSeq> = members
+                .iter()
+                .map(|blob| CircuitSeq::from_blob(blob))
+                .collect();
+            for left in 0..circuits.len() {
+                for right in 0..circuits.len() {
+                    if left == right {
+                        continue;
+                    }
+                    spellings.fetch_add(1, Ordering::Relaxed);
+                    let mut gates = circuits[left].gates.clone();
+                    gates.extend(circuits[right].gates.iter().rev().copied());
+                    let Some(identity) = simplified_identity(gates) else {
+                        continue;
+                    };
+                    let canonical = dihedral_canonical_word(&identity.gates);
+                    let hash = xxhash_rust::xxh3::xxh3_128(&word_bytes(&canonical));
+                    if !orbits.insert(hash) {
+                        continue;
+                    }
+                    identities_new.fetch_add(1, Ordering::Relaxed);
+                    match write_identity_circuit(&output_db, &CircuitSeq { gates: canonical }) {
+                        Ok((g, u)) => {
+                            generated.fetch_add(g, Ordering::Relaxed);
+                            written.fetch_add(u, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            error = Some(e);
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % 16 == 0 || n as usize == shard_count {
+            eprintln!(
+                "[v3-pools] shards={n}/{shard_count} classes={} spellings={} orbit-new={} generated={} written={}",
+                classes.load(Ordering::Relaxed),
+                spellings.load(Ordering::Relaxed),
+                identities_new.load(Ordering::Relaxed),
+                generated.load(Ordering::Relaxed),
+                written.load(Ordering::Relaxed)
+            );
+        }
+        Ok(())
+    })?;
+    if identities_new.load(Ordering::Relaxed) == 0 {
+        return Err("frozen regular store produced no identities".into());
+    }
+    eprintln!("[v3-pools] orbit-unique identities total={}", orbits.len());
+    finalize_composite(&output_db, "from-frozen-identities-v3-pools")?;
     Ok(())
 }
 
@@ -1743,6 +1849,11 @@ fn run() -> AnyResult<()> {
             glue_min_identity_gates,
             shards,
         ),
+        Command::FromFrozenIdentitiesV3Pools {
+            frozen_regular,
+            output_rocks,
+            shards,
+        } => from_frozen_identities_v3_pools(&frozen_regular, &output_rocks, shards),
         Command::Sieve {
             input_rocks,
             output_rocks,

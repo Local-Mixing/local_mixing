@@ -429,16 +429,16 @@ fn is_reorder_is_multiset_equality() {
     assert!(is_reorder(&[a.clone(), a.clone()], &[a.clone(), a]));
 }
 
-// The pair-window reorder ban: for a commuting 2-gate window whose stored
-// spellings are exactly its two orderings, the identity guard kills one
-// and ban_reorder must kill the other, so nothing is chosen — the
-// situation that forces a real pair splice onto a longer spelling. With
-// the ban off, the reordered spelling is (deliberately) still admissible.
-// A commuting involution pair is its own inverse, so both canonical
-// directions share one key and the single stored value serves either
-// probe direction.
+// A commuting 2-gate window whose stored spellings are exactly its two
+// orderings. The identity guard compares in canonical gate order, so both
+// orderings are the window itself and nothing is chosen, with or without
+// ban_reorder — the situation that forces a real pair splice onto a longer
+// spelling. (Before the guard was canonical, the reordered spelling was
+// admissible unless ban_reorder was armed.) A commuting involution pair is
+// its own inverse, so both canonical directions share one key and the single
+// stored value serves either probe direction.
 #[test]
-fn ban_reorder_refuses_the_permuted_pair() {
+fn identity_guard_refuses_the_permuted_pair() {
     let g1 = db_g57_to_xgate([0, 1, 2]);
     let g2 = db_g57_to_xgate([3, 4, 5]);
     let window = vec![g1.clone(), g2.clone()];
@@ -470,23 +470,241 @@ fn ban_reorder_refuses_the_permuted_pair() {
             |k, cur| if cur { None } else { store.get(k).cloned() },
         );
         assert_eq!(res.match_count, 2);
-        if ban {
-            assert!(res.chosen.is_none(), "both orderings must be refused");
-            assert_eq!(res.identity_skipped, 1);
-            assert_eq!(res.permutation_skipped, 1);
+        assert!(
+            res.chosen.is_none(),
+            "both orderings must be refused (ban={ban})"
+        );
+        assert_eq!(res.identity_skipped, 2);
+        assert_eq!(res.permutation_skipped, 0);
+    }
+}
+
+// The reordered-gates bug at a window longer than a pair, where ban_reorder
+// is never armed: a stored candidate that is the window up to commuting
+// swaps must be refused by the identity guard, while a genuinely different
+// spelling of the same function (here: shorter) is still chosen.
+#[test]
+fn identity_guard_refuses_commuting_respelling_of_longer_window() {
+    // [0,1,2] and [3,4,5] commute; [0,1,2] then [6,0,3] do not ([6,0,3]
+    // reads wire 0).
+    let window_g57 = vec![[0u16, 1, 2], [3, 4, 5], [6, 0, 3]];
+    let window: Vec<XGate> = window_g57.iter().map(|&t| db_g57_to_xgate(t)).collect();
+    let respelled = vec![[3u16, 4, 5], [0, 1, 2], [6, 0, 3]];
+    let respelled_x: Vec<XGate> = respelled.iter().map(|&t| db_g57_to_xgate(t)).collect();
+    assert_ne!(respelled_x, window);
+    assert!(exhaustively_equal(&window, &respelled_x, 7));
+
+    // Store the commuting re-spelling (canonical wire frame, as the builder
+    // does) under the window's FORWARD key, served as a curated entry: the
+    // curated stage probes the forward key only, while the regular store is
+    // keyed by the smaller of the two directions.
+    let circuit = CircuitSeq { gates: window_g57 };
+    let (polys, order, _used) = circuit.canonicalize_polys_single(false);
+    let key = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+    let mut stored = CircuitSeq { gates: respelled };
+    stored.rewire(&order.invert(), stored.max_wire() as usize + 1);
+    let store = HashMap::from([(key, encode_value(&[stored]))]);
+
+    let before = REORDER_IDENTITY_SKIPS.load(std::sync::atomic::Ordering::Relaxed);
+    let mut rng = StdRng::seed_from_u64(11);
+    let res = db_replace_with(
+        &window,
+        8,
+        XPolyBudget::default(),
+        DbMode::Mix,
+        DegreeGuard::OFF,
+        true,
+        false,
+        false,
+        false,
+        &mut rng,
+        |k, cur| if cur { store.get(k).cloned() } else { None },
+    );
+    assert_eq!(res.match_count, 1);
+    assert!(
+        res.chosen.is_none(),
+        "a commuting re-spelling is the window itself"
+    );
+    assert_eq!(res.identity_skipped, 1);
+    assert!(REORDER_IDENTITY_SKIPS.load(std::sync::atomic::Ordering::Relaxed) > before);
+}
+
+// The QC path under circuit-key mode: the curated probes ask for the
+// canonical-circuit keys of the forward AND reversed window (the regular
+// probes keep function keys), an entry stored under the forward circuit key
+// is found and decoded, and the canonical-order identity guard still rejects
+// a commuting re-spelling of the window.
+#[test]
+fn qc_circuit_key_mode_probes_curated_by_canonical_circuit() {
+    use crate::database::lookup_cache::CuratedKeyMode;
+    let window_g57 = vec![[0u16, 1, 2], [3, 4, 5], [6, 0, 3]];
+    let window: Vec<XGate> = window_g57.iter().map(|&t| db_g57_to_xgate(t)).collect();
+    let fwd_circuit_key = circuit_key_of_window(&window).expect("g57 windows key");
+    let rev_window: Vec<XGate> = window.iter().rev().cloned().collect();
+    let rev_circuit_key = circuit_key_of_window(&rev_window).expect("g57 windows key");
+    assert_ne!(fwd_circuit_key, rev_circuit_key);
+
+    // The commuting re-spelling, framed as the builder stores candidates
+    // (the window function's canonical wire frame).
+    let respelled = vec![[3u16, 4, 5], [0, 1, 2], [6, 0, 3]];
+    let circuit = CircuitSeq { gates: window_g57 };
+    let (_, order, _) = circuit.canonicalize_polys_single(false);
+    let mut stored = CircuitSeq { gates: respelled };
+    stored.rewire(&order.invert(), stored.max_wire() as usize + 1);
+    let value = encode_value(&[stored]);
+
+    let mut curated_keys = Vec::new();
+    let mut rng = StdRng::seed_from_u64(3);
+    let res = qc_candidates_with_key_mode(
+        &window,
+        8,
+        XPolyBudget::default(),
+        qc_limits(),
+        &mut rng,
+        |k: &[u8; 16], cur: bool| {
+            if cur {
+                curated_keys.push(*k);
+                (*k == fwd_circuit_key).then(|| value.clone())
+            } else {
+                None
+            }
+        },
+        CuratedKeyMode::Circuit,
+    );
+    assert_eq!(curated_keys, vec![fwd_circuit_key, rev_circuit_key]);
+    assert_eq!(res.entries_found, 1);
+    assert_eq!(
+        res.identity_skipped, 1,
+        "the circuit-keyed entry must be decoded and then identity-guarded"
+    );
+    assert!(res.candidates.is_empty());
+}
+
+// The circuit key must agree byte-for-byte with the v3 true-friend builder's
+// framing: the function-canonical wire frame, canonical gate order, one byte
+// per wire index, xxh3-128. Replicates the builder path inline
+// (db_gen/curated_full.rs prefix framing + codec::checked_blob) and checks
+// label-invariance: a wire-relabelled window keys identically.
+#[test]
+fn circuit_key_matches_builder_framing_and_is_label_invariant() {
+    let mut rng = StdRng::seed_from_u64(0xC1);
+    for _ in 0..200 {
+        let gates: Vec<[u16; 3]> = (0..rng.random_range(1..=8))
+            .map(|_| {
+                loop {
+                    let t = rng.random_range(0..10u16);
+                    let a = rng.random_range(0..10u16);
+                    let b = rng.random_range(0..10u16);
+                    if t != a && t != b && a != b {
+                        break [t, a, b];
+                    }
+                }
+            })
+            .collect();
+        let window: Vec<XGate> = gates.iter().map(|&t| db_g57_to_xgate(t)).collect();
+        let runtime = circuit_key_of_window(&window).expect("g57 windows key");
+
+        let circuit = CircuitSeq {
+            gates: gates.clone(),
+        };
+        let (key, permutation, used) = circuit.canonicalize_polys_single_hashed(false);
+        key.expect("small windows canonicalize");
+        let inverse = permutation.invert();
+        let used_map: HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
+            .map(|(dense, &original)| (original, inverse.data[dense] as u16))
+            .collect();
+        let mut canonical = CircuitSeq {
+            gates: gates
+                .iter()
+                .map(|&[t, a, b]| [used_map[&t], used_map[&a], used_map[&b]])
+                .collect(),
+        };
+        canonical.canonicalize();
+        let blob: Vec<u8> = canonical
+            .gates
+            .iter()
+            .flatten()
+            .map(|&wire| u8::try_from(wire).expect("canonical frame fits a byte"))
+            .collect();
+        assert_eq!(runtime, xxh3_128(&blob).to_le_bytes());
+
+        let shifted: Vec<XGate> = gates
+            .iter()
+            .map(|&[t, a, b]| db_g57_to_xgate([t + 17, a + 17, b + 17]))
+            .collect();
+        assert_eq!(circuit_key_of_window(&shifted), Some(runtime));
+    }
+}
+
+// FROZEN_CURATED_KEY=circuit semantics via explicit options: the curated
+// probe asks for the canonical-circuit key instead of the function key,
+// serves entries stored under it, and a circuit-keyed store is invisible to
+// a function-keyed probe (and vice versa).
+#[test]
+fn circuit_key_mode_probes_curated_by_canonical_circuit() {
+    use crate::database::lookup_cache::CuratedKeyMode;
+    let window_g57 = vec![[0u16, 1, 2], [1, 2, 3], [2, 0, 3]];
+    let window: Vec<XGate> = window_g57.iter().map(|&t| db_g57_to_xgate(t)).collect();
+    let circuit_key = circuit_key_of_window(&window).expect("g57 windows key");
+
+    let circuit = CircuitSeq { gates: window_g57 };
+    let (polys, _, _) = circuit.canonicalize_polys_single(false);
+    let function_key = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+    assert_ne!(circuit_key, function_key);
+
+    // Any decodable g57 circuit in the canonical frame serves as the friend;
+    // db_replace does not verify equivalence (that is the caller's QC).
+    let friend = CircuitSeq {
+        gates: vec![[0, 1, 2], [3, 1, 2], [0, 2, 1], [3, 2, 1]],
+    };
+    let value = encode_value(&[friend]);
+
+    for (mode, expect_hit) in [
+        (CuratedKeyMode::Circuit, true),
+        (CuratedKeyMode::Function, false),
+    ] {
+        let options = ReplacementOptions {
+            curated_key: mode,
+            ..ReplacementOptions::default()
+        };
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut curated_keys_seen = Vec::new();
+        let res = db_replace_with_options(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::SizeAgnostic,
+            DegreeGuard::OFF,
+            true,  // curated armed
+            false, // no regular fallback: isolate the curated stage
+            false,
+            false,
+            &mut rng,
+            |k: &[u8; 16], cur: bool| {
+                if cur {
+                    curated_keys_seen.push(*k);
+                    (*k == circuit_key).then(|| value.clone())
+                } else {
+                    None
+                }
+            },
+            &options,
+        );
+        match mode {
+            CuratedKeyMode::Circuit => assert_eq!(curated_keys_seen, vec![circuit_key]),
+            CuratedKeyMode::Function => assert_eq!(curated_keys_seen, vec![function_key]),
+        }
+        if expect_hit {
+            assert_eq!(res.curated_matches, 1);
+            let chosen = res.chosen.expect("the circuit-keyed entry is served");
+            assert_eq!(chosen.len(), 4);
+            assert!(res.chosen_curated);
         } else {
-            let repl = res
-                .chosen
-                .expect("without the ban the reorder is admissible");
-            assert_eq!(
-                repl,
-                vec![g2.clone(), g1.clone()],
-                "the non-identity ordering wins"
-            );
-            assert_eq!(res.permutation_skipped, 0);
             assert!(
-                exhaustively_equal(&window, &repl, 8),
-                "the reorder computes the same function (the pair commutes)"
+                res.chosen.is_none(),
+                "a function-keyed probe must miss the circuit-keyed store"
             );
         }
     }

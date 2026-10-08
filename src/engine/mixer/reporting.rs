@@ -387,6 +387,12 @@ impl Mixer {
                 hs.join(" ")
             );
         }
+        println!(
+            "[circuit_mixer] reorder-idsk mv={} total={}",
+            self.moves_done,
+            crate::stages::db_mixing::replacement::REORDER_IDENTITY_SKIPS
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
         let ms: Vec<String> = self
             .m123_class_hist
             .iter()

@@ -253,11 +253,16 @@ impl Mixer {
             // policy, so neither is hidden from the counters.
             let cur_ok =
                 self.params.curated && (mode != DbMode::Compressing || self.params.curated_in_comp);
-            let passes: &[(bool, bool)] = if self.params.curated_exhaust && cur_ok {
-                &[(true, false), (false, true)]
-            } else {
-                &[(cur_ok, true)]
-            };
+            let passes: &[(bool, bool)] =
+                if self.params.curated_only_mix && mode != DbMode::Compressing {
+                    // Experiment arm: non-COMP rounds are curated-or-nothing. A
+                    // miss ends the round; COMP below keeps its full cascade.
+                    if cur_ok { &[(true, false)] } else { &[] }
+                } else if self.params.curated_exhaust && cur_ok {
+                    &[(true, false), (false, true)]
+                } else {
+                    &[(cur_ok, true)]
+                };
             for &(cur_armed, reg_fb) in passes {
                 let (mut lo, mut hi) = (0usize, window.len() - 1);
                 loop {
@@ -440,7 +445,7 @@ impl Mixer {
             guard,
             self.params.curated,
             self.params.curated_in_comp,
-            true,
+            !(self.params.curated_only_mix && mode != DbMode::Compressing),
             self.params.mix_pay_random,
             self.db_pair_round,
             &mut self.rng,

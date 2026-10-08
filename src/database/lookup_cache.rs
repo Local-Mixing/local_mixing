@@ -1,7 +1,7 @@
 //! Shared immutable-store cache and canonical lookup direction policy.
 
 use super::environment::lookup_cache_cap_bytes;
-pub(crate) use super::environment::min_dir_lookup_mode;
+pub(crate) use super::environment::{curated_key_mode, min_dir_lookup_mode};
 use crate::database::frozen::FrozenDb;
 use dashmap::DashMap;
 use std::sync::OnceLock;
@@ -137,6 +137,21 @@ pub enum MinDirLookup {
 
 pub static MIN_DIR_VALIDATE_PROBES: AtomicU64 = AtomicU64::new(0);
 pub static MIN_DIR_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+
+// ---------------------------------------------------------------------------
+// FROZEN_CURATED_KEY=circuit -> curated lookups key by the hash of the
+//                               window's CANONICAL g57 CIRCUIT blob, matching
+//                               the v3 true-friend (ncdb) stores.
+// unset / "function"         -> curated lookups key by canonical polynomials,
+//                               matching the v2-era function-keyed stores
+//                               (default).
+// ---------------------------------------------------------------------------
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CuratedKeyMode {
+    #[default]
+    Function,
+    Circuit,
+}
 
 /// An exact cache bound to one immutable database handle. Configuration and
 /// cache lifetime belong to the caller, so neither can leak between stores.

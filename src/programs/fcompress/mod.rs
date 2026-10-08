@@ -65,6 +65,14 @@ pub struct Args {
     /// ESOP size) of the compressed circuit
     #[arg(long, default_value_t = false)]
     pack_census: bool,
+    /// FLIPPED ORDER (experiment): pack+compact+re-expand the INPUT before
+    /// the compression passes run, so compression consumes the canonical
+    /// cube spelling of each maximal same-target run instead of the raw
+    /// spelling. The deliverable is then packed again as usual (pack ->
+    /// compress -> pack). Note runs are short before gathering, so this
+    /// canonicalizes per-run, not per-group.
+    #[arg(long, default_value_t = false)]
+    pack_first: bool,
     /// Rounds of the 64-lane sampled global check against the input
     #[arg(long, default_value_t = 64)]
     verify_rounds: usize,
@@ -126,6 +134,19 @@ pub fn run(args: Args) {
             (g, w)
         }
         other => panic!("unknown --input-format {other}"),
+    };
+    let gates = if args.pack_first {
+        let p = compact(&pack(&gates));
+        let expanded = expand_packed(&p);
+        println!(
+            "[fcompress] pack-first: {} gates -> {} packed -> {} canonical cubes fed to compression",
+            gates.len(),
+            p.len(),
+            expanded.len()
+        );
+        expanded
+    } else {
+        gates
     };
     let wires = file_wires.max(max_wire(&gates) as usize + 1);
     let live = parse_live(&args.live_wires, wires);
