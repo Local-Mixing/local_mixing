@@ -121,6 +121,29 @@ maximum 7,673, **zero overflows** at both scales. Every window is
 functionally re-verified against the gate-level window on the shared
 sample set before serialization.
 
+### 1.2a Commutation-aware repair (`waist/order_repair.py`, `waist/repair.sh`)
+
+*Added 2026-10-07; see `docs/STAGE2_LINKABILITY.md` §3.6.* Runs on the
+packed order before emission; window boundaries are markers that stay
+between the same surviving gates, and every step is a legal rewrite of
+the gate sequence (two gates commute iff neither's target is a control
+of the other).
+
+1. **Pair cancellation.** Delete pairs of identical gates that commute
+   adjacent: do/undo pairs the mixer leaves in place. Iterated to a
+   fixed point; removes about 7% of delivered gates at both scales.
+2. **Leak slides.** For each interior C value still exposed, the
+   predictor's support is a fixed set of wire segments; the relation
+   holds from the write that completes it to the write that breaks it.
+   Slide the completer forward and the breaker backward by commutation
+   until no boundary separates them.
+3. **Fallback.** Merge away any remaining exposing boundary, and split
+   any window over 65,536 monomials at an exposure-free cut
+   (`merge_bounds2.py`, `anf_split2.py`), iterated to a fixed point.
+
+The repaired circuit is checked functionally equivalent to its input
+(`verify_equiv.py`, 1,024 random full states), then emitted as in §1.2.
+
 ### 1.3 Serialization
 
 The artifact (`deliverable.bin`) is the sequence of window ANFs in a
