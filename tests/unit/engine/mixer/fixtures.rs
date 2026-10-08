@@ -133,16 +133,19 @@ fn g57_fixture_build(wires: u16, max_len: usize) -> std::collections::HashMap<[u
         let gates: Vec<XGate> = c.iter().map(|&g| XGate::from_g57(g)).collect();
         let mut fwd_key = None;
         for reversed in [false, true] {
-            let canon =
-                canonicalize_xgates_single_capped(&gates, reversed, Default::default(), 0)
-                    .expect("fixture circuits canonicalize");
+            let canon = canonicalize_xgates_single_capped(&gates, reversed, Default::default(), 0)
+                .expect("fixture circuits canonicalize");
             let key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.polys)).to_le_bytes();
             if reversed && fwd_key == Some(key) {
                 continue; // the runtime decodes an equal key forward
             }
             // global -> dense (used_wires) -> canonical (inverse of order).
             let dense = |w: u16| {
-                canon.used_wires.iter().position(|&u| u == w).expect("used wire")
+                canon
+                    .used_wires
+                    .iter()
+                    .position(|&u| u == w)
+                    .expect("used wire")
             };
             let canonical = |w: u16| {
                 canon
@@ -190,7 +193,8 @@ fn g57_fixture_map() -> std::sync::Arc<std::collections::HashMap<[u8; 16], Vec<u
     // Up to three gates on five wires: ~1.1k classes, built in about half a
     // second (release). Two-gate windows sampled convexly share a wire and
     // always fit; three-gate classes hold genuine re-spellings.
-    MAP.get_or_init(|| Arc::new(g57_fixture_build(5, 3))).clone()
+    MAP.get_or_init(|| Arc::new(g57_fixture_build(5, 3)))
+        .clone()
 }
 
 fn g57_fixture_store() -> FrozenDb {

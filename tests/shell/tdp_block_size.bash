@@ -91,7 +91,9 @@ for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical'):
     stage3 = lines[1].split()
     assert stage3[stage3.index('--p-db') + 1] == '0', lines  # empty-store plumbing mode
     assert not any(a in stage3 for a in ('--p-comp', '--p-any', '--resume')), lines
-    assert 'PIPELINE COMPLETE' in (root / mode / 'tdp_gen.log').read_text()
+    log = (root / mode / 'tdp_gen.log').read_text()
+    assert 'PIPELINE COMPLETE (stages 1-3)' in log, log
+    assert 'stage 4 (packing) is not run by this driver' in log, log
     assert (root / mode / 'db_mixing.mpmct1').is_file()
     assert (root / mode / 'db_mixing.state').is_file()
     for i, line in enumerate(lines):

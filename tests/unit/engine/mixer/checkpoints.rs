@@ -190,7 +190,15 @@ fn checkpoint_without_optional_sections_loads_and_older_versions_are_refused() {
         .skip_while(|l| !l.starts_with("gates "))
         .nth(1)
         .expect("a gate line");
-    assert_eq!(gate_line.split(" | ").nth(1).unwrap().split_whitespace().count(), 5);
+    assert_eq!(
+        gate_line
+            .split(" | ")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .count(),
+        5
+    );
     // The optional anctracers section is absent here (no sampled ancestry):
     // the minimal state loads and continues.
     let mut resumed =

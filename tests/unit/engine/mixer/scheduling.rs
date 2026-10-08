@@ -160,7 +160,11 @@ fn db_walk_splices_real_hits_and_preserves_function() {
     let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
     mx.run();
     let c = &mx.counters;
-    assert!(c.db_slot2_hits > 1_000, "DB walk barely spliced: {}", c.db_slot2_hits);
+    assert!(
+        c.db_slot2_hits > 1_000,
+        "DB walk barely spliced: {}",
+        c.db_slot2_hits
+    );
     assert!(c.db_agn_hits + c.db_comp_hits > 0);
     assert!(
         mx.gens_in_order().iter().any(|&g| g > 0 && g != GEN_FRESH),
@@ -174,4 +178,3 @@ fn db_walk_splices_real_hits_and_preserves_function() {
     );
     mx.global_check();
 }
-
