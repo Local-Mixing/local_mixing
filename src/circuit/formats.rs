@@ -131,9 +131,10 @@ impl<'a> Fields<'a> {
 //   <target> <n_terms> [<degree> <w_1> ... <w_degree>]*
 //
 // In `esop1` it is an exclusive sum of mixed-polarity cubes, produced from the
-// ANF by a fixed deterministic compaction (stages::post_processing::compression::compact)
-// -- a function of the activation function alone, hence also one spelling
-// per function, at ~2.3x fewer terms than the ANF:
+// ANF by a fixed deterministic compaction (implemented in the historic fcompress
+// stage, branch ran/archive/curated-and-postmix) -- a function of the
+// activation function alone, hence also one spelling per function, at ~2.3x
+// fewer terms than the ANF:
 //
 //   esop1 <wires> <gates>
 //   <target> <n_terms> [<width> <w_1> <p_1> ... <w_width> <p_width>]*

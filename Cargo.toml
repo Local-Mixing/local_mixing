@@ -81,10 +81,6 @@ bincode2 = { package = "bincode", version = "2" }
 lmdb = "0.8.0"
 
 [[bin]]
-name = "fcompress"
-path = "src/programs/fcompress/main.rs"
-
-[[bin]]
 name = "circuit_mixer"
 path = "src/programs/circuit_mixer/main.rs"
 
@@ -190,16 +186,6 @@ path = "tests/manual/tdp/verify_zero_slice.rs"
 [[bin]]
 name = "embedded_masking_gadgetize"
 path = "security_tests/preprocessing/embedded_masking.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "output_cone"
-path = "security_tests/demixing/output_cone.rs"
-required-features = ["security-tools"]
-
-[[bin]]
-name = "crossing_downhill"
-path = "security_tests/demixing/crossing_downhill.rs"
 required-features = ["security-tools"]
 
 [[bin]]
@@ -317,9 +303,4 @@ required-features = ["benchmark-tools"]
 [[bin]]
 name = "leeway_by_width"
 path = "benchmarks/mixing/leeway_by_width.rs"
-required-features = ["benchmark-tools"]
-
-[[bin]]
-name = "pairfloat_exp"
-path = "benchmarks/mixing/pairfloat_exp.rs"
 required-features = ["benchmark-tools"]

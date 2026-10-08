@@ -69,7 +69,7 @@ Path(sys.argv[1]).write_text('4\nx\nx\n')
 Path(sys.argv[1] + '.sandwich.mpmct1').write_text('4\nx\nx\n')
 MOCK
 chmod +x "$TDP_BIN_DIR/mock"
-for binary in gen_sandwich_gadget circuit_mixer fcompress; do
+for binary in gen_sandwich_gadget circuit_mixer; do
   ln -s mock "$TDP_BIN_DIR/$binary"
 done
 run_case() {

@@ -81,10 +81,11 @@ pub struct MixCounters {
     pub litter_banned: u64,
     // Distance-from-minimal: sampled windows for which the store held ANY
     // non-identical equivalent, and how many of those admitted a STRICTLY
-    // SHORTER one. The ratio is a live fcompress residual without running
-    // fcompress -- as COMP drives the circuit toward its locally-minimal form
-    // (the form the attacker-computable compressor would reach anyway) this
-    // falls toward zero, which is the spelling diversity being spent.
+    // SHORTER one. The ratio is a live compression residual without running a
+    // compressor (the historic fcompress) -- as COMP drives the circuit toward
+    // its locally-minimal form (the form the attacker-computable compressor
+    // would reach anyway) this falls toward zero, which is the spelling
+    // diversity being spent.
     pub dmin_windows: u64,
     pub dmin_shorter: u64,
     // Twists placed on a pattern match, and twists that fell back to a random

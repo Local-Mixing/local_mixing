@@ -9,10 +9,10 @@ config_version = 1  # required TOML schema version (distinct from saved recipe v
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
-build_binaries = true  # bool; build the three release stage binaries for fresh runs
+build_binaries = true  # bool; build the release stage binaries for fresh runs
 # build_directory = "target"  # string; default CARGO_TARGET_DIR, otherwise target
-stop_after_stage = 6  # integer 2..6; steps 1 and 2 run together
-# rerun_from_stage = 4  # integer 2..6; redo this stage and subsequent reached stages
+stop_after_stage = 5  # integer 2..5; steps 1 and 2 run together
+# rerun_from_stage = 4  # integer 2..5; redo this stage and subsequent reached stages
 # adopt_unverified_run = false  # retired compatibility field; true is rejected
 
 [source]

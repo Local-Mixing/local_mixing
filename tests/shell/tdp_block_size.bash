@@ -56,7 +56,7 @@ else:
 Path(out).write_text('4\nx\nx\n')
 MOCK
 chmod +x "$TDP_BIN_DIR/mock"
-for binary in gen_sandwich_gadget circuit_mixer fcompress; do
+for binary in gen_sandwich_gadget circuit_mixer; do
   ln -s mock "$TDP_BIN_DIR/$binary"
 done
 run_case() {
@@ -77,7 +77,7 @@ import sys
 root = Path(sys.argv[1])
 for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical'):
     lines = (root / f'{mode}.calls').read_text().splitlines()
-    assert len(lines) == 5, lines
+    assert len(lines) == 4, lines
     assert '--db-mixing' in lines[1], lines
     assert (root / mode / 'db_mixing.mpmct1').is_file()
     assert (root / mode / 'db_mixing.state').is_file()

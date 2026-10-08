@@ -17,7 +17,7 @@
 #   5    circuit_mixer the crossing walk (resumes the split state;
 #        numerical defaults reflect the X-panel, but deliverable-promotion
 #        status remains unresolved — see the manual)
-#   6    fcompress
+#   (the old stage 6, fcompress, is historic: branch ran/archive/curated-and-postmix)
 #
 # Every stage writes its artifact + log into the run dir and is skipped when
 # the artifact already exists (rerun with --run-rerun-from-stage K). bash only — do not
@@ -76,7 +76,7 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --crossing-move-attempts M
                  stage-5 move budget (default 6 x target: STOP AT ARRIVAL —
                  median spread peaks there and the hold erodes it)
-  --run-stop-after-stage K stop after stage K (2, 3, 4, 5 or 6)      [6]
+  --run-stop-after-stage K stop after stage K (2, 3, 4 or 5)         [5]
   --run-rerun-from-stage K rebuild from stage K even if artifacts exist [unset]
   --parallel-pieces P
                  stages 3-4 piecewise-parallel mixing: cut the circuit into
@@ -99,8 +99,8 @@ env:
                       (mpmct1; default: stage-3 input); see docs/tdp_pipeline.md
   DB_QC_SEED          independent QC seed [20803]; existing stage-3 artifacts
                       are still skipped unless --run-rerun-from-stage 3 is supplied
-  TDP_BIN_DIR         directory containing gen_sandwich_gadget, circuit_mixer and
-                      fcompress [default: repository target/release]
+  TDP_BIN_DIR         directory containing gen_sandwich_gadget and circuit_mixer
+                      [default: repository target/release]
 EOF
   exit "${1:-1}"
 }
@@ -110,7 +110,7 @@ PREPROCESSING_MODE=embedded-masking
 EMBEDDED_MASKING_K_ARG=""; EMBEDDED_MASKING_MAX_OPEN_ARG=""; EMBEDDED_MASKING_BALANCED_ARG=""; EMBEDDED_MASKING_MIN_OPEN_ARG=""
 EMBEDDED_MASKING_SHUFFLING_ARG=""; EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG=""
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
-STOP_AFTER=6; FORCE_FROM=99
+STOP_AFTER=5; FORCE_FROM=99
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""
 declare -A PREPROCESSING_FLAGS_SEEN=()
 while [ $# -gt 0 ]; do
@@ -220,6 +220,8 @@ bounded_uint() {
   return 2
 }
 N=$(bounded_uint --source-wires "$N" 3 4095)
+STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 5)
+[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 5)
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   [ "$PIECES_SET" -eq 0 ] || {
@@ -297,7 +299,7 @@ for legacy_artifact in gss_command.conf gss.mpmct1; do
 done
 
 BIN=${TDP_BIN_DIR:-$(cd "$(dirname "$0")/.." && pwd)/target/release}
-for b in gen_sandwich_gadget circuit_mixer fcompress; do
+for b in gen_sandwich_gadget circuit_mixer; do
   [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first"; exit 1; }
 done
 mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
@@ -412,7 +414,6 @@ umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 DB_MIXING=$RUN/db_mixing.mpmct1
 SPLIT=$RUN/split.mpmct1
 CROSSING=$RUN/crossing.mpmct1
-FINAL=$RUN/final.esop1
 
 # ---- stages 1+2: sandwich + selected gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
@@ -553,26 +554,4 @@ EOF
 else
   note "stage 5: $CROSSING exists, skipping"
 fi
-[ "$STOP_AFTER" -le 5 ] && { note "stopped after stage 5"; exit 0; }
-
-# ---- stage 6: fcompress ----
-if [ "$FORCE_FROM" -le 6 ] || [ ! -s "$FINAL" ]; then
-  note "stage 6: fcompress"
-  # Compress (transport / separated reads / reversed gather; docs/tdp_pipeline.md)
-  # and PACK: the deliverable is the esop1 file, one generalized gate per
-  # maximal same-target run, its activation function spelled as the ANF
-  # compacted by the deterministic reducer (a function of the ANF alone, so
-  # one spelling per function). The cube count (fcompress's "gates A -> B"
-  # line) is the honest effective size; the packed count is the number of
-  # generalized gates. Every mpmct1 reader loads esop1 transparently.
-  "$BIN/fcompress" --input "$CROSSING" --output "$FINAL" --seed "$((SEED + 5))" \
-      > "$RUN/stage6.log" 2>&1
-  G_X=$(gates_of "$CROSSING"); G_P=$(gates_of "$FINAL")
-  G_C=$(sed -n 's/.*done in .*gates [0-9]* -> \([0-9]*\) (.*/\1/p' "$RUN/stage6.log" | tail -1)
-  G_C=${G_C:-$G_P}
-  note "stage 6 done: $G_X -> $G_C cubes (residual $(python3 -I -c "print(f'{100*$G_C/$G_X:.1f}%')")) -> $G_P packed gates"
-else
-  note "stage 6: $FINAL exists, skipping"
-fi
-
-note "PIPELINE COMPLETE: $FINAL"
+note "PIPELINE COMPLETE: $CROSSING"

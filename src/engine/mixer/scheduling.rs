@@ -382,8 +382,9 @@ impl Mixer {
     /// its usefulness, where it starves -- declines climb as the circuit nears
     /// local minimality -- and spends re-encoding diversity, since COMP draws
     /// only from minimum-size spellings and so pulls the circuit toward exactly
-    /// the form `fcompress` would compute anyway. Guarding that directly means
-    /// a too-wide band costs nothing: the brake lets go on its own.
+    /// the form a local compressor (the historic `fcompress`) would compute
+    /// anyway. Guarding that directly means a too-wide band costs nothing: the
+    /// brake lets go on its own.
     pub(super) fn apply_size_brake(&mut self) {
         if self.params.size_hi == 0 {
             return;

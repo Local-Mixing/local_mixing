@@ -570,9 +570,10 @@ pub struct DbResult {
     /// Length of the SHORTEST non-identical equivalent the store returned, if
     /// any. Comparing it to the window length says whether this window still
     /// admits a strictly shorter spelling -- the adversary-aligned quantity,
-    /// since `fcompress` is attacker-computable and a circuit driven to its
-    /// locally-minimal form has spent the spelling diversity that re-encoding
-    /// buys. Reported as dmin=.
+    /// since local compression (the historic `fcompress`) is
+    /// attacker-computable and a circuit driven to its locally-minimal form
+    /// has spent the spelling diversity that re-encoding buys. Reported as
+    /// dmin=.
     pub min_match_len: Option<usize>,
     /// True when BOTH directions were skipped by the degree guard (a certain
     /// miss reached without any canonicalization or store lookup).

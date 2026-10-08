@@ -58,7 +58,7 @@ pub(crate) fn prepare_recipe_manifest(
 pub(crate) fn production_binary_fingerprints(
     binary_dir: &Path,
 ) -> Result<Vec<(&'static str, u128)>, TdpError> {
-    ["gen_sandwich_gadget", "circuit_mixer", "fcompress"]
+    ["gen_sandwich_gadget", "circuit_mixer"]
         .into_iter()
         .map(|name| {
             let path = binary_dir.join(name);
@@ -66,7 +66,7 @@ pub(crate) fn production_binary_fingerprints(
                 .map(|hash| (name, hash))
                 .map_err(|error| {
                     TdpError::io(format!(
-                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing all three binaries",
+                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing both binaries",
                         path.display()
                     ))
                 })

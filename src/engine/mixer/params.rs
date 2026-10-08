@@ -375,7 +375,8 @@ pub struct MixParams {
     // risk was never the width, it was sitting in COMP past its usefulness,
     // where it starves (declines rise as the circuit approaches local
     // minimality) and spends re-encoding diversity (COMP draws only from
-    // minimum-size spellings, pulling toward the form fcompress would reach).
+    // minimum-size spellings, pulling toward the form a local compressor
+    // would reach).
     // 0 = brake off.
     // Upper clamp on the contraction probability. The old 0.98 left a 2%
     // expansion floor that is a structural growth source (measured +0.007

@@ -258,7 +258,8 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "db_mixing.target_size_factor = 1",
         "db_mixing.hold_work_units = -1",
         "crossing.size_tolerance_divisor = 0",
-        "run.stop_after_stage = 7",
+        "run.stop_after_stage = 6",
+        "run.rerun_from_stage = 6",
         "preprocessing.mode = \"invented\"",
         "run.build_binaries = \"yes\"",
         "database.lookup_miss_filter = \"maybe\"",
@@ -353,11 +354,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
         "run.directory = \"runs/manifest-test\"\nrun.stop_after_stage = 2\ndatabase.allow_no_database_for_tests = true",
     ))
     .unwrap();
-    let fingerprints = [
-        ("gen_sandwich_gadget", 1u128),
-        ("circuit_mixer", 2u128),
-        ("fcompress", 3u128),
-    ];
+    let fingerprints = [("gen_sandwich_gadget", 1u128), ("circuit_mixer", 2u128)];
     let expected = recipe_manifest(&base, &fingerprints, 4);
     assert!(expected.contains("binary_circuit_mixer_xxh3=00000000000000000000000000000002"));
     assert!(expected.contains("script_tdp_gen_xxh3=00000000000000000000000000000004"));
@@ -389,7 +386,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
     lifecycle.calibration_seed = Some("987654321".to_owned());
     lifecycle.build_release = false;
     lifecycle.build_target_dir = PathBuf::from("/different/target");
-    lifecycle.stop_after = Some("6".to_owned());
+    lifecycle.stop_after = Some("5".to_owned());
     lifecycle.force_from = Some("4".to_owned());
     lifecycle.frozen_filter = FrozenFilter::Off;
     assert_eq!(expected, recipe_manifest(&lifecycle, &fingerprints, 4));
@@ -624,7 +621,7 @@ fn managed_v9_dry_run_preserves_manifest_and_rejects_changed_binary() {
         .join("release");
     fs::create_dir_all(&run_dir).unwrap();
     fs::create_dir_all(&binary_dir).unwrap();
-    for name in ["gen_sandwich_gadget", "circuit_mixer", "fcompress"] {
+    for name in ["gen_sandwich_gadget", "circuit_mixer"] {
         fs::write(binary_dir.join(name), format!("original {name}\n")).unwrap();
     }
     let recipe = format!(
@@ -1011,7 +1008,7 @@ fn fresh_v9_managed_runs_record_and_resume_both_preprocessing_modes() {
             "printf '4\\nx\\nx\\n' > \"$1.sandwich.mpmct1\"\n",
             "printf 'called\\n' >> \"$1.calls\"\n",
         );
-        for name in ["gen_sandwich_gadget", "circuit_mixer", "fcompress"] {
+        for name in ["gen_sandwich_gadget", "circuit_mixer"] {
             let path = binary_dir.join(name);
             fs::write(
                 &path,

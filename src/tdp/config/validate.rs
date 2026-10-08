@@ -198,8 +198,8 @@ where
     let xc = parse_optional_u64(raw, "xc", 0, 1_000_000_000)?;
     let xtdiv = parse_optional_u64(raw, "xtdiv", 1, 1_000_000_000)?;
     let xmoves = parse_optional_u64(raw, "xmoves", 1, 1_000_000_000_000)?;
-    let stop_after = parse_optional_u64(raw, "stop_after", 2, 6)?;
-    let force_from = parse_optional_u64(raw, "force_from", 2, 6)?;
+    let stop_after = parse_optional_u64(raw, "stop_after", 2, 5)?;
+    let force_from = parse_optional_u64(raw, "force_from", 2, 5)?;
     let pieces = parse_optional_u64(raw, "pieces", 1, 64)?;
     let min_block_size = parse_optional_u64(raw, "min_block_size", 2, 1_000_000_000)?;
     if pieces.is_some() && min_block_size.is_some() {

@@ -164,7 +164,7 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         );
     }
     if should_build {
-        println!("[tdp_gen] building the three TDP_GEN release executables (incremental)");
+        println!("[tdp_gen] building the TDP_GEN release executables (incremental)");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
         let mut build = ProcessCommand::new(cargo);
         build
@@ -180,8 +180,6 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
             .arg("gen_sandwich_gadget")
             .arg("--bin")
             .arg("circuit_mixer")
-            .arg("--bin")
-            .arg("fcompress")
             .env_remove("CARGO_BUILD_TARGET");
         let status = build
             .status()
@@ -481,7 +479,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     );
     println!(
         "[tdp_gen] lifecycle: stop_after_stage={} rerun_from_stage={} build_binaries={}",
-        config.stop_after.as_deref().unwrap_or("6"),
+        config.stop_after.as_deref().unwrap_or("5"),
         config.force_from.as_deref().unwrap_or("none"),
         config.build_release
     );
@@ -497,7 +495,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     let stop_after = config
         .stop_after
         .as_deref()
-        .unwrap_or("6")
+        .unwrap_or("5")
         .parse::<u64>()
         .expect("validated stop_after");
     if stop_after >= 5 {
@@ -541,8 +539,6 @@ pub(crate) fn print_dry_run(
             OsString::from("gen_sandwich_gadget"),
             OsString::from("--bin"),
             OsString::from("circuit_mixer"),
-            OsString::from("--bin"),
-            OsString::from("fcompress"),
         ];
         println!("[tdp_gen] would build: {}", render_command(&build, None));
     } else if managed_resume && config.build_release {

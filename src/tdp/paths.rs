@@ -11,7 +11,7 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
     let stop_after = config
         .stop_after
         .as_deref()
-        .unwrap_or("6")
+        .unwrap_or("5")
         .parse::<u64>()
         .expect("validated stop_after");
     let force_from = config
