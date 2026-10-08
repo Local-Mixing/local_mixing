@@ -10,14 +10,13 @@
 #        is the default)
 #   3    circuit_mixer db_mixing: --tdp --db-mixing --profile 3,(3+HOLD),(3+HOLD),R1,R1
 #        (no compression leg since 2026-08-17: it only simplified the
-#        circuit — it made sense before splitting and crossing existed, not anymore)
-#   4    circuit_mixer the split stage, current defaults, to exhaustion
-#        (stages 3 and 4 run piecewise-parallel under --parallel-pieces P > 1:
-#        docs/tdp_pipeline.md; P = 1 is the serial run, unchanged)
-#   5    circuit_mixer the crossing walk (resumes the split state;
+#        circuit). Stage 3 runs piecewise-parallel under --parallel-pieces
+#        P > 1: docs/tdp_pipeline.md; P = 1 is the serial run, unchanged.
+#   5    circuit_mixer the crossing walk (resumes the stage-3 state;
 #        numerical defaults reflect the X-panel, but deliverable-promotion
 #        status remains unresolved — see the manual)
-#   (the old stage 6, fcompress, is historic: branch ran/archive/curated-and-postmix)
+#   (the old stages 4, split, and 6, fcompress, are historic: branch
+#   ran/archive/curated-and-postmix)
 #
 # Every stage writes its artifact + log into the run dir and is skipped when
 # the artifact already exists (rerun with --run-rerun-from-stage K). bash only — do not
@@ -76,15 +75,16 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --crossing-move-attempts M
                  stage-5 move budget (default 6 x target: STOP AT ARRIVAL —
                  median spread peaks there and the hold erodes it)
-  --run-stop-after-stage K stop after stage K (2, 3, 4 or 5)         [5]
-  --run-rerun-from-stage K rebuild from stage K even if artifacts exist [unset]
+  --run-stop-after-stage K stop after stage K (2, 3 or 5)            [5]
+  --run-rerun-from-stage K rebuild from stage K (2, 3 or 5) even if
+                 artifacts exist                                  [unset]
   --parallel-pieces P
-                 stages 3-4 piecewise-parallel mixing: cut the circuit into
+                 stage-3 piecewise-parallel mixing: cut the circuit into
                  P pieces, mix them in parallel on one shared store,
                  concatenate, shift the cuts by half a slice, repeat
                  [1 = serial; range 1..64; docs/tdp_pipeline.md]
   --parallel-target-piece-gates B
-                 nominal divisor for automatic stages 3-4 sizing (2..1000000000);
+                 nominal divisor for automatic stage-3 sizing (2..1000000000);
                  each round P=max(1,current gates/B), then fixed-P cutting
                  (shifted ends may be smaller);
                  mutually exclusive with explicit --parallel-pieces, including 1
@@ -198,7 +198,7 @@ if [ "${#legacy_mask_controls[@]}" -gt 0 ]; then
   echo "FATAL: BV5_* controls have been removed; use EMBEDDED_MASKING_* controls and unset: ${legacy_mask_controls[*]}" >&2
   exit 2
 fi
-# Piecewise-parallel stages 3-4 (docs/tdp_pipeline.md). The serial command
+# Piecewise-parallel stage 3 (docs/tdp_pipeline.md). The serial command
 # lines stay byte-identical: flags are passed only in piece mode. The
 # same rules live in `local_mixing_bin tdp_gen`, so both entry points agree.
 # Normalize decimal input before arithmetic (leading zeros are not octal).
@@ -222,6 +222,11 @@ bounded_uint() {
 N=$(bounded_uint --source-wires "$N" 3 4095)
 STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 5)
 [ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 5)
+# Stage 4 (split) is historic: it has no artifact, so it is no valid stop or rerun point.
+if [ "$STOP_AFTER" = 4 ] || [ "$FORCE_FROM" = 4 ]; then
+  echo "FATAL: stage 4 (split) is historic; use 2, 3 or 5 (see branch ran/archive/curated-and-postmix)" >&2
+  exit 2
+fi
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   [ "$PIECES_SET" -eq 0 ] || {
@@ -412,7 +417,6 @@ note "seed source: $SEED_SRC (value in $RUN/SEED)"
 umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 
 DB_MIXING=$RUN/db_mixing.mpmct1
-SPLIT=$RUN/split.mpmct1
 CROSSING=$RUN/crossing.mpmct1
 
 # ---- stages 1+2: sandwich + selected gadgetization ----
@@ -445,7 +449,7 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
 import sys
 r1, hold, g = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 # No compression leg (2026-08-17): it only simplified the circuit. It made
-# sense when db_mixing was the whole pipeline; with splitting and crossing following, the run
+# sense when db_mixing was the whole pipeline; with the later stages following, the run
 # ends at the held size (N2 = N1, R2 = R1 — a zero-length leg is valid,
 # prof_target never enters the interpolation branch).
 n0 = 3.0
@@ -506,30 +510,10 @@ else
 fi
 [ "$STOP_AFTER" -le 3 ] && { note "stopped after stage 3"; exit 0; }
 
-# ---- stage 4: splitting, current defaults ----
-if [ "$FORCE_FROM" -le 4 ] || [ ! -s "$SPLIT" ]; then
-  G_A=$(gates_of "$DB_MIXING")
-  B_MOVES=$((G_A + 1000000))   # one move per split twist; comp count < G_A
-  note "stage 4: circuit_mixer --split (current defaults), moves ceiling $B_MOVES, $PIECE_DESCRIPTION"
-  export MIXER_STOP_FLAG=$RUN/stage4.stop MIXER_DUMP_FLAG=$RUN/stage4.dump
-  rm -f "$MIXER_STOP_FLAG"
-  "$BIN/circuit_mixer" --input "$DB_MIXING" --split --split-stop \
-      --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256 \
-      --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12 \
-      ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} \
-      --moves "$B_MOVES" --seed "$((SEED + 3))" --report-every 1000000 \
-      --state-out "$RUN/split.state" --output "$SPLIT" > "$RUN/stage4.log" 2>&1
-  grep -E "split stage ENDED|split spans|canary deciles" "$RUN/stage4.log" | tee -a "$LOGALL" || true
-  note "stage 4 done: $(gates_of "$SPLIT") gates"
-else
-  note "stage 4: $SPLIT exists, skipping"
-fi
-[ "$STOP_AFTER" -le 4 ] && { note "stopped after stage 4"; exit 0; }
-
 # ---- stage 5: crossing walk (X-panel defaults; promotion status unresolved) ----
 if [ "$FORCE_FROM" -le 5 ] || [ ! -s "$CROSSING" ]; then
-  G_S=$(gates_of "$SPLIT")
-  read -r X_TGT X_TEMP X_MOVES_ABS <<< "$(python3 -I - "$G_S" "$XR" "$XTDIV" "${XMOVES:-0}" "$(state_moves "$RUN/split.state")" <<'EOF'
+  G_S=$(gates_of "$DB_MIXING")
+  read -r X_TGT X_TEMP X_MOVES_ABS <<< "$(python3 -I - "$G_S" "$XR" "$XTDIV" "${XMOVES:-0}" "$(state_moves "$RUN/db_mixing.state")" <<'EOF'
 import sys
 g, xr, tdiv, xmoves, done = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 tgt = round(g * xr)
@@ -545,7 +529,7 @@ EOF
   note "stage 5: crossing walk (resume) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves(abs)=$X_MOVES_ABS — calibrated defaults; promotion status unresolved, see manual"
   export MIXER_STOP_FLAG=$RUN/stage5.stop MIXER_DUMP_FLAG=$RUN/stage5.dump
   rm -f "$MIXER_STOP_FLAG"
-  "$BIN/circuit_mixer" --resume "$RUN/split.state" \
+  "$BIN/circuit_mixer" --resume "$RUN/db_mixing.state" \
       --target-size "$X_TGT" --temp "$X_TEMP" --split-base "$XB" --split-damp "$XC" \
       --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 \
       --moves "$X_MOVES_ABS" --report-every 500000 \

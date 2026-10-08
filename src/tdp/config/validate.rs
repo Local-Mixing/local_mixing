@@ -198,8 +198,8 @@ where
     let xc = parse_optional_u64(raw, "xc", 0, 1_000_000_000)?;
     let xtdiv = parse_optional_u64(raw, "xtdiv", 1, 1_000_000_000)?;
     let xmoves = parse_optional_u64(raw, "xmoves", 1, 1_000_000_000_000)?;
-    let stop_after = parse_optional_u64(raw, "stop_after", 2, 5)?;
-    let force_from = parse_optional_u64(raw, "force_from", 2, 5)?;
+    let stop_after = parse_optional_stage(raw, "stop_after")?;
+    let force_from = parse_optional_stage(raw, "force_from")?;
     let pieces = parse_optional_u64(raw, "pieces", 1, 64)?;
     let min_block_size = parse_optional_u64(raw, "min_block_size", 2, 1_000_000_000)?;
     if pieces.is_some() && min_block_size.is_some() {
@@ -298,6 +298,20 @@ pub(crate) fn parse_usize(
         ));
     }
     Ok(parsed)
+}
+
+/// A pipeline stage number: 2, 3 or 5. Stage 4 (split) is historic and
+/// has no artifact any more; stage 5 resumes the stage-3 state.
+fn parse_optional_stage(raw: &RawConfig, key: &str) -> Result<Option<String>, String> {
+    let stage = parse_optional_u64(raw, key, 2, 5)?;
+    if stage.as_deref() == Some("4") {
+        return Err(config_error(
+            raw,
+            key,
+            "stage 4 (split) is historic; use 2, 3 or 5 (see branch ran/archive/curated-and-postmix)",
+        ));
+    }
+    Ok(stage)
 }
 
 pub(crate) fn parse_optional_u64(

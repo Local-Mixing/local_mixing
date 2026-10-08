@@ -78,7 +78,7 @@ fn nonlinear_capacity_is_validated_before_launch() {
 #[test]
 fn every_public_tuning_value_maps_to_a_separate_script_argument() {
     let raw = parse(
-        "source.wires = 64\nrun.directory = \"runs/with spaces;$(literal)\"\nsource.gates = 900\ndb_mixing.target_size_factor = 2.5\ndb_mixing.hold_work_units = 4.5\ncrossing.target_size_factor = 2.25\ncrossing.width_penalty_base = 4\ncrossing.width_penalty_threshold = 2\ncrossing.size_tolerance_divisor = 20\ncrossing.move_attempts = 1234\nrun.stop_after_stage = 5\nrun.rerun_from_stage = 4\nparallel.pieces = 4\nparallel.threads = 6\ndatabase.allow_no_database_for_tests = true",
+        "source.wires = 64\nrun.directory = \"runs/with spaces;$(literal)\"\nsource.gates = 900\ndb_mixing.target_size_factor = 2.5\ndb_mixing.hold_work_units = 4.5\ncrossing.target_size_factor = 2.25\ncrossing.width_penalty_base = 4\ncrossing.width_penalty_threshold = 2\ncrossing.size_tolerance_divisor = 20\ncrossing.move_attempts = 1234\nrun.stop_after_stage = 5\nrun.rerun_from_stage = 3\nparallel.pieces = 4\nparallel.threads = 6\ndatabase.allow_no_database_for_tests = true",
     );
     let resolved = resolve_for_test(&raw).unwrap();
     let args = script_args(&resolved);
@@ -109,7 +109,7 @@ fn every_public_tuning_value_maps_to_a_separate_script_argument() {
         "--run-stop-after-stage",
         "5",
         "--run-rerun-from-stage",
-        "4",
+        "3",
         "--parallel-pieces",
         "--parallel-threads",
         "6",
@@ -260,6 +260,8 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "crossing.size_tolerance_divisor = 0",
         "run.stop_after_stage = 6",
         "run.rerun_from_stage = 6",
+        "run.stop_after_stage = 4",
+        "run.rerun_from_stage = 4",
         "preprocessing.mode = \"invented\"",
         "run.build_binaries = \"yes\"",
         "database.lookup_miss_filter = \"maybe\"",
@@ -387,7 +389,7 @@ fn recipe_manifest_is_seed_free_normalized_and_lifecycle_independent() {
     lifecycle.build_release = false;
     lifecycle.build_target_dir = PathBuf::from("/different/target");
     lifecycle.stop_after = Some("5".to_owned());
-    lifecycle.force_from = Some("4".to_owned());
+    lifecycle.force_from = Some("3".to_owned());
     lifecycle.frozen_filter = FrozenFilter::Off;
     assert_eq!(expected, recipe_manifest(&lifecycle, &fingerprints, 4));
     assert!(!expected.contains("987654321"));

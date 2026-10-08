@@ -458,13 +458,13 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     );
     if let Some(size) = &config.min_block_size {
         println!(
-            "[tdp_gen] stages 3-4: automatic pieces target_piece_gates={} threads={}",
+            "[tdp_gen] stage 3: automatic pieces target_piece_gates={} threads={}",
             size,
             config.piece_threads.as_deref().unwrap_or("available CPUs")
         );
     } else {
         println!(
-            "[tdp_gen] stages 3-4: pieces={} threads={}",
+            "[tdp_gen] stage 3: pieces={} threads={}",
             config.pieces.as_deref().unwrap_or("1"),
             config.piece_threads.as_deref().unwrap_or("pieces+1")
         );

@@ -32,6 +32,9 @@ reject --parallel-pieces 2 --parallel-threads 999999999999999999999999999999
 reject --parallel-target-piece-gates 2 --parallel-pieces 1
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 reject --parallel-threads 2
+# Stage 4 (split) is historic: neither a stop nor a rerun point.
+reject --run-stop-after-stage 4
+reject --run-rerun-from-stage 4
 reject --parallel-target-piece-gates 2 --parallel-threads 0
 for flag in --parallel-target-piece-gates --parallel-pieces --parallel-threads; do
   reject "$flag"
@@ -77,13 +80,16 @@ import sys
 root = Path(sys.argv[1])
 for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical'):
     lines = (root / f'{mode}.calls').read_text().splitlines()
-    assert len(lines) == 4, lines
+    assert len(lines) == 3, lines
     assert '--db-mixing' in lines[1], lines
+    # Stage 5 resumes the stage-3 state now that stage 4 (split) is historic.
+    stage5 = lines[2].split()
+    assert stage5[stage5.index('--resume') + 1].endswith('/db_mixing.state'), lines
     assert (root / mode / 'db_mixing.mpmct1').is_file()
     assert (root / mode / 'db_mixing.state').is_file()
     for i, line in enumerate(lines):
         args = line.split()
-        enabled = i in (1, 2) and mode in ('auto', 'auto_default', 'fixed', 'canonical')
+        enabled = i == 1 and mode in ('auto', 'auto_default', 'fixed', 'canonical')
         assert ('--parallel-threads' in args) == (enabled and mode != 'auto_default'), line
         assert ('--parallel-target-piece-gates' in args) == (enabled and (mode.startswith('auto') or mode == 'canonical')), line
         assert ('--parallel-pieces' in args) == (enabled and mode == 'fixed'), line

@@ -106,7 +106,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) force_from: Option<String>,
     pub(crate) allow_empty_store: bool,
     pub(crate) frozen_filter: FrozenFilter,
-    // Stages 3-4 piecewise-parallel rounds. `pieces`
+    // Stage-3 piecewise-parallel rounds. `pieces`
     // and `min_block_size` are locked recipe values; threads are lifecycle.
     pub(crate) pieces: Option<String>,
     pub(crate) min_block_size: Option<String>,
