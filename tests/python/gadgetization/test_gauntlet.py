@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -50,7 +51,10 @@ class GauntletSeedsTest(unittest.TestCase):
                 "--mix", "both", "--mix-seeds", "777,778", "--jobs", "2",
                 "--outdir", str(outdir), "--bin-dir", str(binaries),
             ]
-            with patch.object(gauntlet, "generate_cell", side_effect=generate), \
+            # Mixed cells need the regular frozen store; generation is mocked,
+            # so any existing directory satisfies the up-front check.
+            with patch.dict(os.environ, {"FROZEN_DB_DIR": str(root)}), \
+                 patch.object(gauntlet, "generate_cell", side_effect=generate), \
                  patch.object(gauntlet, "audit_cell", side_effect=audit), \
                  patch.object(gauntlet, "maps_cell", side_effect=maps), \
                  contextlib.redirect_stdout(io.StringIO()):
@@ -98,6 +102,27 @@ class GauntletSeedsTest(unittest.TestCase):
                     gauntlet.main(["gen", option, value, "--outdir", str(output)])
                 self.assertEqual(error.exception.code, 2)
                 self.assertFalse(output.exists())
+
+    def test_mixed_cells_need_the_frozen_store_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binaries = root / "bin"
+            binaries.mkdir()
+            for name in ("gauntlet_gen", "gauntlet_audit"):
+                (binaries / name).touch()
+            output = root / "not-created"
+            environment = {k: v for k, v in os.environ.items() if k != "FROZEN_DB_DIR"}
+            for mix in ("both", "on"):
+                with self.subTest(mix=mix), patch.dict(os.environ, environment, clear=True):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+                        gauntlet.main([
+                            "gen", "--mix", mix, "--outdir", str(output),
+                            "--bin-dir", str(binaries),
+                        ])
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertIn("FROZEN_DB_DIR", stderr.getvalue())
+                    self.assertFalse(output.exists())
 
     def test_native_generation_forwards_seed_and_shuffling_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
