@@ -41,7 +41,7 @@ The curated store was a second frozen table built by splitting (approximately) m
 | TDP: `database.curated_dir`, `database.curated_control_order`, curated manifest fields | `src/tdp/`, `configs/tdp.toml`, `scripts/tdp_gen.sh` | Keys rejected as unknown |
 | Builders: `build_curated_full` (v2/v3 identity-split stores), `db_gen/curated_full.rs`, `CompositeShards`, `require_curated_full_manifest`, pool swap | `db_gen/bin/build_curated_full.rs`, `db_gen/curated_full.rs`, `db_gen/frozen_build.rs` | Gone |
 | `frozen_from_lmdb --curated`, `--composite`, `--min-gates` | `db_gen/bin/frozen_from_lmdb.rs` | Gone; `--bands` stays |
-| Test-only `canonicalize_polys_single_neg*` | `src/canonicalization/window.rs` | Gone |
+| Test-only `canonicalize_polys_single_neg*` and its input-negation helper `substitute_input_negation` (with its two tests) | `src/canonicalization/window.rs`, `polynomial.rs` | Gone |
 | Tests: curated cascade, regular-fallback and circuit-key replacement tests, `tests/unit/db_gen/curated_full/`, `tests/unit/db_gen/bin/build_curated_full/` | `tests/` | Gone; CI no longer runs `--bin build_curated_full` |
 | Write-up `CURATED_DB_V3_SUMMARY` (`.md`, `.tex`, `.pdf`) | `docs/` | Gone |
 
@@ -106,7 +106,7 @@ The crossing walk shot fragments to their first true collider and rewrote each c
 | Tests: 22 compression tests | `tests/unit/stages/post-processing/compression/compress_tests.rs` | Gone |
 | Demixing probes `crossing_downhill` (downhill on crossed circuits), `output_cone` (liveness prune plus crossing rules) | `security_tests/demixing/` | Gone |
 | Benchmark `pairfloat_exp` (uses the crossing rules and presplit) | `benchmarks/mixing/pairfloat_exp.rs` | Gone |
-| Formats `esop1`, `anf1`, packed | `src/circuit/formats.rs` | **Kept**: the circuit utilities still read them (`read_mpmct` dispatch); the writers are kept with a round-trip unit test but have no production caller |
+| Formats `esop1`, `anf1`, packed | `src/circuit/formats.rs` | **Read side kept**: `read_packed` and the `read_mpmct` dispatch still load archive-built packed outputs, tested on byte fixtures. The writers (`write_packed`, `write_anf1`, `write_esop1`) and the `PackedGate` helpers only they used went to the archive with their sole producer |
 
 ## Why they were retired
 
