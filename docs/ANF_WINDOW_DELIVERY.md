@@ -1,0 +1,403 @@
+# Windowed ANF Delivery: Packing the DB-Mixed Circuit into ANF Blocks
+
+*2026-10-07. Status: prototype-validated pipeline stage (python tools in
+`runs/ncdb_ab_20261001/`), production artifacts at n=64 and n=128
+(`waist/final64/`, `waist/final128/`); Rust port planned per
+`docs/windowed_delivery_design.md` §7. All measurements cited here are
+recorded in that run's RESULTS.md and in
+`runs/exposure_report_20261003/REPORT.md`.*
+
+---
+
+## 1. The current process
+
+The delivery stage consumes the **stage-3 (DB-mixed) circuit** and
+produces the shipped artifact. It replaces the former stages 4–6
+(split, crossing walk, fcompress/packing). Three steps:
+
+### 1.1 Commuting reorder + window scheduling (`window_pack3.py`)
+
+The gate order of the mixed circuit is re-scheduled within its exact
+commutation freedom, and simultaneously partitioned into contiguous
+**windows**. Scheduling and partitioning are one optimization because
+the reorder is where all the leverage is (§2.3).
+
+**Commutation model (MPMCT).** Same-target writers commute; a reader
+pins against *all* later writers of the wire it reads. Pairwise
+RAW/WAR edges are unsound for this gate set; the scheduler therefore
+uses epoch conditions: per wire, a write counter; a reader of wire *c*
+is ready iff `writes_done[c]` equals its required epoch, a writer iff
+all earlier-epoch readers of its target have been emitted. Function
+preservation is by construction and is additionally verified (256
+bit-sliced input samples, all wires) on the emitted order.
+
+**Value-aware planning.** Before scheduling, the stage-2 reference
+circuit A and the mixed circuit B are simulated on 4,096 shared random
+inputs; every intermediate value is fingerprinted. This yields the
+**carried values** of B (values of A that re-appear on B's wires) and
+their **spans** (birth write → next write of the carrier wire). A value
+is *hidden* in the delivered artifact iff **none** of its spans
+contains a window boundary; hiding is therefore all-or-nothing per
+value, over all of its spans (typically ~3, up to several hundred).
+
+**How the blocks are determined.** The partition is *not* a greedy
+accumulation of gates; greedy filling is only the background activity.
+The window structure is driven by **interval reservations and atomic
+bursts**, in five steps:
+
+1. **Interval extraction (per span).** For each span (birth write *b* →
+   killing write *e*) of each carried value, compute the span's
+   *two-sided tainted closure*: a forward taint sweep from *b* (a gate
+   joins if it reads a tainted-written wire or writes a tainted-read
+   wire — the sound any-tainted rule, since pairwise RAW/WAR edges are
+   unsound for MPMCT), intersected with a backward taint sweep from
+   *e*. The result is the minimal gate set that must share a window
+   for that span to be hidden — its *members*. A span whose member set
+   exceeds `W_cap` gates disqualifies (one rescue is attempted:
+   extend to the next-next writer of the carrier wire). A value is
+   **winnable** iff *all* of its spans have member sets ≤ `W_cap`;
+   values with any raw span longer than `span_cap` are disqualified
+   outright.
+
+2. **Readiness bookkeeping (epochs).** Every gate carries an unmet
+   count: a reader of wire *c* becomes ready when *c* reaches the
+   write-epoch the original order gave it; a writer of wire *t* when
+   all earlier readers of *t* are emitted. This is the exact
+   commutation freedom — the scheduler can emit any ready gate at any
+   time without changing the function.
+
+3. **Drain phase (the greedy part).** Intervals are processed by
+   ascending end position. Between bursts the scheduler emits
+   **filler**: ready gates that belong to *no* living interval
+   (protection count zero). Filler fills windows with material whose
+   placement is exposure-irrelevant.
+
+4. **Atomic bursts + value-level accounting.** When an interval's turn
+   comes, the window is first checked: if the remaining gate capacity
+   is below the interval's size (+ a pad of 4) or the composed ANF is
+   above ¾ of the monomial budget, the window is closed *pre-emptively*
+   so the burst is never split by a scheduled close. Then **all member
+   gates of the interval are scheduled consecutively** (dependencies
+   pulled from the ready heap as needed) inside the one window.
+   Hiding is all-or-nothing per value: the first touched span commits
+   the value; if any span dies — a window closed mid-burst, or a
+   member was consumed earlier as filler/another burst
+   (`resumed_later`) — **all sibling intervals of that value are
+   killed** (`kill_value`) and their reserved gates are released to
+   the filler pool immediately, so no capacity is spent on
+   half-hidden values. After each burst, **contagion** completes any
+   committed interval with ≤ 24 remaining members in place while the
+   window is still open.
+
+5. **Budget-adaptive close.** The close condition measures the *real*
+   deliverable cost: the window's sparse ANF is composed incrementally
+   gate-by-gate during scheduling, and the window closes when the
+   monomial count exceeds the soft budget `B_mono` (hard `2·B_mono`
+   inside a burst) or the gate count exceeds the soft target `G`
+   (hard `2G` inside a burst). Every interval death is attributed
+   (`drain_close` / `burst_close` / `resumed_later` / `sibling`), which
+   is how scheduler losses are diagnosed (§2.4).
+
+After the main pass, remaining gates are emitted by readiness, the
+final window closes, the emitted order is re-verified functionally,
+and the ANF emission stage (§1.2) re-composes each window
+independently against the larger emission budget with per-window
+verification.
+
+### 1.2 ANF emission (`anf_compose.py`)
+
+Each window is delivered as the canonical algebraic normal form of its
+touched wires: for every wire written inside the window, the exact
+GF(2) polynomial of its value at the window's end as a function of the
+window's *input* wire values. Composition is sparse and exact, with
+true GF(2) cancellation (per-monomial toggle — symmetric-difference
+dedup is a measured bug, caught by re-verification). Monomials and
+wires are canonically ordered; the within-window gate text, gate
+count, gate order, and all intermediate spellings are discarded.
+
+Budget: 16,384 monomials per window. Measured usage is far below it:
+median 184 (n=64) / 207 (n=128) monomials per window, p90 ≈ 290–430,
+maximum 7,673, **zero overflows** at both scales. Every window is
+functionally re-verified against the gate-level window on the shared
+sample set before serialization.
+
+### 1.3 Serialization
+
+The artifact (`deliverable.bin`) is the sequence of window ANFs in a
+binary format (wire ids, monomial lists over window inputs). Nothing
+else ships: no gate list, no boundary metadata beyond the windows
+themselves, no stage provenance.
+
+| | n=64 (\|C\|=1,000) | n=128 (\|C\|=3,000) |
+|---|---|---|
+| stage-2 circuit | 771,029 g / 256 w | 2,240,757 g / 512 w |
+| stage-3 (mixed) input | 1,648,679 g | 4,803,546 g |
+| windows | 10,702 | 28,986 |
+| ANF payload | 24.6 MB (×3.88 vs gate list) | 93.7 MB (×5.06) |
+| deliverable.bin | 27.5 MB | 103.1 MB |
+| xz-compressed | 4.52 MB | 15.3 MB |
+
+Evaluation cost (python reference evaluator, 1,024-lane bit-sliced):
+0.68 / 1.70 ms per input in gate form, 0.85 / 2.54 ms in ANF form,
+bit-exact agreement between the two forms at both scales.
+Compressibility is 6.1–6.7× under xz — and the compressed ANF is
+*smaller* than the compressed gate list, i.e. the ×4–5 raw inflation
+is redundancy of the format, not information added.
+
+### 1.4 Full production parameters, both scales
+
+Stage-2 knobs are identical at both scales (the managed embedded-
+masking preset): K=2 band wires per LGI, `max_open` 3 / `min_open` 2,
+quad-fire, balanced masks and balanced seed, rich band seed
+(`seed_fill_nl` 4), feistel slice guards (all gates ≤ 2 controls),
+carrier shuffling dose 8 with **persistent migration**
+(`EMBEDDED_MASKING_SHUFFLING=8`, `..._RETURN_HOME=0`). Stage-3 flags
+are identical: `--tdp --db-mixing --profile 2,2,2,2,2 --p-db 1.0
+--p-comp 1.0 --p-any 0.1 --db-max-degree 9 --db-max-span 30
+--db-wire-terms 1024 --db-total-terms 2048`, regular frozen store
+`frozen_m1_m11`, moves = ⌈2·2·1.3·(stage-2 gates)⌉. Packing and
+emission are identical: `W_cap` 128, `G` 128 (hard 256), `B_mono`
+6,144 (hard 12,288 in a burst; ¾ pre-burst guard), `span_cap` 3,000,
+contagion threshold 24, pad 4; emission budget 16,384
+monomials/window; 4,096 fingerprint lanes. Fresh CSPRNG seeds per run,
+recorded in each run directory.
+
+| parameter | n=64 run | n=128 run |
+|---|---|---|
+| source C | 64 wires, 1,000 gates | 128 wires, 3,000 gates |
+| sandwich (|D|, s, slice gates) | 1,000 / 384 / 1,280 | 3,000 / 896 / 2,560 |
+| sandwich circuit | 2,832 g / 128 w | 7,920 g / 256 w |
+| stage-2 output | 771,029 g / 256 w | 2,240,757 g / 512 w |
+| mixer moves | 4,009,351 | 11,651,936 |
+| stage-3 output (wall time) | 1,648,679 g (~26 min) | 4,803,546 g (~76 min) |
+| carried / winnable | 145,481 / 131,226 (90.4%) | 426,891 / 382,071 (89.5%) |
+| hidden by construction | 125,592 (95.7% of winnable) | 337,934 (88.4%) |
+| windows | 10,702 | 28,986 |
+| window monomials med/p90/max | 194 / 301 / 7,682 | 207 / 332 / 2,846 |
+| exposed distinct at boundaries | 23,347 (16.0% of carried) | 89,072 (20.8%) |
+
+---
+
+## 2. Rationale, tradeoffs, and what the process optimizes
+
+### 2.1 The threat model that motivates windowing
+
+Every exposure metric in the 2026-10 program — per-value visibility,
+the t\* exposure census (exact affine predictors), the equality-cluster
+attack — quantifies over **cuts of the delivered spelling**: the
+adversary reads wire values at positions between delivered blocks. Two
+measured laws made gate-granular delivery look fundamentally leaky:
+
+- **Reader law**: any value with ≥1 bare reader is ~100% visible under
+  every-gate cuts (measured 3.2 / 55.4 / 63.8 / 100.0% visibility at
+  fanout 0/1/2/≥3 on the TDP, stage 3).
+- **Closure law**: function preservation forces interior basis changes
+  to close (the second bracket undoes the first), so **no self-closing
+  interior move can raise the min-over-cuts predictor weight at any
+  dose** — a CNOT/transvection twist sweep that bloated the circuit
+  ×37 left t\*=1 mass at 84%. The interior move system contains no
+  weight-raising operator; the t\* spectrum belongs to the circuit
+  ends.
+
+Windowing attacks the quantifier instead of the values: **a window has
+no interior cuts.** A value is exposed only if it is alive across a
+window boundary. Deleting cuts (a) makes read values hideable for the
+first time — the reader law presumed a cut between every pair of
+gates; (b) sidesteps the closure law — nothing is rewritten between
+cuts, the cuts are deleted; and (c) annihilates all within-window
+text: templates, k-grams, gate provenance, stage-2 vocabulary
+signatures, and the gate count itself vanish into a canonical
+polynomial. What remains observable is exactly: values alive at
+boundaries, the boundary equality-linkage graph, and the outputs.
+
+### 2.2 The objective function
+
+The packer maximizes the number of **distinct carried stage-2 values
+hidden** — ground truth measured by fingerprint simulation on the
+emitted order, not a proxy. Secondary structure it respects:
+
+- value-level all-or-nothing (a value with one exposed span is
+  exposed; partial hiding is worthless);
+- the C-view invariant: the source computation's interior must stay at
+  **zero** exposure (measured: the output-only floor — exactly the 64 /
+  128 outputs visible, all t\*=1 — holds through the entire delivery
+  stage at both scales);
+- ANF budget and window caps (digestibility and size).
+
+### 2.3 Where the leverage is: reorder, not boundary placement
+
+Measured on the TDP: delivered-order carrier spans are long and waists
+are flat — optimal boundary placement in the *given* order is
+approximately uniform placement, worth almost nothing. But a value's
+minimal bare residency under commuting reorder is its **DAG interval**,
+median 6 gates on stage-3 material — **×21 shorter** than its spelled
+span. The entire mechanism is: reorder to compress each value's bare
+residency to its DAG interval, then drop windows around the intervals.
+
+### 2.4 The window-size tradeoff
+
+The one real tradeoff surface is window size G:
+
+- **Hiding rises ~+14 points per doubling of G** (measured sequence,
+  migrated material: 46% hidden @G=64, 58% @G=128, 72% @G=256 — 5.2%
+  of the full stage-2 vocabulary still exposed at G=256).
+- The **ANF budget never binds**: median monomial usage is ~200–400 of
+  multi-thousand budgets even at 512-gate windows, zero overflows
+  anywhere in the program. The limit on G is architectural, not
+  combinatorial: boundary count vs the circuit ends, the
+  re-synthesis-hardness floor (very small windows are canonically
+  re-synthesizable; very large windows reduce the boundary count
+  toward the ends), and delivery size (≈ ×12 at G=512).
+- Scheduler quality, not material, is the current binding constraint:
+  on migration-refreshed material, 93% of carried values are winnable
+  while v3 hides 72–73% of winnable; the gap is attributed by the
+  death counters to burst-time closes and sibling cascades (scheduler
+  v4, value-unit planning with conflict-graph pre-grouping, is the
+  specified next step; estimated ceiling 94%).
+
+Packer evolution, same ground truth (% of carried values hidden,
+stage-3 input, W=20 era → G-era): naive uniform windows 5% → v1
+interval-burst scheduler 21% → v2 value-level all-or-nothing 32% →
+v2.1 35% → v3 budget-adaptive 46/58/72% at G=64/128/256.
+
+### 2.5 Costs accepted
+
+- **Size** ×4–5 raw (×≈0.9 after compression, see §1.3): the format
+  buys erasure, not compression.
+- **Boundaries are new visible structure**: the window lattice itself
+  is observable. Measured consequence: a value recurring ≥5 times
+  among the carried values is *always* boundary-exposed
+  (deterministic at both scales; non-exposed maximum multiplicity
+  is 4). This "recurrence law" shifted the program's focus upstream to
+  stage-2 carrier hygiene (the celebrity program: migration,
+  hot-targeting, threshold retirement), since no boundary placement
+  can hide a value whose spans tile the stream (celebrity liveness
+  was measured at ~110 of 256 wires at *every* cut position).
+- **Affine-metric caveat**: all exposure numbers quantify exact affine
+  predictors at boundaries; the approximate/nonlinear-predictor flank
+  is an open thread of the exposure program (known empty for the
+  QC-style detector: agreement ≥0.98 coincides with exact equality).
+
+---
+
+## 3. Why stages 4–6 were abandoned
+
+The decision rests on the stage-wise exposure study (nine arms × four
+stages, random family and TDP, 2026-10-03) plus the direct
+input-choice measurement of the windowing program (2026-10-04).
+
+### 3.1 What stages 4–6 actually bought (measured)
+
+Per-stage visibility % [t\*≥2 share %], random-family arms, every-cut
+grids (excerpt; full table in `runs/exposure_report_20261003/REPORT.md`):
+
+| arm | s3 mix | s4 split | s5 crossing | s6 fcompress |
+|---|---|---|---|---|
+| random f=2 | 85.1 [1.5] | 84.0 [8.3] | 76.1 [8.9] | 79.2 [5.8] |
+| f=10 | 79.5 [1.7] | 79.0 [5.1] | 76.0 [6.1] | 76.3 [4.3] |
+| eq. arity-2 | 82.6 [1.3] | 81.6 [4.5] | 78.7 [6.0] | 79.4 [4.6] |
+| twists p=.05 | 87.0 [2.2] | 87.0 [5.8] | 82.7 [7.8] | 83.9 [5.8] |
+
+Stage signatures, replicated at TDP scale:
+
+- **Stage 4 (split)** is a visibility-neutral t-raiser: it moves
+  4–8 points of t\*=1 mass into small parities and erases nothing. In
+  carrier terms it *adds* exposure surface: 105.7k → 107.9k carried
+  values on the TDP.
+- **Stage 5 (crossing)** was the only post-processing eraser:
+  −3…−5 points of visibility in every arm (105.7k → 89.8k carried on
+  the TDP). This is the entire measured security content of the old
+  post-3 pipeline.
+- **Stage 6 (fcompress)** partially *refunds* stages 4–5: +1…+3 points,
+  parities collapse back. Its packing component is exposure-neutral
+  (pack-only ≡ crossing to ±0.1; pack-then-compress ≡
+  compress-then-pack, order flip null at +2% size).
+- At TDP scale the whole chain is flat: stage-2-view visibility
+  26.5 → 26.5 → 25.6 → 27.2/27.3% across s3 → s6. The C-view
+  output-only floor is owned by stage 2 and never moves.
+
+So the old pipeline's net effect was: one eraser (crossing), one
+neutral t-raiser (split) whose gains the compressor refunded, at the
+price of large inflation and run time.
+
+### 3.2 The direct comparison: windowing s3 vs windowing s5
+
+The windowing program's first decision was its input. Measured:
+
+- **Crossing welds the dependency structure.** Its ×3.45 inflation
+  stretches the median DAG interval from 6 gates (s3) to 26 (s5) —
+  ×4 — so the reorder lever that windowing lives on is largely
+  destroyed. Per-value hideable ceilings at matched window size W=20:
+  69.6% of carried values (s3) vs 46.9% (s5).
+- **Crossing's erasure does not pay for the welding.** In absolute
+  terms at W=20: ~32k exposed values on the s3 ceiling vs ~48k on the
+  s5 ceiling — windowing the raw mixed circuit strictly dominates
+  windowing the crossed one, despite crossing's 15% carrier erasure.
+- **Split only adds carriers** (§3.1), and the walk family generally
+  is exposure-hostile: the order-preserving greedy walk measured
+  97.4% exposure against its own 79.4% floor — verbatim-dressing
+  passes are exposure-*maximal*.
+
+Against these, a single windowing pass hides 58–72% of carried values
+(G=128–256) — an order of magnitude beyond crossing's −3…−5 points —
+while *deleting* within-window text rather than respelling it, at
+lower wall-clock cost than the crossing walk it replaces.
+
+### 3.3 Division of labor after the replacement
+
+- **Stage 2** — semantic hiding: which values ever exist bare (data
+  path at zero bare reads; band carrier hygiene: lifetime, migration,
+  dedup/retirement, seed density).
+- **Stage 3** — un-invertible respelling, dilution, DB-form digestion.
+- **Windowed ANF delivery (new stage 4)** — cut deletion: *where*
+  anything is observable at all, plus canonical within-window
+  respelling.
+- **Circuit ends (sandwich/slicing)** — the t\*-spectrum of the
+  survivors (interior moves provably cannot move it).
+
+---
+
+## 4. Production reference results (pipeline v2.1, final64/final128)
+
+End-to-end: classic sandwich → embedded masking (rich band seed,
+persistent carrier migration dose 8, read-pressure partners, feistel
+slice guards) → db_mixing → window-pack G=128 → per-window sparse ANF.
+Function checks green at every stage, both scales; all windows
+re-verified; zero budget overflows; fresh CSPRNG seeds recorded in the
+run directories.
+
+| leakage parameter | n=64 | n=128 |
+|---|---|---|
+| C-view (the secret) | 6.4% = exactly the 64 outputs, t\*=1 | 4.3% = the 128 outputs (+2 interior t\*=4) |
+| stage-2-view visible (boundary lattice, exact) | 27.3% (t\*=1 22.1, t\*≥2 5.2) | 28.4% (23.6 / 4.7) |
+| distinct values exposed at boundaries | 23,347 = 16.0% of carried = 3.8% of vocabulary | 89,072 = 20.8% / 5.0% |
+| class uniformity (data/mid/band) | 26.5 / 27.3 / 27.7% | 28.3 / 27.2 / 28.7% |
+| non-exposed max multiplicity | 4 | 4 |
+| max boundary equality cluster (proxy) | 342 | 397 |
+
+The residual exposed mass is dominated by high-recurrence band
+vocabulary (the celebrity class, 330/966 values of multiplicity ≥257),
+which is a **stage-2 birth phenomenon**, not a packing phenomenon:
+boundary redrawing was measured infeasible (celebrity spans
+median 494 / p95 2,505 packed gates, liveness ~110 wires at every cut
+position), and the fix in progress (threshold retirement of band
+carriers at the emitter) operates upstream of this stage. The delivery
+stage's own contract — C-view at the output-only floor, within-window
+annihilation, recurrence-law behavior at boundaries — is identical
+with and without that fix.
+
+---
+
+## 5. Artifacts and tools
+
+- Design doc: `docs/windowed_delivery_design.md` (architecture + the
+  stage-2 band-subsystem spec).
+- Tools: `runs/ncdb_ab_20261001/window_pack3.py`, `anf_compose.py`,
+  `boundary_cluster.py`, `waist/recurrence2.py`, `waist/anf_dump_eval.py`,
+  `wire_balance.py`; exposure scans via `hmap_affine --exposure
+  --g-cuts` (boundary-lattice mode).
+- Production artifacts: `runs/ncdb_ab_20261001/waist/final64/`,
+  `.../final128/` (stage-2/3 circuits, packed order + bounds,
+  deliverable.bin + compressed forms, full census logs, seeds).
+- Measurement record: `runs/ncdb_ab_20261001/RESULTS.md`;
+  stage-wise study: `runs/exposure_report_20261003/REPORT.md`.

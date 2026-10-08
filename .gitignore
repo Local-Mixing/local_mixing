@@ -8,6 +8,7 @@
 !/pyproject.toml
 !/.gitignore
 !/README.md
+!/PUNCHLIST.md
 !/.github/
 !/configs/
 !/src/
