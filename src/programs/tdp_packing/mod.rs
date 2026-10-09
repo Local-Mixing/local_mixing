@@ -1035,13 +1035,11 @@ fn private_dir(dir: &Path) -> Result<(), Stage4Error> {
     Ok(())
 }
 
+/// Writes one output file's content.
+type FileBody<'a> = Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()> + 'a>;
+
 /// Write each (path, writer) via *.tmp; commit all or none.
-fn write_all_staged(
-    files: Vec<(
-        PathBuf,
-        Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()> + '_>,
-    )>,
-) -> Result<(), Stage4Error> {
+fn write_all_staged(files: Vec<(PathBuf, FileBody<'_>)>) -> Result<(), Stage4Error> {
     let mut staged: Vec<Staged> = Vec::new();
     let r = (|| -> Result<(), Stage4Error> {
         for (path, f) in files {
@@ -1195,10 +1193,7 @@ fn cmd_repair(a: &Args) -> Result<(), Stage4Error> {
         &pa.display().to_string(),
         &pw.display().to_string(),
     );
-    let mut files: Vec<(
-        PathBuf,
-        Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()>>,
-    )> = vec![
+    let mut files: Vec<(PathBuf, FileBody)> = vec![
         (
             rep_path.clone(),
             Box::new(|w| write_repair_mpmct(w, r.n_header, &r.gates)),

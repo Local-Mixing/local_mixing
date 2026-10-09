@@ -106,9 +106,9 @@ fn reorder_core<'a>(
         run_len[cur[w] as usize] += 1;
         cur[w]
     };
-    for i in 0..m {
+    for (i, &off) in acc_off[..m].iter().enumerate() {
         let x = gate(i);
-        let o = acc_off[i] as usize;
+        let o = off as usize;
         acc_run[o] = assign(x.target as usize, true, &mut run_len, &mut run_next);
         for (k, &(c, _)) in x.ctrls.iter().enumerate() {
             acc_run[o + 1 + k] = assign(c as usize, false, &mut run_len, &mut run_next);

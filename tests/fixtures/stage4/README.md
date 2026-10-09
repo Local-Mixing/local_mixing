@@ -128,11 +128,52 @@ compares stdout, bounds and both digests for every case.
 `tests/manual/stage4/pack_parity.sh` compares the 8 archived real packs
 against Appendix B.
 
+## `repair/`: the repair `repair.sh` (P4)
+
+`repair/cases.txt` lists `name packed bounds C n split_budget fix fallback`
+(paths relative to this directory). Inputs:
+
+- `n8_L8` (`@n8`): the real n=8 pack, i.e. `window_pack3.py` at the
+  production argv on `cview_n8/g2.mpmct1` + `n8_L8/g3.mpmct1` (in the tests
+  it is made by `tdp_packing pack`, whose output is the oracle's), with the
+  calibration C `n8_L8/c.g57`: 3 cancel passes (1,327 pairs), floor met at
+  fix iteration 1, one clean exposure-aware split. Its expected circuit is
+  `n8_L8/rep.mpmct1` (asserted equal by `regen.sh`).
+- synthetic cases from `repair_cases.py` (deterministic, seeds fixed): a
+  random g57 C on 8 wires run verbatim on the data wires of a 32-wire P,
+  with noise gates on the ancillas (some reading data wires, which blocks
+  slides) and inserted identical pairs, some nested; boundaries every few
+  gates. `leaky` (split budget 64), `leaky_it23` (the same inputs, budget 256,
+  2 fix and 3 fallback iterations), `dense` (64), `sparse` (256): fix moves
+  in all four iterations, the fix loop exhausted, merges, forced splits
+  (`WARNING`), clean splits, and runs that end with visible non-output rows
+  (the oracle's count test `visible <= n` passes on `sparse` while the
+  identity test does not: exit 5 in Rust). `orderdep` (budget 104): the
+  `anf_cases.py` product windows written so the cancel pass keeps them; the
+  split decisions depend on the CPython 3.9 set order (6 splits; none under
+  `canonical`).
+
+Expected (`repair/expected/<name>.*`), all from the unmodified oracle, each
+case in its own sandbox with `SPLIT_BUDGET`/`FIX_ITERS`/`FALLBACK_ITERS`
+rewritten exactly once: `rep.mpmct1` (synthetic cases), `bounds`,
+`exposure.tsv`, `allcuts.tsv`, `wit.tsv`, `cview.log` and `log` (the
+`repair.sh` stdout up to its report part, `== <name> rep512 final`), with
+the sandbox directory normalized to `<DIR>`. `coverage.txt` holds the Rust
+`repair --stats` counters per case plus whether `--anf-cap-semantics
+canonical` changes the bounds; `regen.sh repair` asserts the coverage.
+`tests/integration/tdp_packing.rs` (`repair_matches_oracle`) compares every
+file byte for byte (logs after the `<DIR>` normalization; the oracle's first
+`verify_equiv` runs in the background, so the two verify lines are compared
+as a set and the other lines in order). The lattice without an interior cut
+(the oracle's `hmap_affine` panics on it) is a Rust-only test
+(`repair_single_window_case`). `tests/manual/stage4/repair_parity.sh`
+compares the 8 archived real repairs against Appendix B.
+
 ## `regen.sh`
 
     HMAP_BASELINE=... ORACLE_PY=/usr/bin/python3 CARGO_TARGET_DIR=... \
     FROZEN_DB_DIR=~/code/local_mixing/frozen_db/frozen_m1_m11 \
-    WORK=<durable scratch> bash regen.sh [n8_L8] [anf] [container] [pack]
+    WORK=<durable scratch> bash regen.sh [n8_L8] [anf] [container] [pack] [repair]
 
 A full rerun of `regen.sh n8_L8 anf container` (2026-10-08) reproduced every
 committed file byte for byte (gen, mixer and the oracle chain are
