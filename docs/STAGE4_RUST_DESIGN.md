@@ -725,16 +725,16 @@ name = "tdp_packing"
 path = "src/programs/tdp_packing/main.rs"
 ```
 
-The binary has no required features. It lives in `src/programs/tdp_packing/{main.rs,mod.rs,cli.rs}`. It reads **no environment variables**; threads are set by `--threads` only.
+The binary has no required features. It lives in `src/programs/tdp_packing/{main.rs,mod.rs,run.rs}` (`run.rs` is the production `run` command; `mod.rs` the parity subcommands, argument parsing and staged output). It reads **no environment variables**; threads are set by `--threads` only.
 
 ### 5.1 CLI
 
 ```
 tdp_packing run   --stage2 <tdp.mpmct1> --stage3 <db_mixing.mpmct1> --source-c <tdp.mpmct1.source_c.g57>
-                  --n <N> --out-dir <DIR>
+                  --n <N> --out-dir <DIR> [--label tdp]
                   [--window-gates 512] [--interval-cap 512] [--monomial-budget 24576] [--span-cap 3000]
                   [--split-budget 65536] [--fix-iterations 4] [--fallback-iterations 4]
-                  [--anf-cap-semantics cpython39|canonical] [--zero-slice-samples 4096]
+                  [--anf-cap-semantics cpython39|canonical]
                   [--allow-floor-miss] [--allow-over-budget] [--threads K] [--no-oracle-files]
 tdp_packing pack      <A> <B> <W_cap> <G> <B_mono> <span_cap> <label> <out.mpmct1>      # WP argv, parity mode
 tdp_packing repair    --packed P --bounds B --source-c C --n N --out-dir DIR [repair flags] # repair.sh parity mode
@@ -745,6 +745,8 @@ tdp_packing decode    <file> --format raw --n N | --format container [--stats]
 tdp_packing eval      <file> --format … --input <hex|file>
 tdp_packing census    <A> <P> <B> <label>                                                # link_census parity
 ```
+
+`--label` is the text prefix of the report lines (`<label>-G512`, `<label>-rep512`; the oracle's `TAG`); it reaches no binary artifact. The zero-slice check always draws 4096 samples (the constant `ZERO_SLICE_SAMPLES`; there is no flag). The parameters are bounded as in the managed driver's `[packing]` (`PackParams::validate`, `RepairParams::validate`): window gates and interval cap 1..=10^6, monomial budget, span cap and split budget 1..=10^9, iterations 0..=1000; anything else is exit 2 (beyond these the scheduler's `2·G`, `G − load` and `8·b_mono` caps would wrap in release builds).
 
 ### 5.2 Inputs
 
@@ -770,6 +772,8 @@ The directory is created with mode 0700, and every file is created under umask 0
 | `packing.report` | machine-readable report (§5.5), publishable | no |
 
 Nothing is written outside `--out-dir`.
+
+A reused `--out-dir`: once the inputs have loaded, `run` removes every file of the table above (for this `G`, and its `*.tmp`) before writing anything, so a failed run never leaves a deliverable, `packing.report` or intermediate that belongs to an earlier run (an input error, exit 2 or 3, touches nothing). On success the commit order is `deliverable.bin`, `deliverable.tdp4`, then `packing.report`: the report is the completion record, and a directory without one, or with a status other than `ok`, holds no recommended deliverable. Each file is renamed separately (renames cannot be undone as a group); after a failed rename the remaining `*.tmp` files are removed.
 
 ### 5.4 Exit codes
 
@@ -842,7 +846,7 @@ All fields are little-endian. `deliverable.tdp4[48:] == deliverable.bin`, which 
 **The oracle is not edited.** Parity compares `deliverable.bin` (and `deliverable.tdp4[48:]`) with the oracle's raw body. The header is tested by:
 
 - decoder unit tests;
-- a 15-line standalone writer, `tests/manual/stage4/container_header.py` (`struct` + `zlib.crc32`), which `parity.sh` uses to rebuild the header from the oracle body and `cmp` the whole container.
+- a 15-line standalone writer, `tests/manual/stage4/container_header.py` (`struct` + `zlib.crc32`), which `anf_parity.sh`, `run_parity.sh` and `reproduce_val_chain.sh` use to rebuild the header from the oracle body and `cmp` the whole container.
 
 The decoder (`serialize::decode`, `tdp_packing decode`) validates the following (the same set `port_runs/anf_spec/decode_check.py` verified on vA64a):
 
@@ -952,14 +956,15 @@ Calibration mode never draws a random mix seed.
 ### 8.4 Validation and redaction
 
 - `tdp_gen.sh` parses `SEEDS` strictly: exactly the five keys, `gen_seed` and `mix_seed` through `bounded_uint 0 9223372036854775792`, and `run_key` as 64 lowercase hex characters. A malformed file is fatal (exit 2).
-- **Gen banner check.** After stage 2, bash extracts `seed=`, `gadget_seed=` and `sandwich_seed=` from line 1 of `stage12.log` and compares each with `GEN_SEED` in bash. It prints only `gen seeds: verified` or a fatal "gen used a different seed than SEEDS". With strict gen parsing (D17) this is a second line of defence.
+- **Gen banner check.** After stage 2, bash requires line 1 of `stage12.log` to show `seed=(file) gadget_seed=(file) sandwich_seed=(file)`, i.e. that gen took all three seeds from the driver's descriptors (§8.5). It prints only `gen seeds: verified` or a fatal "gen used a different seed than SEEDS". With strict gen parsing (D17) this is a second line of defence.
 - `render_command` (`runner.rs:542`) redacts the value after **every** flag whose name contains `seed`, except `--seed-file`, whose path is not secret. Seed values are never printed to `tdp_gen.log`, stdout or the dry-run output.
 - `tdp_command.conf` records `seed_record=SEEDS`, `seed_source`, `seed_bits=63` and `calibration_only`, and nothing derived from the seeds. The stage-12 marker records `seeds_mac = HMAC-SHA256(run_key, "gen_seed=…\nmix_seed=…\n")`, so a swapped `SEEDS` file is detected on resume without publishing a brute-forceable hash.
 
 ### 8.5 Use of the seeds
 
 - Gen receives `GEN_SEED` as all three positional seeds: `seed`, `gadget_seed` and `sandwich_seed` (D1).
-- Stage 3 receives `--seed "$MIX_SEED"` (D7). This is the only argv that carries a seed, as in the reference. The mixer's own argv is visible in `ps` exactly as in `val_chain.sh`; the `ps-seed-leak` hygiene rule applies.
+- Stage 3 receives `MIX_SEED` as the mixer seed (D7).
+- **Neither seed is on a stage binary's argv** (review round 1). `val_chain.sh` passes them as arguments, where `ps` shows them to every local user for the life of the process (seconds for gen, 25 min to hours for the mixer), and the gen seed alone regenerates the secret C and the whole stage-2 artifact. The driver instead hands each value over on an inherited file descriptor: gen gets `@/dev/fd/3 @/dev/fd/4 @/dev/fd/5` (a positional seed of the form `@PATH` is read from PATH), the mixer `--seed-file /dev/fd/3`, each fed by a bash here-string (`3<<< "$GEN_SEED"`; a builtin, so the value is never on any argv; nothing is written to disk). The values reaching the binaries are unchanged, so every output byte is too. Their banners print `(file)` in place of a file-borne seed, so `stage12.log` and `stage3.log` hold no seed value either. The only on-disk copy is the private `$RUN/SEEDS` (and, for a calibration run, the operator's seed file). Running `val_chain.sh` itself, or a stage binary by hand with `--seed N`, still exposes the seed in `ps`; the `ps-seed-leak` hygiene rule applies there.
 
 ---
 
@@ -986,7 +991,7 @@ Targets on a 10-core Apple-silicon Mac (release build):
 | one full C-view scan | ≤ 5 s | ≤ 30 s | parallel over cuts; about 7 000 cuts × 3 000 rows at n=128 |
 | repair total | ≤ 1 min | ≤ 4 min | at most 4 fix scans with a fresh oracle each; the fallback loop and every split share one memo |
 | emit + all checks | ≤ 20 s | ≤ 90 s | streamed body; flat-arena decode; exhaustive windows ≤ 16 support |
-| **stage 4 wall** | **≤ 2 min** | **≤ 6 min, hard ceiling 10 min** | in `packing.report`; asserted by `parity.sh` |
+| **stage 4 wall** | **≤ 2 min** | **≤ 6 min, hard ceiling 10 min** | `time.*_s` in `packing.report`; measured (not asserted) by `run_parity.sh` and the acceptance runs (§12) |
 | **stage 4 peak RSS** | ≤ 1.5 GB | **≤ 3 GB** | G3 as XGate (4.6M gates, about 180 MB); blake2b value index (about 2M × 20 B, about 40 MB); intervals ≤ 100 MB; arena sets ≤ 8 concurrent × ≤ 60 MB; C-view streaming plus checkpoints and memo ≤ 200 MB; decoded deliverable as a flat arena (about 110 MB) |
 
 ---
@@ -1104,9 +1109,9 @@ Tests:
   - a tiny split budget with a 1-gate over-budget window gives 6, and with `--allow-over-budget` gives 0;
   - an unwritable out-dir gives 7.
 
-### 10.5 Real-artifact parity (manual): `tests/manual/stage4/parity.sh`
+### 10.5 Real-artifact parity (manual): `tests/manual/stage4/*_parity.sh`
 
-This script reads `waist/<tag>/` read-only, writes to `port_runs/parity_<tag>/`, and never runs in CI. For each of the 8 tags:
+As built, the plan below is split over five scripts, one per component: `cview_parity.sh` (step 0 and the HA comparisons), `pack_parity.sh` (step 1; `pack_replay.sh` for step 6), `repair_parity.sh` (step 2), `anf_parity.sh` (steps 3 and 5) and `run_parity.sh` (the whole `tdp_packing run`); their results are recorded in §12. They read `waist/<tag>/` read-only, write under `port_runs/`, and never run in CI. Time and peak RSS are measured with `/usr/bin/time -l` and recorded, not asserted (step 7). For each of the 8 tags:
 
 0. **Provenance of the archived C-view.** Run the baseline HA and the archive-era HA (§10.1) on the archived `rep512.mpmct1` + `rep512.bounds`, and compare both with the archived `rep512.{exposure,allcuts,wit}.tsv` and line 2 of `rep512.cview.log`.
    - **If the baseline reproduces the archive:** the targets are Appendix B.
@@ -1207,47 +1212,23 @@ The anchor proves that the managed defaults reproduce the **chosen runs themselv
    - a one-line legacy seed file is rejected with the migration text;
    - `-s` is rejected;
    - a gen mock whose banner reports a different seed is fatal;
-   - no seed value appears in `tdp_gen.log`, stdout or the dry-run output.
+   - no seed value appears in `tdp_gen.log`, `stage12.log`, `stage3.log`, stdout or the dry-run output;
+   - no seed value is on any stage binary's raw argv: gen gets `@/dev/fd/3..5`, the mixer `--seed-file /dev/fd/3` (the mocks resolve them and record both forms).
+   - Every assertion is its own command (errexit ignores all but the last command of an `&&` list and any `!`-negated command).
 8. **`tests/shell/tdp_stage4_resume.bash`:**
    - a resume after an `--allow-floor-miss` run does not print `PIPELINE COMPLETE`;
    - regenerating stage 3 forces stage 4;
    - a changed packing parameter forces stage 4;
    - a tampered `packing.recipe` forces stage 4;
-   - exits 5, 6 and 7 are reported with their meanings.
+   - exits 5, 6 and 7 are reported with their meanings;
+   - every check is a plain command or an explicit `if … then exit 1` (not `!` or `&&`, which errexit does not enforce).
 
 The CI workflow adds:
 
-- `--test tdp_packing` to "Runtime and command correctness";
+- `--test tdp_packing` and `--test stage2_typed_params` (gen's L8/A output bytes pinned to the validated binary; the only CI guard of stage-2 bytes, since `tdp_stage12_parity.bash` compares one binary with itself) to "Runtime and command correctness";
 - `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash` and `tdp_stage4_resume.bash` to "TDP script flags and block sizing";
 - `--features security-tools --test hmap_affine_exposure` to "Trace-affine heatmap". This test runs the **refactored** HA on the n8 fixture and compares with TSVs produced by the **baseline** HA;
 - the new `stage4-oracle` job (§10.6).
-
-### 10.10 Acceptance round 1: vL128a (n=128, L8), 2026-10-09
-
-`tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128` with every parameter at its default (= the recommended configuration: G=512, interval cap 512, monomial budget 24576, span cap 3000, split budget 65536, 4+4 iterations), on the archived inputs; outputs in `port_runs/vL128a_r1/`.
-
-| artifact | vs archived oracle output |
-|---|---|
-| `packed_G512.mpmct1`, `.bounds` | identical |
-| `rep512.mpmct1`, `rep512.bounds` | identical (4 596 808 → 4 259 448 gates, 7 058 boundaries) |
-| `rep512.exposure.tsv`, `.allcuts.tsv`, `.wit.tsv` | identical |
-| `deliverable.bin` | identical; `deliverable.tdp4[48:]` = `deliverable.bin` (the 48-byte container header is the only addition) |
-| `anf_rep512.txt`, `link_rep512.txt`, `pack_G512.txt` | identical |
-| `repair512.log`, `rep512.cview.log` | identical except the absolute output paths printed in them |
-
-Independent checks on the Rust outputs: the standalone `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (current tree) reports **128 visible of 3 000 born values (the exact floor)** and reproduces the three TSVs byte for byte; `verify_zero_slice C rep512.mpmct1 128 512` PASS; the Python `link_census.py` on the Rust `rep512.*` equals the oracle `link_rep512.txt` (proxy L2 16 106, M2 187 248).
-
-Cost on this Mac (machine shared with another session, load about 5):
-
-| | wall | CPU (user+sys) | peak RSS |
-|---|---|---|---|
-| Rust `tdp_packing run` (all checks included) | 119 s | 627 s | 2.04 GB |
-| Python oracle, sandboxed (CPython 3.9.6, pinned baseline HA) | 6 921 s | 1 943 s | 5.08 GB |
-| — `window_pack3.py` | 176 s | 171 s | 5.08 GB |
-| — `repair.sh` (incl. `anf_compose.py`, `link_census.py`) | 6 418 s | 1 445 s | 3.40 GB |
-| — `anf_dump_eval.py` | 328 s | 327 s | 2.00 GB |
-
-The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its repair wall time is far above its CPU time (the machine was shared during the four fix scans and the fallback), so the ratio is about 58× in wall time and 3× in CPU time. Both §9 n=128 targets hold (wall ≤ 6 min, peak RSS ≤ 3 GB).
 
 ---
 
@@ -1388,19 +1369,22 @@ fi
 **`runner.rs`.**
 
 - Resolve the seeds and create `$RUN/SEEDS` (create_new, 0600) **before** `prepare_recipe_manifest` (§8.2).
-- `configure_environment` becomes **allow-list based**: `command.env_clear()`, then `ALLOW_ENV`, then the registry's driver-set variables (`FROZEN_DB_DIR`, `FROZEN_FILTER` per D11, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `TDP_SOURCE_C` when `source.path`, the cache sizes), then the script variables `TDP_PREPROCESSING_PRESET` / `TDP_SCHEDULE` / `TDP_PACKING_*`.
+- `configure_environment` is **allow-list based**: `command.env_clear()`, then the inherited `ALLOW_ENV` variables (PATH, HOME, TMPDIR), `LANG=C`/`LC_ALL=C`, `TDP_BIN_DIR`, `FROZEN_DB_DIR` (when a store is set) and `TDP_GEN_ALLOW_EMPTY_STORE=1` (plumbing tests). Nothing else: every recipe setting (preset and knobs, schedule, packing parameters, filter mode, pieces, leakage repair) travels as a `tdp_gen.sh` flag (`script_args`), and bash builds each stage binary's environment itself (`stage_exec`: `FROZEN_FILTER` per D11, `FROZEN_REGULAR_VALUE_CONVENTION`, the cache sizes, the `EMBEDDED_MASKING_*` preset variables, `TDP_SOURCE_C` when `source.path`).
 - Before launching, the inherited environment is checked against the registry and refused with the same message as bash.
 - `render_command` redaction per §8.4.
 - `script_args`: `--preprocessing-preset`, `--source-gates-rule`, the `--packing-*` flags. No seed flags.
 - Map `tdp_gen.sh`'s exit codes to messages via the shared table (`Stage4Error::meaning` for 2-8 and 101).
 - The build and dry-run lists add `--bin tdp_packing`. Delete the "not driven yet" message.
+- A fresh run with `build_binaries = true` also builds the report-only `hmap_affine` in a separate `cargo build --features security-tools --bin hmap_affine` (same target directory and triple, so the feature never reaches the production binaries). `tdp_gen.sh` runs val_chain.sh's stage-2 span check with it (`$RUN/stage2_span.{txt,tsv}`); without it the report is skipped with a note.
 
 **`paths.rs`.** Stage-4 prerequisites for `rerun_from_stage = 4`.
 
 **`manifest.rs`.**
 
 - `CURRENT_RECIPE_VERSION = 10`. `read_recipe_version` accepts only 10; v9 gives "recipe v9 run: resume with the checkout that created it".
-- `production_binary_fingerprints` adds `tdp_packing`.
+- `production_binary_fingerprints` adds `tdp_packing`; `run_binary_fingerprints` adds `hmap_affine` (`binary_hmap_affine_xxh3`) when it is in the binary directory, and the manifest records `stage2_span_report=hmap_affine|skipped`.
+- `frozen_filter=<mode>(<resolved>)`: the `FROZEN_FILTER` value stage 3 will use, resolved as `tdp_gen.sh` does (`auto`: 1 without `filters.bin`, 0 with one while no neutrality comparison is recorded; `unset` without a store). The script records the value it actually set in `$RUN/stage3.settings`.
+- `pinned_recipe` is derived, not constant: `val_chain-L8-20261007` or `val_chain-A-20261007` only for embedded masking with preset L8/A, the validated |C| for a generated source, schedule validated in one piece, `FROZEN_FILTER` resolving to 1 on a real store, no leakage repair and default packing; otherwise `none`.
 - The manifest prints **resolved** values only, which removes the `hold` "30" text (D18):
 
 ```
@@ -1413,11 +1397,12 @@ stage3_verify_every=default(10000)  stage3_report_every=default(50000)
 source_gates=1000  source_gates_rule=validated|explicit|formula
 seed_record=SEEDS  seed_source=random|explicit  seed_bits=63  calibration_only=false
 env_policy=allowlist-v1  cache_mb=lookup:2048,canon:256,xpoly:1024  canon_caps=unbounded
-frozen_filter=auto(<resolved>)
+frozen_filter=auto(<resolved>)        # e.g. auto(1); stage3.settings records the value set
 packing_params=default  packing_window_gates=512  packing_interval_cap=512  packing_monomial_budget=24576
 packing_span_cap=3000  packing_split_budget=65536  packing_fix_iterations=4  packing_fallback_iterations=4
 packing_anf_cap_semantics=cpython39  packing_allow_floor_miss=false  packing_allow_over_budget=false
-pinned_recipe=val_chain-L8-20261007
+pinned_recipe=val_chain-L8-20261007   # or val_chain-A-20261007, or none (derived)
+stage2_span_report=hmap_affine|skipped
 ```
 
 **`configs/tdp.toml`** becomes a v2 template. `wires = 128`, and no stage-2 or stage-3 knob appears uncommented. A comment says: "defaults reproduce val_chain.sh CONFIG=L8 as run for vL64a/b, vL128a/b (docs/STAGE4_RUST_DESIGN.md §2); source.gates defaults to 1000 (n=64) / 3000 (n=128)". `lookup_miss_filter` documents the D11 rule.
@@ -1608,6 +1593,31 @@ The CI differential (`tests/stage4/differential.sh`) on four local seeds: 160 ca
 | Python oracle: `window_pack3.py` / `repair.sh` / `anf_dump_eval.py` | 141 s / 4753 s / 1057 s = 5951 s | 136.8 s / 760.8 s / 82.9 s = 980.5 s | 5.14 GB (the packer; repair 3.37 GB, serializer 1.98 GB) |
 
 The oracle's wall time is inflated by contention (it ran in the background next to another n=128 oracle chain and two `circuit_mixer` jobs; `anf_dump_eval.py` used 83 s of CPU in 1057 s, against 65 s wall for its serialization in the archived run); its CPU time is the fair comparison: about 3.2x the Rust CPU, and the Rust wall is 12-14x shorter than the 15-17 min the uncontended oracle chain takes at n=128 (§12 P6). The Rust peak (2.1 GB) is below the 3 GB n=128 target of §9 and 2.4x below the oracle's packer peak.
+
+**Acceptance round 1, vL128a (n=128, L8; 2026-10-09).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128` with every parameter at its default (= the recommended configuration: G=512, interval cap 512, monomial budget 24576, span cap 3000, split budget 65536, 4+4 iterations), on the archived inputs; outputs in `port_runs/vL128a_r1/`.
+
+| artifact | vs archived oracle output |
+|---|---|
+| `packed_G512.mpmct1`, `.bounds` | identical |
+| `rep512.mpmct1`, `rep512.bounds` | identical (4 596 808 → 4 259 448 gates, 7 058 boundaries) |
+| `rep512.exposure.tsv`, `.allcuts.tsv`, `.wit.tsv` | identical |
+| `deliverable.bin` | identical; `deliverable.tdp4[48:]` = `deliverable.bin` (the 48-byte container header is the only addition) |
+| `anf_rep512.txt`, `link_rep512.txt`, `pack_G512.txt` | identical |
+| `repair512.log`, `rep512.cview.log` | identical except the absolute output paths printed in them |
+
+Independent checks on the Rust outputs: the standalone `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (current tree) reports **128 visible of 3 000 born values (the exact floor)** and reproduces the three TSVs byte for byte; `verify_zero_slice C rep512.mpmct1 128 512` PASS; the Python `link_census.py` on the Rust `rep512.*` equals the oracle `link_rep512.txt` (proxy L2 16 106, M2 187 248).
+
+Cost on this Mac (machine shared with another session, load about 5):
+
+| | wall | CPU (user+sys) | peak RSS |
+|---|---|---|---|
+| Rust `tdp_packing run` (all checks included) | 119 s | 627 s | 2.04 GB |
+| Python oracle, sandboxed (CPython 3.9.6, pinned baseline HA) | 6 921 s | 1 943 s | 5.08 GB |
+| — `window_pack3.py` | 176 s | 171 s | 5.08 GB |
+| — `repair.sh` (incl. `anf_compose.py`, `link_census.py`) | 6 418 s | 1 445 s | 3.40 GB |
+| — `anf_dump_eval.py` | 328 s | 327 s | 2.00 GB |
+
+The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its repair wall time is far above its CPU time (the machine was shared during the four fix scans and the fallback), so the ratio is about 58× in wall time and 3× in CPU time. Both §9 n=128 targets hold (wall ≤ 6 min, peak RSS ≤ 3 GB).
 
 ---
 

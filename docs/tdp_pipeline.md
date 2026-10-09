@@ -88,8 +88,8 @@ A run directory holds:
 | Stage | Files |
 | --- | --- |
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
-| 2. Preprocessing | `tdp.mpmct1`, `stage12.log`, `stage12.recipe`; report-only `stage2_mult.txt` (rebirth census) and, when a `security-tools` `hmap_affine` is built, `stage2_span.{tsv,txt}` |
-| 3. Database mixing | `db_mixing.mpmct1`, `stage3.log` (and `db_mixing.leakage_repair.txt` with leakage repair) |
+| 2. Preprocessing | `tdp.mpmct1`, `stage12.log`, `stage12.recipe`; report-only `stage2_mult.txt` (rebirth census) and `stage2_span.{tsv,txt}` (val_chain.sh's span check; the managed driver builds the `security-tools` `hmap_affine` it needs, a standalone run skips it unless `$TDP_BIN_DIR/hmap_affine` exists) |
+| 3. Database mixing | `db_mixing.mpmct1`, `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER`) (and `db_mixing.leakage_repair.txt` with leakage repair) |
 | 4. Packing | `packing/`: `deliverable.tdp4` (the shipped file), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `stage4.log`; `packing.recipe` (keyed completion marker) |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
@@ -177,7 +177,7 @@ them); `stage12.recipe` uses `tdp_stage12_recipe=7`.
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `database.regular_dir` | string, `FROZEN_DB_DIR` or unset | Regular frozen replacement store, required when stage 3 runs. A TOML path overrides the environment path. Needs nonempty `tables.bin` and all 256 shard files. |
-| `database.lookup_miss_filter` | string, `"auto"` | `"auto"`: `FROZEN_FILTER=1` when the store has no `filters.bin` (the reference runs' situation: the mixer notes it and runs unfiltered); when `filters.bin` exists the filter stays off until its output neutrality is recorded. `"on"` requires `filters.bin`; `"off"` never loads it. |
+| `database.lookup_miss_filter` | string, `"auto"` | `"auto"`: `FROZEN_FILTER=1` when the store has no `filters.bin` (the reference runs' situation: the mixer notes it and runs unfiltered); when `filters.bin` exists the filter stays off until its output neutrality is recorded. `"on"` requires `filters.bin`; `"off"` never loads it. The manifest records the mode with the value it resolves to (`frozen_filter=auto(1)`), `$RUN/stage3.settings` the value stage 3 set. |
 | `database.allow_no_database_for_tests` | bool, `false` | Plumbing runs with all replacement channels disabled. |
 
 ### Preprocessing
@@ -261,10 +261,20 @@ seed_source=random|explicit
 ```
 
 Gen receives `gen_seed` as all three of its seeds (C, gadgetization and
-sandwich), the mixer `--seed mix_seed`, exactly as val_chain.sh does. No seed
-travels on a command line between the Rust driver and bash, no seed value is
-printed, and no unkeyed hash of a seed, of $C$ or of a private circuit is
-written; resume markers use HMAC-SHA256 keyed by `run_key`. The manifest
+sandwich), the mixer `mix_seed`, the same values val_chain.sh passes. Unlike
+val_chain.sh, **no seed is on any command line**: val_chain.sh puts them on
+gen's and the mixer's argv, where `ps` shows them to every local user while
+the process runs (the gen seed alone regenerates $C$ and the stage-2
+artifact). The driver hands them over on inherited file descriptors instead
+(gen `@/dev/fd/3 @/dev/fd/4 @/dev/fd/5`, the mixer `--seed-file /dev/fd/3`,
+each fed by a bash here-string, so nothing is written to disk), and the two
+binaries print `(file)` in their banners in place of the value. So no seed
+value appears in `ps`, on the Rust-to-bash command line, in `tdp_gen.log`,
+`stage12.log`, `stage3.log`, the manifest or stdout; the private `SEEDS` (and,
+for calibration, your seed file) is the only copy. No unkeyed hash of a seed,
+of $C$ or of a private circuit is written; resume markers use HMAC-SHA256
+keyed by `run_key`. (Running gen or the mixer by hand with a numeric seed, or
+val_chain.sh itself, still exposes it in `ps`.) The manifest
 records `seed_record=SEEDS`, `seed_source`, and `seed_bits=63` (a stopgap:
 $C$ is generated from at most 64 bits; use `source.path` for production
 deliverables until the 256-bit decision, design §13.1).
@@ -383,7 +393,7 @@ count), exactly val_chain.sh's command:
 ```text
 circuit_mixer --input tdp.mpmct1 --output db_mixing.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2
     --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024
-    --db-total-terms 2048 --no-local-verify --seed <mix_seed>
+    --db-total-terms 2048 --no-local-verify --seed-file /dev/fd/3   # mix_seed; val_chain.sh: --seed <mix_seed>
 ```
 
 `--verify-every` and `--report-every` stay at their defaults: the global
@@ -441,7 +451,12 @@ and repair certificate, both sampled equivalence checks, decode = window
 ANF, window ANF = gates (exhaustive up to 16 support wires, sampled above),
 `anf_dump_eval.py`'s evaluation check, and the zero slice of the deliverable
 against $C$ (4096 inputs). Outputs are written to `*.tmp` and renamed; the
-deliverable is written last.
+deliverable is written after every check, and `packing.report` (the
+completion record) after the deliverable. Run standalone into a reused
+`--out-dir`, `tdp_packing run` first removes the earlier run's outputs, so a
+failed run leaves no deliverable or report from another run. Parameters are
+bounded as in `[packing]` (window gates ≤ 10^6, budgets ≤ 10^9, iterations
+≤ 1000; exit 2 otherwise).
 
 **`deliverable.tdp4`** is the shipped file: a 48-byte header (`LMTDPANF`,
 version, source and state wires, layout, window count, body length, CRC-32 of

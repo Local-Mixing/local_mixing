@@ -236,7 +236,7 @@ Before it writes anything, the generator does three things:
 
 1. It asserts that no `BV5_*` or `PROD_*` environment variables are set (`mod.rs:150-171`).
 2. It validates the stage-2 shuffling controls (`:173-182`; §2c.1).
-3. It prints a header line, `[gen] n=… |C|=… |D|=… s=… rg_freq=… slice_gates=… seed=… gadget_seed=… sandwich_seed=… gadgetization_mode=… sandwich_variant=…` (`:184-188`).
+3. It prints a header line, `[gen] n=… |C|=… |D|=… s=… rg_freq=… slice_gates=… seed=… gadget_seed=… sandwich_seed=… gadgetization_mode=… sandwich_variant=…` (`:184-188`). A seed given as `@PATH` (read from PATH; the managed driver passes `@/dev/fd/N` so no seed is on argv) is printed as `(file)`.
 
 **The header contains the raw seeds, so `gen.log` is secret material** (see 1.8).
 
