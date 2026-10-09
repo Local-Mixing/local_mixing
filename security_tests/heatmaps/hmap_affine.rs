@@ -42,6 +42,9 @@
 use clap::Parser;
 use local_mixing::circuit::formats::{read_g57_file, read_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
+use local_mixing::stages::packing::cview::{
+    ExposureOptions, HonestSamples, born_rows, exposure_scan, parse_cut_file, prefix_indices,
+};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -148,17 +151,6 @@ struct Args {
     exposure: bool,
     #[arg(long)]
     out: String,
-}
-
-fn indices(end: usize, step: usize) -> Vec<usize> {
-    let mut v = Vec::new();
-    let mut i = 0;
-    while i < end {
-        v.push(i);
-        i += step;
-    }
-    v.push(end);
-    v
 }
 
 // Snapshot lane-state (bit l = sample l) at each prefix length in `idx`.
@@ -324,19 +316,22 @@ fn main() {
         let hi = if to == 0 { usize::MAX } else { to };
         v.into_iter().filter(|&x| x >= from && x <= hi).collect()
     };
-    let i_idx = clip(indices(c.len(), args.c_step.max(1)), args.c_from, args.c_to);
+    let i_idx = clip(
+        prefix_indices(c.len(), args.c_step.max(1)),
+        args.c_from,
+        args.c_to,
+    );
     let j_idx = if args.g_cuts.is_empty() {
-        clip(indices(g.len(), args.g_step.max(1)), args.g_from, args.g_to)
+        clip(
+            prefix_indices(g.len(), args.g_step.max(1)),
+            args.g_from,
+            args.g_to,
+        )
     } else {
-        let mut cuts: Vec<usize> = std::fs::read_to_string(&args.g_cuts)
-            .expect("read --g-cuts file")
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().parse::<usize>().expect("cut index"))
-            .filter(|&x| x <= g.len())
-            .collect();
-        cuts.sort_unstable();
-        cuts.dedup();
+        let text = std::fs::read_to_string(&args.g_cuts).expect("read --g-cuts file");
+        let cuts = parse_cut_file(&text, g.len())
+            .map_err(|e| e.source)
+            .expect("cut index");
         clip(cuts, args.g_from, args.g_to)
     };
     assert!(
@@ -360,41 +355,44 @@ fn main() {
     );
 
     // Per batch: snapshot C at each i (targets) and G at each j (regressors),
-    // driven by the SAME random x on wires 0..n-1.
-    let mut rng = StdRng::seed_from_u64(args.seed);
-    let mut cs: Vec<Vec<Vec<u64>>> = Vec::with_capacity(b); // [batch][i][wire]
-    let mut gs: Vec<Vec<Vec<u64>>> = Vec::with_capacity(b); // [batch][j][wire]
-    for _ in 0..b {
-        let x: Vec<u64> = (0..n).map(|_| rng.random::<u64>()).collect();
-        let mut ic = vec![0u64; nw_c];
-        let mut ig = vec![0u64; nw_g];
-        ic[..n].copy_from_slice(&x);
-        ig[..n].copy_from_slice(&x);
-        cs.push(snapshots(&c, &ic, &i_idx));
-        gs.push(snapshots(&g, &ig, &j_idx));
-    }
+    // driven by the SAME random x on wires 0..n-1. The exposure scan streams
+    // instead (library C-view engine); SPAN and the heatmap materialize.
+    let materialize = || {
+        let mut rng = StdRng::seed_from_u64(args.seed);
+        let mut cs: Vec<Vec<Vec<u64>>> = Vec::with_capacity(b); // [batch][i][wire]
+        let mut gs: Vec<Vec<Vec<u64>>> = Vec::with_capacity(b); // [batch][j][wire]
+        for _ in 0..b {
+            let x: Vec<u64> = (0..n).map(|_| rng.random::<u64>()).collect();
+            let mut ic = vec![0u64; nw_c];
+            let mut ig = vec![0u64; nw_g];
+            ic[..n].copy_from_slice(&x);
+            ig[..n].copy_from_slice(&x);
+            cs.push(snapshots(&c, &ic, &i_idx));
+            gs.push(snapshots(&g, &ig, &j_idx));
+        }
+        (cs, gs)
+    };
 
     if args.exposure {
         assert!(args.degree == 1, "--exposure is affine-only (degree 1)");
-        let words = b;
-        let allzero = |v: &[u64]| v.iter().all(|&w| w == 0);
-        // rows = born values of C (active-wire semantics)
-        let mut rowinfo: Vec<(usize, usize, usize)> = Vec::new(); // (ri, gate idx, wire)
-        for (ri, &i) in i_idx.iter().enumerate() {
-            if i == 0 {
-                continue;
-            }
-            let t = c[i - 1].target as usize;
-            if t < n {
-                rowinfo.push((ri, i - 1, t));
-            }
-        }
         // SPAN_INTERSECT=<path>: per G cut, the dimension of the intersection
         // of span{C born values, 1} and span{G wire values at the cut, 1},
         // minus the shared constant -- i.e. how many independent NONZERO
         // affine combinations of C values are also affine combinations of
         // the cut's wire values. dim(U∩W) = dim W - rank(W reduced mod U).
         if let Ok(spath) = std::env::var("SPAN_INTERSECT") {
+            let (cs, gs) = materialize();
+            // rows = born values of C (active-wire semantics)
+            let mut rowinfo: Vec<(usize, usize, usize)> = Vec::new(); // (ri, gate idx, wire)
+            for (ri, &i) in i_idx.iter().enumerate() {
+                if i == 0 {
+                    continue;
+                }
+                let t = c[i - 1].target as usize;
+                if t < n {
+                    rowinfo.push((ri, i - 1, t));
+                }
+            }
             let words = b;
             let lead = |v: &[u64]| -> Option<usize> {
                 v.iter()
@@ -498,207 +496,50 @@ fn main() {
             );
             return;
         }
-        let mut best: Vec<i64> = vec![-1; rowinfo.len()];
+        // Rows = born values of C (active-wire semantics); the scan is the
+        // library C-view engine (stage 4), per-cut results in parallel and
+        // replayed in cut order.
         // EXPOSURE_WITNESS=<path>: per exposed row, dump the minimizing
         // predictor -- cut position and the participating G wires.
         let witness_path = std::env::var("EXPOSURE_WITNESS").ok();
         // Every (row, cut, weight) at which a row is exactly affine, not just
         // its best cut: the per-value exposure multiplicity over the lattice.
         let allcuts_path = std::env::var("EXPOSURE_ALLCUTS").ok();
-        let mut allcuts: Vec<(usize, usize, u32)> = Vec::new();
-        let mut witness: Vec<Option<(usize, Vec<usize>)>> = vec![None; rowinfo.len()];
-        let mut approx = 0usize;
-        for (cj, _) in j_idx.iter().enumerate() {
-            // Dedup wire columns under complement; constants are free.
-            let mut reps: Vec<Vec<u64>> = Vec::new();
-            let mut rep_wires: Vec<usize> = Vec::new();
-            let mut seen: std::collections::HashMap<Vec<u64>, usize> =
-                std::collections::HashMap::new();
-            for k in 0..nw_g {
-                let col: Vec<u64> = (0..b).map(|batch| gs[batch][cj][k]).collect();
-                let mut key = col;
-                if key[0] & 1 == 1 {
-                    for w in key.iter_mut() {
-                        *w = !*w;
-                    }
-                }
-                if allzero(&key) {
-                    continue;
-                }
-                if !seen.contains_key(&key) {
-                    seen.insert(key.clone(), reps.len());
-                    reps.push(key);
-                    rep_wires.push(k);
-                }
-            }
-            let m = reps.len();
-            let cw = (m + 1).div_ceil(64); // coef bits: reps 0..m, const at m
-            let mut basis: Vec<(usize, Vec<u64>, Vec<u64>)> = Vec::new();
-            let mut nulls: Vec<Vec<u64>> = Vec::new();
-            {
-                let mut add = |mut samp: Vec<u64>, idx: usize| {
-                    let mut coef = vec![0u64; cw];
-                    coef[idx / 64] |= 1 << (idx % 64);
-                    for (p, bs, bc) in basis.iter() {
-                        if (samp[p / 64] >> (p % 64)) & 1 == 1 {
-                            for (a, x) in samp.iter_mut().zip(bs) {
-                                *a ^= x;
-                            }
-                            for (a, x) in coef.iter_mut().zip(bc) {
-                                *a ^= x;
-                            }
-                        }
-                    }
-                    match samp.iter().enumerate().find_map(|(wi, &w)| {
-                        (w != 0).then(|| wi * 64 + w.trailing_zeros() as usize)
-                    }) {
-                        Some(p) => basis.push((p, samp, coef)),
-                        None => nulls.push(coef),
-                    }
-                };
-                for idx in 0..m {
-                    add(reps[idx].clone(), idx);
-                }
-                add(vec![!0u64; words], m);
-            }
-            let wirewt = |coef: &[u64]| -> u32 {
-                let mut wt = 0u32;
-                for (wi, &w) in coef.iter().enumerate() {
-                    let mut ww = w;
-                    if wi == m / 64 {
-                        ww &= !(1u64 << (m % 64));
-                    }
-                    wt += ww.count_ones();
-                }
-                wt
-            };
-            for (rowi, &(ri, _, t)) in rowinfo.iter().enumerate() {
-                if allcuts_path.is_none() && best[rowi] >= 0 && best[rowi] <= 1 {
-                    continue; // cannot improve below weight 1 (0 = constant value)
-                }
-                let mut samp: Vec<u64> = (0..b).map(|batch| cs[batch][ri][t]).collect();
-                let mut coef = vec![0u64; cw];
-                for (p, bs, bc) in basis.iter() {
-                    if (samp[p / 64] >> (p % 64)) & 1 == 1 {
-                        for (a, x) in samp.iter_mut().zip(bs) {
-                            *a ^= x;
-                        }
-                        for (a, x) in coef.iter_mut().zip(bc) {
-                            *a ^= x;
-                        }
-                    }
-                }
-                if !allzero(&samp) {
-                    continue; // not exactly affine at this cut
-                }
-                let mut w = wirewt(&coef);
-                let mut argmin = coef.clone();
-                if !nulls.is_empty() {
-                    if nulls.len() <= 14 {
-                        let k = nulls.len();
-                        let mut cur = coef.clone();
-                        let mut prev = 0usize;
-                        for g2 in 1usize..(1usize << k) {
-                            let gray = g2 ^ (g2 >> 1);
-                            let flip = (gray ^ prev).trailing_zeros() as usize;
-                            prev = gray;
-                            for (a, x) in cur.iter_mut().zip(&nulls[flip]) {
-                                *a ^= x;
-                            }
-                            let wt = wirewt(&cur);
-                            if wt < w {
-                                w = wt;
-                                argmin = cur.clone();
-                            }
-                        }
-                    } else {
-                        approx += 1;
-                    }
-                }
-                if allcuts_path.is_some() {
-                    allcuts.push((rowi, cj, w));
-                }
-                if best[rowi] < 0 || (w as i64) < best[rowi] {
-                    best[rowi] = w as i64;
-                    if witness_path.is_some() {
-                        let mut wires = Vec::new();
-                        for idx in 0..m {
-                            if (argmin[idx / 64] >> (idx % 64)) & 1 == 1 {
-                                wires.push(rep_wires[idx]);
-                            }
-                        }
-                        witness[rowi] = Some((cj, wires));
-                    }
-                }
-            }
+        let samples = HonestSamples::draw(n, b, args.seed);
+        let rows = born_rows(&c, n, &i_idx, &samples);
+        let opts = ExposureOptions::historic(allcuts_path.is_some(), witness_path.is_some());
+        let report = exposure_scan(&rows, &g, nw_g, &samples, &j_idx, &opts);
+        for line in report.summary_lines() {
+            println!("{line}");
         }
-        let mut hist: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
-        for &t in &best {
-            *hist.entry(t).or_default() += 1;
-        }
-        let total = best.len().max(1);
-        let visible = best.iter().filter(|&&t| t >= 0).count();
-        println!(
-            "[exposure] {} born values, {} visible ({:.1}%), {} coset-minimizations skipped (nullity>14)",
-            total,
-            visible,
-            100.0 * visible as f64 / total as f64,
-            approx
-        );
-        let mut cum = 0usize;
-        for (&t, &cnt) in hist.iter().filter(|(t, _)| **t >= 0) {
-            cum += cnt;
-            println!(
-                "[exposure] t*={:>3}: {:>5} values ({:>5.1}%)  cumulative {:>5.1}%",
-                t,
-                cnt,
-                100.0 * cnt as f64 / total as f64,
-                100.0 * cum as f64 / total as f64
-            );
-        }
-        use std::io::Write as _;
         let path = format!("{}.exposure.tsv", args.out);
-        let mut f = std::fs::File::create(&path).expect("write exposure tsv");
-        writeln!(
-            f,
-            "# gate\twire\ttstar (-1 = no exact affine predictor at any sampled cut)"
-        )
-        .unwrap();
-        for (&(_, gi, t), &w) in rowinfo.iter().zip(best.iter()) {
-            writeln!(f, "{gi}\t{t}\t{w}").unwrap();
-        }
+        let mut f =
+            std::io::BufWriter::new(std::fs::File::create(&path).expect("write exposure tsv"));
+        report.write_exposure_tsv(&mut f).unwrap();
+        f.flush().unwrap();
         println!("[exposure] wrote {path}");
         if let Some(apath) = allcuts_path {
-            let mut f = std::fs::File::create(&apath).expect("write exposure allcuts");
-            writeln!(
-                f,
-                "# gate\twire\tcut\tweight (every cut where the value is exactly affine)"
-            )
-            .unwrap();
-            for &(rowi, cj, w) in &allcuts {
-                let (_, gi, t) = rowinfo[rowi];
-                writeln!(f, "{gi}\t{t}\t{}\t{w}", j_idx[cj]).unwrap();
-            }
-            println!("[exposure] wrote all-cuts {apath} ({} rows)", allcuts.len());
+            let mut f = std::io::BufWriter::new(
+                std::fs::File::create(&apath).expect("write exposure allcuts"),
+            );
+            report.write_allcuts_tsv(&mut f).unwrap();
+            f.flush().unwrap();
+            println!(
+                "[exposure] wrote all-cuts {apath} ({} rows)",
+                report.allcuts.len()
+            );
         }
         if let Some(wpath) = witness_path {
-            let mut f = std::fs::File::create(&wpath).expect("write exposure witness");
-            writeln!(f, "# gate\twire\ttstar\tcut\tG-wires (predictor support)").unwrap();
-            for ((&(_, gi, t), &w), wit) in rowinfo.iter().zip(best.iter()).zip(witness.iter()) {
-                if w >= 0 {
-                    let (cj, wires) = wit.as_ref().unwrap();
-                    let list = wires
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    writeln!(f, "{gi}\t{t}\t{w}\t{}\t{list}", j_idx[*cj]).unwrap();
-                }
-            }
+            let mut f = std::io::BufWriter::new(
+                std::fs::File::create(&wpath).expect("write exposure witness"),
+            );
+            report.write_witness_tsv(&mut f).unwrap();
+            f.flush().unwrap();
             println!("[exposure] wrote witness {wpath}");
         }
         return;
     }
+    let (cs, gs) = materialize();
 
     // Per-column excluded-wire sets from --exclude-segments: wire w is
     // excluded at column cut j when some listed segment (w, s, e) is live
