@@ -29,20 +29,32 @@
 //!     replays the packer's incremental window ANF (WindowState, product cap
 //!     8·b_mono) over a packed circuit's windows: compose aborts (each must be
 //!     a window's last gate), order-dependent aborts, ambiguous products.
+//!
+//! tdp_packing pack <A> <B> [W_cap=64] [G=64] [B_mono=3072] [span_cap=3000]
+//!                       [label=pack3-G{G}] [out.mpmct1]
+//!                       [--order-out P] [--anf-cap-semantics …] [--stats] [--threads K]
+//!     window_pack3.py parity mode (the argv and its defaults; production is
+//!     `512 512 24576 3000`): stdout is the oracle's log; `out.mpmct1` and
+//!     `out.mpmct1.bounds` are written (via *.tmp) only after the oracle's
+//!     VERIFY and the exact reorder certificate pass. `--order-out` writes
+//!     the emitted order as WP's PACK_DUMP_ORDER does.
 //! ```
 //!
-//! `run`, `pack`, `repair`, `check-final` and `census` belong to later
-//! phases and exit 2.
+//! `run`, `repair`, `check-final` and `census` belong to later phases and
+//! exit 2.
 use crate::circuit::formats::read_g57_file;
 use crate::circuit::xgate::XGate;
 use crate::stages::packing::anf::{MulStats, window_anf};
 use crate::stages::packing::census::anf_size_report;
 use crate::stages::packing::mono::{MonoWidthFn, with_mono_width};
-use crate::stages::packing::oracle_io::{read_bounds, read_oracle_mpmct, window_cuts};
+use crate::stages::packing::oracle_io::{
+    read_bounds, read_oracle_mpmct, window_cuts, write_bounds, write_pack_mpmct,
+};
+use crate::stages::packing::scheduler::pack;
 use crate::stages::packing::serialize::{
     ContainerHeader, Deliverable, Format, IO_LAYOUT_CLASSIC_ZERO_SLICE, decode, encode_body,
 };
-use crate::stages::packing::types::{CapSemantics, Stage4Error};
+use crate::stages::packing::types::{CapSemantics, PackParams, Stage4Error};
 use crate::stages::packing::verify::{
     check_deliverable, check_windows_anf, check_zero_slice, verify_equiv,
 };
@@ -180,7 +192,8 @@ fn dispatch(argv: &[String]) -> Result<(), Stage4Error> {
         "container" => cmd_container(&a),
         "verify-equiv" => cmd_verify_equiv(&a),
         "pack-replay" => cmd_pack_replay(&a),
-        "run" | "pack" | "repair" | "check-final" | "census" => Err(Stage4Error::Usage(format!(
+        "pack" => cmd_pack(&a),
+        "run" | "repair" | "check-final" | "census" => Err(Stage4Error::Usage(format!(
             "`{cmd}` is not implemented yet (docs/STAGE4_RUST_DESIGN.md §12)"
         ))),
         other => Err(Stage4Error::Usage(format!("unknown command {other:?}"))),
@@ -803,5 +816,100 @@ fn cmd_pack_replay(a: &Args) -> Result<(), Stage4Error> {
         st.ambiguous,
         sem.name()
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- pack
+
+fn cmd_pack(a: &Args) -> Result<(), Stage4Error> {
+    a.check_known(&["order-out", "anf-cap-semantics", "stats", "threads"])?;
+    if a.pos.len() < 2 || a.pos.len() > 8 {
+        return Err(Stage4Error::Usage(
+            "pack <A> <B> [W_cap] [G] [B_mono] [span_cap] [label] [out.mpmct1]".into(),
+        ));
+    }
+    setup_threads(a)?;
+    let mut p = PackParams::ORACLE_DEFAULTS;
+    p.cap_semantics = cap_semantics(a)?;
+    let num = |i: usize, what: &str, dflt: usize| -> Result<usize, Stage4Error> {
+        a.pos
+            .get(i)
+            .map(|v| parse_u64(v, what).map(|x| x as usize))
+            .transpose()
+            .map(|x| x.unwrap_or(dflt))
+    };
+    p.w_cap = num(2, "W_cap", p.w_cap)?;
+    p.g = num(3, "G", p.g)?;
+    p.b_mono = num(4, "B_mono", p.b_mono)?;
+    p.span_cap = num(5, "span_cap", p.span_cap)?;
+    let label = a
+        .pos
+        .get(6)
+        .cloned()
+        .unwrap_or_else(|| format!("pack3-G{}", p.g));
+    let t0 = Instant::now();
+    let ca = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    let cb = read_oracle_mpmct(Path::new(&a.pos[1]))?;
+    let t_read = t0.elapsed().as_secs_f64();
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let packed = pack(&ca, &cb, &p, &label, &mut out)?;
+    drop(out);
+    let t_pack = t0.elapsed().as_secs_f64() - t_read;
+    let mut staged: Vec<Staged> = Vec::new();
+    let r = (|| -> Result<(), Stage4Error> {
+        if let Some(path) = a.pos.get(7) {
+            let path = Path::new(path);
+            let (st, mut w) = Staged::create(path)?;
+            staged.push(st);
+            let tmp = staged.last().unwrap().tmp.clone();
+            let gates: Vec<XGate> = packed.gates(&cb.gates).cloned().collect();
+            write_pack_mpmct(&mut w, packed.n_out, &gates).map_err(|e| Stage4Error::io(&tmp, e))?;
+            Staged::finish(w, &tmp)?;
+            let mut bp = path.as_os_str().to_owned();
+            bp.push(".bounds");
+            let (st, mut w) = Staged::create(Path::new(&bp))?;
+            staged.push(st);
+            let tmp = staged.last().unwrap().tmp.clone();
+            write_bounds(&mut w, &packed.bounds).map_err(|e| Stage4Error::io(&tmp, e))?;
+            Staged::finish(w, &tmp)?;
+        }
+        if let Some(path) = a.get("order-out") {
+            let (st, mut w) = Staged::create(Path::new(path))?;
+            staged.push(st);
+            let tmp = staged.last().unwrap().tmp.clone();
+            let order: Vec<usize> = packed.order.iter().map(|&i| i as usize).collect();
+            write_bounds(&mut w, &order).map_err(|e| Stage4Error::io(&tmp, e))?;
+            Staged::finish(w, &tmp)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        for s in &staged {
+            s.abandon();
+        }
+        return Err(e);
+    }
+    for s in staged {
+        s.commit()?;
+    }
+    if a.flag("stats") {
+        let rp = &packed.report;
+        eprintln!(
+            "stats: mul calls={} ambiguous={} aborts={} order_dependent={} ({}); compose_aborts={} \
+             bounds={} duplicate_bounds={} windows={}; read {:.2}s pack+verify+certify {:.2}s",
+            rp.mul.calls,
+            rp.mul.ambiguous,
+            rp.mul.aborts,
+            rp.mul.aborts_order_dependent,
+            p.cap_semantics.name(),
+            rp.compose_aborts,
+            rp.bounds,
+            rp.duplicate_bounds,
+            rp.windows,
+            t_read,
+            t_pack
+        );
+    }
     Ok(())
 }

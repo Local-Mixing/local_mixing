@@ -34,6 +34,54 @@ impl CapSemantics {
     }
 }
 
+/// Packer parameters (docs/STAGE4_RUST_DESIGN.md §4.1). `PRODUCTION` is the
+/// recommended configuration (`window_pack3.py A B 512 512 24576 3000`);
+/// `ORACLE_DEFAULTS` are `window_pack3.py`'s own argv defaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackParams {
+    /// Interval cap (argv 3).
+    pub w_cap: usize,
+    /// Soft window gate cap G (argv 4; hard 2G inside a burst).
+    pub g: usize,
+    /// Soft window monomial budget (argv 5; hard 2·b_mono in a burst);
+    /// the product cap is 8·b_mono.
+    pub b_mono: usize,
+    /// Longest span considered (argv 6).
+    pub span_cap: usize,
+    /// Pre-emptive close slack (WP const PAD).
+    pub pad: usize,
+    /// Contagion threshold (WP const CMAX).
+    pub cmax: usize,
+    /// Fingerprint seed (WP const SEED).
+    pub fp_seed: u64,
+    pub cap_semantics: CapSemantics,
+}
+
+impl PackParams {
+    pub const PRODUCTION: PackParams = PackParams {
+        w_cap: 512,
+        g: 512,
+        b_mono: 24576,
+        span_cap: 3000,
+        pad: 4,
+        cmax: 24,
+        fp_seed: 20_261_004,
+        cap_semantics: CapSemantics::CPython39,
+    };
+
+    pub const ORACLE_DEFAULTS: PackParams = PackParams {
+        w_cap: 64,
+        g: 64,
+        b_mono: 3072,
+        span_cap: 3000,
+        ..PackParams::PRODUCTION
+    };
+
+    pub fn mul_cap(&self) -> usize {
+        self.b_mono.saturating_mul(8)
+    }
+}
+
 /// Every stage-4 failure, mapped one-to-one onto the binary's exit codes.
 #[derive(Debug)]
 pub enum Stage4Error {
