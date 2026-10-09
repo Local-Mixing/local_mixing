@@ -23,7 +23,9 @@ use crate::stages::packing::oracle_io::OracleCircuit;
 use crate::stages::packing::scheduler::Packed;
 use std::fmt::Write as _;
 
-/// Fixed analysis constants recorded in `packing.report` (§8.1).
+/// `repair.sh`'s `anf_compose.py $P $B 65536 TAG-rep$G 500` (report only):
+/// both literals, independent of the split budget.
+const AC_BUDGET: usize = 65536;
 const AC_CHECK_EVERY: usize = 500;
 
 /// The production defaults, which are also the `[packing]` defaults of the
@@ -501,7 +503,7 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
         &rep.gates,
         rep.computed_n,
         &rep_bounds,
-        rp.split_budget,
+        AC_BUDGET,
         &rep_label,
         AC_CHECK_EVERY,
         rp.cap_semantics,
