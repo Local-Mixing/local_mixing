@@ -1,0 +1,10 @@
+wide128-caps: B=3200 gates; 2466 interior spans, 1922 carried values (126 output-forced); input function check 128/128; W_cap=24 G=16 B_mono=40
+winnable values: 1629 of 1836 carried (disq: 111 long-span, 56 big-interval; 5 spans rescued by next-next writer)
+intervals to pack: 2107
+scheduled: 114 windows, 542/2107 interval-spans hidden, 395/1629 winnable VALUES fully hidden by construction
+death causes: {'burst_close': 1213, 'sibling': 458, 'drain_close': 23}
+VERIFY: emitted function check 128/128 wires (OK)
+RESULT: carried in emitted order 1909; distinct A values exposed at window boundaries: 1517 (79.5% of carried, 75.5% of all distinct A)
+  data: exposed 969/1205 (80.4%)
+  mid: exposed 548/704 (77.8%)
+window gates: med=31 p90=32 max=32; window monomials: med=79 p90=85 max=104; windows=114

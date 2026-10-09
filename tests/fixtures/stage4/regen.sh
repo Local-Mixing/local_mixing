@@ -5,7 +5,8 @@
 # the CPython 3.9 set-order self-test, with the PINNED baseline hmap_affine.
 #
 #   HMAP_BASELINE=.../baseline_target/release/hmap_affine ORACLE_PY=/usr/bin/python3 \
-#   CARGO_TARGET_DIR=... FROZEN_DB_DIR=... WORK=<durable scratch dir> bash regen.sh [n8_L8] [anf]
+#   CARGO_TARGET_DIR=... FROZEN_DB_DIR=... WORK=<durable scratch dir> \
+#   bash regen.sh [n8_L8] [anf] [container] [pack]
 #
 # Parts:
 #   n8_L8  real chain at n=8 (|C|=|D|=16, preset L8): gen_sandwich_gadget and
@@ -19,16 +20,22 @@
 #          and per-window window_anf decisions (anf_windows.py).
 #   container  48-byte container headers of every fixture body, from the
 #          standalone writer tests/manual/stage4/container_header.py.
+#   pack   the packer window_pack3.py on the cases of pack/cases.txt: the real
+#          n=8 (G2, G3) pair at production and crafted argv, and synthetic
+#          pairs from pack_cases.py (wide states, dense ANF, ancilla wires).
+#          Expected: stdout, bounds, and blake2b-128 digests of the packed
+#          circuit and of the emitted order (WP's PACK_DUMP_ORDER). Coverage
+#          is asserted from the oracle logs and tdp_packing --stats.
 #
 # Seeds here are CALIBRATION values, never deliverable seeds.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 : "${HMAP_BASELINE:?}" "${ORACLE_PY:?}" "${WORK:?set WORK to a durable scratch directory}"
-PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container)
+PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container pack)
 want() { local p; for p in "${PARTS[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
 
-if want n8_L8 || want anf; then
+if want n8_L8 || want anf || want pack; then
   STAMP=$(date +%Y%m%d_%H%M%S)
   SBR=$WORK/fixture_$STAMP
   RD=$(bash "$HERE/oracle_sandbox.sh" "$SBR")
@@ -67,6 +74,9 @@ if want n8_L8; then
   done
   out=$HERE/n8_L8; rm -rf "$out"; mkdir -p "$out"
   cp "$R/tdp.mpmct1.source_c.g57" "$out/c.g57"
+  # G2 is committed once, as cview_n8/g2.mpmct1 (same calibration run)
+  cmp "$R/tdp.mpmct1" "$HERE/cview_n8/g2.mpmct1" || { echo "n8 G2 != cview_n8/g2.mpmct1" >&2; exit 1; }
+  cp "$R/s3.mpmct1" "$out/g3.mpmct1"
   cp "$R/rep512.mpmct1" "$out/rep.mpmct1"
   cp "$R/rep512.bounds" "$out/rep.bounds"
   cp "$R/deliverable.bin" "$out/deliverable.bin"
@@ -105,5 +115,50 @@ if want container; then
     state=$(head -1 "$HERE/anf/$name.mpmct1" | awk '{print $2}')
     hdr "$HERE/anf/$name.bin" 1 "$state" "$HERE/anf/$name.tdp4hdr"
   done < "$HERE/anf/cases.txt"
+fi
+if want pack; then
+  : "${CARGO_TARGET_DIR:?}"
+  (cd "$REPO" && cargo build --locked --release --bin tdp_packing)
+  TP=$CARGO_TARGET_DIR/release/tdp_packing
+  out=$HERE/pack; mkdir -p "$out"; rm -rf "$out/expected"; mkdir -p "$out/expected"
+  "$ORACLE_PY" -I "$HERE/pack_cases.py" "$out"
+  PW=$SBR/pack_work; mkdir -p "$PW"
+  digest() { "$ORACLE_PY" -I -c 'import hashlib,sys; print(hashlib.blake2b(open(sys.argv[1],"rb").read(), digest_size=16).hexdigest())' "$1"; }
+  : > "$PW/coverage.txt"
+  while read -r name a b rest; do
+    [ -z "$name" ] && continue
+    args=(); rargs=(); has_out=0
+    for t in $rest; do
+      if [ "$t" = OUT ]; then
+        args+=("$PW/$name.mpmct1"); rargs+=("$PW/rust_$name.mpmct1"); has_out=1
+      else
+        args+=("$t"); rargs+=("$t")
+      fi
+    done
+    (cd "$RD" && PACK_DUMP_ORDER="$PW/$name.order" "$ORACLE_PY" window_pack3.py \
+       "$HERE/$a" "$HERE/$b" ${args[@]+"${args[@]}"} > "$out/expected/$name.txt" 2>&1)
+    { [ $has_out = 1 ] && echo "packed $(digest "$PW/$name.mpmct1")"
+      echo "order $(digest "$PW/$name.order")"; } > "$out/expected/$name.digest"
+    [ $has_out = 1 ] && cp "$PW/$name.mpmct1.bounds" "$out/expected/$name.bounds"
+    st=$("$TP" pack "$HERE/$a" "$HERE/$b" ${rargs[@]+"${rargs[@]}"} --order-out "$PW/rust_$name.order" \
+           --stats 2>&1 >/dev/null | grep '^stats:' | sed 's/; read .*//')
+    echo "$name $st" >> "$PW/coverage.txt"
+  done < "$out/cases.txt"
+  # Coverage (docs/STAGE4_RUST_DESIGN.md §10.3 step 6, packer part).
+  cov() { if ! eval "$2"; then echo "regen pack: coverage '$1' not reached" >&2; exit 1; fi; echo "  covered: $1"; }
+  E=$out/expected
+  cov "compose abort" "grep -q 'compose_aborts=[1-9]' '$PW/coverage.txt'"
+  cov "order-dependent compose abort" "grep -q 'order_dependent=[1-9]' '$PW/coverage.txt'"
+  cov "duplicate boundary" "grep -q 'duplicate_bounds=[1-9]' '$PW/coverage.txt'"
+  cov "next-next-writer rescue" "grep -qE '; [1-9][0-9]* spans rescued' $E/*.txt"
+  cov "long-span disqualification" "grep -qE 'disq: [1-9][0-9]* long-span' $E/*.txt"
+  cov "big-interval disqualification" "grep -qE ', [1-9][0-9]* big-interval' $E/*.txt"
+  cov "mid and band classes" "grep -q '  mid: ' $E/*.txt && grep -q '  band: ' $E/*.txt"
+  cov "drain, burst and sibling deaths" "grep -q drain_close $E/*.txt && grep -q burst_close $E/*.txt && grep -q sibling $E/*.txt"
+  cov "no deaths" "grep -q 'death causes: {}' $E/*.txt"
+  cov "B wider than A" "grep -q 'input function check 128/128' $E/wide128_prod.txt"
+  cov "W = 16 state" "grep -q 'w1024' '$out/cases.txt'"
+  cp "$PW/coverage.txt" "$out/coverage.txt"
+  sed -i '' -e "s|$HERE/||g" "$out/coverage.txt"
 fi
 du -sh "$HERE"

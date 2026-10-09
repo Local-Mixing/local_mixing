@@ -1,0 +1,12 @@
+w1024-caps: B=2200 gates; 1162 interior spans, 1672 carried values (870 output-forced); input function check 1024/1024; W_cap=32 G=24 B_mono=32
+winnable values: 747 of 976 carried (disq: 55 long-span, 0 big-interval; 0 spans rescued by next-next writer)
+intervals to pack: 850
+  processed 850/850 intervals, 2200/2200 gates, windows=94, hidden spans=307
+scheduled: 95 windows, 307/850 interval-spans hidden, 259/747 winnable VALUES fully hidden by construction
+death causes: {'burst_close': 464, 'sibling': 87, 'drain_close': 24}
+VERIFY: emitted function check 1024/1024 wires (OK)
+RESULT: carried in emitted order 1659; distinct A values exposed at window boundaries: 1407 (84.8% of carried, 82.0% of all distinct A)
+  data: exposed 86/102 (84.3%)
+  mid: exposed 117/143 (81.8%)
+  band: exposed 1204/1414 (85.1%)
+window gates: med=24 p90=32 max=39; window monomials: med=65 p90=69 max=80; windows=95

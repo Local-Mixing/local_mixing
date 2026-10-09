@@ -303,3 +303,196 @@ fn exit_codes() {
     assert_eq!(code(&["decode", p(&raw), "--format", "container"]), Some(3));
     let _ = fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------- packer
+
+/// `pack/cases.txt`: `name A B argv...` (`OUT` = the output circuit path).
+fn pack_cases() -> Vec<(String, String, String, Vec<String>)> {
+    fs::read_to_string(fx("pack/cases.txt"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let mut it = l.split_whitespace().map(String::from);
+            let name = it.next().unwrap();
+            let a = it.next().unwrap();
+            let b = it.next().unwrap();
+            (name, a, b, it.collect())
+        })
+        .collect()
+}
+
+fn digest(path: &Path) -> String {
+    use local_mixing::stages::packing::blake2b::{blake2b, hex};
+    hex(&blake2b(&fs::read(path).unwrap(), 16))
+}
+
+/// Run one fixture case; returns (stdout, packed path if any, order path).
+fn run_pack_case(
+    dir: &Path,
+    a: &str,
+    b: &str,
+    argv: &[String],
+    extra: &[&str],
+) -> (String, Option<PathBuf>, PathBuf) {
+    let out = dir.join("packed.mpmct1");
+    let order = dir.join("order.txt");
+    let mut args: Vec<String> = vec!["pack".into(), p(&fx(a)).into(), p(&fx(b)).into()];
+    let mut has_out = false;
+    for t in argv {
+        if t == "OUT" {
+            args.push(p(&out).into());
+            has_out = true;
+        } else {
+            args.push(t.clone());
+        }
+    }
+    args.push("--order-out".into());
+    args.push(p(&order).into());
+    args.extend(extra.iter().map(|s| s.to_string()));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let stdout = ok(&refs);
+    (stdout, has_out.then_some(out), order)
+}
+
+#[test]
+fn pack_matches_oracle() {
+    let cases = pack_cases();
+    assert!(cases.len() >= 15);
+    for (name, a, b, argv) in cases {
+        let dir = scratch();
+        let (stdout, packed, order) = run_pack_case(&dir, &a, &b, &argv, &[]);
+        let want = fs::read_to_string(fx(&format!("pack/expected/{name}.txt"))).unwrap();
+        assert_eq!(stdout, want, "{name}: stdout differs from window_pack3.py");
+        let mut got_digest = String::new();
+        if let Some(pk) = &packed {
+            got_digest.push_str(&format!("packed {}\n", digest(pk)));
+            let mut bp = pk.as_os_str().to_owned();
+            bp.push(".bounds");
+            assert_eq!(
+                fs::read(PathBuf::from(bp)).unwrap(),
+                fs::read(fx(&format!("pack/expected/{name}.bounds"))).unwrap(),
+                "{name}: bounds differ"
+            );
+        }
+        got_digest.push_str(&format!("order {}\n", digest(&order)));
+        assert_eq!(
+            got_digest,
+            fs::read_to_string(fx(&format!("pack/expected/{name}.digest"))).unwrap(),
+            "{name}: packed circuit or emitted order differs"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn pack_thread_count_does_not_change_output() {
+    let case = pack_cases().into_iter().find(|c| c.0 == "n8_prod").unwrap();
+    let mut outs = Vec::new();
+    for t in ["1", "4"] {
+        let dir = scratch();
+        let (stdout, packed, order) =
+            run_pack_case(&dir, &case.1, &case.2, &case.3, &["--threads", t]);
+        outs.push((
+            stdout,
+            fs::read(packed.unwrap()).unwrap(),
+            fs::read(order).unwrap(),
+        ));
+        let _ = fs::remove_dir_all(dir);
+    }
+    assert!(outs[0] == outs[1]);
+}
+
+#[test]
+fn pack_exit_codes() {
+    let dir = scratch();
+    let code = |args: &[&str]| run(args).status.code();
+    let a = fx("pack/dense16_a.mpmct1");
+    let b = fx("pack/dense16_b.mpmct1");
+    let out = dir.join("o.mpmct1");
+    let leftovers = |d: &Path| fs::read_dir(d).unwrap().count();
+    // 2: usage
+    assert_eq!(code(&["pack", p(&a)]), Some(2));
+    assert_eq!(code(&["pack", p(&a), p(&b), "x"]), Some(2));
+    assert_eq!(code(&["pack", p(&a), p(&b), "--bogus", "1"]), Some(2));
+    assert_eq!(
+        code(&[
+            "pack",
+            p(&a),
+            p(&b),
+            "8",
+            "8",
+            "64",
+            "300",
+            "l",
+            "o",
+            "extra"
+        ]),
+        Some(2)
+    );
+    // 3: malformed gate line; empty B
+    let bad = dir.join("bad.mpmct1");
+    fs::write(&bad, "mpmct1 4 1\n0 0 2 3 1 1 1\n").unwrap();
+    assert_eq!(code(&["pack", p(&a), p(&bad)]), Some(3));
+    let empty = dir.join("empty.mpmct1");
+    fs::write(&empty, "mpmct1 16 0\n").unwrap();
+    assert_eq!(
+        code(&[
+            "pack",
+            p(&a),
+            p(&empty),
+            "64",
+            "64",
+            "3072",
+            "3000",
+            "x",
+            p(&out)
+        ]),
+        Some(3)
+    );
+    // 4: B is not A's function, so the oracle's VERIFY fails; no output
+    let text = fs::read_to_string(&b).unwrap();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let g: Vec<&str> = lines[10].split_whitespace().collect();
+    let flipped = format!(
+        "{} {} {}",
+        g[0],
+        1 - g[1].parse::<u8>().unwrap(),
+        g[2..].join(" ")
+    );
+    lines[10] = flipped;
+    let wrong = dir.join("wrong.mpmct1");
+    fs::write(&wrong, lines.join("\n") + "\n").unwrap();
+    let before = leftovers(&dir);
+    let o = run(&[
+        "pack",
+        p(&a),
+        p(&wrong),
+        "64",
+        "64",
+        "3072",
+        "3000",
+        "x",
+        p(&out),
+    ]);
+    assert_eq!(o.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("(FAIL)"));
+    assert_eq!(leftovers(&dir), before, "no output after a failed VERIFY");
+    // 7: the output directory does not exist
+    let nowhere = dir.join("missing/o.mpmct1");
+    assert_eq!(
+        code(&[
+            "pack",
+            p(&a),
+            p(&b),
+            "64",
+            "64",
+            "3072",
+            "3000",
+            "x",
+            p(&nowhere)
+        ]),
+        Some(7)
+    );
+    let _ = fs::remove_dir_all(dir);
+}

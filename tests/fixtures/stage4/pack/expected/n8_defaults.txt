@@ -1,0 +1,14 @@
+pack3-G64: B=37479 gates; 6888 interior spans, 2804 carried values (32 output-forced); input function check 32/32; W_cap=64 G=64 B_mono=3072
+winnable values: 2530 of 2791 carried (disq: 1 long-span, 241 big-interval; 1 spans rescued by next-next writer)
+intervals to pack: 3064
+  processed 306/3064 intervals, 4055/37479 gates, windows=55, hidden spans=292
+  processed 918/3064 intervals, 11480/37479 gates, windows=165, hidden spans=895
+  processed 1530/3064 intervals, 18897/37479 gates, windows=267, hidden spans=1492
+  processed 1836/3064 intervals, 22657/37479 gates, windows=324, hidden spans=1796
+  processed 2448/3064 intervals, 30414/37479 gates, windows=436, hidden spans=2397
+scheduled: 533 windows, 2994/3064 interval-spans hidden, 2477/2530 winnable VALUES fully hidden by construction
+death causes: {'burst_close': 32, 'sibling': 25, 'drain_close': 21}
+VERIFY: emitted function check 32/32 wires (OK)
+RESULT: carried in emitted order 2808; distinct A values exposed at window boundaries: 332 (11.8% of carried, 2.1% of all distinct A)
+  data: exposed 332/2808 (11.8%)
+window gates: med=64 p90=97 max=128; window monomials: med=96 p90=173 max=638; windows=533

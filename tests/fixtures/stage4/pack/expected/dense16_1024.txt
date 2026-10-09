@@ -1,0 +1,9 @@
+dense16-b1024: B=1280 gates; 1123 interior spans, 1105 carried values (16 output-forced); input function check 16/16; W_cap=512 G=512 B_mono=1024
+winnable values: 1089 of 1090 carried (disq: 0 long-span, 0 big-interval; 0 spans rescued by next-next writer)
+intervals to pack: 1122
+scheduled: 55 windows, 492/1122 interval-spans hidden, 475/1089 winnable VALUES fully hidden by construction
+death causes: {'burst_close': 614, 'sibling': 25}
+VERIFY: emitted function check 16/16 wires (OK)
+RESULT: carried in emitted order 1104; distinct A values exposed at window boundaries: 629 (57.0% of carried, 52.4% of all distinct A)
+  data: exposed 629/1104 (57.0%)
+window gates: med=24 p90=29 max=34; window monomials: med=2525 p90=3791 max=7223; windows=55

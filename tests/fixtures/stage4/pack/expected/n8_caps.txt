@@ -1,0 +1,14 @@
+n8-caps: B=37479 gates; 6888 interior spans, 2804 carried values (32 output-forced); input function check 32/32; W_cap=32 G=32 B_mono=48
+winnable values: 2497 of 2791 carried (disq: 195 long-span, 80 big-interval; 1 spans rescued by next-next writer)
+intervals to pack: 3015
+  processed 602/3015 intervals, 7543/37479 gates, windows=339, hidden spans=528
+  processed 1204/3015 intervals, 15068/37479 gates, windows=650, hidden spans=1092
+  processed 1505/3015 intervals, 18839/37479 gates, windows=802, hidden spans=1359
+  processed 1806/3015 intervals, 22624/37479 gates, windows=963, hidden spans=1651
+  processed 2709/3015 intervals, 33876/37479 gates, windows=1430, hidden spans=2472
+scheduled: 1585 windows, 2728/3015 interval-spans hidden, 2260/2497 winnable VALUES fully hidden by construction
+death causes: {'burst_close': 219, 'sibling': 85, 'drain_close': 18}
+VERIFY: emitted function check 32/32 wires (OK)
+RESULT: carried in emitted order 2809; distinct A values exposed at window boundaries: 548 (19.5% of carried, 3.4% of all distinct A)
+  data: exposed 548/2809 (19.5%)
+window gates: med=22 p90=34 max=64; window monomials: med=50 p90=95 max=433; windows=1585

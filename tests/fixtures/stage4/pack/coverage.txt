@@ -1,0 +1,15 @@
+n8_prod stats: mul calls=74599 ambiguous=6 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=71 duplicate_bounds=0 windows=72
+n8_defaults stats: mul calls=74599 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=532 duplicate_bounds=0 windows=533
+n8_caps stats: mul calls=74599 ambiguous=3 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=1584 duplicate_bounds=0 windows=1585
+n8_span40 stats: mul calls=74599 ambiguous=3 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=73 duplicate_bounds=0 windows=74
+n8_wcap8 stats: mul calls=74599 ambiguous=4 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=73 duplicate_bounds=0 windows=74
+n8_tightG stats: mul calls=74599 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=2178 duplicate_bounds=0 windows=2179
+wide300_64 stats: mul calls=4237 ambiguous=2 aborts=1 order_dependent=0 (cpython39); compose_aborts=1 bounds=29 duplicate_bounds=0 windows=30
+wide300_caps stats: mul calls=4237 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=99 duplicate_bounds=0 windows=100
+wide128_prod stats: mul calls=3773 ambiguous=10 aborts=2 order_dependent=1 (cpython39); compose_aborts=2 bounds=19 duplicate_bounds=0 windows=20
+wide128_caps stats: mul calls=3773 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=113 duplicate_bounds=0 windows=114
+dense16_256 stats: mul calls=3843 ambiguous=58 aborts=2 order_dependent=1 (cpython39); compose_aborts=2 bounds=76 duplicate_bounds=0 windows=77
+dense16_1024 stats: mul calls=3845 ambiguous=101 aborts=1 order_dependent=1 (cpython39); compose_aborts=1 bounds=54 duplicate_bounds=0 windows=55
+dense16_dup stats: mul calls=3845 ambiguous=2 aborts=1 order_dependent=1 (cpython39); compose_aborts=1 bounds=395 duplicate_bounds=1 windows=397
+w1024_64 stats: mul calls=2185 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=17 duplicate_bounds=0 windows=18
+w1024_caps stats: mul calls=2185 ambiguous=0 aborts=0 order_dependent=0 (cpython39); compose_aborts=0 bounds=94 duplicate_bounds=0 windows=95

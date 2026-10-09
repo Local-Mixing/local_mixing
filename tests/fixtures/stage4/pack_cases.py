@@ -6,9 +6,9 @@ A is a random circuit; B is A rewritten by legal commutations (adjacent swaps
 of gates that do not read each other's target), with inserted cancelling
 pairs and, for `wide128`, copy/uncopy CNOT pairs into extra ancilla wires
 (B is wider than A). B computes A's function on A's wires, so the packer's
-VERIFY holds. Gates use 0..4 controls, both polarities and complements, so
-the window ANF grows quickly and small monomial budgets force compose
-aborts. Seeds are fixed (CALIBRATION material only).
+VERIFY holds. Gates use 0..2 controls (2..4 in `dense16`, whose window
+ANFs explode so that moderate budgets force compose aborts), both
+polarities and complements. Seeds are fixed (CALIBRATION material only).
 """
 import os
 import random
@@ -74,15 +74,18 @@ def main():
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
     # 300 wires (W = 8; wire ids >= 61, >= 128, >= 256: data/mid/band classes)
-    make(out, "wide300", 3001, 300, 300, list(range(300)), 2400,
-         [0, 1, 2, 2, 3, 3, 4], 300, 0, 60000, 24)
+    make(out, "wide300", 3001, 300, 300, list(range(300)), 3000,
+         [0, 1, 1, 1, 2, 2], 300, 0, 60000, 48)
     # A on 128 wires, B on 160 (W = 4 for n = 160): ancilla copy/uncopy pairs
-    make(out, "wide128", 1281, 128, 160, list(range(128)), 2000,
-         [1, 2, 2, 3, 3, 4], 200, 150, 50000, 20)
+    make(out, "wide128", 1281, 128, 160, list(range(128)), 2500,
+         [0, 1, 1, 2, 2], 200, 150, 50000, 40)
+    # 16 dense wires, 2-3 controls: window ANFs explode, so moderate budgets
+    # force many (order-dependent) compose aborts
+    make(out, "dense16", 1601, 16, 16, list(range(16)), 1200,
+         [2, 3, 3, 4], 40, 0, 20000, 16)
     # 1024 wires (W = 16; wire ids up to 1023)
-    make(out, "w1024", 10241, 1024, 1024, list(range(1024)), 1500,
-         [0, 1, 2, 3, 3], 100, 0, 30000, 40)
-
+    make(out, "w1024", 10241, 1024, 1024, list(range(1024)), 2000,
+         [0, 1, 1, 2], 100, 0, 30000, 64)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,15 @@
+n8_prod cview_n8/g2.mpmct1 n8_L8/g3.mpmct1 512 512 24576 3000 n8_L8-G512 OUT
+n8_defaults cview_n8/g2.mpmct1 n8_L8/g3.mpmct1
+n8_caps cview_n8/g2.mpmct1 n8_L8/g3.mpmct1 32 32 48 300 n8-caps OUT
+n8_span40 cview_n8/g2.mpmct1 n8_L8/g3.mpmct1 512 512 24576 40 n8-span40 OUT
+n8_wcap8 cview_n8/g2.mpmct1 n8_L8/g3.mpmct1 8 512 24576 3000 n8-wcap8 OUT
+n8_tightG cview_n8/g2.mpmct1 n8_L8/g3.mpmct1 512 16 4096 3000 n8-tightG OUT
+wide300_64 pack/wide300_a.mpmct1 pack/wide300_b.mpmct1 64 64 3072 3000 wide300-G64 OUT
+wide300_caps pack/wide300_a.mpmct1 pack/wide300_b.mpmct1 64 32 48 300 wide300-caps OUT
+wide128_prod pack/wide128_a.mpmct1 pack/wide128_b.mpmct1 512 512 24576 3000 wide128-G512 OUT
+wide128_caps pack/wide128_a.mpmct1 pack/wide128_b.mpmct1 24 16 40 200 wide128-caps OUT
+dense16_256 pack/dense16_a.mpmct1 pack/dense16_b.mpmct1 512 512 256 3000 dense16-b256 OUT
+dense16_1024 pack/dense16_a.mpmct1 pack/dense16_b.mpmct1 512 512 1024 3000 dense16-b1024 OUT
+dense16_dup pack/dense16_a.mpmct1 pack/dense16_b.mpmct1 512 4 8 3000 dense16-dup OUT
+w1024_64 pack/w1024_a.mpmct1 pack/w1024_b.mpmct1 64 64 3072 3000 w1024-G64 OUT
+w1024_caps pack/w1024_a.mpmct1 pack/w1024_b.mpmct1 32 24 32 200 w1024-caps OUT
