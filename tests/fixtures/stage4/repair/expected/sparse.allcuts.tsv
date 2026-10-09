@@ -1,0 +1,11 @@
+# gate	wire	cut	weight (every cut where the value is exactly affine)
+0	2	4	1
+0	2	8	1
+0	2	11	1
+0	2	12	1
+0	2	33	1
+2	7	33	1
+5	6	33	1
+7	4	33	1
+8	1	33	1
+11	3	33	1

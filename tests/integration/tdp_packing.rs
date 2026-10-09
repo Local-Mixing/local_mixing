@@ -496,3 +496,315 @@ fn pack_exit_codes() {
     );
     let _ = fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------- repair
+
+/// `repair/cases.txt`: `name packed bounds c n split_budget fix fallback`
+/// (`@n8` = the real n=8 pack, made here by `tdp_packing pack`, whose output
+/// is the oracle's: see `pack_matches_oracle`).
+struct RepairCase {
+    name: String,
+    packed: String,
+    bounds: String,
+    c: String,
+    n: String,
+    budget: String,
+    fix: String,
+    fallback: String,
+}
+
+fn repair_cases() -> Vec<RepairCase> {
+    fs::read_to_string(fx("repair/cases.txt"))
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let f: Vec<String> = l.split_whitespace().map(String::from).collect();
+            assert_eq!(f.len(), 8, "repair case line {l:?}");
+            RepairCase {
+                name: f[0].clone(),
+                packed: f[1].clone(),
+                bounds: f[2].clone(),
+                c: f[3].clone(),
+                n: f[4].clone(),
+                budget: f[5].clone(),
+                fix: f[6].clone(),
+                fallback: f[7].clone(),
+            }
+        })
+        .collect()
+}
+
+/// The packed input of a case: (circuit, bounds).
+fn repair_input(rc: &RepairCase, dir: &Path) -> (PathBuf, PathBuf) {
+    if rc.packed == "@n8" {
+        let out = dir.join("packed.mpmct1");
+        ok(&[
+            "pack",
+            p(&fx("cview_n8/g2.mpmct1")),
+            p(&fx("n8_L8/g3.mpmct1")),
+            "512",
+            "512",
+            "24576",
+            "3000",
+            "n8-G512",
+            p(&out),
+        ]);
+        (out.clone(), dir.join("packed.mpmct1.bounds"))
+    } else {
+        (fx(&rc.packed), fx(&rc.bounds))
+    }
+}
+
+fn run_repair_case(rc: &RepairCase, dir: &Path, extra: &[&str]) -> (Output, PathBuf) {
+    let (packed, bounds) = repair_input(rc, dir);
+    let out = dir.join("out");
+    let c = fx(&rc.c);
+    let mut args = vec![
+        "repair",
+        "--packed",
+        p(&packed),
+        "--bounds",
+        p(&bounds),
+        "--source-c",
+        p(&c),
+        "--n",
+        &rc.n,
+        "--out-dir",
+        p(&out),
+        "--split-budget",
+        &rc.budget,
+        "--fix-iterations",
+        &rc.fix,
+        "--fallback-iterations",
+        &rc.fallback,
+    ];
+    args.extend_from_slice(extra);
+    (run(&args), out)
+}
+
+/// The oracle runs its first `verify_equiv` in the background, so that line's
+/// position in the log is a race: compare the other lines in order and the
+/// verify lines as a multiset.
+fn split_verify_lines(log: &str) -> (Vec<String>, Vec<String>) {
+    let (mut other, mut verify): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for l in log.lines() {
+        if l.ends_with("EQUIVALENT (1024 random states)") {
+            verify.push(l.to_string());
+        } else {
+            other.push(l.to_string());
+        }
+    }
+    verify.sort();
+    (other, verify)
+}
+
+#[test]
+fn repair_matches_oracle() {
+    let cases = repair_cases();
+    assert!(cases.len() >= 6);
+    for rc in &cases {
+        let dir = scratch();
+        let (o, out) = run_repair_case(rc, &dir, &["--allow-floor-miss", "--allow-over-budget"]);
+        let name = &rc.name;
+        assert!(
+            o.status.success(),
+            "{name}: {}\n{}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let exp = |s: &str| fx(&format!("repair/expected/{name}.{s}"));
+        let got = |s: &str| out.join(format!("rep512.{s}"));
+        let want_rep = if rc.packed == "@n8" {
+            fx("n8_L8/rep.mpmct1")
+        } else {
+            exp("rep.mpmct1")
+        };
+        assert!(
+            fs::read(got("mpmct1")).unwrap() == fs::read(want_rep).unwrap(),
+            "{name}: repaired circuit differs from the oracle's"
+        );
+        for s in ["bounds", "exposure.tsv", "allcuts.tsv", "wit.tsv"] {
+            assert!(
+                fs::read(got(s)).unwrap() == fs::read(exp(s)).unwrap(),
+                "{name}: rep512.{s} differs from the oracle's"
+            );
+        }
+        let prefix = format!("{}/", out.display());
+        let norm = |path: PathBuf| fs::read_to_string(path).unwrap().replace(&prefix, "<DIR>/");
+        assert_eq!(
+            norm(got("cview.log")),
+            fs::read_to_string(exp("cview.log")).unwrap(),
+            "{name}: cview.log"
+        );
+        let log = norm(out.join("repair512.log"));
+        assert_eq!(
+            split_verify_lines(&log),
+            split_verify_lines(&fs::read_to_string(exp("log")).unwrap()),
+            "{name}: repair log"
+        );
+        assert_eq!(
+            String::from_utf8(o.stdout).unwrap(),
+            fs::read_to_string(out.join("repair512.log")).unwrap(),
+            "{name}: stdout is the log"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn repair_thread_count_does_not_change_output() {
+    let rc = repair_cases()
+        .into_iter()
+        .find(|c| c.name == "leaky")
+        .unwrap();
+    let mut outs = Vec::new();
+    for t in ["1", "4"] {
+        let dir = scratch();
+        let (o, out) = run_repair_case(&rc, &dir, &["--allow-floor-miss", "--threads", t]);
+        assert!(o.status.success());
+        let mut files = Vec::new();
+        for f in [
+            "rep512.mpmct1",
+            "rep512.bounds",
+            "rep512.exposure.tsv",
+            "rep512.allcuts.tsv",
+            "rep512.wit.tsv",
+        ] {
+            files.push(fs::read(out.join(f)).unwrap());
+        }
+        outs.push(files);
+        let _ = fs::remove_dir_all(dir);
+    }
+    assert!(outs[0] == outs[1]);
+}
+
+#[test]
+fn repair_single_window_case() {
+    // the orderdep inputs with no boundary at all: the oracle's hmap_affine
+    // panics on such a lattice ("empty plate"); here it is scanned as zero
+    // cuts (visible 0) and the window is kept whole when it fits.
+    let mut rc = repair_cases()
+        .into_iter()
+        .find(|c| c.name == "orderdep")
+        .unwrap();
+    let dir = scratch();
+    let empty = dir.join("empty.bounds");
+    fs::write(&empty, "\n").unwrap();
+    rc.bounds = p(&empty).to_string();
+    rc.packed = p(&fx(&rc.packed)).to_string();
+    rc.budget = "65536".into();
+    let (o, out) = run_repair_case(&rc, &dir, &["--stats"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("repair.single_window_scans=2"), "{err}");
+    assert_eq!(fs::read_to_string(out.join("rep512.bounds")).unwrap(), "\n");
+    let log = fs::read_to_string(out.join("repair512.log")).unwrap();
+    assert!(log.contains("fix iter 1: C-view visible 0 (floor 8)\n  (single window"));
+    assert!(log.contains("0 splits added (0 -> 0 boundaries)"));
+    let cv = fs::read_to_string(out.join("rep512.cview.log")).unwrap();
+    assert!(cv.contains(" cols=0, "), "{cv}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn repair_exit_codes_and_check_final() {
+    let cases = repair_cases();
+    let get = |n: &str| cases.iter().find(|c| c.name == n).unwrap();
+    let code = |o: &Output| o.status.code();
+    // 5: leaky ends with visible non-output rows; the repair outputs (oracle
+    // intermediates) are still written; --allow-floor-miss gives 0
+    let dir = scratch();
+    let (o, out) = run_repair_case(get("leaky"), &dir, &[]);
+    assert_eq!(code(&o), Some(5));
+    assert!(out.join("rep512.mpmct1").exists());
+    let (o, _) = run_repair_case(get("leaky"), &dir, &["--allow-floor-miss"]);
+    assert_eq!(code(&o), Some(0));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("status=floor_miss"));
+    // check-final agrees on the oracle's own repaired leaky circuit
+    let cf = |rep: &Path, bounds: &Path, c: &str, extra: &[&str]| {
+        let mut a = vec![
+            "check-final",
+            "--rep",
+            p(rep),
+            "--bounds",
+            p(bounds),
+            "--source-c",
+            c,
+            "--n",
+            "8",
+        ];
+        a.extend_from_slice(extra);
+        run(&a)
+    };
+    let leaky_c = fx("repair/leaky.c.g57");
+    let o = cf(
+        &fx("repair/expected/leaky.rep.mpmct1"),
+        &fx("repair/expected/leaky.bounds"),
+        p(&leaky_c),
+        &[],
+    );
+    assert_eq!(code(&o), Some(5));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("status=floor_miss"));
+    // ... and passes the real n=8 repair (the oracle's rep.mpmct1)
+    let n8c = fx("n8_L8/c.g57");
+    let o = cf(
+        &fx("n8_L8/rep.mpmct1"),
+        &fx("n8_L8/rep.bounds"),
+        p(&n8c),
+        &[],
+    );
+    assert_eq!(code(&o), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("status=ok"));
+    // 6: orderdep (nothing visible) with a budget no window can meet
+    let mut od = repair_cases()
+        .into_iter()
+        .find(|c| c.name == "orderdep")
+        .unwrap();
+    od.budget = "2".into();
+    let d2 = scratch();
+    let (o, _) = run_repair_case(&od, &d2, &[]);
+    assert_eq!(code(&o), Some(6), "{}", String::from_utf8_lossy(&o.stderr));
+    let (o, _) = run_repair_case(&od, &d2, &["--allow-over-budget"]);
+    assert_eq!(code(&o), Some(0));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("status=over_budget"));
+    // 2: usage; 3: malformed input
+    assert_eq!(run(&["repair", "--packed", "x"]).status.code(), Some(2));
+    let bad = d2.join("bad.mpmct1");
+    fs::write(&bad, "mpmct1 32 1\n0 0 2 3 1 1 1\n").unwrap();
+    let mut bad_case = repair_cases()
+        .into_iter()
+        .find(|c| c.name == "leaky")
+        .unwrap();
+    bad_case.packed = p(&bad).to_string();
+    bad_case.bounds = p(&fx("repair/leaky.packed.bounds")).to_string();
+    let (o, _) = run_repair_case(&bad_case, &d2, &[]);
+    assert_eq!(code(&o), Some(3));
+    // 7: the output directory cannot be created
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = d2.join("ro");
+        fs::create_dir_all(&ro).unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+        let rc = get("sparse");
+        let o = run(&[
+            "repair",
+            "--packed",
+            p(&fx(&rc.packed)),
+            "--bounds",
+            p(&fx(&rc.bounds)),
+            "--source-c",
+            p(&fx(&rc.c)),
+            "--n",
+            "8",
+            "--out-dir",
+            p(&ro.join("sub")),
+            "--allow-floor-miss",
+        ]);
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(code(&o), Some(7), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(d2);
+}

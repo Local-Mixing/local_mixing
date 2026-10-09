@@ -6,7 +6,7 @@
 #
 #   HMAP_BASELINE=.../baseline_target/release/hmap_affine ORACLE_PY=/usr/bin/python3 \
 #   CARGO_TARGET_DIR=... FROZEN_DB_DIR=... WORK=<durable scratch dir> \
-#   bash regen.sh [n8_L8] [anf] [container] [pack]
+#   bash regen.sh [n8_L8] [anf] [container] [pack] [repair]
 #
 # Parts:
 #   n8_L8  real chain at n=8 (|C|=|D|=16, preset L8): gen_sandwich_gadget and
@@ -26,16 +26,26 @@
 #          Expected: stdout, bounds, and blake2b-128 digests of the packed
 #          circuit and of the emitted order (WP's PACK_DUMP_ORDER). Coverage
 #          is asserted from the oracle logs and tdp_packing --stats.
+#   repair the oracle repair (repair.sh with order_repair.py, merge_bounds2.py,
+#          anf_split2.py and the baseline hmap_affine) on the cases of
+#          repair/cases.txt: the real n=8 pack (window_pack3.py on the n8_L8
+#          G2/G3 pair, production argv) and the synthetic inputs of
+#          repair_cases.py, each in its own sandbox with the split budget and
+#          the iteration counts rewritten (exactly once). Expected: the
+#          repaired circuit (synthetic cases; n8 is n8_L8/rep.mpmct1, asserted
+#          equal), bounds, the three TSVs, cview.log and the repair log up to
+#          its report part, with sandbox paths normalized to <DIR>. Coverage is
+#          asserted from the oracle logs and tdp_packing repair --stats.
 #
 # Seeds here are CALIBRATION values, never deliverable seeds.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 : "${HMAP_BASELINE:?}" "${ORACLE_PY:?}" "${WORK:?set WORK to a durable scratch directory}"
-PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container pack)
+PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container pack repair)
 want() { local p; for p in "${PARTS[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
 
-if want n8_L8 || want anf || want pack; then
+if want n8_L8 || want anf || want pack || want repair; then
   STAMP=$(date +%Y%m%d_%H%M%S)
   SBR=$WORK/fixture_$STAMP
   RD=$(bash "$HERE/oracle_sandbox.sh" "$SBR")
@@ -159,6 +169,66 @@ if want pack; then
   cov "B wider than A" "grep -q 'input function check 128/128' $E/wide128_prod.txt"
   cov "W = 16 state" "grep -q 'w1024' '$out/cases.txt'"
   cp "$PW/coverage.txt" "$out/coverage.txt"
+  sed -i '' -e "s|$HERE/||g" "$out/coverage.txt"
+fi
+if want repair; then
+  : "${CARGO_TARGET_DIR:?}"
+  (cd "$REPO" && cargo build --locked --release --bin tdp_packing)
+  TP=$CARGO_TARGET_DIR/release/tdp_packing
+  out=$HERE/repair; mkdir -p "$out"; rm -rf "$out/expected"; mkdir -p "$out/expected"
+  rm -f "$out"/*.g57 "$out"/*.mpmct1 "$out"/*.bounds
+  "$ORACLE_PY" -I "$HERE/repair_cases.py" "$out"
+  RW=$SBR/repair_work; mkdir -p "$RW"
+  # the real n=8 pack, from the oracle packer (its digest is a pack fixture)
+  (cd "$RD" && "$ORACLE_PY" window_pack3.py "$HERE/cview_n8/g2.mpmct1" "$HERE/n8_L8/g3.mpmct1" \
+     512 512 24576 3000 n8-G512 "$RW/n8_packed.mpmct1" > "$RW/n8_pack.txt" 2>&1)
+  : > "$RW/coverage.txt"
+  while read -r name packed bounds c n budget fix fb; do
+    [ -z "$name" ] && continue
+    if [ "$packed" = @n8 ]; then
+      P0=$RW/n8_packed.mpmct1; B0=$RW/n8_packed.mpmct1.bounds
+    else
+      P0=$HERE/$packed; B0=$HERE/$bounds
+    fi
+    SB=$SBR/repair_$name
+    RDR=$(SPLIT_BUDGET=$budget FIX_ITERS=$fix FALLBACK_ITERS=$fb bash "$HERE/oracle_sandbox.sh" "$SB")
+    R=$RDR/waist/$name; mkdir -p "$R"
+    cp "$P0" "$R/packed_G512.mpmct1"; cp "$B0" "$R/packed_G512.mpmct1.bounds"
+    cp "$HERE/$c" "$R/tdp.mpmct1.source_c.g57"
+    cp "$P0" "$R/tdp.mpmct1"   # link_census input only (report part, not compared)
+    bash "$RDR/waist/repair.sh" "$name" 512 "$n" > "$R/repair512.log" 2>&1
+    E=$out/expected/$name
+    if [ "$packed" = @n8 ]; then
+      cmp "$R/rep512.mpmct1" "$HERE/n8_L8/rep.mpmct1" || { echo "n8 repair != n8_L8/rep.mpmct1" >&2; exit 1; }
+    else
+      cp "$R/rep512.mpmct1" "$E.rep.mpmct1"
+    fi
+    cp "$R/rep512.bounds" "$E.bounds"
+    for t in exposure allcuts wit; do cp "$R/rep512.$t.tsv" "$E.$t.tsv"; done
+    sed "s|$R/|<DIR>/|g" "$R/rep512.cview.log" > "$E.cview.log"
+    sed -n "/^== $name rep512 final/q;p" "$R/repair512.log" | sed "s|$R/|<DIR>/|g" > "$E.log"
+    # Rust counters for the coverage table (the comparison is the CI test)
+    rargs=(--packed "$P0" --bounds "$B0" --source-c "$HERE/$c" --n "$n" --split-budget "$budget"
+           --fix-iterations "$fix" --fallback-iterations "$fb" --allow-floor-miss --allow-over-budget)
+    st=$("$TP" repair "${rargs[@]}" --out-dir "$RW/rust_$name" --stats 2>&1 >/dev/null | grep '^stats: repair\.' \
+          | sed 's/^stats: //' | tr '\n' ' ')
+    stc=$("$TP" repair "${rargs[@]}" --out-dir "$RW/rustc_$name" --anf-cap-semantics canonical 2>/dev/null >/dev/null;
+          cmp -s "$RW/rust_$name/rep512.bounds" "$RW/rustc_$name/rep512.bounds" && echo same || echo differs)
+    echo "$name $st canonical_bounds=$stc" >> "$RW/coverage.txt"
+  done < "$out/cases.txt"
+  # Coverage (docs/STAGE4_RUST_DESIGN.md §10.3 step 6, repair part).
+  cov() { if ! eval "$2"; then echo "regen repair: coverage '$1' not reached" >&2; exit 1; fi; echo "  covered: $1"; }
+  E=$out/expected; C=$RW/coverage.txt
+  cov "cancel passes >= 2" "(for f in $E/*.log; do [ \$(grep -c 'cancel pass:' \$f) -ge 2 ] && exit 0; done; exit 1)"
+  cov "fix moved > 0 in >= 2 iterations" "grep -qE 'fix_moved=[1-9][0-9]*,[1-9]' '$C'"
+  cov "fix exhausted" "grep -q 'fix_exhausted=1' '$C'"
+  cov "merge removed > 0" "grep -qE '^merge: removed [1-9]' $E/*.log"
+  cov "clean split" "grep -qE 'splits=[1-9][0-9]*(,[0-9]+)* repair.forced_splits=0' '$C'"
+  cov "forced split (WARNING)" "grep -q 'WARNING: no exposure-free split' $E/*.log"
+  cov "order-dependent split decision" "grep -qE 'split_order_dependent_windows=[1-9].*canonical_bounds=differs' '$C'"
+  cov "final non-output row visible (exit 5 path)" "grep -qE 'final_nonoutput_visible=[1-9]' '$C'"
+  cov "non-default split budget and iterations" "awk '\$6 != 65536 && (\$7 != 4 || \$8 != 4)' '$out/cases.txt' | grep -q ."
+  cp "$C" "$out/coverage.txt"
   sed -i '' -e "s|$HERE/||g" "$out/coverage.txt"
 fi
 du -sh "$HERE"
