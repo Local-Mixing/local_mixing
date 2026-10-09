@@ -486,7 +486,7 @@ impl<'a> CutOracle<'a> {
         while self.pos < target {
             apply_wire_major(&self.p[self.pos], &mut self.state, b, acc);
             self.pos += 1;
-            if self.pos % self.checkpoint_every == 0
+            if self.pos.is_multiple_of(self.checkpoint_every)
                 && self.checkpoints.len() == self.pos / self.checkpoint_every
             {
                 self.checkpoints.push(self.state.clone());

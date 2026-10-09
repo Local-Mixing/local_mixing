@@ -33,7 +33,8 @@ fn ref_snapshots(gates: &[XGate], init: &[u64], idx: &[usize]) -> Vec<Vec<u64>> 
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+// Verbatim transcription: keep HA's loop shapes.
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn reference_scan(
     c: &[XGate],
     g: &[XGate],
