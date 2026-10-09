@@ -1566,6 +1566,13 @@ The CI differential (`tests/stage4/differential.sh`) on four local seeds: 160 ca
 
 **P9:** the documentation of §14 is updated.
 
+**Acceptance round 1, vL64a (2026-10-09, at `b77753ad`).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 64` with no packing flag (the defaults are the recommended G=512 chain: `window_pack3.py 512 512 24576 3000`, repair budget 65536, 4+4 iterations, cpython39 caps); exit 0, `status=ok`. Against the archived oracle files: `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, `rep512.{exposure,allcuts,wit}.tsv` and `deliverable.bin` byte-identical; `deliverable.tdp4[48:]` = the archived (pre-header) `deliverable.bin`, and `tdp_packing decode --format container` accepts it; `pack_G512.txt`, `anf_rep512.txt`, `link_rep512.txt` identical up to the run label (`tdp-` for `vL64a-`), `rep512.cview.log` and `repair512.log` up to output paths. Independent checks on the Rust outputs: `hmap_affine --exposure --g-cuts rep512.bounds` reports 64 visible of 1000 (the exact floor; the 64 are the last writer of each of the 64 wires) with TSVs identical to the oracle's; `verify_zero_slice` PASS with 512 samples on `rep512.mpmct1` and `packed_G512.mpmct1`; the oracle's `link_census.py` on the Rust `rep512` gives the archived `link_rep512.txt` byte for byte (proxy L2 5366 / M2 58598, froth L2 1126 / M2 2330). A fresh sandboxed oracle rerun reproduced the archive byte for byte.
+
+| stage 4 on vL64a | wall | peak RSS |
+|---|---|---|
+| Rust `tdp_packing run` (pack, repair, reports, serialize, every check incl. 4096-sample zero slice) | 31.3 s | 1.10 GB |
+| Python oracle: `window_pack3.py` / `repair.sh` / `anf_dump_eval.py` | 67.4 s / 213.7 s / 49.4 s = 330.5 s | 1.75 GB (the packer) |
+
 ---
 
 ## 13. Open decisions for RC
