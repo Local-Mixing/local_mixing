@@ -1556,7 +1556,7 @@ So the chosen runs are reproducible by the current binaries, and the targets sta
 | reproduction n=8, \|C\|=16, L8 (`tdp_reproduce_small.bash`) | ALL IDENTICAL | 51 s / 15 s |
 | reproduction n=16, \|C\|=64, L8 | ALL IDENTICAL | 182 s / 73 s |
 | reproduction n=16, \|C\|=64, A | ALL IDENTICAL | 158 s / 64 s |
-| reproduction n=64, L8 (\|C\| = 1000 by default) | @@N64@@ | @@N64T@@ |
+| reproduction n=64, L8 (\|C\| = 1000 by default) | ALL IDENTICAL | 1,908 s / 1,492 s (stage 3: 1,457 s / 1,601 s, +9.9%, sequential runs on a shared machine) |
 | anchor B vL64a (archived seeds) | every artifact identical to the archive, `status=ok` | managed 1,542 s |
 | anchor B vL128a (archived seeds) | @@V128@@ | @@V128T@@ |
 
