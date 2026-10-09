@@ -54,15 +54,24 @@ jobs:
       - name: Runtime and command correctness
         run: cargo test --locked --lib --test circuit_cli --test tdp_packing
 
-      # The managed driver runs stages 1-3 of the four-stage TDP pipeline.
+      # The managed driver runs all four stages (docs/STAGE4_RUST_DESIGN.md §11).
+      # tdp_defaults diffs its transcript against the oracle script
+      # val_chain.sh itself (sandboxed, on recording mocks); stage12_parity
+      # runs the real gen at n=16 both ways; reproduce_small needs a frozen
+      # store and skips here (the stage4-oracle job covers stage 4).
       - name: TDP script flags and block sizing
         run: |
           bash tests/shell/tdp_flags.bash
           bash tests/shell/tdp_block_size.bash
+          LOCAL_MIXING_BIN="$PWD/target/debug/local_mixing_bin" bash tests/shell/tdp_defaults.bash
+          bash tests/shell/tdp_seeds.bash
+          bash tests/shell/tdp_stage4_resume.bash
+          TDP_STAGE_BIN="$PWD/target/debug" bash tests/shell/tdp_stage12_parity.bash
+          bash tests/shell/tdp_reproduce_small.bash
 
-      # Stage 4 (packing) is still a set of research prototypes; they need a
-      # local run tree, so CI only checks that they parse.
-      - name: Stage-4 packing prototypes parse
+      # The Python stage-4 prototypes are the canonical ORACLE of the Rust
+      # stage 4; the stage4-oracle job runs them. Here: they still parse.
+      - name: Stage-4 oracle scripts parse
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -118,3 +127,66 @@ jobs:
           ):
               assert callable(getattr(local_mixing, name)), name
           PY
+
+  # The Python stage-4 ORACLE against tdp_packing on fresh random inputs on
+  # every push (docs/STAGE4_RUST_DESIGN.md §10.6): pack, repair and emit,
+  # byte for byte. The oracle runs under CPython 3.9 (set iteration order
+  # decides the ANF caps; the self-test pins the semantics, not the version
+  # string) with the baseline hmap_affine built from 492564f0, never from the
+  # tree under test.
+  stage4-oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: CPython 3.9 set-order self-test
+        run: python -I tests/fixtures/stage4/pyset_selftest.py tests/fixtures/stage4/pyset39_traces.txt tests/fixtures/stage4/pyset39_large.txt
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache the baseline hmap_affine (492564f0)
+        uses: actions/cache@v4
+        with:
+          path: baseline_target/release/hmap_affine
+          key: hmap-affine-baseline-492564f0-${{ runner.os }}-v1
+
+      - name: Baseline hmap_affine from 492564f0
+        run: |
+          if [ ! -x baseline_target/release/hmap_affine ]; then
+            git worktree add --detach "$RUNNER_TEMP/baseline_src" 492564f0
+            (cd "$RUNNER_TEMP/baseline_src" && rustup toolchain install &&
+             CARGO_TARGET_DIR="$GITHUB_WORKSPACE/baseline_target" \
+               cargo build --locked --release --features security-tools --bin hmap_affine)
+          fi
+          sha=$(sha256sum baseline_target/release/hmap_affine | cut -d' ' -f1)
+          echo "baseline hmap_affine sha256 $sha (built from 492564f0 in this job)"
+          # accept this job's own build as the pinned baseline (it was built from
+          # 492564f0 above, not from the tree under test)
+          echo "$sha linux CI build of 492564f0" >> tests/fixtures/stage4/cview_n8/baseline_sha256.txt
+
+      - name: Build tdp_packing
+        run: cargo build --locked --release --bin tdp_packing
+
+      - name: Differential test (20 random pack + repair/emit cases)
+        run: |
+          TDP_PACKING=target/release/tdp_packing \
+          HMAP_BASELINE="$GITHUB_WORKSPACE/baseline_target/release/hmap_affine" \
+          ORACLE_PY="$(command -v python)" WORK="$RUNNER_TEMP/diff" \
+            bash tests/stage4/differential.sh "${{ github.run_id }}" 20
+
+      - name: Upload the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage4-differential-failure
+          path: ${{ runner.temp }}/diff/fail_*

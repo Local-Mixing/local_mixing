@@ -781,7 +781,14 @@ fn env_registry_covers_every_env_read() {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut files,
     );
-    let callers = ["env::var(", "env::var_os(", "envu(", "value_convention("];
+    let callers = [
+        "env::var(",
+        "env::var_os(",
+        "envu(",
+        "value_convention(",
+        "flag(",
+        "num(",
+    ];
     let mut unclassified = BTreeSet::new();
     let mut found = 0;
     for f in files {
@@ -811,6 +818,34 @@ fn env_registry_covers_every_env_read() {
         unclassified.is_empty(),
         "unclassified environment reads: {unclassified:?}"
     );
+}
+
+/// The `src/stages` contract: construction never reads process configuration.
+/// The stage-2 knobs are typed fields since §11.4; the remaining reads are
+/// the stage-3 engine's, a recorded follow-up (§13.4) that the managed driver
+/// forbids.
+#[test]
+fn stages_library_reads_no_environment() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src/stages"), &mut files);
+    let allowed = [root.join("src/stages/db_mixing/environment.rs")];
+    for f in files {
+        let text = fs::read_to_string(&f).unwrap();
+        if text.contains("env::var") && !allowed.contains(&f) {
+            panic!("{} reads the environment", f.display());
+        }
+    }
 }
 
 #[test]

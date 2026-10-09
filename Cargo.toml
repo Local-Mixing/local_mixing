@@ -113,6 +113,10 @@ path = "tests/integration/mixer_db_replacement.rs"
 name = "tdp_packing"
 path = "tests/integration/tdp_packing.rs"
 
+[[test]]
+name = "stage2_typed_params"
+path = "tests/integration/stage2_typed_params.rs"
+
 # hmap_affine --exposure (library C-view engine) against the pinned baseline.
 [[test]]
 name = "hmap_affine_exposure"

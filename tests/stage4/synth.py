@@ -24,6 +24,21 @@ sys.path.insert(0, os.path.join(HERE, "..", "fixtures", "stage4"))
 import pack_cases  # noqa: E402
 import repair_cases  # noqa: E402
 
+# repair_cases writes C as f"{a}{x}{y};", which is the base-83 g57 text only
+# for wires < 10; wires >= 10 need their base-83 digit (circuit/formats/g57.rs).
+G57_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
+
+
+class Wire(int):
+    """An int that formats (f-strings) as its base-83 g57 digit; str() stays decimal."""
+
+    def __format__(self, spec):
+        return G57_ALPHABET[int(self)]
+
+
+_g57_gate = repair_cases.g57_gate
+repair_cases.g57_gate = lambda rng: tuple(Wire(v) for v in _g57_gate(rng))
+
 
 def main():
     out, kind, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -32,8 +47,8 @@ def main():
     if kind == "pack":
         na = rng.choice([8, 12, 16, 24, 40, 70])
         nb = na + rng.choice([0, 0, 0, 8, 24])
-        local = min(na, rng.choice([4, 6, 8, 12, 16]))
         kdist = rng.choice([[0, 1, 1, 2], [1, 2, 2], [2, 3, 3, 4], [0, 1, 1, 1, 2, 2]])
+        local = min(na, max(max(kdist) + 2, rng.choice([4, 6, 8, 12, 16])))
         m = rng.randrange(150, 1200)
         pack_cases.make(out, "x", rng.randrange(1 << 30), na, nb, list(range(na)), m, kdist,
                         rng.randrange(0, 60), rng.randrange(0, 40) if nb > na else 0,

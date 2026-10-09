@@ -38,19 +38,20 @@ for k in $(seq 1 "$K"); do
   s=$("$ORACLE_PY" -I -c "import random,sys; r=random.Random(int(sys.argv[1])*1000003+int(sys.argv[2])); print(r.randrange(1<<40))" "$SEED" "$k")
   # ---- pack
   D=$WORK/k$k/pack; mkdir -p "$D"
-  read -r wc g bm sc < <("$ORACLE_PY" -I "$HERE/synth.py" "$D" pack "$s")
+  args=$("$ORACLE_PY" -I "$HERE/synth.py" "$D" pack "$s") || { echo "synth.py pack failed (k=$k)" >&2; exit 2; }
+  read -r wc g bm sc <<< "$args"
   (cd "$RD" && "$ORACLE_PY" window_pack3.py "$D/a.mpmct1" "$D/b.mpmct1" "$wc" "$g" "$bm" "$sc" lbl "$D/o.mpmct1" > "$D/o.txt" 2>&1)
   "$TDP_PACKING" pack "$D/a.mpmct1" "$D/b.mpmct1" "$wc" "$g" "$bm" "$sc" lbl "$D/r.mpmct1" > "$D/r.txt" 2> "$D/r.err"
   st=ok
   cmp -s "$D/o.txt" "$D/r.txt" || st="$st; stdout"
   cmp -s "$D/o.mpmct1" "$D/r.mpmct1" || st="$st; packed"
   cmp -s "$D/o.mpmct1.bounds" "$D/r.mpmct1.bounds" || st="$st; bounds"
-  aborts=$(grep -c . /dev/null)
   if [ "$st" = ok ]; then echo "  k=$k pack ($wc $g $bm $sc; $(head -c 40 "$D/a.mpmct1" | head -1)): identical"
   else note_fail "$k" pack "$st"; cp -r "$D" "$WORK/fail_${k}_pack"; fi
   # ---- repair + emit
   D=$WORK/k$k/repair; mkdir -p "$D"
-  read -r n bud fix fb < <("$ORACLE_PY" -I "$HERE/synth.py" "$D/in" repair "$s")
+  args=$("$ORACLE_PY" -I "$HERE/synth.py" "$D/in" repair "$s") || { echo "synth.py repair failed (k=$k)" >&2; exit 2; }
+  read -r n bud fix fb <<< "$args"
   SB=$WORK/k$k/sb_repair
   RDR=$(SPLIT_BUDGET=$bud FIX_ITERS=$fix FALLBACK_ITERS=$fb bash "$FX/oracle_sandbox.sh" "$SB") || exit 2
   R=$RDR/waist/x; mkdir -p "$R"

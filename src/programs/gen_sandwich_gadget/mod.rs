@@ -92,6 +92,69 @@ fn parse_shuffling_controls(
     Ok((segments, return_home, jit_gap))
 }
 
+/// The stage-2 construction knobs that the library takes as typed fields
+/// (docs/STAGE4_RUST_DESIGN.md §11.4), from their historical environment
+/// names. This adapter (and the security tools that reuse it) is the only
+/// place those names are read; the library never reads the environment.
+/// Unset variables keep `p`'s values.
+pub fn stage2_knobs_from_env(p: EmbeddedMaskingParams) -> EmbeddedMaskingParams {
+    use crate::stages::preprocessing::embedded_masking::RetireParams;
+    let var = |k: &str| std::env::var(k);
+    let num = |k: &str, d: usize| -> usize {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    let flag = |k: &str, d: bool| -> bool { var(k).map_or(d, |v| v != "0") };
+    EmbeddedMaskingParams {
+        premask: flag("EMBEDDED_MASKING_PREMASK", p.premask),
+        seed_avoid_c1: flag("EMBEDDED_MASKING_SEED_AVOID_C1", p.seed_avoid_c1),
+        chain_k: num("EMBEDDED_MASKING_CHAIN", p.chain_k),
+        chain_len: num("EMBEDDED_MASKING_CHAIN_LEN", p.chain_len),
+        chain_rotate: flag("EMBEDDED_MASKING_CHAIN_ROTATE", p.chain_rotate),
+        retire: RetireParams {
+            k: num("EMBEDDED_MASKING_RETIRE", p.retire.k),
+            warmup_pct: num("EMBEDDED_MASKING_RETIRE_WARMUP", p.retire.warmup_pct),
+            safe: flag("EMBEDDED_MASKING_RETIRE_SAFE", p.retire.safe),
+            burst: num("EMBEDDED_MASKING_RETIRE_BURST", p.retire.burst).max(1),
+            repair: var("EMBEDDED_MASKING_RETIRE_MODE").map_or(p.retire.repair, |v| v == "repair"),
+            pin_need: num("EMBEDDED_MASKING_RETIRE_PIN", p.retire.pin_need),
+            norep: flag("EMBEDDED_MASKING_RETIRE_NOREPLACE", p.retire.norep),
+            preopen_pct: num("EMBEDDED_MASKING_RETIRE_PREOPEN", p.retire.preopen_pct),
+        },
+        drift: flag("EMBEDDED_MASKING_DRIFT", p.drift),
+        drift_window: match var("EMBEDDED_MASKING_DRIFT_ONLY") {
+            Err(_) => p.drift_window,
+            Ok(w) => Some(parse_drift_window(&w)),
+        },
+        anc_reserve: num("EMBEDDED_MASKING_ANC_RESERVE", p.anc_reserve),
+        legacy_slice_guard: flag("SLICE_GUARD_LEGACY", p.legacy_slice_guard),
+        ..p
+    }
+}
+
+/// `lo:hi`; anything unparsable disables the drift everywhere (the empty
+/// window `(1, 0)`), as the historical inline parse did.
+pub(crate) fn parse_drift_window(w: &str) -> (usize, usize) {
+    w.split_once(':')
+        .and_then(|(lo, hi)| Some((lo.parse().ok()?, hi.parse().ok()?)))
+        .unwrap_or((1, 0))
+}
+
+/// Diagnostics of the construction (traces, dumps) from the environment.
+pub fn execution_from_env(e: EmbeddedMaskingExecution) -> EmbeddedMaskingExecution {
+    EmbeddedMaskingExecution {
+        lgi_debug: std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok(),
+        straddle_census: std::env::var("EMBEDDED_MASKING_STRADDLE_CENSUS").is_ok(),
+        drift_debug: std::env::var("EMBEDDED_MASKING_DRIFT_DEBUG").is_ok(),
+        dump_gates: std::env::var("EMBEDDED_MASKING_DUMP_GATES")
+            .ok()
+            .map(std::path::PathBuf::from),
+        ..e
+    }
+}
+
 /// A positional argument: absent (`None`) means the default; present but
 /// unparsable, including empty, is an error naming the argument (D17: a parse
 /// slip must never silently become a default such as seed 1).
@@ -297,13 +360,14 @@ pub fn run() {
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
                     .unwrap_or(4),
-                execution: EmbeddedMaskingExecution {
+                execution: execution_from_env(EmbeddedMaskingExecution {
                     ancilla_band_only: std::env::var("EMBEDDED_MASKING_ANC_POOL")
                         .map_or(true, |v| v != "all"),
                     diagnostics: std::env::var("EMBEDDED_MASKING_DIAG").is_ok(),
                     record_hot_intervals: std::env::var("EMBEDDED_MASKING_HOT_MANIFEST").is_ok(),
-                },
-                params,
+                    ..Default::default()
+                }),
+                params: stage2_knobs_from_env(params),
             };
             let output =
                 preprocess_sandwich(&sandwich, n, slice_gates, variant, &options, &mut rng)

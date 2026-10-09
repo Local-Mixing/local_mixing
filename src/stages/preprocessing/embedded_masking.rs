@@ -174,6 +174,59 @@ pub struct EmbeddedMaskingParams {
     /// end (the migration-drain celebrity class). Requires persistent
     /// migration (`shuffling_return_home == false`).
     pub shuffling_jit_gap: usize,
+    /// Up-front masking (fringe fix 1; adapter: `EMBEDDED_MASKING_PREMASK`).
+    pub premask: bool,
+    /// Keep the forward band seed's raw-pair products off the control pairs
+    /// of the sandwich's first-layer gates (fringe fix 2; read by the stage-2
+    /// assembly; adapter: `EMBEDDED_MASKING_SEED_AVOID_C1`).
+    pub seed_avoid_c1: bool,
+    /// Bounded bracket chains: chain `chain_k` brackets per hot wire
+    /// (`EMBEDDED_MASKING_CHAIN`, 0 = off) ...
+    pub chain_k: usize,
+    /// ... of length `chain_len` (`EMBEDDED_MASKING_CHAIN_LEN`) ...
+    pub chain_len: usize,
+    /// ... rotating the chained wires (`EMBEDDED_MASKING_CHAIN_ROTATE`).
+    pub chain_rotate: bool,
+    /// Band-wire retirement (`EMBEDDED_MASKING_RETIRE*`; off by default).
+    pub retire: RetireParams,
+    /// The ancilla-restore drop (`EMBEDDED_MASKING_DRIFT`, default on) ...
+    pub drift: bool,
+    /// ... restricted to source gates `lo..hi` (`EMBEDDED_MASKING_DRIFT_ONLY=lo:hi`;
+    /// `None` = every gate; an unparsable window disables it everywhere,
+    /// which the adapter encodes as the empty window `(1, 0)`).
+    pub drift_window: Option<(usize, usize)>,
+    /// Reserved ancilla pool size (`EMBEDDED_MASKING_ANC_RESERVE`, 0 = off).
+    pub anc_reserve: usize,
+    /// The width-3 quad slice guard of the stage-2 assembly instead of the
+    /// accumulate-and-inject guard (`SLICE_GUARD_LEGACY`; comparison arms).
+    pub legacy_slice_guard: bool,
+}
+
+/// Band-wire retirement knobs (`EMBEDDED_MASKING_RETIRE*`). `k = 0` is off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetireParams {
+    pub k: usize,
+    pub warmup_pct: usize,
+    pub safe: bool,
+    /// At least 1.
+    pub burst: usize,
+    pub repair: bool,
+    pub pin_need: usize,
+    pub norep: bool,
+    pub preopen_pct: usize,
+}
+
+impl RetireParams {
+    pub const OFF: RetireParams = RetireParams {
+        k: 0,
+        warmup_pct: 0,
+        safe: true,
+        burst: 1,
+        repair: false,
+        pin_need: 0,
+        norep: false,
+        preopen_pct: 0,
+    };
 }
 
 impl EmbeddedMaskingParams {
@@ -213,17 +266,37 @@ impl EmbeddedMaskingParams {
             shuffling_segments: 0,
             shuffling_return_home: true,
             shuffling_jit_gap: 0,
+            premask: false,
+            seed_avoid_c1: false,
+            chain_k: 0,
+            chain_len: 0,
+            chain_rotate: false,
+            retire: RetireParams::OFF,
+            drift: true,
+            drift_window: None,
+            anc_reserve: 0,
+            legacy_slice_guard: false,
         }
     }
 }
 
-/// Resolved comparison controls. Environment parsing belongs to executable adapters.
-#[derive(Clone, Copy, Debug)]
+/// Resolved comparison controls and diagnostics. Environment parsing belongs
+/// to executable adapters; none of these changes the emitted circuit except
+/// `ancilla_band_only`.
+#[derive(Clone, Debug)]
 pub struct EmbeddedMaskingExecution {
     pub ancilla_band_only: bool,
     pub diagnostics: bool,
     /// Record mask-coverage intervals in the original logical-role stream.
     pub record_hot_intervals: bool,
+    /// LGI emission trace on stderr (`EMBEDDED_MASKING_LGI_DEBUG`).
+    pub lgi_debug: bool,
+    /// Bracket-borrow straddle census (`EMBEDDED_MASKING_STRADDLE_CENSUS`).
+    pub straddle_census: bool,
+    /// Drift trace on stderr (`EMBEDDED_MASKING_DRIFT_DEBUG`).
+    pub drift_debug: bool,
+    /// Append the emitted gates to this file (`EMBEDDED_MASKING_DUMP_GATES`).
+    pub dump_gates: Option<std::path::PathBuf>,
 }
 
 impl Default for EmbeddedMaskingExecution {
@@ -232,6 +305,10 @@ impl Default for EmbeddedMaskingExecution {
             ancilla_band_only: true,
             diagnostics: false,
             record_hot_intervals: false,
+            lgi_debug: false,
+            straddle_census: false,
+            drift_debug: false,
+            dump_gates: None,
         }
     }
 }
@@ -1097,6 +1174,7 @@ fn compute_deps(src: &[XGate], np: usize) -> Vec<Vec<usize>> {
 /// A balanced LGI carries an odd trailing wire `z` = the CNOT term `w ^= z`,
 /// toggled in `lin` (the wire's net-open linear band terms).
 fn emit_lgi_tagged(
+    debug: bool,
     tag: &'static str,
     w: u16,
     cy: &[u16],
@@ -1104,8 +1182,7 @@ fn emit_lgi_tagged(
     pairs: &mut BTreeSet<(u16, u16)>,
     lin: &mut BTreeSet<u16>,
 ) {
-    if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() && (cy.contains(&7) || cy.contains(&29))
-    {
+    if debug && (cy.contains(&7) || cy.contains(&29)) {
         eprintln!("[lgi] {tag} at out.len()={} w={w} cy={cy:?}", out.len());
     }
     emit_lgi(w, cy, out, pairs, lin)
@@ -1176,6 +1253,7 @@ pub fn preprocess_embedded_masking_with_execution(
         "preprocessing shuffling accepts any segment count (0 = off; 1 = one transfer per original write)"
     );
     let k = p.k.max(2); // g57 1-cycle is a degenerate constant flip
+    let lgi_debug = execution.lgi_debug;
     let r = if p.r == 0 { np } else { p.r };
     // Band wires per LGI cycle: `K` rounded down to disjoint pairs (odd K wastes
     // a wire: K3 == K2), plus the balancing wire `z` when balanced.
@@ -1211,11 +1289,7 @@ pub fn preprocess_embedded_masking_with_execution(
     // each borrow then evolves the ancilla instead of re-bearing its prior
     // value (bracket restores were 84% of the recurring-value births).
     // Drawn from its own seeded stream: 0 (default) leaves the circuit as is.
-    let anc_reserve: usize = std::env::var("EMBEDDED_MASKING_ANC_RESERVE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-        .min(r / 2);
+    let anc_reserve: usize = p.anc_reserve.min(r / 2);
     let (mask_band, anc_band): (Vec<u16>, Vec<u16>) = if anc_reserve > 0 {
         let mut prng = StdRng::seed_from_u64(p.seed ^ 0xA9C1_11A5);
         let mut all = band.clone();
@@ -1353,7 +1427,7 @@ pub fn preprocess_embedded_masking_with_execution(
     // ledger entries (open cycles / open_lin terms over all data wires)
     // contain the borrowed ancilla -- the injection count a restore-drop or
     // retirement at that point would pay (RC's compensation scheme pricing).
-    let straddle_census_on = std::env::var("EMBEDDED_MASKING_STRADDLE_CENSUS").is_ok();
+    let straddle_census_on = execution.straddle_census;
     let mut straddle_hist: Vec<usize> = Vec::new();
     let mut straddle_firelocal = 0usize;
     // Bracket-ancilla borrows per band wire since its last burst write:
@@ -1469,6 +1543,7 @@ pub fn preprocess_embedded_masking_with_execution(
                 for _ in remain..min_open {
                     let cy = sample_fresh!(w, Some(b), &BTreeSet::new());
                     emit_lgi_tagged(
+                        lgi_debug,
                         "site0",
                         w as u16,
                         &cy,
@@ -1570,6 +1645,7 @@ pub fn preprocess_embedded_masking_with_execution(
                         if open_cy[w][idx].iter().any(|&x| x == b) {
                             let cy = open_cy[w].remove(idx);
                             emit_lgi_tagged(
+                                lgi_debug,
                                 "site1",
                                 w as u16,
                                 &cy,
@@ -1608,41 +1684,25 @@ pub fn preprocess_embedded_masking_with_execution(
     // every bracket-restore chain near the recurrence-law threshold without
     // any compensation gates, by reusing the hot-targeting slot mechanics
     // at per-wire cadence instead of once per rerand slot.
-    let chain_k: usize = std::env::var("EMBEDDED_MASKING_CHAIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let chain_k: usize = p.chain_k;
     let mut chained_brackets = 0usize;
-    let chain_rotate = std::env::var("EMBEDDED_MASKING_CHAIN_ROTATE").is_ok_and(|v| v != "0");
-    let chain_len: usize = std::env::var("EMBEDDED_MASKING_CHAIN_LEN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let retire_k: usize = std::env::var("EMBEDDED_MASKING_RETIRE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let chain_rotate = p.chain_rotate;
+    let chain_len: usize = p.chain_len;
+    let retire_k: usize = p.retire.k;
     // Input-fringe guard (ret32w probe): no retirement during the first
     // N% of the compute, so the band accumulates nonlinear depth before
     // churn begins -- the early-C t*=2..8 leak in the delivered artifact
     // tracked retirement material in the input fringe.
-    let retire_warmup_pct: usize = std::env::var("EMBEDDED_MASKING_RETIRE_WARMUP")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let retire_warmup_pct: usize = p.retire.warmup_pct;
     // A retirement's new band value differs from the old by its write
     // gates alone; with one gate whose two band controls are some data
     // wire's open mask pair, old ^ new IS that mask product (up to affine
     // terms), and the long-lived old value's copies make it strippable at a
     // boundary. SAFE redraws such gates; BURST writes several products so
     // old ^ new is never a single mask term.
-    let retire_safe = std::env::var("EMBEDDED_MASKING_RETIRE_SAFE").map_or(true, |v| v != "0");
-    let retire_burst: usize = std::env::var("EMBEDDED_MASKING_RETIRE_BURST")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1)
-        .max(1);
-    let retire_repair = std::env::var("EMBEDDED_MASKING_RETIRE_MODE").is_ok_and(|v| v == "repair");
+    let retire_safe = p.retire.safe;
+    let retire_burst: usize = p.retire.burst.max(1);
+    let retire_repair = p.retire.repair;
     // Pinned-coverage gate: writes to one data wire commute, so between two
     // reads of `w` the mixer may reorder all of its mask opens and closes.
     // Only masks opened BEFORE `w`'s last read survive every such reordering
@@ -1650,25 +1710,19 @@ pub fn preprocess_embedded_masking_with_execution(
     // cycle reads `b` keeps `min_open` pinned cycles without it; otherwise
     // defer. Tracked by an incremental scan of `out`: last read per data
     // wire, last write position per (wire, mask pair) gate.
-    let retire_pin_need: usize = std::env::var("EMBEDDED_MASKING_RETIRE_PIN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let retire_pin_need: usize = p.retire.pin_need;
     let retire_pin = retire_pin_need > 0;
     // Count-only variant: no replacement opens at retirement (so no open
     // sits next to a close on the same wire); defer while any affected wire
     // would drop below `min_open` open cycles.
-    let retire_norep = std::env::var("EMBEDDED_MASKING_RETIRE_NOREPLACE").is_ok_and(|v| v != "0");
+    let retire_norep = p.retire.norep;
     // Early replacement: once a band wire reaches PREOPEN% of the threshold,
     // open the replacement cycles its retirement will need on every affected
     // data wire NOW, so the eventual close is never adjacent to an open on
     // the same wire (a local rewrite could otherwise merge the two and expose
     // an under-masked intermediate). Same opens as at retirement, moved
     // earlier: no added gates.
-    let retire_preopen_pct: usize = std::env::var("EMBEDDED_MASKING_RETIRE_PREOPEN")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let retire_preopen_pct: usize = p.retire.preopen_pct;
     let mut retire_preopens = 0usize;
     let mut pin_scan = 0usize;
     let mut pin_last_read: Vec<Option<usize>> = vec![None; np];
@@ -1822,6 +1876,7 @@ pub fn preprocess_embedded_masking_with_execution(
                             if open_cy[w][idx].iter().any(|&x| x == b) {
                                 let cy = open_cy[w].remove(idx);
                                 emit_lgi_tagged(
+                                    lgi_debug,
                                     "site10",
                                     w as u16,
                                     &cy,
@@ -1855,6 +1910,7 @@ pub fn preprocess_embedded_masking_with_execution(
             while open_cy[w].len() < min_open {
                 let cy = sample_fresh!(w, None, $extra);
                 emit_lgi_tagged(
+                    lgi_debug,
                     "site2",
                     w as u16,
                     &cy,
@@ -1871,12 +1927,13 @@ pub fn preprocess_embedded_masking_with_execution(
     macro_rules! filler_open {
         ($w:expr) => {{
             let w = $w;
-            if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() {
+            if lgi_debug {
                 eprintln!("[trace] filler w={w} at out.len()={}", out.len());
             }
             if open_cy[w].len() >= max_open {
                 let cy = open_cy[w].remove(0);
                 emit_lgi_tagged(
+                    lgi_debug,
                     "site3",
                     w as u16,
                     &cy,
@@ -1887,6 +1944,7 @@ pub fn preprocess_embedded_masking_with_execution(
             }
             let cy = sample_fresh!(w, None, &BTreeSet::new());
             emit_lgi_tagged(
+                lgi_debug,
                 "site4",
                 w as u16,
                 &cy,
@@ -1909,6 +1967,7 @@ pub fn preprocess_embedded_masking_with_execution(
             for _ in 0..max_open {
                 let cy = sample_fresh!(w, None, &BTreeSet::new());
                 emit_lgi_tagged(
+                    lgi_debug,
                     "site5",
                     w as u16,
                     &cy,
@@ -1924,7 +1983,7 @@ pub fn preprocess_embedded_masking_with_execution(
     // only when first used, so raw input copies survive deep into the compute
     // and, with a reordered fire ancilla holding a bare operand product,
     // recombine into a first-layer C value at a delivered boundary.
-    let premask = std::env::var("EMBEDDED_MASKING_PREMASK").is_ok_and(|v| v != "0");
+    let premask = p.premask;
     if premask && !p.encoded_io {
         let mut order: Vec<usize> = (0..np).collect();
         for i in (1..order.len()).rev() {
@@ -1935,6 +1994,7 @@ pub fn preprocess_embedded_masking_with_execution(
             while open_cy[w].len() < min_open {
                 let cy = sample_fresh!(w, None, &BTreeSet::new());
                 emit_lgi_tagged(
+                    lgi_debug,
                     "site11",
                     w as u16,
                     &cy,
@@ -1956,7 +2016,7 @@ pub fn preprocess_embedded_masking_with_execution(
         let mut ctrls: Vec<(u16, bool, Vec<u16>)> = Vec::new();
         let mut operands: Vec<Operand> = Vec::new();
         let mut undo: Vec<XGate> = Vec::new();
-        if std::env::var("EMBEDDED_MASKING_LGI_DEBUG").is_ok() {
+        if lgi_debug {
             eprintln!(
                 "[trace] fire gi={gi} target={} at out.len()={}",
                 src[gi].target,
@@ -2130,6 +2190,7 @@ pub fn preprocess_embedded_masking_with_execution(
         if open_cy[c].len() >= max_open {
             let cy = open_cy[c].remove(0);
             emit_lgi_tagged(
+                lgi_debug,
                 "site6",
                 c as u16,
                 &cy,
@@ -2163,6 +2224,7 @@ pub fn preprocess_embedded_masking_with_execution(
         };
         let cover = sample_fresh!(c, None, &fire_wires);
         emit_lgi_tagged(
+            lgi_debug,
             "site7",
             c as u16,
             &cover,
@@ -2406,13 +2468,7 @@ pub fn preprocess_embedded_masking_with_execution(
         // drifted ancilla is shared), and in-box-written partner exclusion
         // in the shuffling pass. EMBEDDED_MASKING_DRIFT=0 restores the
         // legacy always-restore behaviour.
-        let drift_enabled = std::env::var("EMBEDDED_MASKING_DRIFT").map_or(true, |v| v != "0")
-            && std::env::var("EMBEDDED_MASKING_DRIFT_ONLY").map_or(true, |w| {
-                w.split_once(':').is_some_and(|(lo, hi)| {
-                    lo.parse::<usize>().is_ok_and(|l| gi >= l)
-                        && hi.parse::<usize>().is_ok_and(|h| gi < h)
-                })
-            });
+        let drift_enabled = p.drift && p.drift_window.is_none_or(|(lo, hi)| gi >= lo && gi < hi);
         if straddle_census_on {
             for &(_, h) in &fire_droppable {
                 let injections = open_cy
@@ -2445,7 +2501,7 @@ pub fn preprocess_embedded_masking_with_execution(
                 drifted.push(h);
             }
         }
-        if std::env::var("EMBEDDED_MASKING_DRIFT_DEBUG").is_ok() && !drifted.is_empty() {
+        if execution.drift_debug && !drifted.is_empty() {
             eprintln!(
                 "[drift] fire gi={gi} c={c} drifted={drifted:?} support={fire_support:?} cover={cover:?} straddle={cy:?} open_cy[c]={:?}",
                 open_cy[c]
@@ -2506,6 +2562,7 @@ pub fn preprocess_embedded_masking_with_execution(
             record_box_boundary!(false);
         }
         emit_lgi_tagged(
+            lgi_debug,
             "site8",
             c as u16,
             &cy,
@@ -2517,6 +2574,7 @@ pub fn preprocess_embedded_masking_with_execution(
         record_box_boundary!(true);
         for mcy in &midfire_opens {
             emit_lgi_tagged(
+                lgi_debug,
                 "site2-mid",
                 c as u16,
                 mcy,
@@ -2541,6 +2599,7 @@ pub fn preprocess_embedded_masking_with_execution(
         }
         // close the bracket (toggles its pairs/linear term back off)
         emit_lgi_tagged(
+            lgi_debug,
             "site9",
             c as u16,
             &cover,
@@ -2727,7 +2786,7 @@ pub fn preprocess_embedded_masking_with_execution(
             100.0 * straddle_firelocal as f64 / n as f64,
         );
     }
-    if let Ok(path) = std::env::var("EMBEDDED_MASKING_DUMP_GATES") {
+    if let Some(path) = &execution.dump_gates {
         use std::io::Write;
         let mut body = format!(
             "=== call np={np} r={r} segments={} seed={}\n",

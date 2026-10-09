@@ -47,8 +47,9 @@ use local_mixing::circuit::Circuit;
 use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
 use local_mixing::circuit::xgate::{XGate, max_wire};
 use local_mixing::engine::mixer::{MixParams, MixStop, Mixer};
+use local_mixing::programs::gen_sandwich_gadget::{execution_from_env, stage2_knobs_from_env};
 use local_mixing::stages::preprocessing::embedded_masking::{
-    EmbeddedMaskingParams, preprocess_embedded_masking,
+    EmbeddedMaskingParams, preprocess_embedded_masking_with_execution,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
@@ -288,7 +289,15 @@ fn main() {
                 ..base
             };
             mask_max_open = p.max_open;
-            let o = preprocess_embedded_masking(&source, args.n, &p);
+            // The typed stage-2 knobs keep their historical environment names
+            // here (docs/STAGE4_RUST_DESIGN.md §11.4).
+            let p = stage2_knobs_from_env(p);
+            let o = preprocess_embedded_masking_with_execution(
+                &source,
+                args.n,
+                &p,
+                &execution_from_env(Default::default()),
+            );
             println!(
                 "[{}] embedded-masking K={} max_open={} band={} atoms={} rerand={} pre={} post={} gates={}",
                 args.gadget,

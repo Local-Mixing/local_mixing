@@ -64,7 +64,7 @@ pub fn preprocess_sandwich(
             // Punchlist #7 (2026-10-06): the accumulate-and-inject guard
             // (width <= 2 everywhere) is the default; SLICE_GUARD_LEGACY=1
             // restores the width-3 quad generator for comparison arms.
-            let legacy_guard = std::env::var("SLICE_GUARD_LEGACY").is_ok_and(|v| v != "0");
+            let legacy_guard = params.legacy_slice_guard;
             let open = if legacy_guard {
                 slice_zero_junk_guard_dims(np, nondata, gc, rng)
             } else {
@@ -86,7 +86,7 @@ pub fn preprocess_sandwich(
             // Fringe fix 2: keep the forward seed's raw-pair products off the
             // control pairs of the sandwich's first-layer gates (target and
             // both controls still untouched inputs).
-            let avoid_c1 = std::env::var("EMBEDDED_MASKING_SEED_AVOID_C1").is_ok_and(|v| v != "0");
+            let avoid_c1 = params.seed_avoid_c1;
             let mut first_layer_pairs: std::collections::HashSet<(u16, u16)> =
                 std::collections::HashSet::new();
             if avoid_c1 {

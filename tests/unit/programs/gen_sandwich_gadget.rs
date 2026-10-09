@@ -103,3 +103,13 @@ fn gen_rejects_unparsable_positionals() {
     }
     assert!(parse_positional::<usize>("s", Some("abc".into())).is_err());
 }
+
+#[test]
+fn drift_window_parses_like_the_historical_inline_reader() {
+    assert_eq!(parse_drift_window("5:40"), (5, 40));
+    // anything unparsable disables the drift everywhere (empty window)
+    for bad in ["x", "5", ":40", "5:", "a:b", "5:x"] {
+        let (lo, hi) = parse_drift_window(bad);
+        assert!((0..100).all(|gi| !(gi >= lo && gi < hi)), "{bad}");
+    }
+}

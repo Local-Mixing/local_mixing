@@ -11,8 +11,9 @@
 //! requires return-home layout so its emitted circuit keeps physical data ports.
 
 use local_mixing::circuit::formats::{read_mpmct, write_mpmct};
+use local_mixing::programs::gen_sandwich_gadget::{execution_from_env, stage2_knobs_from_env};
 use local_mixing::stages::preprocessing::embedded_masking::{
-    EmbeddedMaskingParams, preprocess_embedded_masking, seed_band_mode,
+    EmbeddedMaskingParams, preprocess_embedded_masking_with_execution, seed_band_mode,
 };
 
 fn main() {
@@ -98,7 +99,15 @@ fn main() {
             .unwrap_or(2),
         ..EmbeddedMaskingParams::production(seed)
     };
-    let g = preprocess_embedded_masking(&src, np, &params);
+    // The typed stage-2 knobs keep their historical environment names here
+    // (docs/STAGE4_RUST_DESIGN.md §11.4).
+    let params = stage2_knobs_from_env(params);
+    let g = preprocess_embedded_masking_with_execution(
+        &src,
+        np,
+        &params,
+        &execution_from_env(Default::default()),
+    );
     // Band-seeding module pipelined in front (the compute only reads the band).
     let r_used = if params.r == 0 { np } else { params.r };
     // Modules 2 and 4: band seed BEFORE the compute and re-seed AFTER it. The
