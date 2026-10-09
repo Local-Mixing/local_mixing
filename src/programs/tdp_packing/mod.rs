@@ -38,23 +38,45 @@
 //!     `out.mpmct1.bounds` are written (via *.tmp) only after the oracle's
 //!     VERIFY and the exact reorder certificate pass. `--order-out` writes
 //!     the emitted order as WP's PACK_DUMP_ORDER does.
+//!
+//!
+//! tdp_packing repair --packed <P.mpmct1> [--bounds <P.bounds>] --source-c <C.g57> --n N
+//!                       --out-dir DIR [--g 512] [--split-budget 65536]
+//!                       [--fix-iterations 4] [--fallback-iterations 4]
+//!                       [--anf-cap-semantics …] [--allow-floor-miss] [--allow-over-budget]
+//!                       [--no-oracle-files] [--stats] [--threads K]
+//!     repair.sh parity mode on a packed circuit and its UNREPAIRED bounds
+//!     (default `<P>.bounds`): cancel, fix loop, merge/split fallback loop.
+//!     Writes `rep<G>.mpmct1`, `rep<G>.bounds`, the last in-loop scan as
+//!     `rep<G>.{exposure,allcuts,wit}.tsv` + `rep<G>.cview.log` (unless
+//!     --no-oracle-files) and `repair<G>.log` (also on stdout) into DIR, all
+//!     via *.tmp after the exact repair certificate and both sampled
+//!     equivalence checks passed. Then the final tests: a visible non-output
+//!     row exits 5, a window failing the split's budget test exits 6 (the
+//!     outputs are intermediates and stay written); `--allow-*` turns either
+//!     into exit 0 with `status=floor_miss|over_budget` on stderr.
+//! tdp_packing check-final --rep <R.mpmct1> --bounds <R.bounds> --source-c <C.g57> --n N
+//!                       [--split-budget 65536] [--anf-cap-semantics …]
+//!                       [--allow-floor-miss] [--allow-over-budget] [--threads K]
+//!     the final tests on any repaired circuit (oracle or Rust).
 //! ```
 //!
-//! `run`, `repair`, `check-final` and `census` belong to later phases and
-//! exit 2.
+//! `run` and `census` belong to later phases and exit 2.
 use crate::circuit::formats::read_g57_file;
 use crate::circuit::xgate::XGate;
 use crate::stages::packing::anf::{MulStats, window_anf};
 use crate::stages::packing::census::anf_size_report;
 use crate::stages::packing::mono::{MonoWidthFn, with_mono_width};
 use crate::stages::packing::oracle_io::{
-    read_bounds, read_oracle_mpmct, window_cuts, write_bounds, write_pack_mpmct,
+    read_bounds, read_oracle_mpmct, window_cuts, write_bounds, write_pack_mpmct, write_repair_mpmct,
 };
+use crate::stages::packing::repair::split::FitCache;
+use crate::stages::packing::repair::{CView, RepairReport, anf_width, final_tests, repair};
 use crate::stages::packing::scheduler::pack;
 use crate::stages::packing::serialize::{
     ContainerHeader, Deliverable, Format, IO_LAYOUT_CLASSIC_ZERO_SLICE, decode, encode_body,
 };
-use crate::stages::packing::types::{CapSemantics, PackParams, Stage4Error};
+use crate::stages::packing::types::{CapSemantics, PackParams, RepairParams, Stage4Error};
 use crate::stages::packing::verify::{
     check_deliverable, check_windows_anf, check_zero_slice, verify_equiv,
 };
@@ -93,7 +115,14 @@ struct Args {
     opts: Vec<(String, Option<String>)>,
 }
 
-const SWITCHES: [&str; 3] = ["--no-checks", "--stats", "--help"];
+const SWITCHES: [&str; 6] = [
+    "--no-checks",
+    "--stats",
+    "--help",
+    "--allow-floor-miss",
+    "--allow-over-budget",
+    "--no-oracle-files",
+];
 
 impl Args {
     fn parse(a: &[String]) -> Result<Args, Stage4Error> {
@@ -193,7 +222,9 @@ fn dispatch(argv: &[String]) -> Result<(), Stage4Error> {
         "verify-equiv" => cmd_verify_equiv(&a),
         "pack-replay" => cmd_pack_replay(&a),
         "pack" => cmd_pack(&a),
-        "run" | "repair" | "check-final" | "census" => Err(Stage4Error::Usage(format!(
+        "repair" => cmd_repair(&a),
+        "check-final" => cmd_check_final(&a),
+        "run" | "census" => Err(Stage4Error::Usage(format!(
             "`{cmd}` is not implemented yet (docs/STAGE4_RUST_DESIGN.md §12)"
         ))),
         other => Err(Stage4Error::Usage(format!("unknown command {other:?}"))),
@@ -918,4 +949,359 @@ fn cmd_pack(a: &Args) -> Result<(), Stage4Error> {
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- repair
+
+fn req<'a>(a: &'a Args, k: &str) -> Result<&'a str, Stage4Error> {
+    a.get(k)
+        .ok_or_else(|| Stage4Error::Usage(format!("--{k} is required")))
+}
+
+fn opt_usize(a: &Args, k: &str, dflt: usize) -> Result<usize, Stage4Error> {
+    Ok(a.num(k)?.map(|v| v as usize).unwrap_or(dflt))
+}
+
+fn repair_params(a: &Args) -> Result<RepairParams, Stage4Error> {
+    let mut p = RepairParams::default();
+    p.split_budget = opt_usize(a, "split-budget", p.split_budget)?;
+    p.fix_iterations = opt_usize(a, "fix-iterations", p.fix_iterations)?;
+    p.fallback_iterations = opt_usize(a, "fallback-iterations", p.fallback_iterations)?;
+    p.cap_semantics = cap_semantics(a)?;
+    if p.split_budget == 0 {
+        return Err(Stage4Error::Usage("--split-budget must be positive".into()));
+    }
+    Ok(p)
+}
+
+/// Read C (g57) and check `n` against it and the state width.
+fn load_source_c(path: &str, n: u64, state_n: usize) -> Result<Vec<XGate>, Stage4Error> {
+    if n == 0 || n > 256 {
+        return Err(Stage4Error::Usage(format!(
+            "--n {n}: stage 4 supports 1 <= n <= 256"
+        )));
+    }
+    let n = n as usize;
+    if 4 * n > state_n {
+        return Err(Stage4Error::Usage(format!(
+            "--n {n}: 4n exceeds the {state_n}-wire state"
+        )));
+    }
+    let c = read_g57_file(path).map_err(|e| Stage4Error::Input(format!("{path}: {e}")))?;
+    if let Some(w) = c.iter().map(|g| g.max_wire() as usize).max()
+        && w >= n
+    {
+        return Err(Stage4Error::Input(format!(
+            "{path}: C uses wire {w}, beyond n = {n}"
+        )));
+    }
+    Ok(c)
+}
+
+/// Writes every line to stdout and keeps a copy (the log file).
+struct Tee {
+    buf: Vec<u8>,
+}
+
+impl Write for Tee {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let stdout = io::stdout();
+        let mut o = stdout.lock();
+        o.write_all(b)?;
+        o.flush()?;
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
+
+fn private_dir(dir: &Path) -> Result<(), Stage4Error> {
+    if !dir.exists() {
+        fs::create_dir_all(dir).map_err(|e| Stage4Error::io(dir, e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| Stage4Error::io(dir, e))?;
+        }
+    } else if !dir.is_dir() {
+        return Err(Stage4Error::Usage(format!(
+            "--out-dir {} is not a directory",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Write each (path, writer) via *.tmp; commit all or none.
+fn write_all_staged(
+    files: Vec<(
+        PathBuf,
+        Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()> + '_>,
+    )>,
+) -> Result<(), Stage4Error> {
+    let mut staged: Vec<Staged> = Vec::new();
+    let r = (|| -> Result<(), Stage4Error> {
+        for (path, f) in files {
+            let (st, mut w) = Staged::create(&path)?;
+            let tmp = st.tmp.clone();
+            staged.push(st);
+            f(&mut w).map_err(|e| Stage4Error::io(&tmp, e))?;
+            Staged::finish(w, &tmp)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        for s in &staged {
+            s.abandon();
+        }
+        return Err(e);
+    }
+    for s in staged {
+        s.commit()?;
+    }
+    Ok(())
+}
+
+fn report_lines(r: &RepairReport, p: &RepairParams, status: &str) -> Vec<String> {
+    let join = |v: &[usize]| {
+        v.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    vec![
+        format!("status={status}"),
+        format!(
+            "param.split_budget={} param.fix_iterations={} param.fallback_iterations={} \
+             param.cview_batches={} param.cview_seed={} param.anf_cap_semantics={} param.repair_mode={}",
+            p.split_budget,
+            p.fix_iterations,
+            p.fallback_iterations,
+            p.cview.batches,
+            p.cview.seed,
+            p.cap_semantics.name(),
+            p.mode.name()
+        ),
+        format!(
+            "repair.cancel_passes={} repair.cancel_pairs={} repair.fix_trajectory={} repair.fix_moved={} \
+             repair.fix_exhausted={}",
+            join(&r.cancel_passes),
+            r.cancel_passes.iter().sum::<usize>(),
+            join(&r.fix_trajectory),
+            join(&r.fix_moved),
+            r.fix_exhausted as u8
+        ),
+        format!(
+            "repair.fallback_trajectory={} repair.merged={} repair.splits={} repair.forced_splits={} \
+             repair.single_window_scans={} repair.scans={}",
+            join(&r.fallback_trajectory),
+            join(&r.merged),
+            join(&r.splits),
+            r.forced_splits.len(),
+            r.single_window_scans,
+            r.scans
+        ),
+        format!(
+            "repair.final_gates={} repair.final_bounds={} repair.final_visible={} \
+             repair.final_nonoutput_visible={} repair.final_over_budget={}",
+            r.final_gates,
+            r.final_bounds,
+            r.final_visible,
+            r.final_nonoutput_visible.len(),
+            r.final_over_budget.len()
+        ),
+        format!(
+            "repair.split_mul_calls={} repair.split_mul_ambiguous={} repair.split_aborts={} \
+             repair.split_order_dependent={} repair.split_order_dependent_windows={}",
+            r.split_stats.calls,
+            r.split_stats.ambiguous,
+            r.split_stats.aborts,
+            r.split_stats.aborts_order_dependent,
+            r.split_order_dependent_windows
+        ),
+    ]
+}
+
+fn cmd_repair(a: &Args) -> Result<(), Stage4Error> {
+    a.check_known(&[
+        "packed",
+        "bounds",
+        "source-c",
+        "n",
+        "out-dir",
+        "g",
+        "split-budget",
+        "fix-iterations",
+        "fallback-iterations",
+        "anf-cap-semantics",
+        "allow-floor-miss",
+        "allow-over-budget",
+        "no-oracle-files",
+        "stats",
+        "threads",
+    ])?;
+    if !a.pos.is_empty() {
+        return Err(Stage4Error::Usage(
+            "repair --packed P [--bounds B] --source-c C --n N --out-dir DIR [...]".into(),
+        ));
+    }
+    setup_threads(a)?;
+    let p = repair_params(a)?;
+    let packed_path = req(a, "packed")?;
+    let bounds_path = a
+        .get("bounds")
+        .map(String::from)
+        .unwrap_or_else(|| format!("{packed_path}.bounds"));
+    let out_dir = PathBuf::from(req(a, "out-dir")?);
+    let g = opt_usize(a, "g", 512)?;
+    let n = a
+        .num("n")?
+        .ok_or_else(|| Stage4Error::Usage("--n is required".into()))?;
+    let t0 = Instant::now();
+    let packed = read_oracle_mpmct(Path::new(packed_path))?;
+    let bounds0 = read_bounds(Path::new(&bounds_path))?;
+    let c = load_source_c(req(a, "source-c")?, n, packed.header_n)?;
+    private_dir(&out_dir)?;
+    let rep_path = out_dir.join(format!("rep{g}.mpmct1"));
+    let cv = CView::new(&c, n as usize, &p.cview);
+    let mut tee = Tee { buf: Vec::new() };
+    let r = repair(
+        &packed.gates,
+        packed.header_n,
+        &bounds0,
+        &cv,
+        &p,
+        &rep_path.display().to_string(),
+        &mut tee,
+    )?;
+    let t_repair = t0.elapsed().as_secs_f64();
+    let status = r
+        .report
+        .status(a.flag("allow-floor-miss"), a.flag("allow-over-budget"));
+    let status_name = match &status {
+        Ok(s) => *s,
+        Err(Stage4Error::Floor { .. }) => "floor_miss",
+        Err(_) => "over_budget",
+    };
+    // outputs (the oracle's files)
+    let path = |suffix: &str| out_dir.join(format!("rep{g}.{suffix}"));
+    let (pe, pa, pw) = (path("exposure.tsv"), path("allcuts.tsv"), path("wit.tsv"));
+    let cview_log = cv.scan_log(
+        &r.last_scan,
+        &pe.display().to_string(),
+        &pa.display().to_string(),
+        &pw.display().to_string(),
+    );
+    let mut files: Vec<(
+        PathBuf,
+        Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()>>,
+    )> = vec![
+        (
+            rep_path.clone(),
+            Box::new(|w| write_repair_mpmct(w, r.n_header, &r.gates)),
+        ),
+        (path("bounds"), Box::new(|w| write_bounds(w, &r.bounds))),
+        (
+            out_dir.join(format!("repair{g}.log")),
+            Box::new(|w| w.write_all(&tee.buf)),
+        ),
+    ];
+    if !a.flag("no-oracle-files") {
+        let s = &r.last_scan.report;
+        files.push((pe, Box::new(|w| s.write_exposure_tsv(w))));
+        files.push((pa, Box::new(|w| s.write_allcuts_tsv(w))));
+        files.push((pw, Box::new(|w| s.write_witness_tsv(w))));
+        files.push((
+            path("cview.log"),
+            Box::new(move |w| {
+                for l in &cview_log {
+                    writeln!(w, "{l}")?;
+                }
+                Ok(())
+            }),
+        ));
+    }
+    write_all_staged(files)?;
+    let fr = &r.report;
+    eprintln!(
+        "repair: {} -> {} gates, {} boundaries; final scan: {} visible, {} non-output visible; \
+         {} windows over budget; status={status_name} ({:.1}s)",
+        fr.packed_gates,
+        fr.final_gates,
+        fr.final_bounds,
+        fr.final_visible,
+        fr.final_nonoutput_visible.len(),
+        fr.final_over_budget.len(),
+        t_repair
+    );
+    if a.flag("stats") {
+        for l in report_lines(fr, &p, status_name) {
+            eprintln!("stats: {l}");
+        }
+    }
+    status.map(|_| ())
+}
+
+fn cmd_check_final(a: &Args) -> Result<(), Stage4Error> {
+    a.check_known(&[
+        "rep",
+        "bounds",
+        "source-c",
+        "n",
+        "split-budget",
+        "anf-cap-semantics",
+        "allow-floor-miss",
+        "allow-over-budget",
+        "threads",
+    ])?;
+    if !a.pos.is_empty() {
+        return Err(Stage4Error::Usage(
+            "check-final --rep R --bounds B --source-c C --n N [...]".into(),
+        ));
+    }
+    setup_threads(a)?;
+    let p = repair_params(a)?;
+    let n = a
+        .num("n")?
+        .ok_or_else(|| Stage4Error::Usage("--n is required".into()))?;
+    let rep = read_oracle_mpmct(Path::new(req(a, "rep")?))?;
+    let bounds: Vec<usize> = read_bounds(Path::new(req(a, "bounds")?))?
+        .into_iter()
+        .filter(|&b| b >= 0)
+        .map(|b| b as usize)
+        .collect();
+    let c = load_source_c(req(a, "source-c")?, n, rep.header_n)?;
+    let nw = anf_width(rep.header_n, &rep.gates)?;
+    let cv = CView::new(&c, n as usize, &p.cview);
+    let mut oracle = cv.oracle(&rep.gates);
+    let mut fits = FitCache::new(&rep.gates, nw, p.split_budget, p.cap_semantics);
+    let (s, nonout, over) = final_tests(&cv, &mut oracle, &mut fits, &rep.gates, &bounds);
+    let fr = RepairReport {
+        final_gates: rep.gates.len(),
+        final_bounds: bounds.len(),
+        final_visible: s.visible(),
+        final_nonoutput_visible: nonout,
+        final_over_budget: over,
+        ..Default::default()
+    };
+    let status = fr.status(a.flag("allow-floor-miss"), a.flag("allow-over-budget"));
+    let status_name = match &status {
+        Ok(s) => *s,
+        Err(Stage4Error::Floor { .. }) => "floor_miss",
+        Err(_) => "over_budget",
+    };
+    println!(
+        "check-final: {} gates, {} windows; C-view visible {} (floor {n}), {} non-output visible; \
+         {} windows over budget {}; status={status_name}",
+        fr.final_gates,
+        s.cuts + 1,
+        fr.final_visible,
+        fr.final_nonoutput_visible.len(),
+        fr.final_over_budget.len(),
+        p.split_budget
+    );
+    status.map(|_| ())
 }

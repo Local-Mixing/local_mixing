@@ -82,6 +82,49 @@ impl PackParams {
     }
 }
 
+/// The repair algorithm. Later improvements are new variants behind flags,
+/// never the default until RC re-validates (§13.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RepairMode {
+    /// `repair.sh` exactly: cancel, fix x4, merge/split fallback x4.
+    #[default]
+    Oracle,
+}
+
+impl RepairMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            RepairMode::Oracle => "oracle",
+        }
+    }
+}
+
+/// Repair parameters (docs/STAGE4_RUST_DESIGN.md §4.1). The defaults are the
+/// recommended configuration (`repair.sh`): split budget 65536, 4 fix and 4
+/// fallback iterations, C-view 96 batches with seed 12345, CPython 3.9 caps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepairParams {
+    pub split_budget: usize,
+    pub fix_iterations: usize,
+    pub fallback_iterations: usize,
+    pub cview: crate::stages::packing::cview::CviewParams,
+    pub cap_semantics: CapSemantics,
+    pub mode: RepairMode,
+}
+
+impl Default for RepairParams {
+    fn default() -> Self {
+        RepairParams {
+            split_budget: 65536,
+            fix_iterations: 4,
+            fallback_iterations: 4,
+            cview: Default::default(),
+            cap_semantics: CapSemantics::CPython39,
+            mode: RepairMode::Oracle,
+        }
+    }
+}
+
 /// Every stage-4 failure, mapped one-to-one onto the binary's exit codes.
 #[derive(Debug)]
 pub enum Stage4Error {

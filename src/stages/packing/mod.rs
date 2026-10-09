@@ -12,7 +12,9 @@
 //!   checks (`verify`) and the `anf_compose.py` size report (`census`);
 //! * the packer `window_pack3.py`: value keys (`blake2b`), fingerprints and
 //!   proxy spans (`fingerprint`), interval sets (`intervals`), the scheduler
-//!   (`scheduler`) and the exact reorder certificate (`certify`).
+//!   (`scheduler`) and the exact reorder certificate (`certify`);
+//! * the repair `repair.sh` (`repair`: cancel, fix, merge, exposure-aware
+//!   split, the loop control) with exact cancel/repair certificates.
 pub mod anf;
 pub mod blake2b;
 pub mod census;
@@ -25,6 +27,7 @@ pub mod mono;
 pub mod oracle_io;
 pub mod pyrand;
 pub mod pyset;
+pub mod repair;
 pub mod scheduler;
 pub mod serialize;
 pub mod types;
