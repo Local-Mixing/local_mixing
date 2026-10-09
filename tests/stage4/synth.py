@@ -70,7 +70,11 @@ def main():
         os.replace(os.path.join(out, "x.c.g57"), os.path.join(out, "c.g57"))
         os.replace(os.path.join(out, "x.packed.mpmct1"), os.path.join(out, "p.mpmct1"))
         os.replace(os.path.join(out, "x.packed.bounds"), os.path.join(out, "p.bounds"))
-        print(n, rng.choice([16, 64, 104, 256, 1024, 65536]), rng.randrange(1, 5), rng.randrange(1, 5))
+        # A small state with a large budget makes the oracle's ANF products
+        # (no cap abort below 2^(4n) monomials) take hours in Python: keep
+        # the budget below the state's monomial ceiling.
+        budgets = [16, 64, 104, 256, 1024] + ([65536] if n >= 8 else [])
+        print(n, rng.choice(budgets), rng.randrange(1, 5), rng.randrange(1, 5))
     else:
         sys.exit(f"unknown kind {kind}")
 

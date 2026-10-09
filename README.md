@@ -4,13 +4,14 @@ We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
 compute. TDP is the current end-to-end pipeline. It has four stages: it
 constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
-(2), mixes with the frozen database (3), and packs the result (4). The
-`tdp_gen` driver runs stages 1-3 and ends at `db_mixing.mpmct1`; packing is
-still a set of Python prototypes under
-[`scripts/windowed_delivery/`](scripts/windowed_delivery/) (Rust port
-planned). The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run
-all four stages; a full reference, `docs/TDP_FOUR_STAGE_PIPELINE.md`, is in
-preparation and not yet on this branch. (The curated database and the old split, crossing-walk and
+(2), mixes with the frozen database (3), and packs the result into a windowed
+ANF deliverable (4). The `tdp_gen` driver runs all four stages and ends with
+`packing/deliverable.tdp4`; its defaults reproduce the chosen validation runs
+(`docs/STAGE4_RUST_DESIGN.md`). Stage 4 is the Rust binary `tdp_packing`; the
+Python prototypes under [`scripts/windowed_delivery/`](scripts/windowed_delivery/)
+are its oracle. The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to
+run all four stages; the full reference is
+[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md). (The curated database and the old split, crossing-walk and
 `fcompress` stages are historic: branch `ran/archive/curated-and-postmix`; see
 [the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
 
@@ -58,13 +59,14 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
 The dry run resolves and validates the recipe without creating a run or
-starting the stages. A normal fresh run builds the two stage executables
+starting the stages. A normal fresh run builds the three stage executables
 and writes a timestamped directory under `runs/`. Database files are separate
 from the source checkout; building the project does not generate them.
 
-By default we generate a source circuit $C$ on 128 wires with 6,272 gates,
-using $\mathrm{round}(n\log_2(n)^2)$ gates. To use your own G57 source,
-edit `[source]`:
+By default we generate a source circuit $C$ on 128 wires with 3,000 gates
+(the validated sizes are 1,000 gates at 64 wires and 3,000 at 128; other
+wire counts need `source.gates` or `source.gates_rule = "formula"`, i.e.
+$\mathrm{round}(n\log_2(n)^2)$). To use your own G57 source, edit `[source]`:
 
 ```toml
 [source]
@@ -78,17 +80,13 @@ count. Without `source.path`, `source.gates` overrides the generated size.
 
 The settings we usually change are:
 
-- `preprocessing.mode`: defaults to `"embedded-masking"`, with balanced
-  masks, `mask_pair_wires=2`, `max_open_masks=3` and `min_open_masks=2`.
-  `"nonlinear291"` is also supported; remove all mask and shuffling controls when
-  selecting it and use a smaller source that fits its 65,535-wire limit.
-  The default source exceeds that limit; see [Gadgetization](docs/gadgetization.md)
-  for the width calculation.
-- `preprocessing.shuffling_segments`: defaults to `0` (off); set to `8` or
-  more to transfer the active masked role among eligible band wires during
-  each fire block. Keep `shuffling_return_home=true` to preserve TDP ports.
-- `db_mixing.target_size_factor` and `hold_work_units`: default to `2.0` and
-  `27.0`, controlling the expansion and holding schedule.
+- `preprocessing.preset`: `"L8"` (default; persistent carrier migration,
+  premask, seed avoidance and bounded chains, the recommended configuration),
+  `"A"` (the same without chains) or `"custom"` (every knob explicit).
+  `preprocessing.mode = "nonlinear291"` is also supported, without a preset.
+- `db_mixing.schedule`: `"validated"` (default; profile `2,2,2,2,2`) or
+  `"custom"` with explicit growth, hold and size factor.
+- `[packing]`: stage-4 parameters; the defaults are the validated ones.
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
@@ -103,28 +101,29 @@ test without a database, clear the DB paths and set
 | --- | --- |
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Gadgetization / preprocessing | `tdp.mpmct1` |
-| 3. Database mixing | `db_mixing.mpmct1`, `db_mixing.state` |
-| 4. Packing | not run by `tdp_gen`; see [Stage 4: packing](docs/tdp_pipeline.md#stage-4-packing) |
+| 3. Database mixing | `db_mixing.mpmct1` |
+| 4. Packing | `packing/deliverable.tdp4` (the shipped file), `packing/packing.report`, and the private intermediates in `packing/` |
 
-`tdp_gen.log` records overall progress; `stage12.log` and `stage3.log` hold
-stage output. The
+`tdp_gen.log` records overall progress; `stage12.log`, `stage3.log` and
+`stage4.log` hold stage output. The
 [TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
 
 To continue a run, set `run.directory` to its directory and invoke the same
 command again. Completed stage outputs are skipped. Set `run.stop_after_stage`
-to `2` to stop after preprocessing (`3`, the default, runs every driven stage;
-the historic old stages 4-6 are rejected); stages 1 and 2 execute together.
+to `2` or `3` to stop early (`4`, the default, runs every stage; the historic
+stages 5-6 are rejected); stages 1 and 2 execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
-New runs record recipe v9 in `tdp_command.conf`, including source hashes and
-driver/executable fingerprints. Managed continuation reuses the exact
+New runs record recipe v10 in `tdp_command.conf`, including the resolved
+recipe and driver/executable fingerprints (never a seed or a hash of $C$). Managed continuation reuses the exact
 recorded stage binaries and skips rebuilding them. Preserve their build
 directory; use a fresh run directory after changing recipe settings or stage
 binaries. Continue only runs created by the matching TDP recipe; earlier
 pipeline runs use different artifact names and are explicitly rejected.
-The private `SEED` file and `stage12.recipe` also belong to the run.
+The private `SEEDS` file (fresh CSPRNG seeds; an explicit seed file is for
+calibration only) and `stage12.recipe` also belong to the run.
 
 ## Using circuit files
 

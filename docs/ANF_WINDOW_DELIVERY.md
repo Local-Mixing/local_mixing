@@ -2,8 +2,9 @@
 
 *2026-10-07. Status: prototype-validated pipeline stage (python tools in
 `runs/ncdb_ab_20261001/`), production artifacts at n=64 and n=128
-(`waist/final64/`, `waist/final128/`); Rust port planned per
-`docs/windowed_delivery_design.md` §7. All measurements cited here are
+(`waist/final64/`, `waist/final128/`). Update 2026-10-09: stage 4 now runs
+in Rust (`tdp_packing run`, `docs/STAGE4_RUST_DESIGN.md`), bit-exact against
+these tools, which remain its oracle. All measurements cited here are
 recorded in that run's RESULTS.md and in
 `runs/exposure_report_20261003/REPORT.md`.*
 
@@ -117,9 +118,12 @@ count, gate order, and all intermediate spellings are discarded.
 
 Budget: 16,384 monomials per window. Measured usage is far below it:
 median 184 (n=64) / 207 (n=128) monomials per window, p90 ≈ 290–430,
-maximum 7,673, **zero overflows** at both scales. Every window is
-functionally re-verified against the gate-level window on the shared
-sample set before serialization.
+maximum 7,673, **zero overflows** at both scales. [Corrected 2026-10-09:
+`anf_compose.py` spot-checks every 500th window on 256 random states; only
+`anf_dump_eval.py`'s 1,024-lane evaluation covers every window. The Rust
+port (`tdp_packing`) checks every window: decoded ANF = composed ANF, and
+ANF = gates, exhaustively for windows with at most 16 support wires and on
+1,024 sampled states otherwise.]
 
 ### 1.2a Commutation-aware repair (`waist/order_repair.py`, `waist/repair.sh`)
 
@@ -150,6 +154,17 @@ The artifact (`deliverable.bin`) is the sequence of window ANFs in a
 binary format (wire ids, monomial lists over window inputs). Nothing
 else ships: no gate list, no boundary metadata beyond the windows
 themselves, no stage provenance.
+
+**Container v1 (2026-10-09).** The raw body carries no n, no version and no
+integrity check, so the managed pipeline ships `deliverable.tdp4`: a 48-byte
+little-endian header (`LMTDPANF`, format version 1, header size 48, flags 0,
+source wires n, state wires 4n, I/O layout 1 = the classic zero slice, window
+count, body length, CRC-32 of the body, CRC-32 of the header) followed by the
+**unchanged** body, which is also kept as `deliverable.bin` so existing
+readers keep working. `tdp_packing decode --format container` validates the
+header and the body (ascending supports, changed wires and masks, mask bits
+below the support size, every support index used); the format is specified
+in `docs/STAGE4_RUST_DESIGN.md` §6.
 
 | | n=64 (\|C\|=1,000) | n=128 (\|C\|=3,000) |
 |---|---|---|

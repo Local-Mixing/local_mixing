@@ -4,7 +4,7 @@
 
 ## Summary
 
-TDP now has four stages: 1 sliced sandwich, 2 preprocessing (embedded masking), 3 database mixing with the **regular** frozen store (`circuit_mixer --tdp --db-mixing --p-db 1.0`), and 4 windowed ANF packing (Python prototypes under `scripts/windowed_delivery/`, Rust port planned). The curated database and the old stages 4 (split), 5 (crossing walk) and 6 (`fcompress`) are historic. This doc lists what exists only on the archive branch, how to get it back, and why it was retired.
+TDP now has four stages: 1 sliced sandwich, 2 preprocessing (embedded masking), 3 database mixing with the **regular** frozen store (`circuit_mixer --tdp --db-mixing --p-db 1.0`), and 4 windowed ANF packing (`tdp_packing`, the Rust port of the Python oracle under `scripts/windowed_delivery/`). The curated database and the old stages 4 (split), 5 (crossing walk) and 6 (`fcompress`) are historic. This doc lists what exists only on the archive branch, how to get it back, and why it was retired.
 
 - **Where the archive is:** branch `ran/archive/curated-and-postmix`, tip `ea2e516f` (2026-10-08, "docs: stage-2 linkability write-up, repair pass, cleanup inventory"). It is the last commit of `ran/stage2-windowed-delivery` before the cleanup. At the time of writing it is a local branch; push it before relying on it from another machine.
 - **What the cleanup did:** five steps on `ran/cleanup-four-stage`, each ending in a summary commit: step 1 curated DB (`04973782`), step 2 `fcompress` (`2dfaaca2`), step 3 split (`c4e6c0d6`), step 4 crossing walk (`ece32ceb`), step 5 driver, CI and docs. 46 files were deleted outright (about 14.4k lines of source, tests and docs) and about 100 more were edited.

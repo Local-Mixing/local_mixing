@@ -177,6 +177,17 @@ fixed code (identical results except vL128a, which now reaches the floor).
 
 ## 6. Recommended configuration
 
+**Managed default (2026-10-09).** This configuration is the default of the
+managed driver (`tdp_gen`, config v2, `docs/tdp_pipeline.md`): preset `L8`
+sets exactly the stage-2 environment below and nothing else, schedule
+`validated` is the stage-3 command below (serial), and stage 4 is
+`tdp_packing run` with the parameters below. From the same seeds the
+managed run is byte-identical to `val_chain.sh` CONFIG=L8 (checked on the
+archived vL64a and vL128a runs and by a reproduction test;
+`docs/STAGE4_RUST_DESIGN.md` §12). Config A (no chains) is
+`preprocessing.preset = "A"`. The source sizes the runs used (|C| = |D| =
+1000 at n=64, 3000 at n=128) are the default `source.gates`.
+
 Stage 2 (`gen_sandwich_gadget`):
 
 ```
@@ -194,7 +205,9 @@ thermostat, which never fires at `--p-db 1.0`, and they are retired (the
 current build rejects them; the output is byte-identical without them).
 
 Stage 4: `window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`
-(pair cancellation, leak slides, merge/split fallback), then ANF emission.
+(pair cancellation, leak slides, merge/split fallback), then ANF emission
+(`anf_dump_eval.py`); in the managed pipeline `tdp_packing run` with its
+defaults, a bit-exact port.
 
 ## 7. Limitations and open items
 
@@ -205,9 +218,16 @@ Stage 4: `window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`
   exact value equality. Low-degree nonlinear predictors were not tested on
   the final artifacts.
 - **Excursion singletons** need value-level (not gate-level) cancellation.
-- **Engineering.** New stage-2 knobs default off; no managed preset yet;
-  chains / premask / seed-avoidance have no unit tests beyond end-to-end
-  verification; stage 4 exists only as Python prototypes.
+- **Engineering.** The new stage-2 knobs are typed `EmbeddedMaskingParams`
+  fields (off in the library's base parameters) and the managed presets
+  L8/A set them; chains / premask / seed-avoidance have no unit tests beyond
+  end-to-end verification and the byte-identity test of the typed-knob
+  refactor (`tests/integration/stage2_typed_params.rs`). Stage 4 is in Rust
+  (`tdp_packing`), with the Python prototypes as its oracle.
+- **Small n.** L8 generation works at n=8 (18,238 gates, 1,734 chained
+  brackets) and n=16; the stage-4 fixtures and the reproduction tests run
+  the whole L8 chain at n=8 and n=16 (calibration material, not validated
+  sizes).
 
 ## 8. Stage-2 knob reference
 

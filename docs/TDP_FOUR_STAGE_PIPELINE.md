@@ -1,21 +1,22 @@
 # The Four-Stage TDP Pipeline
 
-**Status (2026-10-08).** Written on branch `ran/stage2-windowed-delivery`; committed on `ran/cleanup-four-stage`. Line numbers in tracked files refer to commit `ea2e516f` (before the cleanup that removed the historic code; stage-3 line numbers have since shifted). Line numbers in stage-4 scripts refer to the untracked run tree `runs/ncdb_ab_20261001/` (see "Conventions"). The binaries that produced the validation numbers were built from a working tree, not from a recorded commit (§6.9, "Build provenance").
+**Status (2026-10-09).** Written on branch `ran/stage2-windowed-delivery`; committed on `ran/cleanup-four-stage`; stage 4 ported on `ran/stage4-rust`. Line numbers in tracked files refer to commit `ea2e516f` (before the cleanup that removed the historic code; stage-3 line numbers have since shifted). Line numbers in stage-4 scripts refer to the untracked run tree `runs/ncdb_ab_20261001/` (see "Conventions").
 
-- **Rust:** stages 1-3. Stages 1 and 2 run in one process, `gen_sandwich_gadget`. Stage 3 is `circuit_mixer --tdp --db-mixing` with the regular frozen store only.
-- **Prototype:** stage 4 exists only as Python/bash scripts in `runs/ncdb_ab_20261001/` and `runs/ncdb_ab_20261001/waist/`. A tracked snapshot is in `scripts/windowed_delivery/` (commit `7163e457`). A Rust port is planned (§4.9, §5.7).
+- **Rust: all four stages.** Stages 1 and 2 run in one process, `gen_sandwich_gadget`. Stage 3 is `circuit_mixer --tdp --db-mixing` with the regular frozen store only. Stage 4 is `tdp_packing run` (`src/stages/packing/`), a bit-exact port of the Python prototypes (`docs/STAGE4_RUST_DESIGN.md`).
+- **The managed driver runs the recommended configuration by default.** `tdp_gen` with nothing set but `source.wires` (64 or 128) reproduces `val_chain.sh` CONFIG=L8, byte for byte from the same seeds (stage-2 preset L8, schedule `validated`, stage 4 at G=512): proven on the archived runs vL64a and vL128a themselves (the historic anchor, `STAGE4_RUST_DESIGN.md` §12) and by the reproduction test against a sandboxed `val_chain.sh` (n=8, n=16 L8 and A, n=64 L8). Config A is `preprocessing.preset = "A"`.
+- **Oracle:** the Python/bash stage-4 scripts (tracked snapshot `scripts/windowed_delivery/`) are the canonical oracle of the port. They are never edited; CI runs them against `tdp_packing` on random inputs (§4.9).
 - **Historic:** the curated DB and the old stages 4-6 (see "Historic components").
 - **Recommended configuration:** config L8 (bounded chains). Config A (no chains) remains a supported alternative (smaller at n=64, more linkable values; §5.6).
 - **Canonical repair code:** `scripts/windowed_delivery/waist/order_repair.py` (the patched version; the
-  slide step locates the breaker before moving the completer, §4.5). The reference driver is
-  `scripts/windowed_delivery/waist/val_chain.sh`.
+  slide step locates the breaker before moving the completer, §4.5), ported as `stages::packing::repair`.
 - **Validation (closed 2026-10-08).** Twelve end-to-end runs (configs A and L8, n=64 and n=128, three seeds
   each) all reach the exact C-view floor, are functionally equivalent after repair, and pass the end-to-end
   check `verify_zero_slice` (C(x) against the final circuit's payload wires, 512 samples, fresh seeds). All
-  eight replicates were re-repaired with the canonical code (results identical; vL128a re-serialized).
-  Results: `docs/STAGE2_LINKABILITY.md` §5 and `docs/notes/ncdb_ab_20261001_RESULTS.md`. Still open:
-  1. The `hmap_affine` binary that produced every C-view, span and repair number predates its committed source. It has not been rebuilt and re-checked (§6.9).
-  2. The managed driver cannot express this configuration (§6.10); the stage-4 Rust port adds it.
+  eight replicates were re-repaired with the canonical code and re-serialized (§4.7).
+  Results: `docs/STAGE2_LINKABILITY.md` §5 and `docs/notes/ncdb_ab_20261001_RESULTS.md`. The two items that
+  were open are closed:
+  1. **`hmap_affine` provenance (§6.9):** `hmap_affine` rebuilt at `492564f0` reproduces every archived C-view TSV and log line on all eight replicates; the refactored tool (library exposure engine) is byte-identical to it.
+  2. **Managed driver (§6.10):** it now expresses, and defaults to, the recommended configuration.
 
 ## Overview
 
@@ -96,7 +97,16 @@ The figures come from the eight validation replicates (§4.7, §6.9). With 8 job
 
 ### Recommended configuration at a glance
 
-The simplest way to run it is the reference driver, from any directory:
+The supported way to run it is the managed driver, whose defaults are this
+configuration (`docs/tdp_pipeline.md`):
+
+```sh
+cp configs/tdp.toml configs/local.toml        # set database.regular_dir and source.wires (64 or 128)
+cargo run --release --locked -- tdp_gen --config configs/local.toml
+```
+
+The reference driver below is what the validation runs used; it is now a
+parity tool (the reproduction test runs it in a sandbox):
 
 ```sh
 bash runs/ncdb_ab_20261001/waist/val_chain.sh TAG N MC S SLICE CFG   # CFG = L8 (recommended) or A
@@ -2216,6 +2226,19 @@ A versioned header carrying n and the window count, a reference decoder, and a r
 
 ### 4.7 Validation replicates (G=512)
 
+**Update (2026-10-08/09).** All eight replicates were re-repaired with the
+canonical `order_repair.py` and re-serialized on Oct 8; the earlier repairs
+are in `W/<TAG>/rep512_v1/`. The parity targets of the Rust port are the
+current `rep512.*` and `deliverable.bin` (`STAGE4_RUST_DESIGN.md`
+Appendix B), and `tdp_packing run` reproduces every one of them byte for byte
+from the archived `tdp.mpmct1` and `s3.mpmct1` (`tests/manual/stage4/run_parity.sh`).
+The **historic anchor** re-ran the chosen runs from their archived seeds:
+gen at `492564f0` reproduces `tdp.mpmct1`, the source and the sandwich of all
+eight tags; the mixer at `492564f0` reproduces `s3.mpmct1` of vL64a and
+vL128a; and the managed driver on this branch reproduces every artifact of
+vL64a and vL128a down to `deliverable.bin`. The fix-mode paragraph below
+describes the first repairs and is superseded.
+
 All runs used the recommended stages 1-3 and `val_chain.sh` (logs in `W/v{A,L}{64,128}{a,b}/`). Across all eight runs:
 
 - the packer's input and emitted function checks passed (256/256 or 512/512 wires);
@@ -2267,6 +2290,20 @@ Every step of stage 4 reads secret material:
 - `rep512.{wit,allcuts,exposure}.tsv`, `rep512.cview.log` and `split_cands_<pid>.*`.
 
 ### 4.9 Open issues for the Rust port
+
+**Status (2026-10-09): ported.** Stage 4 is `tdp_packing run`
+(`src/stages/packing/`, `src/programs/tdp_packing/`), integrated in the
+managed driver; the design, the exactness plan and the validation are in
+`docs/STAGE4_RUST_DESIGN.md`. Decisions taken there for the items below:
+repair is ported in-process with the C-view engine moved out of
+`hmap_affine` into the library; every check is a hard error (exit 4); the
+final scan is the identity test (exit 5 on a visible non-output row) plus the
+split's budget test (exit 6), with `--allow-*` as recorded escapes; the
+deliverable has a versioned container (`deliverable.tdp4`) and a validating
+decoder with a read-back check; repair improvements (slides across markers,
+marker-identity cuts, all exposing cuts) stay future options behind flags,
+never the default without re-validation. The text below is the analysis as it
+stood before the port.
 
 The documented plan (`docs/windowed_delivery_design.md:178-192`) has four items:
 
@@ -2518,6 +2555,14 @@ The stage-2 rebirth census (`mult_s2.txt`, §2b.7) is consistent across seeds: c
 The n=128 L8 row mixes the patched vL128a rerun with vL128b, and its `.bin` mean uses vL128a's stale v1 file (§4.7). The doc-level summary in `STAGE2_LINKABILITY.md:120-135` predates the replicates. It uses the earlier finals (`RESULTS.md:1742-1751`) and gives L2 −13%, M2 −21% / −26%, "exposed" (= proxy values) −24% / −37%, anchors −39% / −28% and size +18% / 0% (n=64 / n=128). Those are earlier-final figures and should not be quoted as replicate results.
 
 ### 5.7 Limitations and requirements for the Rust port
+
+**Status (2026-10-09).** The port (`docs/STAGE4_RUST_DESIGN.md`) addresses the
+end-to-end check (zero slice of the decoded deliverable against C on every
+run), hard failures, re-scoring (a final scan, identity test), serialization
+(decode round trip, container header) and memory (a streamed C-view with
+checkpoints: 0.4-0.5 GB at n=128). Attack scope, witness cut drift, duplicate
+wires in witnesses and the input models are unchanged (the port reproduces
+the oracle's repair exactly).
 
 - **Attack scope.** Only exact affine predictors and exact value equality are measured. Low-degree nonlinear predictors were not run on the final artifacts (`STAGE2_LINKABILITY.md:178-180`). The C-view is also strictly per-cut: it does not combine wires from different boundaries.
 - **End-to-end correctness.** Add an honest-slice check of the deliverable against C: input (x, 0, 0, 0), compare wires n..2n with C(x). Today stage 1 has no runtime check and every other check is relative. At minimum the driver should run `verify_zero_slice` on `s3.mpmct1` and `rep512.mpmct1`. The port should run the equivalent on the ANF-decoded deliverable.
@@ -2844,7 +2889,15 @@ The other seven runs have not been re-repaired with the patched script.
 
 **Stage-3 share of wall time** is stage-3 wall time divided by total wall time, per run: 87.4, 88.1, 82.2, 82.5% at n=64 (vA64a, vA64b, vL64a, vL64b) and 84.7, 80.3, 74.0, 82.6% at n=128 (vA128a, vA128b, vL128a, vL128b). vL128a's total includes its first, failed repair.
 
-**Build provenance (open item).** No commit hash was recorded for the binaries. File times on this machine:
+**Build provenance (resolved 2026-10-08).** `hmap_affine` rebuilt from
+`492564f0` reproduces the archived `rep512.{exposure,allcuts,wit}.tsv`,
+line 2 of `rep512.cview.log` and the split-candidate TSVs on all eight tags
+(`STAGE4_RUST_DESIGN.md` §12, P2), so the numbers below stand. Gen and the
+mixer at `492564f0` reproduce the archived stage-2 artifacts of all eight
+tags and `s3.mpmct1` of vL64a and vL128a (the historic anchor). The original
+note follows.
+
+No commit hash was recorded for the binaries. File times on this machine:
 
 | binary | built | newer sources? |
 |---|---|---|
@@ -2856,7 +2909,7 @@ The replicates were launched at 23:23 (`W/v*/seed.txt`), so gen and the mixer ma
 
 ### 6.10 The managed driver today
 
-The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen --config`) still implements the earlier six-step pipeline. It cannot run the recommended configuration: it rejects persistent migration, scrubs the new stage-2 knobs, cannot express profile `2,2,2,2,2`, and has no windowed-delivery stage. Use `W/val_chain.sh`. The full gap analysis is in Appendix A.
+The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen --config`) runs all four stages, and its **defaults are the recommended configuration**: config v2 with preset `L8` (preset `A` selectable), schedule `validated` (profile `2,2,2,2,2`, moves `int(G·2·2·1.3)`, serial), the validated source sizes (1000 at n=64, 3000 at n=128), and `tdp_packing run` at G=512 with split budget 65536. Every gap of Appendix A is closed (`docs/STAGE4_RUST_DESIGN.md` §2.2, D1-D18). Use it; `W/val_chain.sh` is a parity tool.
 
 ### 6.11 Pitfalls
 
@@ -2870,12 +2923,11 @@ The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen -
 
 ### 6.12 Open decisions
 
-- **Scale:** whether the default |C| should be the research scale or the library convention.
-- **Seeds:** the seed width and derivation for the cleaned-up driver, whether seeds are passed by file or environment instead of argv, and whether C should come from a generator seeded by a CSPRNG.
-- **Configuration:** whether the replicates settle L8 as the default.
-- **Container:** a versioned container format with a decoder (and a read-back check) for the Rust port.
+Decided by the port (`docs/STAGE4_RUST_DESIGN.md`): the default |C| is the validated table (1000 / 3000; other n need an explicit size or the opt-in formula); seeds are drawn by the driver into a private `SEEDS` file and never travel on argv between driver and bash (gen and mixer still receive them on their own argv, as in the reference); L8 is the default; the container is `deliverable.tdp4` (version 1) with a validating decoder. Still open:
+
+- **Seed entropy:** C is generated from at most 64 bits whatever the seed width; route (a) a 256-bit ChaCha-derived C (changes bytes, needs re-validation) or (b) a CSPRNG-generated C through `source.path` (design §13.1).
 - **Boundaries:** whether to randomize window boundaries.
-- **Timings:** solo stage-3 timings, whether the 512/200000 canonicalization caps bind at this configuration, and validation of `--parallel-pieces` with this configuration.
+- **Timings:** solo stage-3 timings and validation of `--parallel-pieces` with this configuration. (The managed driver no longer sets the 512/200000 canonicalization caps: the reference runs had them unbounded.)
 
 
 ## Historic components
@@ -2883,6 +2935,8 @@ The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen -
 The curated frozen store and the old stages 4-6 (split, the slot-3 crossing walk and fcompress) are historic and play no part in this pipeline. They were removed on `ran/cleanup-four-stage` (stage-2 and stage-3 outputs verified byte-identical before and after) and are preserved on `ran/archive/curated-and-postmix`; see `docs/CURATED_AND_POSTMIX_ARCHIVE.md`.
 
 ## Appendix A. The managed driver: gap analysis
+
+**Closed (2026-10-09).** Every item below is resolved on `ran/stage4-rust`: persistent migration and the new stage-2 knobs are the L8/A presets (custom preset for anything else); the profile `2,2,2,2,2` is the `validated` schedule; the historic stages and the curated store are gone; stage 4 is `tdp_packing run`; seeds are `gen_seed` (all three gen seeds) and an independent `mix_seed` in the private `SEEDS` file. The full list of differences and their resolutions is `docs/STAGE4_RUST_DESIGN.md` §2.2 (D1-D18). The analysis below is kept as it stood.
 
 This appendix collects the managed driver's differences from the recommended pipeline. None of them affects a run made with `W/val_chain.sh`.
 

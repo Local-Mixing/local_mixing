@@ -1897,13 +1897,13 @@ Stage 4, packing, is the last stage of the current design. It reorders the
 mixed circuit along commutations, cuts it into windows and publishes each
 window as its sparse algebraic normal form, so that an observer sees wire
 states only at window boundaries; a commutation-aware repair pass then
-removes the remaining boundary exposures of $C$'s values. It is still a set
-of Python prototypes under `scripts/windowed_delivery/` (design:
-[windowed_delivery_design.md](windowed_delivery_design.md); measurements:
-[ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
-[STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` ends at
-`db_mixing.mpmct1`, and the [pipeline guide](tdp_pipeline.md#stage-4-packing)
-shows how to run the prototypes.
+removes the remaining boundary exposures of $C$'s values. It runs in Rust
+as `tdp_packing run` (`src/stages/packing/`; design:
+[STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md)), a bit-exact port of the
+Python prototypes under `scripts/windowed_delivery/`, which remain its
+oracle (measurements: [ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
+[STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` runs it as the
+last stage, see the [pipeline guide](tdp_pipeline.md#stage-4-packing).
 
 Earlier versions of the pipeline followed database mixing with three
 fragmentation stages. They are historic; their code, tests and full

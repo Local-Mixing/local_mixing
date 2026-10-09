@@ -178,7 +178,13 @@ relying on the packer's reorder to rediscover locality.
 
 ## 7. Implementation plan
 
-Prototype-validated, pending Rust:
+**Superseded (2026-10-09).** Stage 4 is implemented in Rust as
+`tdp_packing run` (`src/stages/packing/`) and integrated in the managed
+driver; the plan, the exactness requirements (bit-exact against the Python
+oracle, including the CPython 3.9 set order of the ANF caps) and the
+validation are in [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md). Item 3
+below (band refresh as a stage 3.5) was superseded earlier by stage-2
+carrier migration (preset L8). The original plan:
 
 1. `window_pack` as a pipeline stage (port of `window_pack3.py`):
    epoch scheduler, winnable-value intervals, drain+burst+contagion,

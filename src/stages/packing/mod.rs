@@ -3,7 +3,7 @@
 //! follows `docs/STAGE4_RUST_DESIGN.md`. Library code here reads no
 //! environment variables (the `src/stages` contract).
 //!
-//! Ported so far:
+//! Ported:
 //! * the C-view exposure engine (`gf2`, `cview`), shared with the
 //!   `hmap_affine` security tool;
 //! * window ANF composition and its caps on a CPython 3.9 set emulator
@@ -14,7 +14,12 @@
 //!   proxy spans (`fingerprint`), interval sets (`intervals`), the scheduler
 //!   (`scheduler`) and the exact reorder certificate (`certify`);
 //! * the repair `repair.sh` (`repair`: cancel, fix, merge, exposure-aware
-//!   split, the loop control) with exact cancel/repair certificates.
+//!   split, the loop control) with exact cancel/repair certificates;
+//! * the report-only censuses `anf_compose.py`, `link_census.py` and
+//!   `mult_census.py` (`census`).
+//!
+//! The production entry point is `tdp_packing run`
+//! (`src/programs/tdp_packing/run.rs`), driven by the managed TDP driver.
 pub mod anf;
 pub mod blake2b;
 pub mod census;

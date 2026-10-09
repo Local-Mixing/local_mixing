@@ -61,7 +61,20 @@
 //!     the final tests on any repaired circuit (oracle or Rust).
 //! ```
 //!
-//! `run` and `census` belong to later phases and exit 2.
+//! tdp_packing run --stage2 <tdp.mpmct1> --stage3 <db_mixing.mpmct1> --source-c <C.g57>
+//!                       --n N --out-dir DIR [--label tdp]
+//!                       [--window-gates 512] [--interval-cap 512] [--monomial-budget 24576]
+//!                       [--span-cap 3000] [--split-budget 65536] [--fix-iterations 4]
+//!                       [--fallback-iterations 4] [--anf-cap-semantics cpython39|canonical]
+//!                       [--allow-floor-miss] [--allow-over-budget] [--no-oracle-files] [--threads K]
+//!     THE PRODUCTION STAGE 4 (what val_chain.sh does after stage 3): pack,
+//!     repair (with repair.sh's report part), the anf_compose and link_census
+//!     reports, the deliverable (`deliverable.bin` raw body + `deliverable.tdp4`
+//!     container, written last, after every check) and `packing.report`.
+//! tdp_packing census <A.mpmct1> <packed.mpmct1> <bounds> <label>
+//!     link_census.py's stdout.
+//! tdp_packing mult-census <A.mpmct1> <label>
+//!     mult_census.py's stdout (the driver's stage-2 side report).
 use crate::circuit::formats::read_g57_file;
 use crate::circuit::xgate::XGate;
 use crate::stages::packing::anf::{MulStats, window_anf};

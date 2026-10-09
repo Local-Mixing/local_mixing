@@ -29,7 +29,7 @@ FX=$REPO/tests/fixtures/stage4
   { echo "ORACLE_PY fails the CPython 3.9 set-order self-test" >&2; exit 2; }
 echo "differential: SEED=$SEED (calibration), K=$K, oracle $("$ORACLE_PY" -c 'import sys; print(sys.version.split()[0])')"
 RD=$(bash "$FX/oracle_sandbox.sh" "$WORK/sb_pack") || exit 2
-fail=0
+fail=0; skipped=0
 note_fail() { echo "  MISMATCH k=$1 $2: $3"; fail=1; }
 norm() { sed "s|$1/|<DIR>/|g" "$2"; }
 split_verify() { grep -v 'EQUIVALENT (1024 random states)' "$1"; }
@@ -57,19 +57,38 @@ for k in $(seq 1 "$K"); do
   R=$RDR/waist/x; mkdir -p "$R"
   cp "$D/in/p.mpmct1" "$R/packed_G512.mpmct1"; cp "$D/in/p.bounds" "$R/packed_G512.mpmct1.bounds"
   cp "$D/in/c.g57" "$R/tdp.mpmct1.source_c.g57"; cp "$D/in/p.mpmct1" "$R/tdp.mpmct1"
-  bash "$RDR/waist/repair.sh" x 512 "$n" > "$R/repair512.log" 2>&1
+  # a guard: an oracle repair over ORACLE_TIMEOUT seconds is reported as
+  # skipped (never as a pass), and the case is kept for inspection
+  perl -e '$t = shift; $pid = fork; if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+           $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 1; kill "KILL", -$pid; exit 142 };
+           alarm $t; waitpid($pid, 0); exit($? >> 8)' \
+    "${ORACLE_TIMEOUT:-600}" bash "$RDR/waist/repair.sh" x 512 "$n" > "$R/repair512.log" 2>&1
+  if [ $? = 142 ]; then
+    echo "  k=$k repair SKIPPED: the oracle exceeded ${ORACLE_TIMEOUT:-600} s (n=$n budget=$bud)"
+    skipped=$((skipped + 1)); cp -r "$D" "$WORK/skipped_${k}_repair"; rm -rf "$SB"; continue
+  fi
   "$TDP_PACKING" repair --packed "$D/in/p.mpmct1" --bounds "$D/in/p.bounds" --source-c "$D/in/c.g57" --n "$n" \
      --out-dir "$D/rust" --split-budget "$bud" --fix-iterations "$fix" --fallback-iterations "$fb" \
      --allow-floor-miss --allow-over-budget > /dev/null 2> "$D/rust.err"
   st=ok
-  for f in rep512.mpmct1 rep512.bounds rep512.exposure.tsv rep512.allcuts.tsv rep512.wit.tsv; do
+  # D-b (docs/STAGE4_RUST_DESIGN.md §7.3): when the merge leaves a single
+  # window the oracle's hmap_affine panics ("empty plate") and repair.sh goes
+  # on with an empty count, leaving stale TSVs; Rust scans zero cuts. Then
+  # only the repaired circuit and bounds are comparable.
+  oracle_panic=0
+  grep -q 'empty plate' "$R/rep512.cview.log" 2>/dev/null && oracle_panic=1
+  files="rep512.mpmct1 rep512.bounds"
+  [ $oracle_panic = 1 ] || files="$files rep512.exposure.tsv rep512.allcuts.tsv rep512.wit.tsv"
+  for f in $files; do
     cmp -s "$R/$f" "$D/rust/$f" || st="$st; $f"
   done
-  cmp -s <(norm "$R" "$R/rep512.cview.log") <(norm "$D/rust" "$D/rust/rep512.cview.log") || st="$st; cview.log"
-  sed -n "/^== x rep512 final/q;p" "$R/repair512.log" | sed "s|$R/|<DIR>/|g" > "$D/want.log"
-  norm "$D/rust" "$D/rust/repair512.log" > "$D/got.log"
-  cmp -s <(split_verify "$D/want.log") <(split_verify "$D/got.log") || st="$st; repair log"
-  cmp -s <(verify_set "$D/want.log") <(verify_set "$D/got.log") || st="$st; verify lines"
+  if [ $oracle_panic = 0 ]; then
+    cmp -s <(norm "$R" "$R/rep512.cview.log") <(norm "$D/rust" "$D/rust/rep512.cview.log") || st="$st; cview.log"
+    sed -n "/^== x rep512 final/q;p" "$R/repair512.log" | sed "s|$R/|<DIR>/|g" > "$D/want.log"
+    norm "$D/rust" "$D/rust/repair512.log" > "$D/got.log"
+    cmp -s <(split_verify "$D/want.log") <(split_verify "$D/got.log") || st="$st; repair log"
+    cmp -s <(verify_set "$D/want.log") <(verify_set "$D/got.log") || st="$st; verify lines"
+  fi
   # emit
   if [ -s "$R/rep512.mpmct1" ]; then
     "$ORACLE_PY" "$RDR/waist/anf_dump_eval.py" "$R/rep512.mpmct1" "$R/rep512.bounds" "$D/o.bin" x > /dev/null 2>&1
@@ -77,9 +96,12 @@ for k in $(seq 1 "$K"); do
     cmp -s "$D/o.bin" "$D/r.bin" || st="$st; deliverable body"
   fi
   if [ "$st" = ok ]; then
-    echo "  k=$k repair+emit (n=$n budget=$bud fix=$fix fallback=$fb; $(grep -c 'splits added' "$R/repair512.log") split rounds): identical"
+    extra=""; [ $oracle_panic = 1 ] && extra=" [single window: the oracle's hmap_affine panicked (D-b); rep + bounds compared]"
+    echo "  k=$k repair+emit (n=$n budget=$bud fix=$fix fallback=$fb; $(grep -c 'splits added' "$R/repair512.log") split rounds): identical$extra"
   else note_fail "$k" repair "$st"; cp -r "$D" "$WORK/fail_${k}_repair"; cp -r "$R" "$WORK/fail_${k}_repair/oracle"; fi
   rm -rf "$SB"
 done
-[ $fail = 0 ] && echo "DIFFERENTIAL: ALL IDENTICAL ($K pack + $K repair/emit cases)"
+[ $fail = 0 ] && echo "DIFFERENTIAL: ALL IDENTICAL ($K pack + $((K - skipped)) repair/emit cases; $skipped skipped)"
+# more than a quarter of the repair cases skipped means the harness is not testing
+[ $fail = 0 ] && [ $((skipped * 4)) -gt "$K" ] && { echo "too many skipped repair cases" >&2; fail=1; }
 exit $fail
