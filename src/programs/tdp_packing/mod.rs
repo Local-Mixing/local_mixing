@@ -85,6 +85,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod run;
+
 /// Default number of windows composed concurrently (§4.1 `max_concurrent_anf`).
 const MAX_CONCURRENT_ANF: usize = 8;
 /// `anf_dump_eval.py`'s evaluation seed.
@@ -224,9 +226,8 @@ fn dispatch(argv: &[String]) -> Result<(), Stage4Error> {
         "pack" => cmd_pack(&a),
         "repair" => cmd_repair(&a),
         "check-final" => cmd_check_final(&a),
-        "run" | "census" => Err(Stage4Error::Usage(format!(
-            "`{cmd}` is not implemented yet (docs/STAGE4_RUST_DESIGN.md §12)"
-        ))),
+        "run" => run::cmd_run(&a),
+        "census" => run::cmd_census(&a),
         other => Err(Stage4Error::Usage(format!("unknown command {other:?}"))),
     }
 }
