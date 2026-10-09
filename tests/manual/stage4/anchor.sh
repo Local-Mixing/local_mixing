@@ -1,5 +1,10 @@
 #!/bin/bash
-# anchor.sh A [gen|mix TAG...] : historic anchor step A (docs/STAGE4_RUST_DESIGN.md §10.8).
+# anchor.sh gen|mix|managed TAG... : historic anchor (docs/STAGE4_RUST_DESIGN.md §10.8).
+#   gen, mix  step A: the baseline binaries (492564f0) with the archived seeds.
+#   managed   step B: the MANAGED DRIVER (local_mixing_bin tdp_gen, config v2,
+#             nothing set but source.wires, the store and the archived seeds in a
+#             private calibration seed file) on this checkout; every artifact is
+#             cmp'd with the archive (db_mixing.mpmct1 vs s3.mpmct1, packing/*).
 # Re-runs gen (all 8 tags) and the mixer (named tags) with the ARCHIVED seeds on the baseline
 # binaries built from 492564f0, under env -i plus the tag's CONFIG environment, and cmp's the
 # outputs with the archive.  Seeds are read from seed.txt inside this script and never printed.
@@ -50,5 +55,52 @@ mix)
     if cmp -s "$a/s3.mpmct1" "$o/s3.mpmct1"; then r=IDENTICAL; else r=DIFFERENT; fi
     echo "$t mix exit=$rc s3.mpmct1=$r" | tee -a "$OUT/summary.txt"
   done ;;
-*) echo "usage: anchor.sh gen|mix TAG..."; exit 2;;
+managed)
+  REPO=$(cd "$(dirname "$0")/../../.." && pwd)
+  LMB=${LOCAL_MIXING_BIN:?path to the local_mixing_bin built from this checkout}
+  TGT=${MANAGED_TARGET_DIR:?cargo target directory for the managed build}
+  for t in "$@"; do
+    a=$ARCH/$t; o=$OUT/managed_$t; rm -rf "$o"; mkdir -p "$o"
+    n=$(awk '{print $2/4}' <<<"$(head -1 "$a/tdp.mpmct1")")
+    sf=$o/seeds.private
+    ( set +x; g=$(gen_seed "$t"); m=$(mix_seed "$t")
+      printf 'gen_seed=%s\nmix_seed=%s\n' "$g" "$m" > "$sf" ); chmod 600 "$sf"
+    case $t in vA*) preset='preprocessing.preset = "A"' ;; *) preset="" ;; esac
+    cat > "$o/config.toml" <<CFG
+config_version = 2
+[run]
+directory = "$o/run"
+build_directory = "$TGT"
+[source]
+wires = $n
+[database]
+regular_dir = "$STORE"
+[preprocessing]
+$preset
+[calibration]
+enabled = true
+seed_file = "$sf"
+CFG
+    /usr/bin/time -l env -i PATH="$(dirname "$(command -v cargo)"):/opt/homebrew/bin:/usr/bin:/bin" HOME="$HOME" "$LMB" tdp_gen --config "$o/config.toml" \
+      > "$o/driver.out" 2> "$o/driver.err"
+    rc=$?
+    r=$o/run; p=$r/packing
+    res="$t managed exit=$rc"
+    chk() { if cmp -s "$1" "$2"; then res="$res $3=IDENTICAL"; else res="$res $3=DIFFERENT"; fi; }
+    chk "$a/tdp.mpmct1" "$r/tdp.mpmct1" tdp.mpmct1
+    chk "$a/tdp.mpmct1.source_c.g57" "$r/tdp.mpmct1.source_c.g57" source_c
+    chk "$a/tdp.mpmct1.sandwich.mpmct1" "$r/tdp.mpmct1.sandwich.mpmct1" sandwich
+    chk "$a/s3.mpmct1" "$r/db_mixing.mpmct1" s3=db_mixing
+    for f in packed_G512.mpmct1 packed_G512.mpmct1.bounds rep512.mpmct1 rep512.bounds \
+             rep512.exposure.tsv rep512.allcuts.tsv rep512.wit.tsv deliverable.bin; do
+      chk "$a/$f" "$p/$f" "$f"
+    done
+    chk "$a/deliverable.bin" <(tail -c +49 "$p/deliverable.tdp4") "deliverable.tdp4[48:]"
+    chk <(sed "s/^$t-rep512:/X:/" "$a/anf_rep512.txt") <(sed "s/^tdp-rep512:/X:/" "$p/anf_rep512.txt") "anf_rep512(label)"
+    chk <(sed -n 2,99p "$a/link_rep512.txt") <(sed -n 2,99p "$p/link_rep512.txt") "link_rep512[2:]"
+    chk <(sed "s/^ $t:/ X:/" "$a/mult_s2.txt") <(sed "s/^ tdp:/ X:/" "$r/stage2_mult.txt") "mult_s2(label)"
+    grep -q '^status=ok$' "$p/packing.report" && res="$res status=ok" || res="$res status!=ok"
+    echo "$res" | tee -a "$OUT/summary.txt"
+  done ;;
+*) echo "usage: anchor.sh gen|mix|managed TAG..."; exit 2;;
 esac
