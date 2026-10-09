@@ -1222,6 +1222,33 @@ The CI workflow adds:
 - `--features security-tools --test hmap_affine_exposure` to "Trace-affine heatmap". This test runs the **refactored** HA on the n8 fixture and compares with TSVs produced by the **baseline** HA;
 - the new `stage4-oracle` job (§10.6).
 
+### 10.10 Acceptance round 1: vL128a (n=128, L8), 2026-10-09
+
+`tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128` with every parameter at its default (= the recommended configuration: G=512, interval cap 512, monomial budget 24576, span cap 3000, split budget 65536, 4+4 iterations), on the archived inputs; outputs in `port_runs/vL128a_r1/`.
+
+| artifact | vs archived oracle output |
+|---|---|
+| `packed_G512.mpmct1`, `.bounds` | identical |
+| `rep512.mpmct1`, `rep512.bounds` | identical (4 596 808 → 4 259 448 gates, 7 058 boundaries) |
+| `rep512.exposure.tsv`, `.allcuts.tsv`, `.wit.tsv` | identical |
+| `deliverable.bin` | identical; `deliverable.tdp4[48:]` = `deliverable.bin` (the 48-byte container header is the only addition) |
+| `anf_rep512.txt`, `link_rep512.txt`, `pack_G512.txt` | identical |
+| `repair512.log`, `rep512.cview.log` | identical except the absolute output paths printed in them |
+
+Independent checks on the Rust outputs: the standalone `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (current tree) reports **128 visible of 3 000 born values (the exact floor)** and reproduces the three TSVs byte for byte; `verify_zero_slice C rep512.mpmct1 128 512` PASS; the Python `link_census.py` on the Rust `rep512.*` equals the oracle `link_rep512.txt` (proxy L2 16 106, M2 187 248).
+
+Cost on this Mac (machine shared with another session, load about 5):
+
+| | wall | CPU (user+sys) | peak RSS |
+|---|---|---|---|
+| Rust `tdp_packing run` (all checks included) | 119 s | 627 s | 2.04 GB |
+| Python oracle, sandboxed (CPython 3.9.6, pinned baseline HA) | 6 921 s | 1 943 s | 5.08 GB |
+| — `window_pack3.py` | 176 s | 171 s | 5.08 GB |
+| — `repair.sh` (incl. `anf_compose.py`, `link_census.py`) | 6 418 s | 1 445 s | 3.40 GB |
+| — `anf_dump_eval.py` | 328 s | 327 s | 2.00 GB |
+
+The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its repair wall time is far above its CPU time (the machine was shared during the four fix scans and the fallback), so the ratio is about 58× in wall time and 3× in CPU time. Both §9 n=128 targets hold (wall ≤ 6 min, peak RSS ≤ 3 GB).
+
 ---
 
 ## 11. Driver integration
