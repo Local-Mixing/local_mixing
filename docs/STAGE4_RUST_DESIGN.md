@@ -1557,8 +1557,8 @@ So the chosen runs are reproducible by the current binaries, and the targets sta
 | reproduction n=16, \|C\|=64, L8 | ALL IDENTICAL | 182 s / 73 s |
 | reproduction n=16, \|C\|=64, A | ALL IDENTICAL | 158 s / 64 s |
 | reproduction n=64, L8 (\|C\| = 1000 by default) | ALL IDENTICAL | 1,908 s / 1,492 s (stage 3: 1,457 s / 1,601 s, +9.9%, sequential runs on a shared machine) |
-| anchor B vL64a (archived seeds) | every artifact identical to the archive, `status=ok` | managed 1,542 s |
-| anchor B vL128a (archived seeds) | @@V128@@ | @@V128T@@ |
+| anchor B vL64a (archived seeds) | every artifact identical to the archive, `status=ok` | managed 1,542 s (5.8 GB peak, the mixer) |
+| anchor B vL128a (archived seeds) | every artifact identical to the archive, `status=ok` | managed 4,499 s (7.4 GB peak, the mixer) |
 
 "ALL IDENTICAL" covers: `tdp.mpmct1`, the source C, the sandwich, `s3.mpmct1` = `db_mixing.mpmct1`, the stage-2 rebirth census, `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, the three TSVs, `pack_G512.txt`, `anf_rep512.txt` and `link_rep512.txt` (labels normalized), `deliverable.bin`, `deliverable.tdp4[48:]`, and `deliverable.tdp4` against `container_header.py` of the oracle body; the driver refused four decoy variables (`MIXER_DB_LEN_BAND`, `SLICE_GUARD_LEGACY`, `EMBEDDED_MASKING_RETIRE`, `CANON_MONOMIAL_CAP`) before each managed run. The anchor rows compare against the archived files of the chosen runs themselves (Appendix B).
 
