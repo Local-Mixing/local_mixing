@@ -1345,3 +1345,41 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         fs::remove_dir_all(base).unwrap();
     }
 }
+
+/// A run directory with SEEDS but no managed manifest (a standalone
+/// tdp_gen.sh run) is never adopted.
+#[test]
+fn standalone_runs_are_not_adopted() {
+    let base = temp_path("standalone-run");
+    let run_dir = base.join("run");
+    fs::create_dir_all(&run_dir).unwrap();
+    private_file(
+        &run_dir.join("SEEDS"),
+        &seeds_text(1, 2, &[9u8; 32], "random"),
+    );
+    fs::write(run_dir.join("tdp.mpmct1"), "saved gadget\n").unwrap();
+    let target_dir = base.join("target");
+    let config_path = base.join("recipe.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "config_version = 2\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
+        ),
+    )
+    .unwrap();
+    for dry in [true, false] {
+        let mut args = vec![
+            OsString::from("tdp_gen"),
+            OsString::from("--config"),
+            config_path.clone().into_os_string(),
+        ];
+        if dry {
+            args.push(OsString::from("--dry-run"));
+        }
+        let error = run_inner(&command().try_get_matches_from(args).unwrap()).unwrap_err();
+        assert!(error.message.contains("no managed manifest"), "{error:?}");
+        assert!(!target_dir.exists());
+        assert!(!run_dir.join("tdp_command.conf").exists());
+    }
+    fs::remove_dir_all(base).unwrap();
+}

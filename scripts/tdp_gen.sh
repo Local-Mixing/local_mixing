@@ -285,7 +285,7 @@ case "$FILTER" in auto|on|off) ;; *) fatal "--database-lookup-miss-filter must b
 if [ "$QC" != 1 ] && { [ -n "$QC_REF" ] || [ "${SEEN[--leakage-repair-seed]+x}" = x ]; }; then
   fatal "--leakage-repair-seed/--leakage-repair-reference require --leakage-repair"
 fi
-QC_SEED=$(bounded_uint --leakage-repair-seed "$QC_SEED" 0 18446744073709551615)
+QC_SEED=$(bounded_uint --leakage-repair-seed "$QC_SEED" 0 9223372036854775807)
 
 # ---- stage-2 preset (§11.1; docs/STAGE2_LINKABILITY.md §6) ----
 # gen's base parameters (EmbeddedMaskingParams::managed_tdp): the effective

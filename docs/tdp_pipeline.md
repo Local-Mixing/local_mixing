@@ -315,7 +315,9 @@ The managed command reads configuration; the Bash driver takes flags (its
 | `parallel.*` | `--parallel-pieces P`, `--parallel-target-piece-gates B`, `--parallel-threads T` |
 
 Standalone, the script draws the seeds itself (`python3 -I` + `secrets`)
-into `$RUN/SEEDS` under the same format and rules. It reads only
+into `$RUN/SEEDS` under the same format and rules. The managed command never
+adopts such a run directory (SEEDS without its manifest): continue it with
+the script, or start a fresh managed run. It reads only
 `FROZEN_DB_DIR`, `TDP_BIN_DIR` and `TDP_GEN_ALLOW_EMPTY_STORE` from its
 environment. It needs bash 4 or newer.
 

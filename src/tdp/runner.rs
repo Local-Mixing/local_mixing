@@ -33,6 +33,12 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
             config.run_dir.display()
         )));
     }
+    if !managed_resume && config.run_dir.join("SEEDS").exists() {
+        return Err(TdpError::config(format!(
+            "{} has a SEEDS file but no managed manifest (a standalone scripts/tdp_gen.sh run, or an interrupted start); use a fresh run.directory (remove SEEDS only if nothing else was written)",
+            config.run_dir.display()
+        )));
+    }
     // Reject retired recipes before building or inspecting stage executables.
     config.recipe_version = if managed_resume {
         read_recipe_version(&manifest_path)?
@@ -177,10 +183,6 @@ pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError>
         ))
     })?;
     let path = config.run_dir.join("SEEDS");
-    if path.exists() {
-        // a fresh managed run whose manifest write was interrupted
-        return check_seeds_file(config);
-    }
     let (gen_seed, mix_seed, source) = match config.seeds {
         SeedPlan::Random => (os_seed()?, os_seed()?, "random"),
         SeedPlan::Explicit { gen_seed, mix_seed } => (gen_seed, mix_seed, "explicit"),
