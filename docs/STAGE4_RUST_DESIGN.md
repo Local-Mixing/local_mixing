@@ -1481,6 +1481,13 @@ Each phase ends with G1-G7, `cargo fmt --check` and clippy green, and a WIP comm
 | P8 | reproduction tests §10.7 (N=16 L8, N=16 A, N=64 L8); **anchor B** for vL64a and vL128a; filter neutrality when a host with `filters.bin` is available | all comparisons identical (or `faithful (failure path)`); §9 times and RSS |
 | P9 | docs (§14) | — |
 
+**P2 result (2026-10-08).** `src/stages/packing/{gf2,cview}.rs`; `hmap_affine --exposure` runs on them.
+
+- Baseline HA built from `492564f0` (`git archive` export, `port_runs/baseline_target`), sha256 `ecf87728491d2ce5c66e06b4fbb319dbc9b2221263d1a30e980b088b18538089` (macOS arm64); archive-era HA copied to `port_runs/archive_hmap_affine`.
+- **§10.5 step 0 (provenance): resolved, no fallback.** On all 8 tags the baseline HA on the archived `rep512.mpmct1` + `rep512.bounds` reproduces the archived `rep512.{exposure,allcuts,wit}.tsv` and line 2 of `rep512.cview.log`, and the archived `split_cands_*.{exposure,allcuts}.tsv` (the four vL128a files from 01:18-01:30 reproduce on `rep512_v1/rep512.mpmct1`, the P they were scanned on). The archive-era HA equals the baseline on vA64a. The targets stay Appendix B.
+- **Refactored HA = baseline, byte for byte** (stdout and every output file, `tests/manual/stage4/cview_parity.sh`, output in `port_runs/p2_parity/`): on all 8 tags for rep512 + bounds with ALLCUTS and WITNESS, with WITNESS only (`skip_settled` path), on `packed_G512` + pre-repair bounds, and on every archived split-candidate file; on vA64a also SPAN and a small heatmap. Time and peak RSS, refactored vs baseline: n=64 rep512 0.4-0.6 s / 140-155 MB vs 8.2-9.0 s / 640-690 MB; n=128 4.3-5.7 s / 440-480 MB vs 120-173 s / 3.2-3.4 GB.
+- CI: `--features security-tools --test hmap_affine_exposure` compares the refactored HA with baseline outputs on `tests/fixtures/stage4/cview_n8` (9 cases: a real n=8 G2 and a synthetic pair with t* up to 3 and nullity above 14). Unit tests: `tests/unit/stages/packing/{gf2,cview}.rs`, including a transcription of HA's scan compared on random circuits with all four option combinations.
+
 ---
 
 ## 13. Open decisions for RC
