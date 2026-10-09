@@ -611,7 +611,7 @@ pub fn decode(bytes: &[u8], format: Format) -> Result<Deliverable, Stage4Error> 
                     *u |= b;
                 }
             }
-            if f % 8 != 0 || f == 0 {
+            if !f.is_multiple_of(8) || f == 0 {
                 let top = fb - 1;
                 let allowed: u8 = if f == 0 {
                     0
@@ -649,14 +649,14 @@ pub fn decode(bytes: &[u8], format: Format) -> Result<Deliverable, Stage4Error> 
             wire_len: c as u16,
         });
     }
-    if let Some(h) = header {
-        if h.window_count as usize != d.windows.len() {
-            return Err(Stage4Error::Input(format!(
-                "container: {} windows, header says {}",
-                d.windows.len(),
-                h.window_count
-            )));
-        }
+    if let Some(h) = header
+        && h.window_count as usize != d.windows.len()
+    {
+        return Err(Stage4Error::Input(format!(
+            "container: {} windows, header says {}",
+            d.windows.len(),
+            h.window_count
+        )));
     }
     Ok(d)
 }

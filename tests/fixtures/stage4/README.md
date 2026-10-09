@@ -102,3 +102,8 @@ validation runs (Appendix B sha256s).
     HMAP_BASELINE=... ORACLE_PY=/usr/bin/python3 CARGO_TARGET_DIR=... \
     FROZEN_DB_DIR=~/code/local_mixing/frozen_db/frozen_m1_m11 \
     WORK=<durable scratch> bash regen.sh [n8_L8] [anf] [container]
+
+A full rerun of `regen.sh n8_L8 anf container` (2026-10-08) reproduced every
+committed file byte for byte (gen, mixer and the oracle chain are
+deterministic for fixed seeds); only sandbox paths, now normalized to
+`<SANDBOX>` in `provenance.txt`, differed.

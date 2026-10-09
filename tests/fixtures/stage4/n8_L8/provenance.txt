@@ -1,11 +1,11 @@
 gen: 18239 lines; s3: mpmct1 32 37479
 fix iter 1: C-view visible 6 (floor 8)
-/Users/rancanetti/code/lm_worktrees/port_runs/fixtures/fixture_20261008_212733/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
-/Users/rancanetti/code/lm_worktrees/port_runs/fixtures/fixture_20261008_212733/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
+<SANDBOX>/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
+<SANDBOX>/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
 fallback iter 1: C-view visible 6
-  /Users/rancanetti/code/lm_worktrees/port_runs/fixtures/fixture_20261008_212733/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 1 splits added (71 -> 72 boundaries)
+  <SANDBOX>/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 1 splits added (71 -> 72 boundaries)
 fallback iter 2: C-view visible 6
-  /Users/rancanetti/code/lm_worktrees/port_runs/fixtures/fixture_20261008_212733/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 0 splits added (72 -> 72 boundaries)
+  <SANDBOX>/runs/ncdb_ab_20261001/waist/n8_L8/rep512.mpmct1: 0 splits added (72 -> 72 boundaries)
 n8_L8-rep512: 73 windows, budget=65536 monomials; overflow 0 (0.00%)
 monomials/window: med=332 p90=1086 p99=46883 max=46883; total=109193
 size: ANF 0.4 MB vs gate-list 0.1 MB (x3.24)

@@ -76,7 +76,7 @@ if want n8_L8; then
   grep -o 'match=[A-Za-z]*' "$R/deliver.txt" > "$out/deliver_match.txt"
   { echo "gen: $(grep -c . "$R/tdp.mpmct1") lines; s3: $(head -1 "$R/s3.mpmct1")"
     grep -E 'fix iter|fallback iter|splits added|EQUIVALENT|MISMATCH|WARNING' "$R/repair512.log"
-    sed -n 1,3p "$R/anf_rep512.txt"; } > "$out/provenance.txt"
+    sed -n 1,3p "$R/anf_rep512.txt"; } | sed "s|$SBR|<SANDBOX>|g" > "$out/provenance.txt"
 fi
 
 if want anf; then

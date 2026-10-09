@@ -261,12 +261,12 @@ fn cmd_serialize(a: &Args) -> Result<(), Stage4Error> {
         ));
     }
     let nw = circ.computed_n;
-    if let Some(n) = source_wires {
-        if n == 0 || 2 * n > nw as u64 {
-            return Err(Stage4Error::Usage(format!(
-                "--source-wires {n} does not fit a {nw}-wire state"
-            )));
-        }
+    if let Some(n) = source_wires
+        && (n == 0 || 2 * n > nw as u64)
+    {
+        return Err(Stage4Error::Usage(format!(
+            "--source-wires {n} does not fit a {nw}-wire state"
+        )));
     }
     let (body, mut w) = Staged::create(out)?;
     let rep = match encode_body(

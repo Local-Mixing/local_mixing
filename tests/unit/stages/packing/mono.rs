@@ -20,7 +20,7 @@ fn int_hash_matches_cpython() {
     ] {
         assert_eq!(Mono::<16>::bit(b).py_hash(), h, "bit {b}");
     }
-    assert_eq!(Mono::<1>(([M61])).py_hash(), 0);
+    assert_eq!(Mono::<1>([M61]).py_hash(), 0);
     assert_eq!(u64::MAX.py_hash(), 7);
     assert_eq!(Mono::<2>([u64::MAX, u64::MAX]).py_hash(), 63);
     // random keys (random.Random(9).getrandbits(k))
@@ -63,7 +63,7 @@ fn ord_matches_python_int_order_multi_limb() {
     let a = Mono::<2>([u64::MAX, 0]);
     let b = Mono::<2>([0, 1]);
     assert!(a < b, "limb 1 is more significant");
-    let mut v = vec![b, a, Mono::ZERO, Mono::bit(64), Mono::bit(3)];
+    let mut v = [b, a, Mono::ZERO, Mono::bit(64), Mono::bit(3)];
     v.sort();
     let hex: Vec<String> = v.iter().map(|m| format!("{m:x}")).collect();
     assert_eq!(

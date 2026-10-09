@@ -174,11 +174,11 @@ impl<K: PyIntKey> PySet<K> {
             if idx[i] == NULL {
                 break;
             }
-            if i + LINEAR_PROBES <= mask {
-                if let Some(j) = (i + 1..=i + LINEAR_PROBES).find(|&j| idx[j] == NULL) {
-                    i = j;
-                    break;
-                }
+            if i + LINEAR_PROBES <= mask
+                && let Some(j) = (i + 1..=i + LINEAR_PROBES).find(|&j| idx[j] == NULL)
+            {
+                i = j;
+                break;
             }
             perturb >>= PERTURB_SHIFT;
             i = (i

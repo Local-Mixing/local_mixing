@@ -192,6 +192,7 @@ fn order_dependent_counter_zero_when_not_ambiguous() {
 }
 
 /// The ANF by brute force: truth tables over the touched wires, Möbius transform.
+#[allow(clippy::needless_range_loop)]
 fn brute_anf(gates: &[XGate], nw: usize) -> Vec<(u16, Vec<u64>)> {
     let mut touched: Vec<usize> = gates
         .iter()

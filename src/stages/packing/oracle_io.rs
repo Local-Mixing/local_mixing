@@ -95,12 +95,12 @@ pub fn parse_oracle_mpmct(text: &str) -> Result<OracleCircuit, Stage4Error> {
                     "line {ln}: control on the target {c}"
                 )));
             }
-            if let Some(&(prev, _)) = ctrls.last() {
-                if c <= prev {
-                    return Err(Stage4Error::Input(format!(
-                        "line {ln}: controls not strictly ascending ({prev} then {c})"
-                    )));
-                }
+            if let Some(&(prev, _)) = ctrls.last()
+                && c <= prev
+            {
+                return Err(Stage4Error::Input(format!(
+                    "line {ln}: controls not strictly ascending ({prev} then {c})"
+                )));
             }
             ctrls.push((c, p));
             maxw = maxw.max(c as usize);
