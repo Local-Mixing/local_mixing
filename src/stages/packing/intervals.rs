@@ -42,6 +42,7 @@ pub fn interval_set(gates: &[XGate], b: usize, e: usize, n: usize, cap: usize) -
     interval_set_with(gates, b, e, cap, &mut s)
 }
 
+#[allow(clippy::needless_range_loop)] // transcribes WP index for index
 pub fn interval_set_with(
     gates: &[XGate],
     b: usize,
@@ -214,7 +215,8 @@ pub fn build_intervals(
                     if mem.is_none() {
                         let ws = &wr_pos[b_gates[e].target as usize];
                         let k = ws.partition_point(|&x| (x as usize) < e);
-                        if k + 1 < ws.len() && ws[k + 1] as usize - b + 1 <= span_cap {
+                        // ws[k+1] - b + 1 <= span_cap
+                        if k + 1 < ws.len() && (ws[k + 1] as usize - b) < span_cap {
                             let e2 = ws[k + 1] as usize;
                             mem = interval_set_with(b_gates, b, e2, w_cap, s);
                             if mem.is_some() {

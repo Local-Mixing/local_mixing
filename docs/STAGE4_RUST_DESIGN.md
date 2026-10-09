@@ -366,7 +366,9 @@ Rules to transcribe (packer spec §9; validated empirically and by the traces of
 
 **Memory layout.** Iteration order is a function of the slot table only, so storing a 12-byte `(hash, idx)` slot plus an arena of keys leaves the order semantics unchanged. Resize compacts the arena in the new table order.
 
-At n=128 (W=8, 64-byte keys), a 2^21-slot table costs about 32 MB of slots plus the live keys, instead of about 150 MB for inline keys. Concurrent `window_anf` evaluations are bounded by `max_concurrent_anf` (default 8). The memory test is §10.5 step 7.
+At n=128 (W=8, 64-byte keys), a 2^21-slot table costs about 32 MB of slots plus the live keys, instead of about 150 MB for inline keys.
+
+*Implemented (P3):* the slot is a 16-byte `(hash: u64, idx: u32)` record (padding included), so one probe step touches one record, and a linear group of 10 slots is scanned branch-free (candidates = NULL slots and active slots with an equal hash, examined in slot order). On vL64a this took the packer's scheduler from 24.5 s (two parallel arrays, slot-by-slot loop) to 13.7 s; a 2^21-slot table is 32 MB of records. Probe chains are long because CPython's int hash of a monomial is its value mod 2^61-1, so clusters share low bits: vL64a makes 336 M probes visiting 13 G slots (39 per probe), which the emulator must visit because the table order depends on them. A tag-byte filter (SwissTable style) gave no further gain and was not kept. Concurrent `window_anf` evaluations are bounded by `max_concurrent_anf` (default 8). The memory test is §10.5 step 7.
 
 The emulator is THE set type in both the packer's compose and `window_anf`, whatever the `CapSemantics`. Table order only matters for the prefix abort, but one code path is simpler to test.
 
@@ -492,6 +494,8 @@ Quirks are reproduced, not fixed:
 The unreachable paths (`burst stuck`, `scheduler stuck`, `resumed_later`) and the lemma "the minimum non-scheduled entry of anyready is the lowest unscheduled gate" are **release-mode checks** returning `Internal` (exit 8), not `debug_assert!`s.
 
 `order` is certified exactly after packing (§4.11a): it is a permutation of G3's indices and a linear extension of G3's dependency order. WP's sampled VERIFY is kept as an additional check.
+
+*Implementation notes (P3).* The signature is `pack(a, b, p, label, log) -> Result<Packed, Stage4Error>` (the label is WP argv 7). The window ANF is a width-erased `Box<dyn Composer>` (the `WindowState<W>` of §4.6 picked by `with_mono_width`), so only the ANF core is monomorphized. Readiness buckets are compressed rows keyed by a dense id per (wire, count) event; `committed` is a `Vec<(iid, rem)>` with a per-iid slot index, compacted when more than half its entries are dead; heaps are `BinaryHeap<Reverse<u32>>`. Intervals are built in parallel per value (pure, merged in first-appearance order). `PackReport` adds `compose_aborts`, `bounds`, `duplicate_bounds` and per-phase wall times. Failure-path differences (D-b): an empty B is an `Input` error (WP writes its outputs and then fails on its window statistics); a VERIFY FAIL prints WP's full log and then exits 4 without writing any output (WP writes before verifying).
 
 Text log lines reproduce WP's format: header, winnable, intervals, scheduled, the `death causes` dict repr in first-increment order, VERIFY, RESULT, class lines and window stats. They are compared on fixtures after path normalization (§10.3). Python `:.1f` versus Rust `{:.1}` can differ only on exact binary ties (D-c).
 
@@ -1539,7 +1543,7 @@ Revision 1's open items "source size" and "where the seed values live" are resol
 - first four `genrand_uint32` outputs: `749935133, 232581420, 3240862439, 1300416022`;
 - `getrandbits(1024)` for wire 0: low64 `0x0ddce92c2cb31a1d`, high64 `0x3f688f70a42f573a`, low128 `0x4d82c616c12ba2e70ddce92c2cb31a1d`;
 - wire 1: low64 `0x12e4aa97d52ee91c`;
-- `blake2b(digest_size=16)` of wire 0 (`to_bytes(128,'little')`): `10443c04d722b9ea2873b4564780ebb1`.
+- `blake2b(digest_size=16)` of wire 0 (`to_bytes(128,'little')`): `10443c04d722b9ea2873b4564780ebb1`. *Precisely:* this is the key of the NORMALIZED value (wire 0 has sample 0 set, so it is complemented first), which is what the packer hashes; the raw value's key is `69f9d20df3b9c38754a0159c292000f0` (both checked in `tests/unit/stages/packing/blake2b.rs`).
 
 **`getrandbits(1024)`, low128 of the first draw:**
 

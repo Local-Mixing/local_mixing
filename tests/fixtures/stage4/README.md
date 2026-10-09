@@ -61,13 +61,14 @@ exactly as `val_chain.sh`: `window_pack3.py 512 512 24576 3000`, `repair.sh`
 exposure-aware split of a 133,935-monomial window), `anf_dump_eval.py`, and
 `anf_compose.py` at budgets 65536/500, 64/3 and 256/3.
 
-Committed: `c.g57` (C, the same calibration C as `cview_n8`), `rep.mpmct1`,
+Committed: `c.g57` (C, the same calibration C as `cview_n8`), `g3.mpmct1`
+(the stage-3 output; its G2 is `cview_n8/g2.mpmct1`, asserted equal by
+`regen.sh`), `rep.mpmct1`,
 `rep.bounds` (the repaired circuit and lattice), `deliverable.bin` (DE body),
 `deliver_line1.txt` (DE line 1, time normalized), `deliver_match.txt`,
 `anf_rep.txt`, `anf_b64.txt`, `anf_b256.txt` (AC stdout), `provenance.txt`,
 `container_header.bin` (the 48-byte header from `container_header.py`).
-The intermediate G2/G3/packed files are not committed (the packer and repair
-phases will add what they need).
+The packed circuit is not committed (the packer fixtures store its digest).
 
 ## `anf/`: crafted ANF / serialization cases
 
@@ -97,11 +98,41 @@ completed. `cases.txt` lists each case with its budgets. Per case:
 `tests/manual/stage4/anf_parity.sh` does the same on the 8 archived
 validation runs (Appendix B sha256s).
 
+## `pack/`: the packer `window_pack3.py` (P3)
+
+`pack/cases.txt` lists `name A B argv...` (`OUT` = the output circuit; paths
+relative to this directory). Inputs:
+
+- the real n=8 pair: `cview_n8/g2.mpmct1` (G2) and `n8_L8/g3.mpmct1` (the
+  stage-3 G3 of the same calibration run, 37,479 gates on 32 wires), at the
+  production argv `512 512 24576 3000` and at five crafted ones (WP's own
+  defaults with no output file; small caps; a 40-gate span cap; an 8-gate
+  interval cap; a 16-gate window cap);
+- synthetic pairs from `pack_cases.py` (deterministic, seeds fixed): `wide300`
+  (300 wires, W = 8, data/mid/band classes), `wide128` (A on 128 wires, B on
+  160 with ancilla copy/uncopy pairs, so B is wider than A), `dense16` (16
+  wires, 2-4 controls: exploding window ANFs, so moderate budgets force
+  compose aborts) and `w1024` (1024 wires, W = 16).
+
+Expected (`pack/expected/`), all from the unmodified oracle in the sandbox:
+`<name>.txt` (stdout), `<name>.bounds`, and `<name>.digest`: blake2b-128 of
+the packed circuit and of the emitted order (WP's `PACK_DUMP_ORDER` file).
+`regen.sh pack` asserts coverage from the oracle logs and the Rust counters
+(`pack/coverage.txt`, from `tdp_packing pack --stats`): compose aborts (7 in
+all, 4 order-dependent: the CPython 3.9 table order decides them), a
+duplicate boundary and an empty first window (`dense16_dup`), next-next-writer
+rescues, long-span and big-interval disqualifications, the mid and band
+classes, all three death causes and a case with none, B wider than A, and a
+W = 16 state. `tests/integration/tdp_packing.rs` (`pack_matches_oracle`)
+compares stdout, bounds and both digests for every case.
+`tests/manual/stage4/pack_parity.sh` compares the 8 archived real packs
+against Appendix B.
+
 ## `regen.sh`
 
     HMAP_BASELINE=... ORACLE_PY=/usr/bin/python3 CARGO_TARGET_DIR=... \
     FROZEN_DB_DIR=~/code/local_mixing/frozen_db/frozen_m1_m11 \
-    WORK=<durable scratch> bash regen.sh [n8_L8] [anf] [container]
+    WORK=<durable scratch> bash regen.sh [n8_L8] [anf] [container] [pack]
 
 A full rerun of `regen.sh n8_L8 anf container` (2026-10-08) reproduced every
 committed file byte for byte (gen, mixer and the oracle chain are
