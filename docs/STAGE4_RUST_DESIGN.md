@@ -1631,6 +1631,21 @@ The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its re
 
 The round-2 Rust times are contention, not a regression: run back to back under the same load, the pre-fix binary (`snap_target`, 00:55) took 116 s wall / 341 s CPU and the `4dc934e9` binary 122 s / 339 s, with identical deliverables. Peak RSS is unchanged (about 1.1 GB, 0.6x the oracle's packer peak).
 
+**Acceptance round 2, vL128a (n=128, L8; 2026-10-09, binary built from `4dc934e9`; outputs `port_runs/vL128a_r2/`).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128 --label vL128a` with every packing parameter at its default (the report records the recommended G=512 chain: `window_gates=512 interval_cap=512 monomial_budget=24576 span_cap=3000 split_budget=65536 fix_iterations=4 fallback_iterations=4 anf_cap_semantics=cpython39`); exit 0, `status=ok`: pack 4,596,808 gates in 7,059 windows, repair 4,259,448 gates and 7,058 boundaries (cancel 168,680 pairs, fix 132 → 130 then exhausted, fallback merge + 1 split 130 → 128), final scan 128 visible / 0 non-output, 0 windows over budget.
+
+- Against the archived oracle, no normalization: `packed_G512.mpmct1`, `.bounds`, `pack_G512.txt`, `rep512.mpmct1`, `rep512.bounds`, `rep512.{exposure,allcuts,wit}.tsv`, `anf_rep512.txt`, `link_rep512.txt` and `deliverable.bin` (102,818,808 bytes) are byte-identical (sha256 = Appendix B). `rep512.cview.log` and `repair512.log` differ only in the absolute output paths (equal after path normalization, line order included). `deliverable.tdp4[48:]` = the archived pre-header `deliverable.bin`; `decode --format container --stats` accepts it (7,059 windows, 4,065,912 monomials). `packing.report` equals round 1's except `binary_xxh3` and the `time.*` keys. A second run (`out2/`) gave the same deliverable, repair and bounds.
+- Independent checks on the Rust outputs (`port_runs/vL128a_r2/check/`): `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (current tree, `security-tools`) reports 3,000 born values, **128 visible** (4.3 %, all t*=1): the exact floor, with TSVs byte-identical to the oracle's; `verify_zero_slice C rep512.mpmct1 128 512` and the same on `packed_G512.mpmct1` PASS; the oracle's `link_census.py` on the Rust `rep512` equals the archived `link_rep512.txt` byte for byte (proxy 34,958 values, L2 16,106 / M2 187,248; froth 285,325, L2 5,579 / M2 11,622).
+- Driver defaults: `tests/shell/tdp_defaults.bash` with `LOCAL_MIXING_BIN` set (the Rust driver case included) passes for d16, d64A, d64L8 and d128: gen argv, mixer argv, effective recipe env, allow-list and the stage-4 call (`tdp_packing run` at its defaults ≙ `window_pack3.py … 512 512 24576 3000`, `repair.sh TAG 512 N`, `anf_dump_eval.py`) are identical to `val_chain.sh`'s. `tdp_flags.bash` and `tdp_block_size.bash` pass.
+
+| stage 4 on vL128a | wall | CPU (user+sys) | peak RSS |
+|---|---|---|---|
+| Rust `tdp_packing run`, round 2 (all checks; load 12-19, another session running `circuit_mixer`/`hmap_affine`) | 335 / 359 s | 1,508 / 1,617 s | 2.02 / 1.87 GB |
+| — pack / repair / reports / emit+checks (first run) | 109 / 142 / 19 / 63 s | | |
+| Rust, round 1 (`b77753ad`, load about 5) | 119 s | 627 s | 2.04 GB |
+| Python oracle (round-1 sandboxed rerun): pack / repair / serialize | 176 / 6,418 / 328 = 6,921 s | 1,943 s | 5.08 GB (packer) |
+
+The oracle scripts are unchanged since round 1 (no diff under `scripts/windowed_delivery/` since `ad9eedfe`), so its round-1 measurement stands. The round-2 Rust times are contention: CPU time rises with wall time in every phase, including the single-threaded pack (43 s → 109 s), and the review fixes touched no packing, repair or emission code path that runs here (outputs and counters are identical). Under that load the Rust stage 4 is still about 19× faster in wall time than the oracle and below the §9 n=128 targets (≤ 6 min, ≤ 3 GB) — barely on wall time; peak RSS is 0.4× the oracle's.
+
 ---
 
 ## 13. Open decisions for RC
