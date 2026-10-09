@@ -808,3 +808,242 @@ fn repair_exit_codes_and_check_final() {
     let _ = fs::remove_dir_all(dir);
     let _ = fs::remove_dir_all(d2);
 }
+
+// ---------------------------------------------------------------- run (P6)
+
+/// `tdp_packing run` on the committed n8_L8 inputs (G2, G3, C), with
+/// optional extra flags; returns (output, out dir).
+fn run_n8(dir: &Path, g3: &Path, extra: &[&str]) -> (Output, PathBuf) {
+    let out = dir.join("packing");
+    let g2 = fx("cview_n8/g2.mpmct1");
+    let c = fx("n8_L8/c.g57");
+    let mut args = vec![
+        "run",
+        "--stage2",
+        p(&g2),
+        "--stage3",
+        p(g3),
+        "--source-c",
+        p(&c),
+        "--n",
+        "8",
+        "--out-dir",
+        p(&out),
+        "--label",
+        "n8_L8",
+    ];
+    args.extend_from_slice(extra);
+    (run(&args), out)
+}
+
+fn kv(report: &str, key: &str) -> String {
+    report
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("{key} missing from packing.report"))
+        .to_string()
+}
+
+#[test]
+fn run_end_to_end_n8() {
+    // The whole stage 4 against the oracle chain of regen.sh `run`
+    // (val_chain.sh's stage 4 on the same inputs).
+    let dir = scratch();
+    let (o, out) = run_n8(&dir, &fx("n8_L8/g3.mpmct1"), &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let same = |got: &str, want: PathBuf| {
+        assert!(
+            fs::read(out.join(got)).unwrap() == fs::read(&want).unwrap(),
+            "{got} differs from the oracle's {}",
+            want.display()
+        );
+    };
+    same("rep512.mpmct1", fx("n8_L8/rep.mpmct1"));
+    same("rep512.bounds", fx("n8_L8/rep.bounds"));
+    same("deliverable.bin", fx("n8_L8/deliverable.bin"));
+    for t in ["exposure", "allcuts", "wit"] {
+        same(
+            &format!("rep512.{t}.tsv"),
+            fx(&format!("repair/expected/n8_L8.{t}.tsv")),
+        );
+    }
+    for f in ["pack_G512.txt", "anf_rep512.txt", "link_rep512.txt"] {
+        same(f, fx(&format!("run/n8_L8/{f}")));
+    }
+    // the container is the standalone writer's header + the same body
+    let mut want = fs::read(fx("n8_L8/container_header.bin")).unwrap();
+    want.extend(fs::read(fx("n8_L8/deliverable.bin")).unwrap());
+    assert!(fs::read(out.join("deliverable.tdp4")).unwrap() == want);
+    let prefix = format!("{}/", out.display());
+    let norm = |f: &str| {
+        fs::read_to_string(out.join(f))
+            .unwrap()
+            .replace(&prefix, "<DIR>/")
+    };
+    assert_eq!(
+        norm("rep512.cview.log"),
+        fs::read_to_string(fx("run/n8_L8/rep512.cview.log")).unwrap()
+    );
+    assert_eq!(
+        split_verify_lines(&norm("repair512.log")),
+        split_verify_lines(&fs::read_to_string(fx("run/n8_L8/repair512.log")).unwrap()),
+        "repair log incl. repair.sh's report part"
+    );
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "ok");
+    assert_eq!(kv(&rep, "param.window_gates"), "512");
+    assert_eq!(kv(&rep, "param.split_budget"), "65536");
+    assert_eq!(kv(&rep, "param.anf_cap_semantics"), "cpython39");
+    assert_eq!(kv(&rep, "check.zero_slice"), "ok(4096)");
+    // publishable: no seed and no hash of C, G2, G3 or the repaired circuit
+    for k in rep.lines().filter_map(|l| l.split_once('=').map(|x| x.0)) {
+        assert!(!k.contains("seed") || k.starts_with("param."), "{k}");
+    }
+    // private outputs
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let m = fs::metadata(out.join("deliverable.tdp4")).unwrap();
+        assert_eq!(m.permissions().mode() & 0o077, 0);
+    }
+    assert!(
+        !fs::read_dir(&out).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp"))
+    );
+    // census command = link_census.py
+    let census = ok(&[
+        "census",
+        p(&fx("cview_n8/g2.mpmct1")),
+        p(&fx("n8_L8/rep.mpmct1")),
+        p(&fx("n8_L8/rep.bounds")),
+        "n8_L8-rep512",
+    ]);
+    assert_eq!(
+        census,
+        fs::read_to_string(fx("run/n8_L8/link_rep512.txt")).unwrap()
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_thread_count_does_not_change_output() {
+    let mut outs = Vec::new();
+    for t in ["1", "3"] {
+        let dir = scratch();
+        let (o, out) = run_n8(&dir, &fx("n8_L8/g3.mpmct1"), &["--threads", t]);
+        assert!(o.status.success());
+        let mut files = Vec::new();
+        for f in [
+            "packed_G512.mpmct1",
+            "packed_G512.mpmct1.bounds",
+            "rep512.mpmct1",
+            "rep512.bounds",
+            "deliverable.tdp4",
+        ] {
+            files.push(fs::read(out.join(f)).unwrap());
+        }
+        outs.push(files);
+        let _ = fs::remove_dir_all(dir);
+    }
+    assert!(outs[0] == outs[1]);
+}
+
+#[test]
+fn run_exit_codes() {
+    let code = |o: &Output| o.status.code();
+    let g3 = fx("n8_L8/g3.mpmct1");
+    let dir = scratch();
+    // 2: usage
+    assert_eq!(run(&["run", "--stage2", "x"]).status.code(), Some(2));
+    let (o, _) = run_n8(&dir, &g3, &["--window-gates", "0"]);
+    assert_eq!(code(&o), Some(2));
+    // 3: a malformed G3 line
+    let bad = dir.join("bad.mpmct1");
+    fs::write(&bad, "mpmct1 32 1\n0 0 2 3 1 1 1\n").unwrap();
+    let (o, out) = run_n8(&dir, &bad, &[]);
+    assert_eq!(code(&o), Some(3));
+    assert!(!out.join("deliverable.tdp4").exists());
+    // 4: one gate of G3 flipped (the packer's VERIFY: G3 no longer computes G2)
+    let text = fs::read_to_string(&g3).unwrap();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let mut q: Vec<String> = lines[5000].split(' ').map(String::from).collect();
+    q[1] = if q[1] == "0" { "1".into() } else { "0".into() };
+    lines[5000] = q.join(" ");
+    let flipped = dir.join("flip.mpmct1");
+    fs::write(&flipped, lines.join("\n") + "\n").unwrap();
+    let d4 = scratch();
+    let (o, out) = run_n8(&d4, &flipped, &[]);
+    assert_eq!(code(&o), Some(4), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!out.join("deliverable.bin").exists());
+    // 5: a split budget so small that the forced splits expose a value;
+    // intermediates stay, no deliverable; --allow-floor-miss ships it with
+    // status=floor_miss
+    let d5 = scratch();
+    let (o, out) = run_n8(&d5, &g3, &["--split-budget", "50"]);
+    assert_eq!(code(&o), Some(5), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(out.join("rep512.mpmct1").exists());
+    assert!(!out.join("deliverable.bin").exists() && !out.join("deliverable.tdp4").exists());
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "floor_miss");
+    assert_eq!(kv(&rep, "emit.deliverable"), "not_written");
+    let d5b = scratch();
+    let (o, out) = run_n8(&d5b, &g3, &["--split-budget", "50", "--allow-floor-miss"]);
+    assert_eq!(code(&o), Some(0));
+    assert!(out.join("deliverable.tdp4").exists());
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "floor_miss");
+    // 6: no fallback iteration, so the 133,935-monomial window is never split
+    let d6 = scratch();
+    let (o, out) = run_n8(&d6, &g3, &["--fallback-iterations", "0"]);
+    assert_eq!(code(&o), Some(6), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!out.join("deliverable.bin").exists());
+    let (o, out) = run_n8(
+        &d6,
+        &g3,
+        &["--fallback-iterations", "0", "--allow-over-budget"],
+    );
+    assert_eq!(code(&o), Some(0));
+    assert_eq!(
+        kv(
+            &fs::read_to_string(out.join("packing.report")).unwrap(),
+            "status"
+        ),
+        "over_budget"
+    );
+    // an allowed floor miss does not hide an over-budget window
+    let (o, _) = run_n8(&d6, &g3, &["--split-budget", "10", "--allow-floor-miss"]);
+    assert_eq!(code(&o), Some(6), "{}", String::from_utf8_lossy(&o.stderr));
+    // 7: the output directory cannot be created
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = dir.join("ro");
+        fs::create_dir_all(&ro).unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+        let o = run(&[
+            "run",
+            "--stage2",
+            p(&fx("cview_n8/g2.mpmct1")),
+            "--stage3",
+            p(&g3),
+            "--source-c",
+            p(&fx("n8_L8/c.g57")),
+            "--n",
+            "8",
+            "--out-dir",
+            p(&ro.join("sub")),
+        ]);
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(code(&o), Some(7), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    for d in [dir, d4, d5, d5b, d6] {
+        let _ = fs::remove_dir_all(d);
+    }
+}

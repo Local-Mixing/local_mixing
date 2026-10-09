@@ -7,8 +7,8 @@
 use super::anf::{AnfOverflow, MulStats, WindowAnf, window_anf};
 use super::mono::{MonoWidthFn, with_mono_width};
 use super::oracle_io::{OracleCircuit, window_cuts};
-use super::scheduler::wp_width;
 use super::pyrand::PyRandom;
+use super::scheduler::wp_width;
 use super::types::CapSemantics;
 use crate::circuit::xgate::XGate;
 use rayon::prelude::*;
@@ -266,7 +266,12 @@ fn py_slice(lo: i64, hi: i64, m: usize) -> (usize, usize) {
 /// seed 20261004). `bounds` keeps the file order; like the script it is
 /// sorted with duplicates kept, and the gates after the last bound are never
 /// simulated.
-pub fn link_census(a: &OracleCircuit, b: &OracleCircuit, bounds: &[i64], label: &str) -> LinkCensus {
+pub fn link_census(
+    a: &OracleCircuit,
+    b: &OracleCircuit,
+    bounds: &[i64],
+    label: &str,
+) -> LinkCensus {
     use super::fingerprint::{inputs, normalize, value_key};
     use rustc_hash::FxHashMap;
     let na = wp_width(a);

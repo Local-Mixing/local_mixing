@@ -36,16 +36,23 @@
 #          equal), bounds, the three TSVs, cview.log and the repair log up to
 #          its report part, with sandbox paths normalized to <DIR>. Coverage is
 #          asserted from the oracle logs and tdp_packing repair --stats.
+#   run    the whole oracle stage 4 exactly as val_chain.sh runs it (pack
+#          512 512 24576 3000, repair.sh including its report part,
+#          anf_dump_eval.py) on the committed n8_L8 inputs (cview_n8/g2.mpmct1,
+#          n8_L8/g3.mpmct1, n8_L8/c.g57); expected for `tdp_packing run`:
+#          pack_G512.txt, repair512.log (paths -> <DIR>), anf_rep512.txt,
+#          link_rep512.txt; rep512.*, the TSVs and deliverable.bin are asserted
+#          equal to the n8_L8 / repair fixtures.
 #
 # Seeds here are CALIBRATION values, never deliverable seeds.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 : "${HMAP_BASELINE:?}" "${ORACLE_PY:?}" "${WORK:?set WORK to a durable scratch directory}"
-PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container pack repair)
+PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container pack repair run)
 want() { local p; for p in "${PARTS[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
 
-if want n8_L8 || want anf || want pack || want repair; then
+if want n8_L8 || want anf || want pack || want repair || want run; then
   STAMP=$(date +%Y%m%d_%H%M%S)
   SBR=$WORK/fixture_$STAMP
   RD=$(bash "$HERE/oracle_sandbox.sh" "$SBR")
@@ -230,5 +237,27 @@ if want repair; then
   cov "non-default split budget and iterations" "awk '\$6 != 65536 && (\$7 != 4 || \$8 != 4)' '$out/cases.txt' | grep -q ."
   cp "$C" "$out/coverage.txt"
   sed -i '' -e "s|$HERE/||g" "$out/coverage.txt"
+fi
+if want run; then
+  TAG=n8_L8; R=$W/$TAG; mkdir -p "$R"
+  cp "$HERE/cview_n8/g2.mpmct1" "$R/tdp.mpmct1"
+  cp "$HERE/n8_L8/g3.mpmct1" "$R/s3.mpmct1"
+  cp "$HERE/n8_L8/c.g57" "$R/tdp.mpmct1.source_c.g57"
+  # val_chain.sh lines 29-31 (stage 4), cwd as there
+  (cd "$RD" && "$ORACLE_PY" window_pack3.py "$R/tdp.mpmct1" "$R/s3.mpmct1" 512 512 24576 3000 \
+     $TAG-G512 "$R/packed_G512.mpmct1" > "$R/pack_G512.txt" 2>&1)
+  (cd "$RD" && bash "$W/repair.sh" $TAG 512 8 > "$R/repair512.log" 2>&1)
+  (cd "$RD" && "$ORACLE_PY" "$W/anf_dump_eval.py" "$R/rep512.mpmct1" "$R/rep512.bounds" "$R/deliverable.bin" $TAG \
+     > "$R/deliver.txt" 2>&1)
+  out=$HERE/run/n8_L8; rm -rf "$out"; mkdir -p "$out"
+  cmp "$R/rep512.mpmct1" "$HERE/n8_L8/rep.mpmct1"
+  cmp "$R/rep512.bounds" "$HERE/n8_L8/rep.bounds"
+  cmp "$R/deliverable.bin" "$HERE/n8_L8/deliverable.bin"
+  cmp "$R/anf_rep512.txt" "$HERE/n8_L8/anf_rep.txt"
+  for t in exposure allcuts wit; do cmp "$R/rep512.$t.tsv" "$HERE/repair/expected/n8_L8.$t.tsv"; done
+  cp "$R/pack_G512.txt" "$R/anf_rep512.txt" "$R/link_rep512.txt" "$out/"
+  sed "s|$R/|<DIR>/|g" "$R/repair512.log" > "$out/repair512.log"
+  sed "s|$R/|<DIR>/|g" "$R/rep512.cview.log" > "$out/rep512.cview.log"
+  if grep -q "$SBR" "$out"/*; then echo "regen run: sandbox path left in run/n8_L8" >&2; exit 1; fi
 fi
 du -sh "$HERE"

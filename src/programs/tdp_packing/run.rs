@@ -268,10 +268,7 @@ fn packing_report(
     };
     kv("packing_report", "2".into());
     kv("status", status.into());
-    kv(
-        "tool",
-        format!("tdp_packing {}", env!("CARGO_PKG_VERSION")),
-    );
+    kv("tool", format!("tdp_packing {}", env!("CARGO_PKG_VERSION")));
     kv(
         "binary_xxh3",
         std::env::current_exe()
@@ -338,7 +335,10 @@ fn packing_report(
     );
     kv("repair.fix_trajectory", join(&r.fix_trajectory));
     kv("repair.fix_moved", join(&r.fix_moved));
-    kv("repair.fix_exhausted", u8::from(r.fix_exhausted).to_string());
+    kv(
+        "repair.fix_exhausted",
+        u8::from(r.fix_exhausted).to_string(),
+    );
     kv("repair.fallback_trajectory", join(&r.fallback_trajectory));
     kv("repair.merged", join(&r.merged));
     kv("repair.splits", join(&r.splits));
@@ -380,7 +380,10 @@ fn packing_report(
             );
             kv("emit.body_bytes", se.rep.body_bytes.to_string());
             kv("emit.container_bytes", (se.rep.body_bytes + 48).to_string());
-            kv("emit.deliverable_xxh3", format!("{:032x}", se.rep.body_xxh3));
+            kv(
+                "emit.deliverable_xxh3",
+                format!("{:032x}", se.rep.body_xxh3),
+            );
         }
         None => kv("emit.deliverable", "not_written".into()),
     }

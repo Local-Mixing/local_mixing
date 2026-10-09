@@ -246,29 +246,31 @@ pub struct RepairReport {
 
 impl RepairReport {
     /// The exit decision of the final tests: `Floor` (exit 5) first, then
-    /// `OverBudget` (exit 6); `allow_*` waives them.
+    /// `OverBudget` (exit 6); `allow_*` waives each one separately (an
+    /// allowed floor miss never hides an over-budget window).
     pub fn status(
         &self,
         allow_floor_miss: bool,
         allow_over_budget: bool,
     ) -> Result<&'static str, Stage4Error> {
-        if !self.final_nonoutput_visible.is_empty() {
-            if !allow_floor_miss {
-                return Err(Stage4Error::Floor {
-                    nonoutput_visible: self.final_nonoutput_visible.clone(),
-                });
-            }
-            return Ok("floor_miss");
+        let floor = !self.final_nonoutput_visible.is_empty();
+        let over = !self.final_over_budget.is_empty();
+        if floor && !allow_floor_miss {
+            return Err(Stage4Error::Floor {
+                nonoutput_visible: self.final_nonoutput_visible.clone(),
+            });
         }
-        if !self.final_over_budget.is_empty() {
-            if !allow_over_budget {
-                return Err(Stage4Error::OverBudget {
-                    windows: self.final_over_budget.clone(),
-                });
-            }
-            return Ok("over_budget");
+        if over && !allow_over_budget {
+            return Err(Stage4Error::OverBudget {
+                windows: self.final_over_budget.clone(),
+            });
         }
-        Ok("ok")
+        Ok(match (floor, over) {
+            (false, false) => "ok",
+            (true, false) => "floor_miss",
+            (false, true) => "over_budget",
+            (true, true) => "floor_miss+over_budget",
+        })
     }
 }
 
