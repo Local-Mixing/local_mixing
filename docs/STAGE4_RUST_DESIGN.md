@@ -1627,7 +1627,7 @@ The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its re
 |---|---|---|---|
 | Rust `tdp_packing run` (all checks), load 6-20 (another session building) | 72-122 s | 241-339 s | 1.02-1.09 GB |
 | Rust, round 1 (`b77753ad`, quiet machine) | 31.3 s | 110.9 s | 1.10 GB |
-| Python oracle (round-1 sandboxed rerun): pack / repair / serialize | 67.4 / 213.7 / 49.4 = 330.5 s | 327.4 s | 1.75 GB (packer) |
+| Python oracle (round-1 sandboxed rerun): pack / repair / serialize | 67.4 / 213.7 / 49.4 = 330.5 s | 328.4 s | 1.75 GB (packer) |
 
 The round-2 Rust times are contention, not a regression: run back to back under the same load, the pre-fix binary (`snap_target`, 00:55) took 116 s wall / 341 s CPU and the `4dc934e9` binary 122 s / 339 s, with identical deliverables. Peak RSS is unchanged (about 1.1 GB, 0.6x the oracle's packer peak).
 
