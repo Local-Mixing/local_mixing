@@ -46,3 +46,58 @@ fn reorder_cert_rejects_non_permutations() {
     assert!(certify_reorder(&c, &[0, 2]).is_err());
     certify_reorder(&[], &[]).unwrap();
 }
+
+#[test]
+fn cancel_cert_rejects_blocked_pair() {
+    // A B A with B writing A's control: A B A != B
+    let a = g(1, &[0]);
+    let c = [a.clone(), g(0, &[2]), a.clone()];
+    assert!(matches!(
+        certify_cancel(&c, &[vec![(0, 2)]]),
+        Err(Stage4Error::Verify(_))
+    ));
+    // ... and with B reading A's target
+    let c = [a.clone(), g(3, &[1]), a.clone()];
+    assert!(certify_cancel(&c, &[vec![(0, 2)]]).is_err());
+    // a commuting middle gate is fine
+    let c = [a.clone(), g(3, &[0]), a.clone()];
+    let live = certify_cancel(&c, &[vec![(0, 2)]]).unwrap();
+    assert_eq!(live, vec![false, true, false]);
+    // a blocker cancelled in an earlier pass no longer blocks
+    let b = g(0, &[2]);
+    let c = [a.clone(), b.clone(), b, a];
+    certify_cancel(&c, &[vec![(1, 2)], vec![(0, 3)]]).unwrap();
+    assert!(certify_cancel(&c, &[vec![(0, 3)]]).is_err());
+}
+
+#[test]
+fn cancel_cert_rejects_nonidentical_pair() {
+    let c = [g(1, &[0]), g(1, &[2])];
+    assert!(certify_cancel(&c, &[vec![(0, 1)]]).is_err());
+    // polarity and complement are part of the identity
+    let mut x = g(1, &[0]);
+    x.comp = true;
+    let c = [g(1, &[0]), x];
+    assert!(certify_cancel(&c, &[vec![(0, 1)]]).is_err());
+    // reversed, repeated or out-of-range pairs
+    let c = [g(1, &[0]), g(1, &[0])];
+    assert!(certify_cancel(&c, &[vec![(1, 0)]]).is_err());
+    assert!(certify_cancel(&c, &[vec![(0, 1)], vec![(0, 1)]]).is_err());
+    assert!(certify_cancel(&c, &[vec![(0, 2)]]).is_err());
+}
+
+#[test]
+fn repair_cert_combines_cancel_and_reorder() {
+    // 0,2 cancel; 1 and 3 commute (reads of 0 and 2 only)
+    let a = g(5, &[4]);
+    let c = [a.clone(), g(1, &[0]), a, g(3, &[2])];
+    certify_repair(&c, &[vec![(0, 2)]], &[3, 1]).unwrap();
+    certify_repair(&c, &[vec![(0, 2)]], &[1, 3]).unwrap();
+    // a cancelled gate may not reappear; a survivor may not vanish
+    assert!(certify_repair(&c, &[vec![(0, 2)]], &[0, 1, 3]).is_err());
+    assert!(certify_repair(&c, &[vec![(0, 2)]], &[1]).is_err());
+    // the subset form rejects a conflicting swap
+    let d = [g(1, &[0]), g(2, &[1])];
+    certify_reorder_subset(&d, &[0, 1], &[0, 1]).unwrap();
+    assert!(certify_reorder_subset(&d, &[0, 1], &[1, 0]).is_err());
+}
