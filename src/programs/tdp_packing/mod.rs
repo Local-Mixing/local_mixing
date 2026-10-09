@@ -897,7 +897,8 @@ fn cmd_pack(a: &Args) -> Result<(), Stage4Error> {
         let rp = &packed.report;
         eprintln!(
             "stats: mul calls={} ambiguous={} aborts={} order_dependent={} ({}); compose_aborts={} \
-             bounds={} duplicate_bounds={} windows={}; read {:.2}s pack+verify+certify {:.2}s",
+             bounds={} duplicate_bounds={} windows={}; read {:.2}s pack+verify+certify {:.2}s \
+             (spans {:.2}s intervals {:.2}s schedule {:.2}s verify {:.2}s certify {:.2}s)",
             rp.mul.calls,
             rp.mul.ambiguous,
             rp.mul.aborts,
@@ -908,7 +909,12 @@ fn cmd_pack(a: &Args) -> Result<(), Stage4Error> {
             rp.duplicate_bounds,
             rp.windows,
             t_read,
-            t_pack
+            t_pack,
+            rp.time_spans_s,
+            rp.time_intervals_s,
+            rp.time_schedule_s,
+            rp.time_verify_s,
+            rp.time_certify_s
         );
     }
     Ok(())

@@ -7,9 +7,9 @@
 //! small-table purge), `set_merge` (verbatim fast path) and 3.9's add, which
 //! does NOT reuse dummy slots.
 //!
-//! Layout: the slot table holds (hash, arena index) in two parallel arrays
-//! (12 bytes per slot); keys live in an arena. Iteration order is a function
-//! of the slot table only. Invariant: `arena.len() == fill` (every add appends
+//! Layout: the slot table holds (hash, arena index) pairs (16 bytes per
+//! slot; a linear group of 10 slots is scanned branch-free); keys live in an
+//! arena. Iteration order is a function of the slot table only. Invariant: `arena.len() == fill` (every add appends
 //! one key; a resize compacts the arena in new table order and sets
 //! `fill = used`).
 use super::mono::PyIntKey;
@@ -20,10 +20,18 @@ const PERTURB_SHIFT: u32 = 5;
 const NULL: u32 = u32::MAX;
 const DUMMY: u32 = u32::MAX - 1;
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Slot {
+    hash: u64,
+    idx: u32,
+}
+
+const EMPTY: Slot = Slot { hash: 0, idx: NULL };
+
 #[derive(Clone)]
 pub struct PySet<K: PyIntKey> {
-    hashes: Vec<u64>,
-    idx: Vec<u32>,
+    slots: Vec<Slot>,
     arena: Vec<K>,
     fill: usize,
     used: usize,
@@ -44,8 +52,7 @@ impl<K: PyIntKey> PySet<K> {
     /// `set()`: an empty 8-slot table.
     pub fn new() -> Self {
         PySet {
-            hashes: vec![0; MINSIZE],
-            idx: vec![NULL; MINSIZE],
+            slots: vec![EMPTY; MINSIZE],
             arena: Vec::new(),
             fill: 0,
             used: 0,
@@ -71,12 +78,12 @@ impl<K: PyIntKey> PySet<K> {
 
     #[inline]
     fn mask(&self) -> usize {
-        self.idx.len() - 1
+        self.slots.len() - 1
     }
 
     /// Slot count (for tests and memory accounting).
     pub fn table_size(&self) -> usize {
-        self.idx.len()
+        self.slots.len()
     }
 
     /// The probe sequence shared by `set_add_entry` and `set_lookkey`: stop at
@@ -87,18 +94,37 @@ impl<K: PyIntKey> PySet<K> {
         let mut i = (h as usize) & mask;
         let mut perturb = h;
         loop {
-            let probes = if i + LINEAR_PROBES <= mask {
-                LINEAR_PROBES
-            } else {
-                0
-            };
-            for j in i..=i + probes {
-                let ix = self.idx[j];
-                if ix == NULL {
-                    return Probe::Free(j);
+            if i + LINEAR_PROBES <= mask {
+                // The 10-slot linear group, scanned branch-free: candidates are
+                // NULL slots and active slots with an equal hash; the first
+                // NULL or the first candidate holding `key` decides, exactly
+                // as the slot-by-slot loop of setobject.c.
+                let grp: &[Slot; LINEAR_PROBES + 1] =
+                    self.slots[i..=i + LINEAR_PROBES].try_into().unwrap();
+                let mut cand = 0u32;
+                for (j, sl) in grp.iter().enumerate() {
+                    let null = (sl.idx == NULL) as u32;
+                    let hit = ((sl.hash == h) & (sl.idx < DUMMY)) as u32;
+                    cand |= (null | hit) << j;
                 }
-                if ix != DUMMY && self.hashes[j] == h && self.arena[ix as usize] == *key {
-                    return Probe::Found(j);
+                while cand != 0 {
+                    let j = cand.trailing_zeros() as usize;
+                    let sl = grp[j];
+                    if sl.idx == NULL {
+                        return Probe::Free(i + j);
+                    }
+                    if self.arena[sl.idx as usize] == *key {
+                        return Probe::Found(i + j);
+                    }
+                    cand &= cand - 1;
+                }
+            } else {
+                let sl = self.slots[i];
+                if sl.idx == NULL {
+                    return Probe::Free(i);
+                }
+                if sl.hash == h && sl.idx != DUMMY && self.arena[sl.idx as usize] == *key {
+                    return Probe::Found(i);
                 }
             }
             perturb >>= PERTURB_SHIFT;
@@ -118,8 +144,10 @@ impl<K: PyIntKey> PySet<K> {
     fn found_unused(&mut self, slot: usize, key: K, h: u64) {
         self.fill += 1;
         self.used += 1;
-        self.hashes[slot] = h;
-        self.idx[slot] = self.arena.len() as u32;
+        self.slots[slot] = Slot {
+            hash: h,
+            idx: self.arena.len() as u32,
+        };
         self.arena.push(key);
         if self.fill * 5 >= self.mask() * 3 {
             let minused = if self.used > 50_000 {
@@ -143,7 +171,7 @@ impl<K: PyIntKey> PySet<K> {
     pub fn discard(&mut self, k: &K) -> bool {
         match self.probe(k, k.py_hash()) {
             Probe::Found(slot) => {
-                self.idx[slot] = DUMMY;
+                self.slots[slot].idx = DUMMY;
                 self.used -= 1;
                 true
             }
@@ -159,23 +187,23 @@ impl<K: PyIntKey> PySet<K> {
         let h = k.py_hash();
         match self.probe(&k, h) {
             Probe::Found(slot) => {
-                self.idx[slot] = DUMMY;
+                self.slots[slot].idx = DUMMY;
                 self.used -= 1;
             }
             Probe::Free(slot) => self.found_unused(slot, k, h),
         }
     }
 
-    fn insert_clean(hashes: &mut [u64], idx: &mut [u32], h: u64, ix: u32) {
-        let mask = idx.len() - 1;
+    fn insert_clean(slots: &mut [Slot], h: u64, ix: u32) {
+        let mask = slots.len() - 1;
         let mut i = (h as usize) & mask;
         let mut perturb = h;
         loop {
-            if idx[i] == NULL {
+            if slots[i].idx == NULL {
                 break;
             }
             if i + LINEAR_PROBES <= mask
-                && let Some(j) = (i + 1..=i + LINEAR_PROBES).find(|&j| idx[j] == NULL)
+                && let Some(j) = (i + 1..=i + LINEAR_PROBES).find(|&j| slots[j].idx == NULL)
             {
                 i = j;
                 break;
@@ -187,8 +215,7 @@ impl<K: PyIntKey> PySet<K> {
                 .wrapping_add(perturb as usize))
                 & mask;
         }
-        hashes[i] = h;
-        idx[i] = ix;
+        slots[i] = Slot { hash: h, idx: ix };
     }
 
     /// `set_table_resize`.
@@ -200,15 +227,14 @@ impl<K: PyIntKey> PySet<K> {
         if newsize == MINSIZE && self.mask() == MINSIZE - 1 && self.fill == self.used {
             return; // small table without dummies: nothing to do
         }
-        let old_hashes = std::mem::replace(&mut self.hashes, vec![0; newsize]);
-        let old_idx = std::mem::replace(&mut self.idx, vec![NULL; newsize]);
+        let old_slots = std::mem::replace(&mut self.slots, vec![EMPTY; newsize]);
         let old_arena = std::mem::take(&mut self.arena);
         self.arena.reserve(self.used);
-        for (h, ix) in old_hashes.into_iter().zip(old_idx) {
-            if ix < DUMMY {
+        for sl in old_slots {
+            if sl.idx < DUMMY {
                 let new_ix = self.arena.len() as u32;
-                self.arena.push(old_arena[ix as usize]);
-                Self::insert_clean(&mut self.hashes, &mut self.idx, h, new_ix);
+                self.arena.push(old_arena[sl.idx as usize]);
+                Self::insert_clean(&mut self.slots, sl.hash, new_ix);
             }
         }
         self.fill = self.used;
@@ -224,8 +250,7 @@ impl<K: PyIntKey> PySet<K> {
         }
         if self.fill == 0 && self.mask() == other.mask() && other.fill == other.used {
             // No dummies in `other`: its arena holds exactly its live keys.
-            self.hashes.copy_from_slice(&other.hashes);
-            self.idx.copy_from_slice(&other.idx);
+            self.slots.copy_from_slice(&other.slots);
             self.arena.clone_from(&other.arena);
             self.fill = other.fill;
             self.used = other.used;
@@ -235,11 +260,11 @@ impl<K: PyIntKey> PySet<K> {
             self.fill = other.used;
             self.used = other.used;
             self.arena.reserve(other.used);
-            for (j, &ix) in other.idx.iter().enumerate() {
-                if ix < DUMMY {
+            for sl in &other.slots {
+                if sl.idx < DUMMY {
                     let new_ix = self.arena.len() as u32;
-                    self.arena.push(other.arena[ix as usize]);
-                    Self::insert_clean(&mut self.hashes, &mut self.idx, other.hashes[j], new_ix);
+                    self.arena.push(other.arena[sl.idx as usize]);
+                    Self::insert_clean(&mut self.slots, sl.hash, new_ix);
                 }
             }
             return;
@@ -265,13 +290,13 @@ impl<K: PyIntKey> PySet<K> {
 
     /// `self ^= b`: `b`'s keys toggled in `b`'s table order.
     pub fn xor_assign(&mut self, b: &Self) {
-        for (j, &ix) in b.idx.iter().enumerate() {
-            if ix < DUMMY {
-                let k = b.arena[ix as usize];
-                let h = b.hashes[j];
+        for sl in &b.slots {
+            if sl.idx < DUMMY {
+                let k = b.arena[sl.idx as usize];
+                let h = sl.hash;
                 match self.probe(&k, h) {
                     Probe::Found(slot) => {
-                        self.idx[slot] = DUMMY;
+                        self.slots[slot].idx = DUMMY;
                         self.used -= 1;
                     }
                     Probe::Free(slot) => self.found_unused(slot, k, h),
@@ -282,10 +307,10 @@ impl<K: PyIntKey> PySet<K> {
 
     /// Keys in table order (skipping NULL and dummy slots).
     pub fn iter(&self) -> impl Iterator<Item = &K> + '_ {
-        self.idx
+        self.slots
             .iter()
-            .filter(|&&ix| ix < DUMMY)
-            .map(move |&ix| &self.arena[ix as usize])
+            .filter(|sl| sl.idx < DUMMY)
+            .map(move |sl| &self.arena[sl.idx as usize])
     }
 
     /// Keys in table order, copied (the operand of a product loop).

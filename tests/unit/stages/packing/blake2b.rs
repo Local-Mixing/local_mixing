@@ -41,12 +41,18 @@ fn incremental_equals_one_shot() {
 
 #[test]
 fn wire0_value_key_matches_hashlib() {
-    // Appendix A: blake2b(getrandbits(1024).to_bytes(128,'little'), digest_size=16)
-    // for wire 0 of Random(20261004).
+    // Appendix A: blake2b(v.to_bytes(128,'little'), digest_size=16) for wire 0
+    // of Random(20261004), raw and NORMALIZED (complemented: sample 0 is set).
     let mut r = PyRandom::new(20_261_004);
     let w0 = r.getrandbits_lanes::<16>();
     assert_eq!(
         hex(&blake2b16_lanes(&w0)),
+        "69f9d20df3b9c38754a0159c292000f0"
+    );
+    let norm = w0.map(|x| !x);
+    assert_eq!(w0[0] & 1, 1);
+    assert_eq!(
+        hex(&blake2b16_lanes(&norm)),
         "10443c04d722b9ea2873b4564780ebb1"
     );
     let mut bytes = Vec::new();

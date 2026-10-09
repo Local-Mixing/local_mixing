@@ -104,6 +104,13 @@ pub struct PackReport {
     pub mul: MulStats,
     /// Gates whose compose aborted (each closes its window right after it).
     pub compose_aborts: usize,
+    /// Wall seconds: fingerprints + spans, intervals, scheduler, verify +
+    /// exposure statistics, reorder certificate.
+    pub time_spans_s: f64,
+    pub time_intervals_s: f64,
+    pub time_schedule_s: f64,
+    pub time_verify_s: f64,
+    pub time_certify_s: f64,
     /// Boundaries kept after the `0 < b < m` filter, and how many of them
     /// repeat the previous one.
     pub bounds: usize,
@@ -715,6 +722,16 @@ fn wire_class(w: u16) -> usize {
     }
 }
 
+struct Lap(std::time::Instant);
+
+impl Lap {
+    fn lap(&mut self) -> f64 {
+        let d = self.0.elapsed().as_secs_f64();
+        self.0 = std::time::Instant::now();
+        d
+    }
+}
+
 fn wl(log: &mut dyn Write, s: std::fmt::Arguments) -> Result<(), Stage4Error> {
     log.write_fmt(s)
         .and_then(|_| log.write_all(b"\n"))
@@ -748,6 +765,7 @@ pub fn pack(
         )));
     }
     let m = b.gates.len();
+    let mut clock = Lap(std::time::Instant::now());
     let fp = inputs(n, p.fp_seed);
     let ai = index_a(&a.gates, &fp, na);
     let sp = spans_b(&b.gates, None, &fp, nb, na, &ai);
@@ -766,7 +784,9 @@ pub fn pack(
             p.b_mono
         ),
     )?;
+    let t_spans = clock.lap();
     let iv = build_intervals(&b.gates, &sp, n, p.w_cap, p.span_cap);
+    let t_intervals = clock.lap();
     let ws = iv.stats;
     wl(
         log,
@@ -780,6 +800,7 @@ pub fn pack(
 
     let mut s = Sched::new(&b.gates, &iv, n, p);
     s.run(log)?;
+    let t_schedule = clock.lap();
     let order = std::mem::take(&mut s.order);
     let bounds: Vec<usize> = s
         .boundaries
@@ -809,6 +830,9 @@ pub fn pack(
         win_monos: quantiles(&s.win_monos_hist),
         mul: s.stats,
         compose_aborts: s.compose_aborts,
+        time_spans_s: t_spans,
+        time_intervals_s: t_intervals,
+        time_schedule_s: t_schedule,
         bounds: bounds.len(),
         duplicate_bounds: bounds.windows(2).filter(|w| w[0] == w[1]).count(),
         ..Default::default()
@@ -898,7 +922,9 @@ pub fn pack(
             sp2.agree
         )));
     }
+    r.time_verify_s = clock.lap();
     certify_reorder(&b.gates, &order)?;
+    r.time_certify_s = clock.lap();
     Ok(Packed {
         n_out: nb,
         order,
