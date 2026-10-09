@@ -1644,7 +1644,7 @@ The round-2 Rust times are contention, not a regression: run back to back under 
 | Rust, round 1 (`b77753ad`, load about 5) | 119 s | 627 s | 2.04 GB |
 | Python oracle (round-1 sandboxed rerun): pack / repair / serialize | 176 / 6,418 / 328 = 6,921 s | 1,943 s | 5.08 GB (packer) |
 
-The oracle scripts are unchanged since round 1 (no diff under `scripts/windowed_delivery/` since `ad9eedfe`), so its round-1 measurement stands. The round-2 Rust times are contention: CPU time rises with wall time in every phase, including the single-threaded pack (43 s → 109 s), and the review fixes touched no packing, repair or emission code path that runs here (outputs and counters are identical). Under that load the Rust stage 4 is still about 19× faster in wall time than the oracle and below the §9 n=128 targets (≤ 6 min, ≤ 3 GB) — barely on wall time; peak RSS is 0.4× the oracle's.
+The oracle scripts are unchanged since round 1 (no diff under `scripts/windowed_delivery/` since `ad9eedfe`), so its round-1 measurement stands. The round-2 Rust times are contention: total CPU time rose with wall time (627 s → 1,508 s), every phase slowed, including the single-threaded pack (43 s → 109 s wall), and the review fixes touched no packing, repair or emission code path that runs here (outputs and counters are identical). Under that load the Rust stage 4 is still about 19× faster in wall time than the oracle and below the §9 n=128 targets (≤ 6 min, ≤ 3 GB) — barely on wall time; peak RSS is 0.4× the oracle's.
 
 ---
 
