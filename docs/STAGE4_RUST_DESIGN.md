@@ -1,17 +1,25 @@
 # Stage 4 (packing) in Rust: design
 
-Status: design, 2026-10-08, branch `ran/stage4-rust` (based on `492564f0`). Owner: RC.
-This document specifies how stage 4 of the TDP pipeline is ported to Rust and how the managed driver is changed so that one managed run, with default settings, produces the recommended deliverable. That deliverable must be byte-for-byte the one the Python reference chain produces.
+Status: design, revision 2, 2026-10-08, branch `ran/stage4-rust` (based on `492564f0`). Owner: RC.
+
+This document does two things:
+
+- It specifies how stage 4 of the TDP pipeline is ported to Rust.
+- It specifies how the managed driver changes so that one managed run with **default settings** reproduces the latest chosen Python runs (vL64a/b, vL128a/b, CONFIG=L8). The output must be byte-for-byte what the Python reference chain produces from the same seeds.
+
+Revision 2 addresses the 37 review issues on revision 1. Appendix C lists each issue and how it is resolved.
 
 Sources of truth, in order of precedence:
 
 1. The owner's requirements, restated in §1.
-2. The Python/bash oracle in `scripts/windowed_delivery/`. These files are byte-identical to the run-tree copies, except that `val_chain.sh` drops the inert `--p-comp/--p-any`, see §2.1. This document cites the oracle as follows:
+2. The Python/bash oracle in `scripts/windowed_delivery/`. These files are byte-identical to the run-tree copies, except that `val_chain.sh` drops the inert `--p-comp/--p-any` (§2.1). Abbreviations used in this document:
    - `WP` = `window_pack3.py`;
    - `AC` = `anf_compose.py`;
-   - `W/` = `waist/` (`order_repair.py`, `merge_bounds2.py`, `anf_split2.py`, `verify_equiv.py`, `anf_dump_eval.py` (`DE`), `link_census.py`, `repair.sh`, `val_chain.sh`);
+   - `W/` = `waist/`, which holds `order_repair.py`, `merge_bounds2.py`, `anf_split2.py`, `verify_equiv.py`, `anf_dump_eval.py` (`DE`), `link_census.py`, `mult_census.py`, `repair.sh` and `val_chain.sh`;
    - `HA` = `security_tests/heatmaps/hmap_affine.rs`.
-3. The validation runs `runs/ncdb_ab_20261001/waist/{vL64a,vL64b,vL128a,vL128b}` (CONFIG=L8) and the matching `vA*` runs. They are read-only. Their `seed.txt`, `gen.log` and `s3.log` were read to verify every default in §2. Docs were not trusted where these disagree.
+
+   **The oracle is never edited.** Every run of it, in fixtures, CI or reproduction, uses a path-rewritten sandbox copy.
+3. The validation runs `runs/ncdb_ab_20261001/waist/{vL64a,vL64b,vL128a,vL128b}` (CONFIG=L8) and the matching `vA*` runs. They are read-only. Every default in §2 was checked against their `seed.txt`, `gen.log` and `s3.log`; where docs disagree with these files, the files win.
 
 Everything not marked "deviation" or "decision" is meant to be bit-exact.
 
@@ -21,27 +29,28 @@ Everything not marked "deviation" or "decision" is meant to be bit-exact.
 
 **Goal (RC).** Stage 4 becomes a Rust production stage, integrated into the TDP driver (`scripts/tdp_gen.sh` and `src/tdp`). It must be faithful to the Python oracle, bit-exact wherever the oracle is deterministic, and validated on real artifacts.
 
-**Defaults requirement (RC, 2026-10-08).** The managed driver's defaults reproduce `W/val_chain.sh` with CONFIG=L8 exactly, as it was run for vL64a, vL64b, vL128a and vL128b:
+**Defaults requirement (RC, 2026-10-08): "the default in the rust driver should match the latest chosen runs in python".** A managed run that sets nothing but `source.wires` (64 or 128) and its seeds must reproduce `W/val_chain.sh TAG N MC S SLICE L8` exactly as it was run for vL64a, vL64b, vL128a and vL128b. That covers:
 
-- stages 1+2 arguments and environment;
-- stage 3 argv and environment, run serially;
-- stage 4 parameters: pack `512 512 24576 3000`; repair as `repair.sh` (4 fix iterations, 4 fallback iterations, ANF budget 65536); serialization as `DE`.
+- the source size: `|C| = |D| = 1000` at n=64 and `3000` at n=128 (§2.4);
+- stage 1+2 argv and the output-affecting environment;
+- stage 3 argv and the output-affecting environment, run serially;
+- stage 4: pack `512 512 24576 3000`; repair as `repair.sh` (4 fix iterations, 4 fallback iterations, ANF budget 65536); serialization as `DE`.
+
+"Output-affecting environment" is defined by the environment registry (§11.5). Variables proven output-neutral (cache sizes) may differ from the reference, and each one has a neutrality test.
 
 Further requirements:
 
 - Config A is selectable by one option.
-- Gen and mix seeds are random per run and recorded. Explicit per-stage seeds are accepted, so that a run can be reproduced.
-- The source size keeps the formula default `round(n·log2²n)` for now, but as one obvious option recorded in the manifest. RC has been asked about this.
+- Gen and mix seeds are random per run and recorded privately. Explicit seeds are accepted for calibration and reproduction only.
+- Old configurations cannot silently produce a hybrid recipe (§11.2: config_version 2, authoritative presets).
+- No ambient environment variable can change a managed run's bytes (§11.5).
 
 **Acceptance.**
 
-- Reproduction test, §10.6: the managed driver and `val_chain.sh` (L8), run with the same source size and the same seeds, produce byte-identical output for:
-  - the stage-2 circuit;
-  - the stage-3 circuit;
-  - the repaired circuit and its bounds;
-  - the deliverable payload.
-- A CI-sized version of the same check, §10.7.
-- Gates G1-G7, `cargo fmt --check` and the CI checks in `.github/workflows/ci.yml`.
+- **Historic anchor (required, §10.8).** For vL64a and vL128a, the managed driver with the archived seeds reproduces the archived `tdp.mpmct1`, `s3.mpmct1`, `packed_G512*`, `rep512.*` and `deliverable.bin` (payload). If a binary change since Oct 7 breaks this, the break is documented and the new reference is defined explicitly (§10.8).
+- **Reproduction test (§10.7).** The managed driver and a sandboxed `val_chain.sh` (L8 and A) with fresh seeds produce byte-identical stage-2, stage-3, packed, repaired and payload artifacts. Exits 5 and 6 are handled as in §10.7.
+- **CI-sized checks (§10.9)**, including a CI differential test of the Python oracle against the Rust port (§10.6).
+- Gates G1-G7, `cargo fmt --check` and the other CI checks in `.github/workflows/ci.yml`.
 
 ---
 
@@ -53,80 +62,107 @@ Verified against the script, `seed.txt` and the gen/s3 logs of all four L8 runs.
 
 | item | value in the reference runs | evidence |
 |---|---|---|
-| gen argv | `tdp.mpmct1 N MC MC S 1 SLICE SEED SEED SEED`, with no mode argument (the default is `embedded-masking`) and no variant argument (the default is `classic`) | `val_chain.sh:15-16`; gen.log `seed=X gadget_seed=X sandwich_seed=X` |
-| sizes | n=64: MC=1000, S=384, SLICE=1280. n=128: MC=3000, S=896, SLICE=2560. S equals `sandwich_default_s(n)` and SLICE equals `10·2n`. MC was passed explicitly; it is not the formula (2304 / 6272) | gen.log line 1 |
-| stage-2 environment | exactly `EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8`. Every other `EMBEDDED_MASKING_*` variable is unset, so gen uses `EmbeddedMaskingParams::production` (K=2, max_open=3, min_open=2, balanced, quad_fire) | `val_chain.sh:13,15`; `embedded_masking.rs:196-216` |
+| gen argv | `tdp.mpmct1 N MC MC S 1 SLICE SEED SEED SEED`. There is no mode positional (the default is `embedded-masking`) and no variant positional (the default is `classic`) | `val_chain.sh:15-16`; gen.log `seed=X gadget_seed=X sandwich_seed=X` |
+| sizes | n=64: MC=1000, S=384, SLICE=1280. n=128: MC=3000, S=896, SLICE=2560. S = `sandwich_default_s(n)` = `max(n, round(n·log2 n))` and SLICE = `10·2n`; these equal the driver's derivation (`tdp_gen.sh:336-341`). MC was passed explicitly and is **not** the formula (2304 / 6272) | gen.log line 1 |
+| stage-2 environment | exactly `EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8`. Every other `EMBEDDED_MASKING_*` variable is unset, so gen uses its base `EmbeddedMaskingParams::managed_tdp(gadget_seed, n)` (K=2, max_open=3, min_open=2, balanced, quad_fire) | `val_chain.sh:13,15`; gen `mod.rs:240-260` |
 | gen seed | `secrets.randbelow(2**31)` | `val_chain.sh:11` |
 | mix seed | `secrets.randbelow(2**40)` | `val_chain.sh:12` |
-| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header. `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`; these equal the CLI defaults, are inert at `p_db=1.0`, and were removed on this branch (TDP doc §3.2). The tracked `val_chain.sh` already omits them | `val_chain.sh:17-22`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
-| stage-3 environment | `FROZEN_DB_DIR=<regular store> FROZEN_FILTER=1`. Nothing else: `CANON_*` caps unset (unbounded), cache sizes at their built-in defaults, `--verify-every` and `--report-every` at their CLI defaults (10 000 and 50 000). The local store has no `filters.bin`, so the filter ran off | s3.log `FROZEN_FILTER=1 but no filters.bin ... running unfiltered`; reports every 50 000 moves |
+| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header, and `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`, which equal the CLI defaults and are inert at `p_db=1.0`. They were removed on this branch (TDP doc §3.2), and the tracked `val_chain.sh` omits them | `val_chain.sh:17-23`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
+| stage-3 environment | `FROZEN_DB_DIR=<regular store> FROZEN_FILTER=1`, and nothing else from the recipe: `CANON_*` caps unset (unbounded), cache sizes at their built-in defaults, `--verify-every` and `--report-every` at their CLI defaults (10 000 and 50 000). The local store has no `filters.bin`, so the filter was off. The interactive shell's other variables were inherited and are unknown; the historic anchor (§10.8) is what proves they were inert | s3.log `FROZEN_FILTER=1 but no filters.bin ... running unfiltered`; reports every 50 000 moves |
 | stage-3 mode | serial: no `--parallel-*` | `val_chain.sh` |
-| stage 4 | `window_pack3.py tdp s3 512 512 24576 3000 TAG-G512 packed_G512.mpmct1`, then `repair.sh TAG 512 N`, then `anf_dump_eval.py rep512.mpmct1 rep512.bounds deliverable.bin TAG` | `val_chain.sh:28-31` |
-| repair version | All eight replicates were re-repaired on Oct 8 with the canonical `order_repair.py` (breaker located before the completer moves) and re-serialized; the earlier repairs are kept in `rep512_v1/`. So TDP doc §4.7 "only the vL128a rerun used the canonical version / not re-serialized" is stale. The parity targets are the current `rep512.*` and `deliverable.bin` (hashes in Appendix B) | file times; `repair512.log` |
+| side reports | `mult_census.py tdp.mpmct1` → `mult_s2.txt`; `hmap_affine` SPAN on stage 2 (`SPAN_OUTPUTS_TRIVIAL=1`, `--g-step 64` at n=64 or `256` otherwise) → `span_s2.{tsv,txt}`. Both are report-only | `val_chain.sh:24-27` |
+| stage 4 | `window_pack3.py tdp s3 512 512 24576 3000 TAG-G512 packed_G512.mpmct1`, then `repair.sh TAG 512 N`, then `anf_dump_eval.py rep512.mpmct1 rep512.bounds deliverable.bin TAG` | `val_chain.sh:29-31` |
+| repair version | All eight replicates were re-repaired on Oct 8 with the canonical `order_repair.py` (breaker located before the completer moves) and re-serialized. The earlier repairs are in `rep512_v1/`, so TDP doc §4.7 is stale. The parity targets are the current `rep512.*` and `deliverable.bin` (Appendix B), subject to the binary-provenance check of §10.5 step 0 | file times; `repair512.log` |
+| binaries | stage-1/2/3 artifacts are timestamped 2026-10-07 23:23 (gen) to 2026-10-08 01:01 (vL128a s3), three minutes after commit `e720d5c0` (23:20). The stage-2 fix `d9631d0e` (Oct 8 18:54) and the stage-3 cleanup commits `8070f5a0..b5608cd9` (Oct 8) came **after** the runs | file mtimes; `git log` |
 
 ### 2.2 Differences in today's managed driver that must change
 
-Every row below changes the output bytes, or could change them. The driver must match the reference column.
+Each row changes output bytes, could change them, or could let an ambient setting change them. The driver must match the reference column.
 
-| # | today (`tdp_gen.sh`, `src/tdp/runner.rs`) | reference | why it matters |
+| # | today (`tdp_gen.sh`, `src/tdp/runner.rs`) | reference / new rule | why it matters |
 |---|---|---|---|
-| D1 | `gadget_seed = SEED+1` (`tdp_gen.sh:419`) | `gadget_seed = SEED` | gadgetization RNG stream (`gen mod.rs: StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E)`) |
-| D2 | `shuffling_segments` defaults to 0; `return_home=0` is **rejected** (`tdp_gen.sh:254-261`, `validate.rs:101-108`) | 8, 0 | stage-2 construction |
-| D3 | PREMASK, SEED_AVOID_C1, CHAIN and CHAIN_LEN cannot be expressed: they are scrubbed (`runner.rs:338`) and there is no field for them | 1, 1, 2, 8 | stage-2 construction |
-| D4 | always exports `EMBEDDED_MASKING_{K,MAX_OPEN,MIN_OPEN,BALANCED,QUAD_FIRE}` | not set | value-neutral today (they equal the preset), but the requirement is "no other `EMBEDDED_MASKING_*` variables" |
-| D5 | profile `3,30,30,2,2` (n0 = 3 hard-coded, hold = 27) | `2,2,2,2,2` | stage-3 schedule |
-| D6 | moves = `round(n2·r1·G·1.3)` | `int(G·2·2·1.3)` (floor) | the last move, when the fraction is ≥ .5 |
-| D7 | mix seed = `SEED+2` (a 63-bit derived value) | independent random value | stage-3 RNG |
-| D8 | `--verify-every 2000000` | default 10 000 | **`global_check` draws `4·num_wires` u64 values from the mixer RNG** (`reporting.rs:17-23`), so the cadence changes the trajectory |
-| D9 | `--report-every 100000 --state-out` | defaults; no state-out | report cadence runs `anc_prune` and the flag and snapshot checks. Not proven trajectory-neutral, so it is dropped |
-| D10 | exports `CANON_RULE_L_BRANCH_CAP=512 CANON_MONOMIAL_CAP=200000 CANON_CACHE_MB=256 XPOLY_CANON_CACHE_MB=1024 LOOKUP_CACHE_MB=2048` (`runner.rs:383-387`, `tdp_gen.sh:446-450`) | all unset | the caps change canonicalization results whenever they bind. The cache sizes should be pure memoization, but the reference did not set them |
-| D11 | `FROZEN_FILTER` auto-detection reads `/proc/meminfo`, which is Linux-only and therefore off on macOS | `FROZEN_FILTER=1` | should be output-neutral (a miss filter only). Matched anyway |
+| D1 | `gadget_seed = SEED+1` (`tdp_gen.sh:419`) | `gadget_seed = sandwich_seed = seed = GEN_SEED` | gadgetization RNG stream (`StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E)`) |
+| D2 | `shuffling_segments` defaults to 0, and `return_home=0` is **rejected** (`tdp_gen.sh:254-261`, `validate.rs:101-108`) | 8 and 0, set by the preset | stage-2 construction |
+| D3 | PREMASK, SEED_AVOID_C1, CHAIN and CHAIN_LEN cannot be expressed: they are scrubbed (`runner.rs:338`) and have no field | 1, 1, 2, 8 (L8); 1, 1, unset, unset (A) | stage-2 construction |
+| D4 | always exports `EMBEDDED_MASKING_{K,MAX_OPEN,MIN_OPEN,BALANCED,QUAD_FIRE}` | not set under the L8/A presets | value-neutral today, but the recipe sets no other stage-2 variable |
+| D5 | profile `3,30,30,2,2` (n0=3 hard-coded, hold=27) | `2,2,2,2,2` | stage-3 schedule |
+| D6 | moves = `round(n2·r1·G·1.3)` | `int(G·2·2·1.3)` (truncation) | the last move whenever the fraction is ≥ .5 |
+| D7 | mix seed = `SEED+2` | an independent random value | stage-3 RNG |
+| D8 | `--verify-every 2000000` | default 10 000 | **`global_check` draws `4·num_wires` u64 values from the mixer RNG** (`reporting.rs:17-23`), so the cadence changes the trajectory. This adds about 400 global checks at n=128 (§9) |
+| D9 | `--report-every 100000 --state-out` | defaults; no state-out | the report cadence runs `anc_prune` and the flag and snapshot checks. Not proven trajectory-neutral, so it is dropped |
+| D10 | exports `CANON_RULE_L_BRANCH_CAP=512 CANON_MONOMIAL_CAP=200000` | **unset** (unbounded) | the caps change canonicalization results whenever they bind |
+| D10b | exports `CANON_CACHE_MB=256 XPOLY_CANON_CACHE_MB=1024 LOOKUP_CACHE_MB=2048` | **kept** at the driver's values | these are exact memo caches (`lookup_cache.rs:15-23`), and the default 512 MB lookup cache epoch-resets on runs of a million moves or more. They are classified output-neutral and proven by `cache_neutrality` (§10.9 item 5) |
+| D11 | `FROZEN_FILTER` auto-detection reads `/proc/meminfo` (Linux only) and requires 60 GiB available | `auto`: `FROZEN_FILTER=1` when the store has no `filters.bin`, the exact reference situation. When `filters.bin` exists, `FROZEN_FILTER=0` until the filtered/unfiltered equivalence of §10.9 item 6 is recorded; after that, `1` only behind a 60 GiB available-RAM gate that also works on macOS | the filter is meant to be output-neutral but needs about 25.5 GB RAM (`frozen.rs:6`); neutrality has never been measured |
 | D12 | gate count via `wc -l` minus 1 | header field 3 | equal for consistent files; use the header field |
 | D13 | the driver ends at stage 3 | stage 4 | — |
-| D14 | the gen mode positional `embedded-masking` is passed | omitted | neutral (it is the default); kept, and documented |
+| D14 | the gen mode positional `embedded-masking` is passed | **omitted** for embedded-masking (passed only for nonlinear291) | neutral, but omitting it makes the argv identical to the reference, so the transcript test (§10.9 item 1) needs no normalization |
+| D15 | environment is scrubbed by a deny-list (`PROD_`, `SAT_`, `EMBEDDED_MASKING_`, `DB_QC*`, `SCRUBBED_ENV`), which lets through `MIXER_DB_LEN_BAND`, `SLICE_GUARD_LEGACY`, `MIXER_STOP_AT_*`, `TWIST_G57_*` and `MIN_DIR_LOOKUP` | **allow-list**: stage binaries start from an empty environment plus the allow-list and recipe variables. Every inherited registry variable that changes output is a fatal error (§11.5) | any of these silently changes or truncates stage 2 or stage 3 |
+| D16 | the C and D size defaults to `round(n·log2²n)` | the validated table: 1000 at n=64, 3000 at n=128. Other n require an explicit size or the opt-in `formula` rule (§2.4) | every downstream byte |
+| D17 | gen parses positionals with `.parse().ok().unwrap_or(default)` (`gen mod.rs:100-117`): an unparsable seed becomes **1** | strict parsing: a present but unparsable positional is a fatal error. The driver also checks that gen's banner seeds equal `GEN_SEED` (§8.4) | a parse slip gives a public, fixed C that passes every later check |
+| D18 | `HOLD` default 27 in the script, `"30"` in the manifest text (`manifest.rs:197`) | the manifest prints resolved values only | latent inconsistency |
 
-`FROZEN_REGULAR_VALUE_CONVENTION=native` stays: the reference log shows `regular=native`, which is the built-in default. `SANDWICH_VARIANT=classic` stays for the same reason.
+`FROZEN_REGULAR_VALUE_CONVENTION=native` stays exported: the reference log shows `regular=native`, which is the built-in default, so the effective value is equal (§11.5 compares effective values). `SANDWICH_VARIANT=classic` stays for the same reason.
 
-### 2.3 Seed width (deviation; decision for RC)
+### 2.3 Seeds, entropy and hygiene (deviation; decision for RC)
 
-The reference draws the gen seed below 2^31 and the mix seed below 2^40. **The gen seed regenerates C** (`prepare_source(n, m_c, seed)`), and generating C is microseconds. A 31-bit seed therefore makes C recoverable by brute force against any artifact: about 2^31 C generations, each followed by a functional comparison. The validation runs are calibration-grade material for this reason.
+The reference draws the gen seed below 2^31 and the mix seed below 2^40. **The gen seed regenerates C** (`prepare_source(n, m_c, seed)`), and generating C takes microseconds. A 31-bit seed therefore makes C recoverable by brute force against any artifact. The validation runs are calibration-grade material.
 
-The managed default draws **both** seeds uniformly below 2^63 from the OS CSPRNG. This changes only the distribution the seed is drawn from. For any given seed, every computation is the one the reference performs, and explicit seeds in the reference range are accepted, so the reproduction test is unaffected.
+The managed default draws **both** seeds uniformly below `2^63 − 16` from the OS CSPRNG. For any given seed, every computation is the one the reference performs, and explicit seeds in the reference range are accepted, so reproduction is unaffected. The manifest records this as `seed_bits=63`.
 
-This is the only intended difference between the reference recipe and the managed defaults. It is recorded in the manifest as `seed_bits=63`.
+**63 bits is a stopgap, not a security margin.** C is generated through `fastrand::seed(seed)` (wyrand, 64-bit state; `sandwich/construct.rs:70`), the gadget stream through `StdRng::seed_from_u64`, and the mixer from a u64. Whatever width the driver draws, C never carries more than 64 bits of entropy, and about 2^63 cheap generations is within reach of a well-resourced attacker. This is recorded as open decision §13.1, with two routes:
 
-Hygiene: hashes of `tdp.mpmct1`, the source C and `s3.mpmct1` are deliberately **not** committed anywhere. With a 31-bit seed space they would be cheap verification oracles for a brute-force search.
+- **(a)** Derive C and the gadget streams from a 256-bit seed (ChaCha20 via `rand_chacha`, already in `Cargo.lock`). This changes bytes, so it cannot be the default while the defaults requirement holds without RC re-validating.
+- **(b)** Supply a CSPRNG-generated C through `source.path` (`TDP_SOURCE_C`), which works today.
+
+**Hygiene rules.**
+
+- No unkeyed hash of C, of `tdp.mpmct1`, of `db_mixing.mpmct1`/`s3.mpmct1` or of the seeds is written anywhere: not in `packing.report`, not in `tdp_command.conf`, not in `packing.recipe`, not in committed files.
+- Integrity pins on private inputs use HMAC-SHA256 keyed by a per-run 256-bit `run_key`, which lives only in the private `$RUN/SEEDS` (§8). The MACs are computed in bash with `python3 -I` (`hmac`, `hashlib`), so Rust needs no new crypto dependency.
+- **Publishable files:** `packing.report` (§5.5) and `tdp_command.conf` contain no seeds, no seed hashes and no hashes of private circuits. Their only content hash is the hash of the deliverable, which is public. The private files are `$RUN/SEEDS`, `$RUN/packing.recipe` (MACs), `stage12.log` (gen banner) and every circuit file.
+
+### 2.4 Source size (resolved by the request)
+
+The request makes the validated sizes the default:
+
+| `source.wires` | default `source.gates` | `source_gates_rule` |
+|---|---|---|
+| 64 | 1000 | `validated` |
+| 128 | 3000 | `validated` |
+| any other n, `source.gates` given | as given | `explicit` |
+| any other n, `source.gates_rule = "formula"` | `round(n·log2²n)` | `formula`; the manifest and log print `UNVALIDATED SIZE` |
+| any other n, neither | — | **error**, exit 2: "no validated source size for n=…; set source.gates or source.gates_rule = \"formula\"" |
+
+An explicit `source.gates` at n=64 or n=128 equal to the table value is recorded as `validated`; any other value is recorded as `explicit`. In `tdp_gen.sh` the same rule applies to `-m/--source-gates` and the new `--source-gates-rule formula`. The C-view floor and the L2/M2 numbers were measured only at the table sizes.
 
 ---
 
 ## 3. Architecture
 
 ```
-          stage 2 G2 (tdp.mpmct1)  stage 3 G3 (db_mixing.mpmct1)        C (tdp.mpmct1.source_c.g57)
-                     \                   /                                     |
-                      v                 v                                      |
-  pack  (fingerprints MT19937/1024 -> proxy spans -> intervals -> scheduler    |
-         with the windowed ANF caps on a CPython-3.9 set emulator)             |
-          -> packed_G512.mpmct1 + .bounds                                      |
-                      |                                                        v
+     stage 2 G2 (tdp.mpmct1)   stage 3 G3 (db_mixing.mpmct1)        C (tdp.mpmct1.source_c.g57)
+                \                     /                                    |
+                 v                   v                                     |
+  pack  (fingerprints MT19937/1024 + blake2b-128 value keys -> proxy spans |
+         -> intervals -> scheduler, windowed ANF caps on a CPython-3.9 set)|
+     -> packed_G512.mpmct1 + .bounds   [certificate: linear extension of G3]
+                 |                                                         v
   repair: cancel -> [C-view scan -> fix]x<=4 -> [C-view -> merge? -> split]x<=4 -> final scan (report)
-          (in-process exposure engine; the leaky-cut predicate is memoized per cut)
-          -> rep512.mpmct1 + rep512.bounds (+ rep512.{exposure,allcuts,wit}.tsv)
-                      |
-  emit:   canonical per-window ANF -> body (DE format) -> container v1 -> deliverable.bin
-  verify: pack VERIFY, sampled equivalence, per-window ANF == gates, decode(deliverable) == circuit,
+          (in-process exposure engine; per-cut memo)  [certificate: cancel pairs + trace equivalence]
+     -> rep512.mpmct1 + rep512.bounds (+ rep512.{exposure,allcuts,wit}.tsv)
+                 |
+  emit:   canonical per-window ANF -> DE body -> deliverable.bin (raw)
+                                             -> deliverable.tdp4 (48-byte header + same body)
+  verify: exact certificates; sampled equivalence; exact decode == ANF; exhaustive or sampled window ANF;
           zero-slice deliverable(x) == C(x)
 ```
 
-One library module tree, `src/stages/packing/`, has no environment reads, following the `src/stages` convention (`preprocessing/types.rs:31`). One production binary, `tdp_packing`, is its adapter. The exposure engine leaves `hmap_affine` and becomes library code shared by both.
+There is one library module tree, `src/stages/packing/`, with **no environment reads**, following the `src/stages` contract (`preprocessing/types.rs:31`). Its one production adapter is the binary `tdp_packing`. The exposure engine moves out of `hmap_affine` into this library and is shared by both.
 
 ---
 
 ## 4. Library layout: `src/stages/packing/`
 
-Add `pub mod packing;` to `src/stages/mod.rs`. Its doc comment becomes: "TDP stage ownership: sandwich, preprocessing, database mixing and packing (stage 4)."
-
-Each module attaches its unit tests by the repo convention:
+Add `pub mod packing;` to `src/stages/mod.rs`. Its doc comment becomes: "TDP stage ownership: sandwich, preprocessing, database mixing and packing (stage 4)." Unit tests attach by the repo convention:
 
 ```rust
 #[cfg(test)] #[path = "../../../tests/unit/stages/packing/<module>.rs"] mod tests;
@@ -134,36 +170,42 @@ Each module attaches its unit tests by the repo convention:
 
 The `repair/` submodules use one more `../`.
 
-The new code adds **no new crate dependency**:
+**No new crate dependency.** The following are in-house, each under about 200 lines, and each tested against `hashlib`/`zlib` vectors:
 
-- MT19937, the CPython set emulator and CRC-32 are in-house (each under about 200 lines);
-- the ordered map is `Vec` plus `FxHashMap`;
-- `rand 0.9.2` is used only by the exposure engine (unchanged);
-- `rayon` and `xxhash-rust` are already dependencies.
+- MT19937;
+- the CPython set emulator;
+- blake2b-128 (RFC 7693);
+- CRC-32.
+
+`rayon` and `xxhash-rust` are already dependencies.
+
+**Supported range.** Stage 4 supports n ≤ 256, i.e. a state of at most 1024 wires, so the monomial width is W ∈ {1, 2, 4, 8, 16}. Config validation rejects n > 256 when `stop_after_stage = 4`, and `tdp_packing` rejects it with exit 2.
 
 ```
 src/stages/packing/
   mod.rs          run_stage4(), re-exports
-  types.rs        PackParams, RepairParams, EmitParams, CapSemantics, RepairMode, reports, errors
-  oracle_io.rs    oracle-compatible readers/writers (mpmct1 width rules, k=0 trailing space, bounds files)
+  types.rs        params, CapSemantics, RepairMode, reports, Stage4Error + exit codes
+  oracle_io.rs    oracle-compatible readers/writers (mpmct1 width rules, k=0 trailing space, bounds)
   pyrand.rs       CPython random.Random: MT19937 init_by_array + getrandbits word order
-  pyset.rs        CPython 3.9.6 setobject emulator (table order, probing, resize, merge fast path)
-  mono.rs         monomial keys [u64; W] (W in {1,2,4,8,16,...,256}), CPython int hash, ordering, width dispatch
-  anf.rs          window state (packer compose) + window_anf (split / emission), cap semantics
+  blake2b.rs      blake2b with digest_size 16 (value identity exactly as WP)
+  pyset.rs        CPython 3.9 setobject emulator (slot table of arena indices + cached hashes)
+  mono.rs         monomial keys [u64; W], Mersenne-fold CPython int hash, ordering, width dispatch
+  anf.rs          packer compose + window_anf (split / emission), cap semantics
   fingerprint.rs  1024-sample bit-sliced evaluation, complement normalisation, proxy_spans
   intervals.rs    interval_set + next-next-writer rescue, winnable values, iid numbering
-  scheduler.rs    the window_pack3 main loop (epochs, filler/anyready, burst, contagion, close_window)
+  scheduler.rs    the window_pack3 main loop
   gf2.rs          GF(2) basis with coefficient tracking (shared by cview)
-  cview.rs        the C-view exposure engine (from HA), streaming over cuts, memoizable per cut
+  cview.rs        the C-view exposure engine (from HA), streaming over cuts, memoized per cut
+  certify.rs      exact release-mode certificates (trace equivalence, cancellation)
   repair/mod.rs   repair loop (repair.sh), RepairMode
   repair/seq.rs   gate/marker sequence: to_seq, from_seq, commute, slide
   repair/cancel.rs cancel_pass, run_cancel
   repair/fix.rs   run_fix (canonical breaker handling)
   repair/merge.rs merge_bounds2
   repair/split.rs anf_split2 (candidate rule, recursion, fit predicate)
-  serialize.rs    DE body encoder, container v1, CRC-32, decoder, evaluator
-  verify.rs       verify_equiv (seed 77), all-window ANF check, decode round-trip, zero-slice vs C
-  census.rs       link_census (L2/M2, proxy/froth) and the packer RESULT on the delivered lattice
+  serialize.rs    DE body encoder, container v1, CRC-32, flat-arena decoder, evaluator
+  verify.rs       verify_equiv (seed 77), window checks, decode checks, zero-slice vs C
+  census.rs       link_census (L2/M2) and the AC size report
 ```
 
 ### 4.1 `types.rs`
@@ -171,9 +213,8 @@ src/stages/packing/
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapSemantics { CPython39, Canonical }        // §7.2; default CPython39
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RepairMode { Oracle }                        // §4.12; later fixes add variants behind flags
+pub enum RepairMode { Oracle }                        // later fixes add variants behind flags
 
 #[derive(Clone, Debug)]
 pub struct PackParams {
@@ -186,7 +227,7 @@ pub struct PackParams {
     pub fp_seed: u64,        // 20261004
     pub cap_semantics: CapSemantics,
 }
-impl PackParams { pub const PRODUCTION: PackParams = /* the values above, CPython39 */; pub fn mul_cap(&self) -> usize { 8 * self.b_mono } }
+impl PackParams { pub const PRODUCTION: PackParams = /* above, CPython39 */; pub fn mul_cap(&self) -> usize { 8 * self.b_mono } }
 
 #[derive(Clone, Debug)]
 pub struct RepairParams {
@@ -195,7 +236,7 @@ pub struct RepairParams {
     pub fallback_iterations: usize,  // 4
     pub cview: CviewParams,          // batches 96, seed 12345
     pub cap_semantics: CapSemantics, // CPython39 (window_anf in the split predicate)
-    pub mode: RepairMode,            // Oracle
+    pub mode: RepairMode,
 }
 
 #[derive(Clone, Debug)]
@@ -203,16 +244,31 @@ pub struct Stage4Params {
     pub pack: PackParams, pub repair: RepairParams,
     pub verify_seed: u64,            // 77   (verify_equiv)
     pub zero_slice_samples: usize,   // 4096 (new check; no oracle counterpart)
+    pub exhaustive_support_max: usize, // 16 (windows with support <= this are checked exhaustively)
     pub allow_floor_miss: bool,      // false
     pub allow_over_budget: bool,     // false
+    pub max_concurrent_anf: usize,   // 8 (bounds concurrent window_anf evaluations; §4.4 memory)
 }
 
-pub struct PackReport { /* every number in the WP log lines, plus compose_aborts, ambiguous_muls */ }
-pub struct RepairReport { /* cancel passes, fix trajectory, moved per pass, fallback trajectory, merges, splits, forced splits, final scan */ }
-pub struct EmitReport { /* windows, monomials, max per window, body bytes, container bytes, xxh3 */ }
+pub struct PackReport { /* every number in the WP log lines, plus mul_calls, ambiguous, compose_aborts, order_dependent */ }
+pub struct RepairReport { /* cancel passes, fix trajectory, moved per pass, fallback trajectory, merges, splits,
+                             forced splits, fix_exhausted, final scan, path counters (§10.3) */ }
+pub struct EmitReport { /* windows, monomials, max per window, body bytes, deliverable xxh3 */ }
 
-#[derive(Debug)] pub enum Stage4Error { Input(String), Verify(String), Floor { nonoutput_visible: Vec<usize> }, OverBudget { windows: Vec<(usize, usize)> }, Internal(String) }
+#[derive(Debug)]
+pub enum Stage4Error {
+    Usage(String),                                  // exit 2
+    Input(String),                                  // exit 3
+    Verify(String),                                 // exit 4
+    Floor { nonoutput_visible: Vec<usize> },        // exit 5
+    OverBudget { windows: Vec<(usize, usize)> },    // exit 6
+    Io { path: PathBuf, source: io::Error },        // exit 7 (disk full, permission, rename)
+    Internal(String),                               // exit 8 (invariant violated without panicking)
+}
+impl Stage4Error { pub fn exit_code(&self) -> i32; pub fn meaning(code: i32) -> &'static str; }
 ```
+
+`Stage4Error::meaning` is the single table of exit-code meanings (§5.4). `runner.rs` and `tdp_gen.sh` print it.
 
 ### 4.2 `oracle_io.rs`: circuits as the oracle reads them
 
@@ -232,24 +288,24 @@ pub fn read_bounds(path: &Path) -> Result<Vec<usize>, Stage4Error>;   // whitesp
 pub fn write_bounds(w: &mut impl Write, b: &[usize]) -> io::Result<()>; // "\n".join + "\n" ("\n" when empty)
 ```
 
-`read_oracle_mpmct` is strict. It accepts only what makes `XGate` equality coincide with the Python tuple:
+`read_oracle_mpmct` is strict. It accepts only files on which `XGate` equality coincides with the Python tuple:
 
-- controls already **ascending** in the file;
+- controls already ascending in the file;
 - no duplicate control;
 - no control on the target;
 - comp and polarity in {0, 1};
 - header m equal to the number of gate lines;
-- extra tokens on a line rejected.
+- no extra tokens on a line.
 
-All Rust-written artifacts satisfy this (vA64a was checked). Any violation is an `Input` error, exit 3, and never a silent canonicalization.
+Every Rust-written artifact satisfies this (checked on vA64a). Any violation is an `Input` error and is never silently canonicalized.
 
-The width rule of each oracle step is applied explicitly where the step uses it:
+Width rules, applied where each oracle step uses them:
 
 - pack: `n = max(computed_n(A), computed_n(B))`, and the output header is `computed_n(B)`;
 - repair: the header n is carried through;
 - emission: m is the header m.
 
-`commute(a, b)` is defined in `repair/seq.rs` as `!a.reads(b.target) && !b.reads(a.target)`. It must **not** reuse `XGate::collides`, which exempts polarity-separated conjunctions.
+`commute(a, b)` lives in `repair/seq.rs` and is `!a.reads(b.target) && !b.reads(a.target)`, where `reads` means "has as a control". It must **not** reuse `XGate::collides`, which exempts polarity-separated conjunctions. Two gates on the same target with neither controlling on the other's target commute, because XOR targets add.
 
 ### 4.3 `pyrand.rs`: CPython `random.Random`
 
@@ -258,13 +314,11 @@ pub struct PyRandom { mt: [u32; 624], idx: usize }
 impl PyRandom {
     pub fn new(seed: u64) -> Self;                       // key = 32-bit LE words of |seed| (one word if < 2^32), init_by_array
     pub fn genrand_u32(&mut self) -> u32;
-    pub fn getrandbits_words(&mut self, k: usize) -> Vec<u32>; // ceil(k/32) words, least-significant first; partial top word = top bits of the output (u32 >> (32 - r))
+    pub fn getrandbits_words(&mut self, k: usize) -> Vec<u32>; // ceil(k/32) words, least-significant first; partial top word = u32 >> (32 - r)
     pub fn getrandbits_lanes<const L: usize>(&mut self) -> [u64; L]; // k = 64L; lane i = w[2i] | w[2i+1] << 32
-    pub fn getrandbit(&mut self) -> bool;                // getrandbits(1) = top bit of one output (DE single-input)
+    pub fn getrandbit(&mut self) -> bool;                // getrandbits(1) = top bit of one output
 }
 ```
-
-Users and their seeds:
 
 | user | seed | draw |
 |---|---|---|
@@ -273,48 +327,48 @@ Users and their seeds:
 | AC spot checks | 20261004 | 4 lanes |
 | DE evaluation | 1 | 16 lanes |
 
-Golden vectors are listed in Appendix A.
+Golden vectors are in Appendix A.
 
-### 4.4 `pyset.rs`: CPython 3.9.6 set emulator
+### 4.4 `pyset.rs`: CPython 3.9 set emulator
 
-This module is the reason the packer and the split predicate can be bit-exact. `mul` aborts when a **prefix** of the smaller operand's iteration order pushes `|res|` above the cap (WP:135-150, AC:49-64), and that order is CPython's table order. All 8 measured compose aborts, and the AC case vA64a span `[492039,492540)`, have a full product within the cap. They fire only because of the order. Under sorted order 1 of 2 (vA64a) and 1 of 6 (vL128b) disappear.
+This module is what makes the packer and the split predicate bit-exact. `mul` aborts when a **prefix** of the smaller operand's iteration order pushes `|res|` above the cap (WP:135-150, AC:49-64), and that order is CPython's table order. All 8 measured compose aborts, and the AC case vA64a span `[492039,492540)`, have a full product within the cap; they fire only because of the order. Under sorted order, 1 of 2 (vA64a) and 1 of 6 (vL128b) disappear.
+
+The order is version-dependent. On this machine, `{1,2,3}; discard 2; add 10` iterates as `[10, 1, 3]` on CPython 3.9.6, which does not reuse the dummy slot. A reported 3.13 run iterates `[1, 10, 3]`. The emulator therefore targets **3.9 `setobject.c` semantics**, and the oracle runtime is a pinned CPython 3.9 that passes the trace self-test (§10.1, traces in §10.3). It is never "whatever `python3` is installed".
 
 ```rust
 pub trait PyIntKey: Copy + Eq { fn py_hash(&self) -> u64; }  // nonnegative int: value mod (2^61-1)
-pub struct PySet<K: PyIntKey> { table: Vec<Slot<K>>, mask: usize, fill: usize, used: usize }
-enum Slot<K> { Null, Dummy, Active { key: K, hash: u64 } }
+pub struct PySet<K: PyIntKey> {
+    slots: Vec<Slot>,          // Slot { hash: u64, idx: u32 }, idx = NULL (u32::MAX) | DUMMY (u32::MAX-1) | arena index
+    arena: Vec<K>,             // keys; discarded keys stay as garbage until the next resize
+    mask: usize, fill: usize, used: usize,
+}
 impl<K: PyIntKey> PySet<K> {
     pub fn new() -> Self;                         // size 8 (PySet_MINSIZE)
     pub fn singleton(k: K) -> Self;               // BUILD_SET {x}: new() then add
     pub fn len(&self) -> usize;
     pub fn contains(&self, k: &K) -> bool;
     pub fn add(&mut self, k: K);                  // first NULL on the probe path; dummies NOT reused (3.9)
-    pub fn discard(&mut self, k: &K) -> bool;     // slot -> Dummy, used -= 1, never shrinks
+    pub fn discard(&mut self, k: &K) -> bool;     // slot -> DUMMY, used -= 1, never shrinks
     pub fn toggle(&mut self, k: K);               // `if v in res: discard else add`
-    pub fn copy_of(other: &Self) -> Self;         // set(other) == set_merge(empty, other) incl. verbatim fast path
+    pub fn copy_of(other: &Self) -> Self;         // set(other) == set_merge(empty, other), incl. verbatim fast path
     pub fn xor(a: &Self, b: &Self) -> Self;       // a ^ b == copy_of(b) then toggle a's keys in a's table order
     pub fn xor_assign(&mut self, b: &Self);       // a ^= b: toggle b's keys in b's table order
-    pub fn iter(&self) -> impl Iterator<Item = &K>; // table order, skipping Null/Dummy
+    pub fn iter(&self) -> impl Iterator<Item = &K>; // table order, skipping NULL/DUMMY
 }
 ```
 
-Rules to transcribe (packer spec §9; validated empirically):
+Rules to transcribe (packer spec §9; validated empirically and by the traces of §10.3):
 
 - **Probe:** `i = h & mask`, `perturb = h`. Examine slot i and, when `i + 9 <= mask`, slots `i+1..i+9` (LINEAR_PROBES = 9). Then `perturb >>= 5` and `i = (5i + 1 + perturb) & mask`.
 - **Growth:** after an insert, if `fill*5 >= mask*3`, resize to `used > 50000 ? used*2 : used*4`.
-- **`resize(minused)`:** start from 8 and double while `<= minused`. Re-insert the active entries in old table order with `insert_clean`, the first NULL on the probe path, with no equality test.
-- **Merge into an empty set:** if `(fill + other.used)*5 >= mask*3`, first resize to `(used + other.used)*2`. Then copy verbatim when `fill == 0`, `mask == other.mask` and other has no dummies; otherwise `insert_clean` in other's table order.
+- **`resize(minused)`:** start from 8 and double while `<= minused`. Re-insert the active entries in old table order with `insert_clean` (first NULL on the probe path, no equality test). This includes the **small-table purge**: newsize == 8 with `fill > used`, which rebuilds in place.
+- **Merge into an empty set:** if `(fill + other.used)*5 >= mask*3`, first resize to `(used + other.used)*2`. Then copy verbatim when `fill == 0`, `mask == other.mask` and `other` has no dummies; otherwise `insert_clean` in `other`'s table order.
 
-Monomial keys implement `PyIntKey` in `mono.rs`. The hash is folded from the most significant limb down with 128-bit arithmetic: `h = ((h as u128) << 64 | limb as u128) % (2^61 - 1)`.
+**Memory layout.** Iteration order is a function of the slot table only, so storing a 12-byte `(hash, idx)` slot plus an arena of keys leaves the order semantics unchanged. Resize compacts the arena in the new table order.
 
-The emulator is THE set type in both the packer's compose and `window_anf`, whatever the `CapSemantics`. The table order only matters for the prefix abort, but one code path is simpler to test.
+At n=128 (W=8, 64-byte keys), a 2^21-slot table costs about 32 MB of slots plus the live keys, instead of about 150 MB for inline keys. Concurrent `window_anf` evaluations are bounded by `max_concurrent_anf` (default 8). The memory test is §10.5 step 7.
 
-Validation obligations:
-
-- a Rust replay of committed traces recorded on `/usr/bin/python3` 3.9.6 (§10.2);
-- a replay of the window ANF of `packed_G512` plus its bounds on vA64a and vL128b, which must reproduce every abort (manual parity, §10.5).
-
-The traces record `sys.version`. CI never trusts the CI runner's Python for set order.
+The emulator is THE set type in both the packer's compose and `window_anf`, whatever the `CapSemantics`. Table order only matters for the prefix abort, but one code path is simpler to test.
 
 ### 4.5 `mono.rs`
 
@@ -325,11 +379,26 @@ pub trait MonoKey: PyIntKey + Ord + Hash + Default {
     fn bits(&self) -> impl Iterator<Item = usize>;
 }
 impl<const W: usize> MonoKey for [u64; W] { /* Ord compares from the most significant word = Python int order */ }
-/// Calls `f::<[u64; W]>()` for the smallest W in {1,2,4,8,16,32,64,128,256} with 64·W >= nw.
+/// Calls `f::<[u64; W]>()` for the smallest W in {1,2,4,8,16} with 64·W >= nw; errors above 1024 wires.
 pub fn with_mono_width<R>(nw: usize, f: impl MonoWidthFn<R>) -> R;
 ```
 
-At n=64 the state is 256 wires, so W=4. At n=128 it is 512 wires, so W=8. The upper limit of 16 384 wires matches the u16 wire ids of the format.
+At n=64 the state is 256 wires, so W=4. At n=128 it is 512 wires, so W=8.
+
+Const-generic width is used only where it pays: `PySet`, `mul`, the hash, `WindowState` and `window_anf`. The scheduler, repair, emission framing and census take `&dyn` access or a runtime width. Five instantiations of the hot core are compiled, not nine instantiations of all of stage 4.
+
+**CPython int hash with Mersenne folding** (no u128 division on the hot path). With `M = 2^61 − 1`, we have `2^64 ≡ 8 (mod M)` and `2^61 ≡ 1`. Folding from the most significant limb down, starting at `h = 0`:
+
+```
+rot8(h)  = ((h << 3) & M) | (h >> 58)          // 8·h mod M, for h < M
+x        = rot8(h) + (limb >> 61) + (limb & M)  // < 2^63
+h        = (x & M) + (x >> 61); if h >= M { h -= M }
+```
+
+This is exact and branch-light. Tests:
+
+- `int_hash_matches_cpython`: recorded 3.9 hashes for keys with top bits at 0, 60, 61, 63, 64, 127, 128, 255, 511 and 1023, including `1<<61` (hash 1) and `(1<<122)` (hash 1);
+- the `py_hash` microbenchmark in `benches/` (target ≤ 5 ns at W=8).
 
 ### 4.6 `anf.rs`
 
@@ -348,17 +417,20 @@ pub fn mul<M: MonoKey>(a: &PySet<M>, b: &PySet<M>, cap: usize, sem: CapSemantics
 pub struct WindowAnf<M> { pub changed: Vec<(u16, Vec<M>)>, pub total: usize } // wires ascending, monomials ascending
 /// AC window_anf (66-91): product cap 8·budget checked per outer row; running sum > 4·budget after each gate
 /// over ALL entries (identity-valued ones included); final total > budget.
-pub fn window_anf<M: MonoKey>(gates: &[XGate], budget: usize, sem: CapSemantics) -> Result<WindowAnf<M>, AnfOverflow>;
-pub struct MulStats { pub calls: u64, pub ambiguous: u64, pub aborts: u64, pub aborts_full_product_fits: u64 }
+pub fn window_anf<M: MonoKey>(gates: &[XGate], budget: usize, sem: CapSemantics, stats: &mut MulStats) -> Result<WindowAnf<M>, AnfOverflow>;
+pub struct MulStats { pub calls: u64, pub ambiguous: u64, pub aborts: u64, pub aborts_order_dependent: u64 }
 ```
 
 `mul` semantics:
 
-- Swap so the smaller operand is outer, and only when `len(a) > len(b)`. On a tie the accumulated product stays outer.
+- Swap so the smaller operand is outer, and only when `len(a) > len(b)`. On a tie, the accumulated product stays outer.
 - Toggle per pair: XOR, not dedup.
 - Check `len(res) > cap` after each outer row.
-- In the ambiguous zone `(|small|-1)·|large| > cap`, `Canonical` mode completes the product and aborts only if the final size exceeds the cap. In `CPython39` mode the prefix decides.
-- `MulStats` counts both outcomes, so a run can report how many decisions depended on the emulator.
+- In the ambiguous zone `(|small|-1)·|large| > cap`:
+  - in `Canonical` mode, complete the product and abort only if the final size exceeds the cap;
+  - in `CPython39` mode, the prefix decides.
+
+  Both modes count `aborts_order_dependent`, the aborts whose full product would fit. In `CPython39` mode that requires finishing the product on a scratch set after an abort, which happens only on aborts.
 
 ### 4.7 `fingerprint.rs`
 
@@ -366,6 +438,7 @@ pub struct MulStats { pub calls: u64, pub ambiguous: u64, pub aborts: u64, pub a
 pub type Fp = [u64; 16];                                  // 1024 samples
 pub fn inputs(n: usize, seed: u64) -> Vec<Fp>;            // PyRandom(seed).getrandbits(1024) per wire, wire order
 pub fn normalize(v: &Fp) -> Option<Fp>;                   // complement if sample 0 is set; None if constant
+pub fn value_key(v: &Fp) -> [u8; 16];                     // blake2b(int.to_bytes(128,'little'), digest_size=16), exactly WP
 pub struct Spans { pub spans: Vec<(u32 /*b*/, u32 /*e*/, u32 /*a*/)>, pub forced: FxHashSet<u32>, pub agree: usize,
                    pub a_wire: FxHashMap<u32, u16>, pub carried: usize }
 pub fn proxy_spans(a: &[XGate], b: &[XGate], n: usize, na: usize, nb: usize, inputs: &[Fp]) -> Spans; // WP:63-90
@@ -373,7 +446,7 @@ pub fn proxy_spans(a: &[XGate], b: &[XGate], n: usize, na: usize, nb: usize, inp
 
 The evaluation adds `XGate::apply_lanes16(&self, &mut [[u64; 16]])` to `xgate.rs`, bit-identical per word to `apply_lanes`.
 
-The value index is keyed on the **full normalized `Fp`**, with the first birth index in A as the value id. The oracle keys on blake2b-128 of the same value. The two are equivalent except under a 2^-128 collision (deviation D-a, §7.3).
+**Value identity uses the oracle's own key**, blake2b-128 of the normalized value, computed by the in-house `blake2b.rs` (golden vector in Appendix A). The index is `FxHashMap<[u8;16], u32>` from the key to the first birth index in A. Revision 1 keyed on the full 128-byte `Fp` and listed a 2^-128 collision deviation. Using the oracle's key removes that deviation (even a blake2b collision behaves identically) and saves about 250 MB at n=128. Cost: about 4.6M hashes of 128 bytes at n=128, about 1-2 s.
 
 The pending-close rule is always applied: the span pops on **every** write, including constant and equal values.
 
@@ -401,10 +474,10 @@ pub fn pack(a: &OracleCircuit, b: &OracleCircuit, p: &PackParams, log: &mut dyn 
 
 Faithful to WP:228-460, following packer spec §§6-11:
 
-- **Epoch readiness:** per-wire `Vec<Vec<u32>>` buckets indexed by the write and read counts.
+- **Epoch readiness:** per-wire `Vec<Vec<u32>>` buckets indexed by write and read counts.
 - **Heaps:** `filler` and `anyready` are `BinaryHeap<Reverse<u32>>` with lazy deletion.
-- **`committed`:** `OrderedMap<u32, u32>`, a `Vec<(key, val, live)>` plus an `FxHashMap` from key to slot. Deletion preserves order. Iteration skips dead entries, and the structure compacts when more than half the slots are dead.
-- **Sorts:** `by_end` and the contagion snapshot use stable sorts.
+- **`committed`:** an order-preserving map, a `Vec<(key, val, live)>` plus an `FxHashMap` from key to slot. Iteration skips dead entries, and it compacts when more than half the slots are dead.
+- **Sorts:** stable sorts for `by_end` and the contagion snapshot.
 
 Quirks are reproduced, not fixed:
 
@@ -416,13 +489,13 @@ Quirks are reproduced, not fixed:
 - The final filter keeps `0 < b < m` without dedup.
 - The output header is `computed_n(B)`.
 
-The unreachable paths (`burst stuck`, `scheduler stuck`, `resumed_later`) become `debug_assert!`s. The lemma "the minimum non-scheduled entry of anyready is the lowest unscheduled gate" is a `debug_assert!` as well.
+The unreachable paths (`burst stuck`, `scheduler stuck`, `resumed_later`) and the lemma "the minimum non-scheduled entry of anyready is the lowest unscheduled gate" are **release-mode checks** returning `Internal` (exit 8), not `debug_assert!`s.
 
-The text log lines reproduce WP's format (header, winnable, intervals, scheduled, the `death causes` dict repr in first-increment order, VERIFY, RESULT, class lines, window stats). They are compared byte for byte on fixtures, where `:.1f` rounding ties are the only tolerated difference (§7.3).
+`order` is certified exactly after packing (§4.11a): it is a permutation of G3's indices and a linear extension of G3's dependency order. WP's sampled VERIFY is kept as an additional check.
+
+Text log lines reproduce WP's format: header, winnable, intervals, scheduled, the `death causes` dict repr in first-increment order, VERIFY, RESULT, class lines and window stats. They are compared on fixtures after path normalization (§10.3). Python `:.1f` versus Rust `{:.1}` can differ only on exact binary ties (D-c).
 
 ### 4.10 `gf2.rs` and `cview.rs`: the exposure engine, moved out of `hmap_affine`
-
-The API follows the exposure spec §9:
 
 ```rust
 pub const DEFAULT_SEED: u64 = 12345; pub const DEFAULT_BATCHES: usize = 96; pub const NULLITY_CAP: usize = 14;
@@ -435,24 +508,20 @@ pub struct BornRow { pub prefix: usize, pub gate: usize, pub wire: usize }
 pub struct CRows { pub rows: Vec<BornRow>, vecs: Vec<Vec<u64>> }                         // [row][batch]
 pub fn born_rows(c: &[XGate], n: usize, prefixes: &[usize], s: &HonestSamples) -> CRows;
 pub fn output_gates(c: &[XGate], n: usize) -> FxHashSet<usize>;                          // last writer per wire < n
-pub struct CutColumns { reps: Vec<Vec<u64>>, rep_wires: Vec<u16>, basis: Vec<(usize, Vec<u64>, Vec<u64>)>, nulls: Vec<Vec<u64>> }
-impl CutColumns { pub fn build(state: &[Vec<u64>] /*[batch][wire]*/, nw: usize) -> Self;
-                  pub fn predict(&self, row: &[u64]) -> Option<CutFit>; }                 // CutFit { weight: u32, support: Vec<u16>, approx: bool }
+pub struct CutColumns { /* reps, rep_wires, basis, nulls */ }
+impl CutColumns { pub fn build(state: &[Vec<u64>], nw: usize) -> Self; pub fn predict(&self, row: &[u64]) -> Option<CutFit>; }
 pub struct CutResult { pub cut: usize, pub fits: Vec<(u32 /*row*/, CutFit)> }            // rows ascending
 pub struct CutOracle<'a> { /* P, nw_g, samples, rows, checkpoints every 16384 gates, memo FxHashMap<cut, Arc<CutResult>> */ }
 impl<'a> CutOracle<'a> {
     pub fn new(p: &'a [XGate], nw_g: usize, rows: &'a CRows, s: &'a HonestSamples) -> Self;
-    pub fn results(&mut self, cuts: &[usize]) -> Vec<Arc<CutResult>>;                    // computes missing cuts in parallel (rayon), returns in cut order
+    pub fn results(&mut self, cuts: &[usize]) -> Vec<Arc<CutResult>>;                    // missing cuts in parallel, returned in cut order
 }
 pub struct ExposureOptions { pub collect_allcuts: bool, pub collect_witness: bool, pub skip_settled: bool }
-pub struct Witness { pub cut: usize, pub support: Vec<u16> }
-pub struct ExposureReport { pub rows: Vec<BornRow>, pub cuts: Vec<usize>, pub tstar: Vec<i64>, pub approx: usize,
-                            pub witness: Vec<Option<Witness>>, pub allcuts: Vec<(u32, usize, u32)> }
 pub fn assemble(rows: &CRows, cuts: &[usize], per_cut: &[Arc<CutResult>], o: &ExposureOptions) -> ExposureReport; // sequential, cut order
 pub fn exposure_scan(c_rows: &CRows, g: &[XGate], nw_g: usize, s: &HonestSamples, cuts: &[usize], o: &ExposureOptions) -> ExposureReport;
 impl ExposureReport {
     pub fn visible(&self) -> usize;
-    pub fn summary_lines(&self) -> Vec<String>;          // exact HA L2 + histogram + "wrote" lines
+    pub fn summary_lines(&self) -> Vec<String>;
     pub fn write_exposure_tsv(&self, w: &mut impl Write) -> io::Result<()>;
     pub fn write_allcuts_tsv(&self, w: &mut impl Write) -> io::Result<()>;
     pub fn write_witness_tsv(&self, w: &mut impl Write) -> io::Result<()>;
@@ -460,23 +529,25 @@ impl ExposureReport {
 }
 ```
 
-The key property: a `(row, cut)` fit depends only on `(C, P, cut, n, seed, batches)`, never on which other cuts are scanned. So `CutResult` is memoized per cut. All semantics that span several cuts are replayed **sequentially in cut order** in `assemble`:
+**Cut independence.** A `(row, cut)` fit depends only on `(C, P, cut, n, seed, batches)`, never on which other cuts are scanned, so `CutResult` is memoized per cut. Semantics that span several cuts are replayed **sequentially in cut order** in `assemble`:
 
-- the strict-< best weight;
-- the earliest-cut witness;
-- the `skip_settled` rule and its `approx` accounting.
+- strict-< best weight;
+- earliest-cut witness;
+- `skip_settled` and its `approx` accounting.
 
 Within a cut, the following match HA exactly:
 
 - the representative is the lowest wire of each complement class;
-- reps are inserted in wire order, with the constant inserted last;
+- reps are inserted in wire order, with the constant last;
 - forward reduction runs in basis insertion order;
 - the Gray-code walk keeps the first strict minimum;
 - nullity above 14 counts as approximate.
 
-The engine **streams** P with one `[batch][wire]` state of 96 × nw u64 words. At n=128 that is 393 KB. It stores checkpoints every 16 384 gates so that candidate cuts can be re-simulated on demand. This replaces HA's materialized `gs[batch][cut][wire]`, which takes about 2.8 GB at n=128.
+The engine **streams** P with one `[batch][wire]` state, 393 KB at n=128. It keeps checkpoints every 16 384 gates so it can re-simulate candidate cuts, instead of HA's materialized 2.8 GB `gs[batch][cut][wire]`.
 
-**`hmap_affine` after the move.** Exposure mode becomes `HonestSamples::draw`, then `born_rows`, then `exposure_scan` with `skip_settled = allcuts_path.is_none()`, then printing and writing in the same order. Line 1, every assert (including `tb*64 > n_reg+64`) and every panic message stay. Heatmap and SPAN modes keep their code. They use the shared sample function only where the RNG order is provably identical; SPAN moves later and separately.
+**`hmap_affine` after the move.** Exposure mode becomes `HonestSamples::draw`, then `born_rows`, then `exposure_scan` with `skip_settled = allcuts_path.is_none()`, then printing and writing in the same order. Line 1, every assert and every panic message stay. Heatmap and SPAN modes keep their code; SPAN moves later and separately.
+
+**Engine parity is never self-referential.** It is checked against a **pinned baseline `hmap_affine` built from `492564f0`** (§10.1), never against a binary built from the tree under test.
 
 The engine is not feature-gated, because stage 4 must build with `cargo build --release`. `hmap_affine` stays under `security-tools`.
 
@@ -484,100 +555,127 @@ The engine is not feature-gated, because stage 4 must build with `cargo build --
 
 ```rust
 // seq.rs
-pub enum Item { Gate(XGate), Marker }
-pub fn to_seq(gates: &[XGate], bounds: &[usize]) -> Vec<Item>;            // dedup, keep 0 < b < m
-pub fn from_seq(seq: &[Item]) -> (Vec<XGate>, Vec<usize>);                  // merge adjacent markers, drop leading/trailing
+pub enum Item { Gate { gate: XGate, origin: u32 /* index in packed */ }, Marker }
+pub fn to_seq(gates: &[(XGate, u32)], bounds: &[usize]) -> Vec<Item>;     // dedup, keep 0 < b < m
+pub fn from_seq(seq: &[Item]) -> (Vec<(XGate, u32)>, Vec<usize>);        // merge adjacent markers, drop leading/trailing
 pub fn commute(a: &XGate, b: &XGate) -> bool;
-pub fn slide(seq: &mut Vec<Item>, pos: usize, forward: bool) -> usize;      // incl. the dest==pos no-move quirk
+pub fn slide(seq: &mut Vec<Item>, pos: usize, forward: bool) -> usize;    // incl. the dest==pos no-move quirk
 // cancel.rs
-pub fn cancel_pass(gates: &[XGate]) -> (Vec<bool> /*dead*/, usize /*pairs*/); // pass-start indexes: dead gates still block
-pub fn run_cancel(seq: &mut Vec<Item>) -> Vec<usize>;                        // pairs per pass, to the fixed point
+pub fn cancel_pass(gates: &[XGate]) -> (Vec<bool> /*dead*/, Vec<(u32, u32)> /*pairs by origin*/); // dead gates still block
+pub fn run_cancel(seq: &mut Vec<Item>) -> Vec<Vec<(u32, u32)>>;           // pairs per pass, to the fixed point
 // fix.rs
 pub struct FixRow { pub c_gate: usize, pub cut: usize, pub support: Vec<u16> }
 pub fn run_fix(seq: &mut Vec<Item>, rows: &[FixRow], outs: &FxHashSet<usize>) -> FixReport; // rows in ascending C gate
 // merge.rs
 pub fn merge_bounds(bounds: &[usize], allcuts: &[(u32, usize, u32)], rows: &[BornRow], outs: &FxHashSet<usize>) -> (Vec<usize>, usize);
 // split.rs
-pub fn split_candidates(lo: usize, hi: usize) -> Vec<usize>;                // {lo + (hi-lo)*i/33 : i=1..32} \ {lo,hi}, sorted
+pub fn split_candidates(lo: usize, hi: usize) -> Vec<usize>;              // {lo + (hi-lo)*i/33 : i=1..32} \ {lo,hi}, sorted
+pub fn fits<M: MonoKey>(window: &[XGate], budget: usize, sem: CapSemantics, stats: &mut MulStats) -> bool; // == anf_split2 fit()
 pub fn split_pass<M: MonoKey>(p: &[XGate], bounds: &[usize], budget: usize, sem: CapSemantics,
                               leaky: &mut dyn FnMut(&[usize]) -> FxHashSet<usize>, log: &mut dyn Write) -> SplitReport;
 // mod.rs
-pub struct Repaired { pub n_header: usize, pub gates: Vec<XGate>, pub bounds: Vec<usize>, pub last_scan: ExposureReport,
-                      pub final_scan: ExposureReport, pub report: RepairReport }
+pub struct Repaired { pub n_header: usize, pub gates: Vec<XGate>, pub origins: Vec<u32>, pub bounds: Vec<usize>,
+                      pub last_scan: ExposureReport, pub final_scan: Option<ExposureReport>, pub cancelled: Vec<(u32, u32)>,
+                      pub report: RepairReport }
 pub fn repair(packed: &[XGate], packed_n: usize, bounds0: &[usize], c: &[XGate], n: usize,
               p: &RepairParams, log: &mut dyn Write) -> Result<Repaired, Stage4Error>;
 ```
 
+Gates carry their packed index (`origin`) through every sequence operation. Nothing in the oracle algorithm reads it; it exists for the certificates.
+
 Control flow of `repair` in `RepairMode::Oracle`, which is exactly `repair.sh`:
 
-1. `seq = to_seq(packed, bounds0)`, then `run_cancel`, then `from_seq`.
-2. `verify_equiv(packed, rep)` against the immutable in-memory packed circuit. There is no file race.
-3. Fix loop, for `it` in `1..=fix_iterations`:
-   - scan the current `(rep, bounds)`;
+1. `seq = to_seq(packed, bounds0)`, then `run_cancel`, then `(gates, bounds) = from_seq(seq)`.
+2. `verify_equiv(packed, gates)` against the immutable in-memory packed circuit. There is no file race.
+3. **Fix loop**, for `it` in `1..=fix_iterations`. **Every iteration starts from `seq = to_seq(gates, bounds)`**, where `gates, bounds` come from the previous `from_seq`, exactly as the subprocess chain reloads the files (`order_repair.py:177-179`). Markers are therefore normalized at the start of each iteration: adjacent and duplicate markers merged, leading and trailing markers dropped. Then:
+   - scan `(gates, bounds)`;
    - log `fix iter {it}: C-view visible {v} (floor {n})`;
    - if `v <= n`, break;
-   - otherwise call `run_fix` with the scan's witness rows and the outputs, then `from_seq`.
-   After the last fix there is no rescan inside this loop.
+   - otherwise `run_fix(&mut seq, witness rows, outs)` and `(gates, bounds) = from_seq(seq)`.
+
+   There is no rescan after the last fix. If all four iterations run without meeting the floor, `fix_exhausted = true` is reported.
 4. `verify_equiv` again.
-5. Fallback loop, for `it` in `1..=fallback_iterations`:
+5. **Fallback loop**, for `it` in `1..=fallback_iterations`:
    - `v` = scan of the current lattice;
-   - if `v > n`, `merge_bounds` using this scan's allcuts;
-   - `split_pass` with budget 65536. Its `leaky` closure is `CutOracle` on the unchanged rep circuit, giving cuts with a fit row outside `outs`.
-   - Break iff `v <= n` and 0 splits were added.
-6. **Final scan, new and report-only.** Scan the final lattice and compute the identity test `nonoutput_visible(outs)`. It does not change any byte of the output. It decides the exit status (§5.4) and fills in the "final lattice never rescanned" gap.
+   - if `v > n`, `merge_bounds` with this scan's allcuts;
+   - `split_pass` with budget 65536 and `leaky` = `CutOracle` on the unchanged rep circuit (cuts with a fit row outside `outs`);
+   - break iff `v <= n` and 0 splits were added.
+6. **Final scan (new, report-only).** Scan the final lattice and compute `nonoutput_visible(outs)` and the over-budget windows (`!fits(window)` with the configured `CapSemantics`). This changes no output byte. It decides the exit status (§5.4).
 
-Memoization makes this cheap. The rep circuit is constant across the whole fallback loop, because merge and split only touch bounds. So every scan and every split-candidate predicate in the fallback loop shares one `CutOracle`. Fix iterations change the circuit and get a fresh `CutOracle` each.
+**Single window.** If the bounds are empty at any scan (a legitimately short G3, or merges that remove every boundary), there is no interior cut:
 
-The merge reads the outputs from C via `output_gates(c, n)`. The oracle derives them from `exposure.tsv` (`last[w] = max gate`). The two are equal when c-step is 1 and every wire is written; the reader asserts this equality on the rows. This drops the `SPLIT_EXP` dependency.
+- the scan is skipped and recorded as `visible=0`, `final_visible=0`;
+- the fallback loop breaks;
+- the circuit is serialized as one window.
 
-Other output-neutral hardening:
+The oracle panics here (HA "empty plate"), so this is a defined behaviour on an oracle failure path (D-b), covered by the `single_window` fixture and unit test.
 
-- Legality is asserted per move: every crossed gate commutes, and each cancelled pair is identical with no blocker in between. These are debug asserts, plus a cheap release check of the gate multiset (`rep = packed - pairs`).
-- Every error the oracle swallows is a hard error here: an empty lattice (HA panics on "empty plate"), a failed scan, a failed split.
+**Memoization.** The rep circuit is constant across the fallback loop, because merge and split touch only bounds. Every scan and every split predicate in that loop share one `CutOracle`. Each fix iteration changes the circuit and gets a fresh one.
+
+The merge reads the outputs from C via `output_gates(c, n)`. The oracle derives them from `exposure.tsv` (`last[w] = max gate`). Both are equal when c-step is 1 and every wire is written; the reader asserts this equality on the rows.
+
+#### 4.11a `certify.rs`: exact certificates (release mode)
+
+Every stage-4 transformation is a reorder by commutation or a cancellation, so equivalence can be certified exactly in O(gate-wire incidences). These checks run in release builds on every run, and a failure is exit 4.
+
+- **`certify_reorder(g3, order)`.** `order` is a permutation of `0..|G3|`, and for every wire w the **run-canonical form** of the access sequence is equal for G3 and for the packed order. The access sequence is the gate ids in order, each labelled `W` (writes w) or `R` (controls on w). The run-canonical form is the sequence of maximal same-label runs, each as a sorted id set.
+
+  Two orders have equal forms on every wire iff they order every conflicting pair (one writes w, the other reads w) identically. That is iff they are linear extensions of the same dependency partial order, which implies functional equality, because non-conflicting gates commute (§4.2). Writes on the same wire commute with each other (XOR), and so do reads.
+- **`certify_cancel(packed_order, passes)`.** Replay the recorded pairs pass by pass on the packed sequence of origins. For each pair `(i, j)`, check that the gates are identical and that every **live** gate strictly between them commutes with gate i. Then delete both. This uses the pairs' semantics, not `cancel_pass`'s code: `g X g = X` when g commutes with every gate of X.
+- **`certify_repair(packed, rep)`.** Apply `certify_cancel`, then `certify_reorder` between the remaining sequence and `rep.origins`. Fix slides are pure commutations, so they are covered.
+- **Window ANF.** `check_windows_anf` compares each decoded window's monomial sets **exactly** with `window_anf` (an equality of sorted lists, not sampling). The ANF engine itself is checked against the gates:
+  - exhaustively for every window whose support is at most `exhaustive_support_max` = 16 wires (all 2^f inputs, bit-sliced);
+  - with 1024 random full states for every other window.
+
+The sampled checks (`verify_equiv` with seed 77, WP VERIFY, zero slice) are kept as additional checks.
 
 ### 4.12 `serialize.rs`: body, container, decoder
 
 ```rust
 pub const MAGIC: [u8; 8] = *b"LMTDPANF"; pub const FORMAT_VERSION: u16 = 1; pub const HEADER_BYTES: u16 = 48;
-pub const IO_LAYOUT_CLASSIC_ZERO_SLICE: u32 = 1;   // inputs 0..n, answer n..2n, all other wires 0 (verify_zero_slice.rs)
+pub const IO_LAYOUT_CLASSIC_ZERO_SLICE: u32 = 1;   // inputs 0..n, answer n..2n, all other wires 0
 pub struct ContainerHeader { pub source_wires: u32, pub state_wires: u32, pub io_layout: u32, pub window_count: u32, pub body_bytes: u64, pub body_crc32: u32 }
-pub fn encode_body(gates: &[XGate], bounds: &[usize], m_header: usize, nw: usize) -> Result<(Vec<u8>, EmitReport), Stage4Error>;
-pub fn encode_container(h: &ContainerHeader, body: &[u8]) -> Vec<u8>;
+pub fn encode_body(gates: &[XGate], bounds: &[usize], m_header: usize, nw: usize, out: &mut impl Write) -> Result<EmitReport, Stage4Error>; // streamed
+pub fn write_container_header(h: &ContainerHeader, out: &mut impl Write) -> io::Result<()>;
 pub fn crc32_ieee(bytes: &[u8]) -> u32;                     // == zlib.crc32
-pub struct DecodedWindow { pub support: Vec<u16>, pub changed: Vec<(u16, Vec<Vec<u8>>)> }
-pub struct Deliverable { pub header: Option<ContainerHeader>, pub windows: Vec<DecodedWindow> }
-pub fn decode(bytes: &[u8]) -> Result<Deliverable, Stage4Error>;      // container or raw body; validates every invariant
+pub enum Format { Raw { source_wires: u32 }, Container }
+pub struct Deliverable {                                    // flat arena: no per-monomial allocation
+    pub header: Option<ContainerHeader>,
+    bytes: Vec<u8>,                                         // all mask bytes, contiguous
+    windows: Vec<WindowIdx>,                                // support range, changed-wire range
+    wires: Vec<WireIdx>,                                    // (wire id, f, mask_bytes, offset into bytes, count)
+    supports: Vec<u16>,
+}
+pub fn decode(bytes: &[u8], format: Format) -> Result<Deliverable, Stage4Error>;   // explicit format; validates every invariant
 impl Deliverable { pub fn eval_lanes16(&self, state: &mut [[u64; 16]]); pub fn eval_u64(&self, state: &mut [u64]); }
 ```
 
 `encode_body` follows `DE:14-50` byte for byte:
 
 - `cuts = [0] + sorted(0 < b < m_header) + [m_header]`, without dedup;
-- each window comes from `window_anf(…, 1<<30)`, so the caps can never fire, and the result is canonical;
+- each window comes from `window_anf(…, 1<<30)`, so no cap can fire and the result is canonical;
 - the support is ascending;
 - the record header is `<HH`;
 - the support ids are `<H` each;
 - each changed wire, in ascending order, is `<HI` followed by its local masks: `ceil(f/8)` bytes little-endian per mask, monomials in ascending global value;
 - each blob is preceded by `<I len`.
 
-Overflows (a wire above 65535, f or c above 65535, or a count or length beyond u32) are errors, never a wrap.
+Overflows (a wire above 65535, f or c above 65535, a count or length beyond u32) are errors, never a wrap.
 
-Windows are encoded in parallel and concatenated in window order.
+Windows are encoded in parallel in bounded batches (`max_concurrent_anf`) and **streamed** to `deliverable.bin.tmp` in window order, while the CRC-32 is computed on the fly. There is no in-memory body. `deliverable.tdp4` is the 48-byte header followed by a copy of the body file (`io::copy`).
 
-The container layout is in §6.
+`decode` never guesses the format: `Format::Raw` requires the source width, and `Format::Container` requires the magic.
 
 ### 4.13 `verify.rs`
 
 ```rust
 pub fn verify_equiv(a: &[XGate], b: &[XGate], n: usize, seed: u64) -> Result<(), Stage4Error>;      // verify_equiv.py: PyRandom(77), 1024 all-wire states
-pub fn check_windows_anf(gates: &[XGate], bounds: &[usize], body: &Deliverable, seed: u64) -> Result<usize, Stage4Error>; // EVERY window, 1024 full random states
-pub fn check_deliverable(gates: &[XGate], d: &Deliverable, seed: u64) -> Result<(), Stage4Error>;   // decode(file) == circuit (DE match=True, but on the decoded FILE)
+pub fn check_windows_anf(gates: &[XGate], bounds: &[usize], d: &Deliverable, exhaustive_max: usize, seed: u64) -> Result<usize, Stage4Error>; // §4.11a
+pub fn check_deliverable(gates: &[XGate], d: &Deliverable, seed: u64) -> Result<(), Stage4Error>;   // decode(file) == circuit, sampled end to end
 pub fn check_zero_slice(c: &[XGate], d: &Deliverable, n: usize, samples: usize, seed: u64) -> Result<(), Stage4Error>; // deliverable(x on 0..n, 0 elsewhere)[n..2n] == C(x)
 ```
 
-`check_windows_anf` replaces AC's spot checks, which only test windows with `wi % 500 == 0`. Spot-check parity is not needed; AC's report numbers are reproduced by `census.rs`, see below.
-
-`check_zero_slice` is the honest-slice end-to-end check that the reference chain never ran automatically.
+`check_windows_anf` replaces AC's spot checks, which only tested windows with `wi % 500 == 0`. AC's report numbers are reproduced by `census.rs`. `check_zero_slice` is the honest-slice end-to-end check that the reference chain never ran automatically.
 
 ### 4.14 `census.rs` (report only)
 
@@ -586,23 +684,19 @@ pub fn link_census(a: &OracleCircuit, p: &[XGate], bounds: &[usize]) -> LinkCens
 pub fn anf_size_report(gates: &[XGate], bounds: &[usize], budget: usize, label: &str, sem: CapSemantics) -> String; // AC report lines (no spot checks)
 ```
 
-These reproduce the numbers in `link_rep512.txt` (L2, M2, size histograms) and the first three lines of `anf_rep512.txt`, so that runs are judged by the program's metrics. They are not on the deliverable path.
+These reproduce `link_rep512.txt` (L2, M2, size histograms) and the first three lines of `anf_rep512.txt`, and their parity is gated (§10.5 step 5). They are not on the deliverable path.
 
 ### 4.15 `mod.rs`
 
 ```rust
 pub struct Stage4Inputs<'a> { pub g2: &'a OracleCircuit, pub g3: &'a OracleCircuit, pub c: &'a [XGate], pub n: usize }
-pub struct Stage4Output { pub packed: Packed, pub repaired: Repaired, pub body: Vec<u8>, pub container: Vec<u8>, pub report: Stage4Report }
-pub fn run_stage4(inp: &Stage4Inputs, p: &Stage4Params, log: &mut dyn Write) -> Result<Stage4Output, Stage4Error>;
+pub struct Stage4Output { pub packed: Packed, pub repaired: Repaired, pub emit: EmitReport, pub report: Stage4Report } // body is on disk
+pub fn run_stage4(inp: &Stage4Inputs, p: &Stage4Params, out_dir: &Path, log: &mut dyn Write) -> Result<Stage4Output, Stage4Error>;
 ```
-
-`run_stage4` dispatches the monomial width once with `with_mono_width(computed_n, …)`.
 
 ---
 
 ## 5. The production binary `tdp_packing`
-
-Add to `Cargo.toml`:
 
 ```toml
 [[bin]]
@@ -610,7 +704,7 @@ name = "tdp_packing"
 path = "src/programs/tdp_packing/main.rs"
 ```
 
-It has no required features. The adapter lives in `src/programs/tdp_packing/{main.rs,mod.rs,cli.rs}`: `main.rs` is three lines, `cli.rs` holds the clap derive, and `mod.rs` holds `run()` with I/O and logs. The binary reads no environment variables, except that `RAYON_NUM_THREADS` is honoured through `--threads`.
+The binary has no required features. It lives in `src/programs/tdp_packing/{main.rs,mod.rs,cli.rs}`. It reads **no environment variables**; threads are set by `--threads` only.
 
 ### 5.1 CLI
 
@@ -620,17 +714,16 @@ tdp_packing run   --stage2 <tdp.mpmct1> --stage3 <db_mixing.mpmct1> --source-c <
                   [--window-gates 512] [--interval-cap 512] [--monomial-budget 24576] [--span-cap 3000]
                   [--split-budget 65536] [--fix-iterations 4] [--fallback-iterations 4]
                   [--anf-cap-semantics cpython39|canonical] [--zero-slice-samples 4096]
-                  [--allow-floor-miss] [--allow-over-budget] [--threads K] [--no-oracle-files] [--raw-body]
-tdp_packing pack      <A> <B> <W_cap> <G> <B_mono> <span_cap> <label> <out.mpmct1>   # WP argv, byte-parity mode
-tdp_packing repair    --packed P --bounds B --source-c C --n N --out-dir DIR [repair flags]   # repair.sh parity mode
-tdp_packing serialize <rep.mpmct1> <rep.bounds> <out.bin> <label> [--container N]          # DE parity mode
-tdp_packing exposure  <hmap_affine exposure argv subset>   # optional convenience; hmap_affine stays the reference tool
-tdp_packing decode    <deliverable.bin> [--stats]          # validate + summary
-tdp_packing eval      <deliverable.bin> --input <hex|file> # reference evaluator (zero-slice or full state)
-tdp_packing census    <A> <P> <B> <label>                  # link_census parity
+                  [--allow-floor-miss] [--allow-over-budget] [--threads K] [--no-oracle-files]
+tdp_packing pack      <A> <B> <W_cap> <G> <B_mono> <span_cap> <label> <out.mpmct1>      # WP argv, parity mode
+tdp_packing repair    --packed P --bounds B --source-c C --n N --out-dir DIR [repair flags] # repair.sh parity mode
+tdp_packing serialize <rep.mpmct1> <rep.bounds> <out.bin> <label>                        # DE parity mode (raw body)
+tdp_packing check-final --rep R --bounds B --source-c C --n N [--split-budget 65536] [--anf-cap-semantics …]
+                                                     # final identity + budget test on any (oracle or Rust) repair
+tdp_packing decode    <file> --format raw --n N | --format container [--stats]
+tdp_packing eval      <file> --format … --input <hex|file>
+tdp_packing census    <A> <P> <B> <label>                                                # link_census parity
 ```
-
-The subcommands `pack`, `repair` and `serialize` accept the oracle's positional shape, so `tests/manual/stage4/parity.sh` can call either implementation the same way.
 
 ### 5.2 Inputs
 
@@ -638,73 +731,76 @@ The subcommands `pack`, `repair` and `serialize` accept the oracle's positional 
 |---|---|
 | `tdp.mpmct1` | the stage-2 circuit |
 | `db_mixing.mpmct1` | the stage-3 circuit; `s3.mpmct1` in the reference |
-| `tdp.mpmct1.source_c.g57` | the source C. Read only by repair and verify; it never reaches a shipped byte |
-| `--n` | the source wires. It must equal the width of C, and `4n` must be at most the state width |
-
-All three files are read through `read_oracle_mpmct` or `read_g57_file` with the strict checks of §4.2.
+| `tdp.mpmct1.source_c.g57` | the source C, read only by repair and verify. It never reaches a shipped byte |
+| `--n` | the source wires. It must equal the width of C, `4n` must be at most the state width, and n ≤ 256 |
 
 ### 5.3 Outputs, all in `--out-dir`
 
-The directory is created with mode 0700, and every file inside it is created under umask 077.
+The directory is created with mode 0700, and every file is created under umask 077. Each file is written to `*.tmp` and renamed. A rename or write failure is `Io` (exit 7).
 
 | file | content | ships? |
 |---|---|---|
-| `deliverable.bin` | container v1 (§6). Written to `deliverable.bin.tmp`, decoded and checked, then renamed. Only on success or an allowed failure | **yes, the only shipped file** |
-| `deliverable.body.bin` | raw DE body, with `--raw-body` (parity) | no |
+| `deliverable.bin` | the **raw DE body**, byte-identical to the reference's `deliverable.bin`. Existing readers (`decode_check.py`, `finalize*.sh`, `score_arm.sh`) keep working | no |
+| `deliverable.tdp4` | container v1 (§6): 48-byte header plus the same body | **yes, the shipped file** |
 | `packed_G{G}.mpmct1`, `packed_G{G}.mpmct1.bounds` | packer output, WP format | no |
-| `rep{G}.mpmct1`, `rep{G}.bounds` | repaired circuit and bounds, order_repair format (k=0 trailing space; header n carried over) | no |
-| `rep{G}.exposure.tsv`, `rep{G}.allcuts.tsv`, `rep{G}.wit.tsv`, `rep{G}.cview.log` | the last in-loop scan, exactly as the oracle leaves them; omitted with `--no-oracle-files` | no (C-keyed, never ship; doc §4.8) |
+| `rep{G}.mpmct1`, `rep{G}.bounds` | repaired circuit and bounds, `order_repair` format | no |
+| `rep{G}.exposure.tsv`, `rep{G}.allcuts.tsv`, `rep{G}.wit.tsv`, `rep{G}.cview.log` | the last in-loop scan, exactly as the oracle leaves them; omitted with `--no-oracle-files` | no (C-keyed) |
 | `pack_G{G}.txt`, `repair{G}.log`, `anf_rep{G}.txt`, `link_rep{G}.txt` | oracle-format text reports | no |
-| `packing.report` | machine-readable report (§5.5) | no |
+| `packing.report` | machine-readable report (§5.5), publishable | no |
 
-Nothing is written outside `--out-dir`. There are no TAG-derived paths and no pid-named scratch files.
+Nothing is written outside `--out-dir`.
 
 ### 5.4 Exit codes
 
-| code | meaning | `deliverable.bin` |
+| code | meaning | `deliverable.*` |
 |---|---|---|
-| 0 | success, all checks passed | written |
-| 2 | usage or parameter error | — |
+| 0 | finished. `packing.report` `status=ok`, or, only under an `--allow-*` flag, `status=floor_miss` or `status=over_budget` | written |
+| 2 | usage or parameter error (including n > 256) | — |
 | 3 | input error: unreadable, malformed, inconsistent header, non-canonical gate line, width mismatch | — |
-| 4 | verification failure: pack VERIFY, `verify_equiv` mismatch, illegal move, ANF ≠ gates on any window, decode ≠ circuit, zero-slice ≠ C | not written |
-| 5 | exposure floor missed: the final scan has a visible non-output row (identity test) | not written, unless `--allow-floor-miss`, which still exits 5 |
-| 6 | window over the split budget after fallback (only 1-2 gate windows can remain) | not written, unless `--allow-over-budget`, which still exits 6 |
-| 101 | panic (internal invariant) | — |
+| 4 | verification failure: a certificate (§4.11a), pack VERIFY, `verify_equiv`, ANF ≠ gates on any window, decode ≠ ANF, zero slice ≠ C | not written |
+| 5 | exposure floor missed: the final scan has a visible non-output row (identity test) | not written |
+| 6 | over budget: some final window fails `split::fits(window, split_budget, cap_semantics)`, the exact predicate the split uses | not written |
+| 7 | I/O error writing outputs (disk full, permission, rename) | partial `*.tmp` removed |
+| 8 | internal invariant violated (non-panicking) | — |
+| 101 | panic | — |
 
-Exits 5 and 6 are deliberate departures from the oracle on failure paths only. The oracle silently shipped vL128a v1 at 129 visible. On every success path the bytes are unchanged.
+Under `--allow-floor-miss` or `--allow-over-budget`, the corresponding failure exits **0** with the deliverable written and `status=floor_miss` or `over_budget` in `packing.report`. A caller must read `status`; the driver does (§11.1).
+
+Exits 5 and 6 are deliberate departures from the oracle on failure paths only. The oracle silently shipped vL128a v1 at 129 visible, and it keeps over-budget 1-2 gate windows silently. On every path where the oracle's output meets both tests, the bytes are unchanged.
 
 ### 5.5 `packing.report`
 
-A flat `key=value` file, one key per line, in fixed key order. It parses trivially in bash and Python, and in Rust tests. It never contains seeds; stage 4 has none that are secret.
+A flat `key=value` file in fixed key order. **Every key is publishable:** no seeds, no hashes of private inputs, nothing derived from C except counts.
 
 ```
-packing_report=1
-status=ok|verify_fail|floor_miss|over_budget
+packing_report=2
+status=ok|floor_miss|over_budget
 tool=tdp_packing <crate version> <git describe if embedded>
 binary_xxh3=<128-bit hex>
-input.stage2_xxh3=…  input.stage3_xxh3=…  input.source_c_xxh3=…     (private run dir only)
 n=64  state_wires=256
 param.window_gates=512 param.interval_cap=512 param.monomial_budget=24576 param.mul_cap=196608 param.span_cap=3000
 param.pad=4 param.cmax=24 param.fp_seed=20261004 param.fp_samples=1024 param.split_budget=65536
 param.fix_iterations=4 param.fallback_iterations=4 param.cview_batches=96 param.cview_seed=12345
-param.verify_seed=77 param.anf_cap_semantics=cpython39 param.repair_mode=oracle
+param.verify_seed=77 param.anf_cap_semantics=cpython39 param.repair_mode=oracle param.exhaustive_support_max=16
 pack.windows= pack.spans= pack.carried= pack.forced= pack.winnable= pack.disq_long= pack.disq_big= pack.rescued=
 pack.intervals= pack.hidden_spans= pack.hidden_values= pack.death.burst_close= pack.death.sibling= pack.death.drain_close=
 pack.exposed= pack.mul_calls= pack.mul_ambiguous= pack.compose_aborts= pack.compose_aborts_order_dependent=
-repair.cancel_passes=51574,2543,191,10 repair.cancel_pairs= repair.fix_trajectory=65,64 repair.fix_moved=…
-repair.fallback_trajectory=64,64 repair.merged=0 repair.splits=2,0 repair.forced_splits=0
-repair.final_visible= repair.final_nonoutput_visible= repair.split_mul_ambiguous=
+repair.cancel_passes=… repair.cancel_pairs= repair.fix_trajectory=… repair.fix_moved=… repair.fix_exhausted=
+repair.fallback_trajectory=… repair.merged= repair.splits=… repair.forced_splits= repair.single_window=
+repair.final_visible= repair.final_nonoutput_visible= repair.final_over_budget= repair.split_mul_ambiguous=
+repair.split_order_dependent=
 emit.windows= emit.monomials= emit.max_window_monomials= emit.body_bytes= emit.container_bytes= emit.deliverable_xxh3=
 census.proxy_values= census.proxy_L2= census.proxy_M2= census.froth_L2= census.froth_M2=
-check.pack_verify=ok check.equiv=ok check.windows_anf=ok(2776) check.decode=ok check.zero_slice=ok(4096)
+check.reorder_cert=ok check.repair_cert=ok check.pack_verify=ok check.equiv=ok
+check.windows_anf=ok(<exhaustive>/<sampled>) check.decode=ok check.zero_slice=ok(4096)
 time.pack_s= time.repair_s= time.emit_s= time.verify_s= peak_rss_mb=
 ```
 
 ---
 
-## 6. Deliverable container v1
+## 6. Deliverable container v1 (`deliverable.tdp4`)
 
-The DE body has no header, so it carries no n, no version and no integrity check. TDP doc §6.12 lists a container as an open decision. Container v1 wraps the **unchanged** DE body:
+The DE body has no header, so it carries no n, no version and no integrity check (TDP doc §6.12). Container v1 wraps the **unchanged** body under a **distinct name**. The raw `deliverable.bin` keeps its existing meaning.
 
 | offset | size | field | value |
 |---|---|---|---|
@@ -713,31 +809,30 @@ The DE body has no header, so it carries no n, no version and no integrity check
 | 10 | u16 | header_bytes | 48 |
 | 12 | u32 | flags | 0 (reserved; readers reject unknown bits) |
 | 16 | u32 | source_wires | n |
-| 20 | u32 | state_wires | header n of the repaired circuit (4n). Must be at most 65536 |
+| 20 | u32 | state_wires | header n of the repaired circuit (4n); at most 65536 |
 | 24 | u32 | io_layout | 1 = classic zero slice: x on wires 0..n, every other wire 0, answer on wires n..2n |
 | 28 | u32 | window_count | |
 | 32 | u64 | body_bytes | |
 | 40 | u32 | body_crc32 | zlib/IEEE CRC-32 of the body |
 | 44 | u32 | header_crc32 | CRC-32 of bytes 0..44 |
 
-All fields are little-endian. The body is the DE byte stream, `<I len` plus blob per window.
+All fields are little-endian. `deliverable.tdp4[48:] == deliverable.bin`, which is byte-identical to the reference chain's `deliverable.bin`. That body is the "payload" in every parity statement.
 
-Hence `deliverable.bin[48:]` is **byte-identical** to the reference chain's `deliverable.bin`. This is the "payload" in every parity statement.
+**The oracle is not edited.** Parity compares `deliverable.bin` (and `deliverable.tdp4[48:]`) with the oracle's raw body. The header is tested by:
 
-**Python oracle update**, made in the same commit as the Rust serializer. `W/anf_dump_eval.py` gains an optional trailing `--container N`. Without it the output is unchanged, which keeps the archived runs and `val_chain.sh` reproducible. With it, the script writes the same 48-byte header, computed with `struct` and `zlib.crc32`, in front of the body. The header needs the window count, which is `len(blobs)`, and the state wires, which is the header n of the repaired circuit.
+- decoder unit tests;
+- a 15-line standalone writer, `tests/manual/stage4/container_header.py` (`struct` + `zlib.crc32`), which `parity.sh` uses to rebuild the header from the oracle body and `cmp` the whole container.
 
-`scripts/windowed_delivery/README.md` documents the flag. `tests/manual/stage4/parity.sh` compares the full container produced by both sides, and the body against the archived files.
+The decoder (`serialize::decode`, `tdp_packing decode`) validates the following (the same set `port_runs/anf_spec/decode_check.py` verified on vA64a):
 
-The decoder (`serialize::decode`, `tdp_packing decode`) validates the following, all of which `port_runs/anf_spec/decode_check.py` verified on vA64a:
-
-- magic, version and both CRCs;
+- magic, version and both CRCs (container);
 - blob lengths;
 - support strictly ascending;
 - changed wires strictly ascending;
 - masks strictly ascending;
 - no mask bit at or above f;
 - every support index used;
-- f = 0 if and only if c = 0.
+- f = 0 iff c = 0.
 
 ---
 
@@ -747,221 +842,364 @@ The decoder (`serialize::decode`, `tdp_packing decode`) validates the following,
 
 | component | oracle | target | how it is achieved and tested |
 |---|---|---|---|
-| CPython MT19937 / getrandbits | `random.Random` | bit-exact | golden vectors (Appendix A) |
-| 1024-sample fingerprints, spans, forced, agree | WP:52-90 | bit-exact | `apply_lanes16`; full-value keys (D-a) |
+| MT19937 / getrandbits | `random.Random` | bit-exact | golden vectors (Appendix A) |
+| value identity | WP blake2b-128 | **bit-exact** (same key) | in-house blake2b, hashlib vectors |
+| fingerprints, spans, forced, agree | WP:52-90 | bit-exact | `apply_lanes16` |
 | winnable values, intervals, iid order | WP:175-226 | bit-exact | first-appearance order; rescue rule |
-| scheduler | WP:228-460 | **byte-exact `packed_G512.mpmct1` + `.bounds`** | ordered `committed`, stable sorts, quirks kept; sha256 against the 8 archived packs (Appendix B) |
-| packer ANF caps | WP:135-150, 324-344 | bit-exact | `PySet` emulator (`CapSemantics::CPython39`); every compose abort reproduced (2 on vA64a, 6 on vL128b) |
-| pack log text | WP prints | byte-exact on fixtures; replicates by line | Python `:.1f` vs Rust `{:.1}` can differ only on exact binary ties (D-c) |
-| cancel / slide / fix | `order_repair.py` (canonical) | bit-exact | stale-blocker rule, greedy ascending, slide landing rules, gate-count cut, breaker survival |
-| C-view TSVs and visible counts | HA exposure | **byte-exact TSVs** | library extraction proven against a pre-refactor `hmap_affine` built from `492564f0` (§10.5 step 1) |
+| scheduler | WP:228-460 | **byte-exact `packed_G512.mpmct1` + `.bounds`** | ordered `committed`, stable sorts, quirks kept; sha256 against the 8 archived packs |
+| packer ANF caps | WP:135-150, 324-344 | bit-exact | `PySet` (`CPython39`); every compose abort reproduced (2 on vA64a, 6 on vL128b); large-table traces |
+| pack log text | WP prints | equal after path normalization; `:.1f` ties tolerated (D-c) | |
+| cancel / slide / fix | `order_repair.py` (canonical) | bit-exact | stale-blocker rule, greedy ascending, slide landing rules, gate-count cut, breaker survival, `to_seq` per fix iteration |
+| C-view TSVs, visible counts | HA exposure | **byte-exact TSVs** | against the **pinned baseline** HA (§10.1), never the tree under test |
 | merge | `merge_bounds2.py` | bit-exact | outputs from C, asserted equal to the TSV rule |
-| split | `anf_split2.py` | bit-exact | `window_anf` on `PySet` (CPython39); per-cut leak memo (exact by the cut-independence property); candidate, tie and recursion rules |
+| split | `anf_split2.py` | bit-exact | `fits` on `PySet` (`CPython39`); per-cut leak memo; candidate, tie and recursion rules |
 | loop control | `repair.sh` | bit-exact | count test `vis <= N`, 4+4 iterations, break rules; final scan report-only |
 | `rep512.mpmct1` + `.bounds` | `order_repair.save` | **byte-exact** | k=0 trailing space; header n carried |
-| per-window ANF and body bytes | DE | **byte-exact payload** | canonical (budget 1<<30); sha256 against the 8 archived `deliverable.bin` |
-| container | new | byte-exact against the updated DE `--container` | |
-| verify_equiv | seed 77 | verdict equal | sampled; plus per-move legality and exact all-window checks |
-| link census / AC report | `link_census.py`, AC | numbers equal | report only |
-| timings | wall clock | not compared | |
+| body bytes | DE | **byte-exact payload** | canonical (budget 1<<30); sha256 against the 8 archived `deliverable.bin` |
+| container | none (new) | header unit tests + standalone writer | |
+| equivalence | sampled in the oracle | **exact certificates** + sampled | §4.11a |
+| link census / AC report | `link_census.py`, AC | numbers equal, gated | §10.5 step 5 |
 
 ### 7.2 `CapSemantics` (decision recorded)
 
-The default is **`CPython39`**. It is required by the defaults requirement and by the reproduction test, because without it the packer and split decisions diverge on real runs. It applies in the packer (MUL_CAP 196 608) and in the split predicate (8·65 536).
+The default is **`CPython39`**. The defaults requirement and the reproduction test both require it: without it, the packer and split decisions diverge on real runs. It applies in the packer (MUL_CAP 196 608) and in the split predicate (8·65 536).
 
-`Canonical` (`--anf-cap-semantics canonical`) aborts on a product only when the completed product exceeds the cap. It is an explicit, manifest-recorded deviation for anyone who wants an implementation-independent definition. It is never the default. The report's `*_ambiguous` and `*_order_dependent` counters show on every run how many decisions depended on the emulator.
+`Canonical` (`--anf-cap-semantics canonical`) aborts a product only when the completed product exceeds the cap. It is an explicit, recorded deviation, never the default. The `*_order_dependent` counters show on every run how many decisions depended on the emulator.
 
 ### 7.3 Allowed differences
 
-- **D-a.** Value identity is keyed on the full normalized 1024-bit value instead of its blake2b-128 digest. They differ only if two distinct values collide in blake2b-128 (probability about 2^-128). No observable difference is expected.
-- **D-b.** Failure paths:
-  - a hard error (exit 3, 4, 5 or 6) where the oracle continues, writes on `VERIFY FAIL`, or panics;
+- **D-b, failure paths:**
+  - hard errors (exits 3-8) where the oracle continues, writes on `VERIFY FAIL`, panics ("empty plate"), or silently keeps an over-budget window;
+  - the defined single-window behaviour;
   - no background verify race;
   - no pid-named scratch files.
-  On success paths there is no byte difference.
+
+  On paths where the oracle's result meets the identity and budget tests, there is no byte difference.
 - **D-c.** Log float formatting on exact `.x5` binary ties (log only).
-- **D-d.** `deliverable.bin` is the container. The payload is identical to the reference's raw file, and `--raw-body` writes the raw body as well.
+- **D-d.** The shipped file is `deliverable.tdp4`. `deliverable.bin` is the unchanged raw body.
 - **D-e.** The oracle's dead DE placeholder pass and its timings are not ported (DE:70-90).
 
-There is no other allowed difference. In particular, sorted iteration in place of CPython order is not allowed in default mode.
+Revision 1's D-a (full-value keys) no longer exists (§4.7). Sorted iteration in place of CPython order is not allowed in default mode.
 
 ---
 
 ## 8. Determinism and seeds
 
-**Stage 4 is a deterministic function of (G2, G3, C, n, parameters).** It uses fixed analysis constants that are part of the algorithm:
+### 8.1 Stage 4
+
+Stage 4 is a deterministic function of (G2, G3, C, n, parameters). Its fixed analysis constants are:
 
 - the fingerprint seed 20261004;
 - the C-view seed 12345 with 96 batches;
 - the verify seed 77.
 
-They are recorded in `packing.report`. Rayon parallelism is restricted to pure per-cut and per-window functions, merged in fixed order. Output therefore does not depend on the thread count; a test runs with 1 and 8 threads and compares.
+They are recorded in `packing.report`. Rayon parallelism is restricted to pure per-cut and per-window functions merged in fixed order, so a test runs with 1 and 8 threads and compares the outputs.
 
-**Gen and mix seeds (RC directive: always random, recorded).**
+### 8.2 Who draws the seeds, and where they live
 
-- The driver draws `gen_seed` and `mix_seed` independently from the OS CSPRNG, uniformly below 2^63 (§2.3).
-- It writes both to `$RUN/SEEDS` with mode 0600, in the format `gen_seed=<u64>\nmix_seed=<u64>\nseed_source=random|explicit\n`.
-- The manifest `tdp_command.conf` records `seed_record=SEEDS`, `seed_source`, `seed_bits=63` and the xxh3-128 of `SEEDS`. A resume therefore cannot silently swap seeds.
-- **Seed values are never printed to the narrative log `tdp_gen.log` or to stdout.**
+**Managed path (Rust).** `runner.rs` resolves the seeds before anything else is written to the run directory:
 
-The seed values live in the private run directory. Writing the values themselves into `tdp_command.conf` would put a secret into the file that people paste when they compare recipes, so the record is the hash-pinned `SEEDS` file next to it. This is a decision for RC (§13, item 2). If RC prefers the values inside `tdp_command.conf`, that is a one-line change.
+- **random** (default): `gen_seed` and `mix_seed` uniform in `[0, 2^63 − 16]` from the OS CSPRNG (`rand::rngs::OsRng`, by rejection sampling), plus a 256-bit `run_key`;
+- **explicit** (calibration only): read from `[calibration] seed_file`, plus a fresh random `run_key`.
 
-The stage logs (`stage12.log` echoes `seed=` through gen's banner) stay inside the private run directory, as today.
+On a fresh run, Rust creates `$RUN/SEEDS` with `create_new` and mode 0600, **then** writes `tdp_command.conf`. On a resume, `SEEDS` must already exist and is never rewritten. An explicit `seed_file` whose values differ from the existing `SEEDS` is fatal; the comparison is done in Rust and never printed.
 
-**Explicit seeds** are for calibration and reproduction only, and the run is marked `calibration_only=true`:
+Seeds never travel on argv between Rust and bash: bash only reads `$RUN/SEEDS`.
 
-- TOML: `[calibration] enabled = true` and `seed_file = "<path>"`, where the file contains `gen_seed=…` and `mix_seed=…`;
-- bash: `-s <gen> --mix-seed <mix>`.
+`$RUN/SEEDS` format, version 2:
 
-Gen uses the single gen seed for all three positional seeds, `seed`, `gadget_seed` and `sandwich_seed` (D1). Stage 3 uses `--seed <mix_seed>` (D7).
+```
+seeds_format=2
+gen_seed=<decimal>
+mix_seed=<decimal>
+run_key=<64 hex>
+seed_source=random|explicit
+```
+
+**Standalone path (bash).** When `tdp_gen.sh` runs without Rust and `$RUN/SEEDS` is absent, bash draws the same three values with `python3 -I -c 'import secrets; …'` and writes the file under `umask 077` with `set -o noclobber`. Explicit seeds in standalone mode are given only as `--seed-file PATH`: a private file (mode 0600, at most 256 bytes) with `gen_seed=` and `mix_seed=` lines.
+
+### 8.3 Legacy seed inputs
+
+These are rejected with migration messages; there is no silent reinterpretation:
+
+- A one-integer `seed_file` / calibration file (recipe v9): "seed file format 1 holds one seed; recipe v10 needs `gen_seed=` and `mix_seed=` lines (the old seed was the gen seed; the old mix seed was gen+2)".
+- `-s` / `--calibration-seed` on the `tdp_gen.sh` command line: "seeds on argv are no longer accepted (they appear in ps); use --seed-file".
+- A v9 `$RUN/SEED` file: "created by recipe v9; resume with the checkout that created it".
+
+Calibration mode never draws a random mix seed.
+
+### 8.4 Validation and redaction
+
+- `tdp_gen.sh` parses `SEEDS` strictly: exactly the five keys, `gen_seed` and `mix_seed` through `bounded_uint 0 9223372036854775792`, and `run_key` as 64 lowercase hex characters. A malformed file is fatal (exit 2).
+- **Gen banner check.** After stage 2, bash extracts `seed=`, `gadget_seed=` and `sandwich_seed=` from line 1 of `stage12.log` and compares each with `GEN_SEED` in bash. It prints only `gen seeds: verified` or a fatal "gen used a different seed than SEEDS". With strict gen parsing (D17) this is a second line of defence.
+- `render_command` (`runner.rs:542`) redacts the value after **every** flag whose name contains `seed`, except `--seed-file`, whose path is not secret. Seed values are never printed to `tdp_gen.log`, stdout or the dry-run output.
+- `tdp_command.conf` records `seed_record=SEEDS`, `seed_source`, `seed_bits=63` and `calibration_only`, and nothing derived from the seeds. The stage-12 marker records `seeds_mac = HMAC-SHA256(run_key, "gen_seed=…\nmix_seed=…\n")`, so a swapped `SEEDS` file is detected on resume without publishing a brute-forceable hash.
+
+### 8.5 Use of the seeds
+
+- Gen receives `GEN_SEED` as all three positional seeds: `seed`, `gadget_seed` and `sandwich_seed` (D1).
+- Stage 3 receives `--seed "$MIX_SEED"` (D7). This is the only argv that carries a seed, as in the reference. The mixer's own argv is visible in `ps` exactly as in `val_chain.sh`; the `ps-seed-leak` hygiene rule applies.
 
 ---
 
 ## 9. Performance targets
 
-Reference points (Python/bash):
+Reference points (Python/bash, Apple-silicon Mac). Stages 1-3 ran with 8 replicates concurrently.
 
 | step | n=64 | n=128 |
 |---|---|---|
+| stage 1+2 (gen) | seconds | seconds |
+| stage 3 (mixer, verify-every 10 000) | about 34 min (vL64a) | about 98 min (vL128a) |
 | pack | 84 s | about 3.2 min |
 | repair | about 2-4 min | about 10-12 min |
 | DE serialize | — | 107 s for 106.8 MB |
 | one HA scan | about 13 s | about 2.4 min, single-threaded |
 
-Targets for the Rust stage 4 on a 10-core Apple-silicon Mac (release build):
+Targets on a 10-core Apple-silicon Mac (release build):
 
 | step | n=64 | n=128 | notes |
 |---|---|---|---|
-| pack | ≤ 15 s | ≤ 60 s | the emulator set for ANF; incremental `win_monos`; 9.1M mul calls at n=128 |
-| cancel | ≤ 2 s | ≤ 10 s | |
+| stage 3 | within +10% of a `val_chain.sh` run on the same machine and seeds | same | D8 brings back about 400 global checks at n=128, which parity requires. D10b keeps the cache sizes. Measured in the reproduction test |
+| pack | ≤ 15 s | ≤ 60 s | Mersenne hash (§4.5); arena sets; incremental `win_monos`; 9.1M mul calls at n=128 |
+| cancel + certificates | ≤ 3 s | ≤ 15 s | O(gate-wire incidences) |
 | one full C-view scan | ≤ 5 s | ≤ 30 s | parallel over cuts; about 7 000 cuts × 3 000 rows at n=128 |
 | repair total | ≤ 1 min | ≤ 4 min | at most 4 fix scans with a fresh oracle each; the fallback loop and every split share one memo |
-| emit + all checks | ≤ 15 s | ≤ 60 s | parallel windows; decode and evaluate the file |
-| **stage 4 wall** | **≤ 2 min** | **≤ 6 min, hard ceiling 10 min** | measured in `packing.report` and asserted by `parity.sh` |
-| **peak RSS** | ≤ 1.5 GB | **≤ 4 GB (goal 2.5 GB)** | G3 as XGate (4.6M gates, about 180 MB); fingerprint index (about 2M × 136 B, about 300 MB); intervals and member lists (≤ 100 MB); C-view streaming (≤ 50 MB of states plus about 100 MB of checkpoints plus the memo); no materialized `gs` (that alone was 2.8 GB) |
+| emit + all checks | ≤ 20 s | ≤ 90 s | streamed body; flat-arena decode; exhaustive windows ≤ 16 support |
+| **stage 4 wall** | **≤ 2 min** | **≤ 6 min, hard ceiling 10 min** | in `packing.report`; asserted by `parity.sh` |
+| **stage 4 peak RSS** | ≤ 1.5 GB | **≤ 3 GB** | G3 as XGate (4.6M gates, about 180 MB); blake2b value index (about 2M × 20 B, about 40 MB); intervals ≤ 100 MB; arena sets ≤ 8 concurrent × ≤ 60 MB; C-view streaming plus checkpoints and memo ≤ 200 MB; decoded deliverable as a flat arena (about 110 MB) |
 
 ---
 
 ## 10. Fixtures and tests
 
-### 10.1 Unit tests (`tests/unit/stages/packing/*.rs`, synthetic, debug-mode fast)
+### 10.1 Pinned reference binaries and interpreter
+
+- **Baseline `hmap_affine`:** built from `492564f0` with `--features security-tools` into `port_runs/baseline_target` (durable disk) via a detached `git worktree` at that commit. Its sha256 is recorded in `tests/fixtures/stage4/README.md`. The scripts take it as `HMAP_BASELINE=<path>` and verify the sha256 before use.
+  - Every fixture regeneration (`regen.sh`), the reference side of `reproduce_val_chain.sh` and `tdp_reproduce_small.bash`, and the CI differential job (§10.6) use this binary. The CI job builds it from `492564f0` itself and caches it by commit.
+  - `regen.sh` **refuses** to run with an HA binary whose sha256 differs from the recorded one, so fixture TSVs can never be produced by a binary that links the new library.
+- **Archive-era `hmap_affine`:** the main checkout's `target/release/hmap_affine` that produced the Oct 8 re-repairs. Today it has sha256 `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3` and mtime 2026-10-07 18:54:28. At P2 start it is **copied** (read-only use) to `port_runs/archive_hmap_affine` so a later rebuild of the main checkout cannot lose it.
+- **Oracle interpreter:** a uv-managed CPython 3.9 (`uv python install 3.9.6`; `ORACLE_PY=$(uv python find 3.9.6)`), not `/usr/bin/python3`, which an OS or Command Line Tools update can replace.
+  - Every script that runs the oracle first runs `tests/fixtures/stage4/pyset_selftest.py` under `$ORACLE_PY`, replaying the recorded traces (§10.2), and refuses to continue if any order differs.
+  - The gate is the **self-test**, not `sys.version`. Any 3.9.x build whose set behaviour matches is acceptable, and `/usr/bin/python3` 3.9.6 remains usable when it passes.
+
+### 10.2 Unit tests (`tests/unit/stages/packing/*.rs`)
 
 | file | tests |
 |---|---|
 | `pyrand.rs` | `mt_first_words_seed_20261004`, `getrandbits_1024_lane_layout`, `seed_77_and_1_low128`, `getrandbit_is_top_bit` |
-| `pyset.rs` | `replays_cpython396_traces` (reads `tests/fixtures/stage4/pyset39_traces.txt`), `dummy_not_reused_on_add`, `resize_reinserts_in_old_table_order`, `merge_fast_path_copies_slots_verbatim`, `xor_is_copy_b_then_toggle_a`, `int_hash_mod_m61_multi_limb` |
-| `anf.rs` | `worked_example_doc_4_6` (gates `2 0 2 0 1 1 1`, `3 0 1 2 0`), `pair_toggle_not_dedup`, `swap_only_when_strictly_larger`, `running_sum_counts_identity_entries`, `prefix_abort_cpython_vs_canonical`, `compose_failure_mutates_nothing` |
+| `blake2b.rs` | `rfc7693_vectors`, `wire0_value_key_matches_hashlib` |
+| `pyset.rs` | `replays_cpython39_traces` (`pyset39_traces.txt`), `replays_large_traces_checkpoints` (`pyset39_large.txt`), `dummy_not_reused_on_add`, `resize_used_le_50000_quadruples`, `resize_used_gt_50000_doubles`, `small_table_purge_newsize_8`, `resize_reinserts_in_old_table_order`, `merge_fast_path_copies_slots_verbatim`, `merge_slow_path_insert_clean`, `xor_is_copy_b_then_toggle_a`, `arena_compaction_keeps_order`, `order_with_keys_bit_ge_61_and_ge_128` |
+| `mono.rs` | `int_hash_matches_cpython` (bits 0..1023, including the M61 wrap), `mersenne_fold_equals_u128_mod`, `ord_matches_python_int_order_multi_limb` |
+| `anf.rs` | `worked_example_doc_4_6`, `pair_toggle_not_dedup`, `swap_only_when_strictly_larger`, `running_sum_counts_identity_entries`, `prefix_abort_cpython_vs_canonical`, `compose_failure_mutates_nothing`, `order_dependent_counter` |
 | `fingerprint.rs` | `complement_normalization_and_constants`, `span_closes_on_every_write`, `first_birth_is_value_id` |
 | `intervals.rs` | `interval_set_matches_bruteforce_taint`, `cap_returns_none_at_cap_minus_2`, `rescue_next_next_writer`, `iid_order_is_first_appearance` |
 | `scheduler.rs` | `lowest_unscheduled_is_ready`, `committed_delete_preserves_order`, `compose_failure_boundary_after_gate`, `preemptive_close_can_emit_duplicate_boundary`, `contagion_snapshot_is_stale` |
+| `certify.rs` | `reorder_cert_accepts_commuting_swap`, `reorder_cert_rejects_conflicting_swap` (including one that differs on only a 2^-k fraction of inputs, and one that differs only off the zero slice), `cancel_cert_rejects_blocked_pair`, `cancel_cert_rejects_nonidentical_pair`, `same_target_writes_commute` |
 | `cview.rs` | `complement_pair_collapses`, `constant_value_tstar_zero`, `nullity_le_14_exact_minimum`, `nullity_gt_14_counts_approx`, `earliest_cut_wins_tie`, `cut_file_parse_rules`, `samples_pinned_seed_12345`, `memo_equals_full_scan`, `parallel_equals_serial` |
-| `repair/*.rs` | `to_from_seq_merges_and_drops_markers`, `cancel_dead_gates_still_block`, `cancel_reaches_fixed_point`, `slide_no_move_when_only_markers_before_blocker`, `slide_lands_before_markers_forward_after_backward`, `fix_breaker_located_before_completer_moves`, `fix_uses_stale_gate_count_cut`, `merge_keeps_input_order`, `split_candidates_and_smaller_tie`, `split_never_splits_two_gate_windows`, `split_forced_when_no_clean_candidate`, `oracle_loop_break_rules` |
-| `serialize.rs` | `blob_23_byte_example`, `constant_monomial_first`, `crc32_matches_zlib_vectors`, `container_roundtrip`, `decoder_rejects_each_invariant_violation`, `decode_eval_equals_gates` |
-| `verify.rs` | `zero_slice_detects_single_flip`, `equiv_detects_noncommuting_swap` |
+| `repair/*.rs` | `to_from_seq_merges_and_drops_markers`, `fix_iteration_restarts_from_to_seq` (adjacent markers created by iteration 1 change a slide in iteration 2), `cancel_dead_gates_still_block`, `cancel_reaches_fixed_point`, `slide_no_move_when_only_markers_before_blocker`, `slide_lands_before_markers_forward_after_backward`, `fix_breaker_located_before_completer_moves`, `fix_uses_stale_gate_count_cut`, `merge_keeps_input_order`, `split_candidates_and_smaller_tie`, `split_never_splits_two_gate_windows`, `split_forced_when_no_clean_candidate`, `oracle_loop_break_rules`, `fix_exhausted_without_rescan`, `single_window_skips_scans` |
+| `serialize.rs` | `blob_23_byte_example`, `constant_monomial_first`, `crc32_matches_zlib_vectors`, `container_header_fields`, `decode_requires_explicit_format`, `decoder_rejects_each_invariant_violation`, `decode_eval_equals_gates`, `emission_body_keys_bit_ge_61_and_ge_128` (recorded 3.9 bytes) |
+| `verify.rs` | `zero_slice_detects_single_flip`, `equiv_detects_noncommuting_swap`, `exhaustive_window_detects_rare_difference` |
+| `types.rs` | `exit_codes_and_meanings_are_a_bijection` |
 
-### 10.2 Committed fixtures: `tests/fixtures/stage4/` (total under 2 MB)
+### 10.3 Committed fixtures: `tests/fixtures/stage4/` (total ≤ 4 MB)
 
 | path | content |
 |---|---|
-| `README.md` | provenance: worktree commit; `sys.version` of the oracle interpreter (`/usr/bin/python3` 3.9.6); seeds marked CALIBRATION, never deliverables; `regen.sh` command line; file sizes |
+| `README.md` | provenance: worktree commit; baseline HA sha256; oracle interpreter and its self-test result; seeds marked **CALIBRATION, never deliverables**; the `regen.sh` command; sizes; the coverage table produced by `regen.sh` |
 | `regen.sh` | regeneration (below) |
-| `pyset39_traces.txt` | about 100 KB: random add/discard/copy/xor/literal traces with 0..512-bit keys, and the expected iteration order after each step, recorded on 3.9.6 |
-| `n8_L8/` | `g2.mpmct1`, `g3.mpmct1`, `c.g57`, `params` (n and the production pack and repair parameters), then the oracle outputs: `packed.mpmct1`, `packed.bounds`, `pack.txt`, `rep.mpmct1`, `rep.bounds`, `rep.exposure.tsv`, `rep.allcuts.tsv`, `rep.wit.tsv`, `repair.txt`, `deliverable.raw.bin`, `deliverable.tdp4.bin` |
-| `n8_caps/` | the same inputs (or a sibling run), packed and repaired with **small caps** (pack `32 32 48 300`, split budget 64), so that compose prefix aborts and order-dependent split decisions happen in CI. Production caps never hit the ambiguous zone at n=8 |
+| `pyset_selftest.py` | replays both trace files under the oracle interpreter; exit 0 iff every order matches |
+| `pyset39_traces.txt` | about 100 KB: random add/discard/copy/xor/literal traces with keys of 0..1024 bits (many with bits ≥ 61, ≥ 128, ≥ 256), with the iteration order after each step |
+| `pyset39_large.txt` | ≤ 10 KB. Large traces are **regenerated** from a recorded op generator (`PyRandom` seed per trace): mul-style toggle loops growing to 2×10^5, 4×10^5 and 6×10^5 elements (the `used > 50000` branch, dummy-heavy tables of 2^19 to 2^21 slots), and patterns that force the small-table purge. Only the sha256 of the iteration order at fixed checkpoints is stored |
+| `n8_L8/` | real chain at n=8, C and D of 16 gates, preset L8: `g2.mpmct1`, `g3.mpmct1`, `c.g57`, `params`, and the oracle outputs `packed.mpmct1`, `packed.bounds`, `pack.txt`, `rep.mpmct1`, `rep.bounds`, `rep.{exposure,allcuts,wit}.tsv`, `repair.txt`, `deliverable.bin` |
+| `crafted/<case>/` | synthetic inputs from the committed generator `tests/stage4/synth.py` (seeded), each with the oracle outputs as above. The cases are listed below |
+| `vA64a_window/` | the gate slice of the real ambiguous window vA64a `[492039,492540)` (packed order) with the expected abort or no-abort decision of `fits` and `window_anf` under `CPython39` and under `Canonical`. CALIBRATION material (31-bit seed run); no C, no G2 |
 
-`regen.sh`:
+Crafted cases:
 
-- builds `gen_sandwich_gadget`, `circuit_mixer`, `hmap_affine` (`--features security-tools`) and `tdp_packing` into `$CARGO_TARGET_DIR`;
-- copies `scripts/windowed_delivery/` into a fresh `port_runs/fixture_<stamp>/` sandbox, rewriting `ROOT`, `RD`, `W`, the hard-coded `sys.path.insert` lines and `target/release` paths there with `sed`. Each rewrite must apply exactly once (asserted), and the tracked oracle is never edited;
-- runs stages 1-3 with the L8 recipe on the local regular store, `n=8` and `|C|=|D|=16`, with fixed calibration seeds;
-- runs the oracle stage 4 with `/usr/bin/python3` (the script refuses any other `sys.version`);
-- copies the outputs into the fixture tree and prints the sizes.
+- `caps_aborts`: production n8 inputs with small caps (pack `32 32 48 300`) **plus** a crafted G3 tail that forces order-dependent compose aborts;
+- `split_forced`: small split budget with a planted leak at every candidate;
+- `fix_exhausted`;
+- `merge`;
+- `single_window`;
+- `wide300`: a synthetic 300-wire G2/G3/C (W=8, wire ids ≥ 61 and ≥ 256);
+- `wide128`: n=32, state 128, W=2.
 
-### 10.3 Integration test (CI): `tests/integration/tdp_packing.rs`
+The crafted G3s are G2 with random legal commutations, inserted cancelling pairs, and planted copy/uncopy gadgets that expose chosen C values at chosen cuts.
 
-Add `[[test]] name = "tdp_packing"`. It uses `env!("CARGO_BIN_EXE_tdp_packing")`:
+**L8 at small n is proven to run** (`port_runs/gen_feas`, 2026-10-08, calibration seeds):
 
-- `pack_matches_oracle_n8_l8`, `pack_matches_oracle_n8_caps`: `packed.mpmct1`, `packed.bounds` and `pack.txt` compared byte for byte;
-- `repair_matches_oracle_n8_l8`, `repair_matches_oracle_n8_caps`: rep circuit, bounds and the three TSVs, byte for byte;
-- `serialize_matches_oracle_n8`: raw body and container, byte for byte;
-- `run_end_to_end_n8`: `run` reproduces every file above and exits 0;
+| n | C gates | G2 gates | state wires | gen log |
+|---|---|---|---|---|
+| 8 | 16 | 18 238 | 32 | `[chain] k=2: 1734 brackets chained`; 160 transfers, 16 ports restored |
+| 16 | 64 | 65 537 | 64 | |
+
+Stage 3 at n=8 on the local store is proven as the first step of P6. If it fails, the n8 case moves to n=16 with `|C|=16`.
+
+**`regen.sh`.**
+
+1. Verifies the baseline HA sha256 and runs `pyset_selftest.py` under `$ORACLE_PY`.
+2. Builds `gen_sandwich_gadget`, `circuit_mixer` and `tdp_packing` from the worktree into `$CARGO_TARGET_DIR`.
+3. Copies `scripts/windowed_delivery/` into a fresh sandbox `port_runs/fixture_<stamp>/`. With `sed`, each rewrite asserted to apply **exactly once**, it rewrites:
+   - `ROOT`, `RD`, `W`, the `sys.path.insert` lines and the `target/release/hmap_affine` path (to `$HMAP_BASELINE`);
+   - `python3` (to `$ORACLE_PY`);
+   - the split budget literal `65536` at `repair.sh:31` (to `$SPLIT_BUDGET`);
+   - the two `for it in 1 2 3 4` loops (to `$FIX_ITERS` and `$FALLBACK_ITERS`);
+   - the pack arguments.
+
+   The tracked oracle is never edited.
+4. Runs stages 1-3 for `n8_L8` (L8 recipe, local regular store, fixed calibration seeds), and `synth.py` for the crafted cases.
+5. Runs the oracle stage 4 and `tdp_packing` on every case and compares the outputs (§10.4).
+6. **Coverage assertions.** Across the fixture set, from the oracle logs and both sides' `RepairReport`/`PackReport` counters, all of the following must hold:
+   - cancel passes ≥ 2 in at least one case;
+   - fix moved > 0 in ≥ 2 iterations of one case;
+   - `fix_exhausted` in one case;
+   - merge removed > 0;
+   - ≥ 1 clean split;
+   - ≥ 1 forced split (oracle `WARNING` line);
+   - one `single_window` case;
+   - ≥ 1 packer abort and ≥ 1 split decision with `order_dependent > 0`. This is cross-checked once against the instrumented oracle copies in `port_runs/spec_pack3`, which report CPython-versus-sorted disagreements.
+
+   If an assertion fails, `regen.sh` searches crafting seeds up to a bound and then fails loudly. The seeds found are recorded in `README.md` as calibration-only.
+7. Copies the outputs into the fixture tree, prints the coverage table and the sizes, and asserts the 4 MB budget.
+
+### 10.4 Integration tests (CI): `tests/integration/tdp_packing.rs`
+
+Add `[[test]] name = "tdp_packing"`. It uses `env!("CARGO_BIN_EXE_tdp_packing")`.
+
+**Comparison rule.** Circuits, bounds, TSVs and `deliverable.bin` are compared **byte for byte**. Text logs (`pack.txt`, `repair.txt`, `cview.log`) are compared after normalization: the absolute sandbox or out-dir prefix becomes `<DIR>`, and `:.1f` ties are tolerated (D-c).
+
+Tests:
+
+- `pack_matches_oracle_<case>` and `repair_matches_oracle_<case>` for every fixture case;
+- `serialize_matches_oracle_<case>`;
+- `run_end_to_end_n8` (exit 0, `status=ok`);
+- `vA64a_window_decisions` (both `CapSemantics`);
 - `thread_count_does_not_change_output`;
-- `exit_codes`: a malformed gate line gives 3; a tampered G3 (one gate flipped) gives 4; a forced floor miss (synthetic C with a planted interior-visible value) gives 5.
-
-### 10.4 hmap_affine regression (CI)
-
-The existing `cargo test --features security-tools --bin hmap_trace_affine` step stays. Add `tests/integration/hmap_affine_exposure.rs`, `required-features = ["security-tools"]`, which runs `hmap_affine --exposure` on the n8 fixture and compares its TSVs with `rep.*.tsv`.
+- `single_window_case`;
+- `exit_codes`:
+  - a malformed gate line gives 3;
+  - a G3 with one gate flipped gives 4 (from the reorder certificate);
+  - a planted interior-visible value gives 5, and with `--allow-floor-miss` gives 0 with `status=floor_miss`;
+  - a tiny split budget with a 1-gate over-budget window gives 6, and with `--allow-over-budget` gives 0;
+  - an unwritable out-dir gives 7.
 
 ### 10.5 Real-artifact parity (manual): `tests/manual/stage4/parity.sh`
 
-This script reads `waist/<tag>/` read-only, writes to `port_runs/parity_<tag>/`, and is never run in CI. For each of the 8 tags:
+This script reads `waist/<tag>/` read-only, writes to `port_runs/parity_<tag>/`, and never runs in CI. For each of the 8 tags:
 
-1. **Rebuild `hmap_affine` at `492564f0`** into `port_runs/baseline_target`. Re-run the last repair scan (`rep512.mpmct1` + `rep512.bounds`) and compare with the archived `rep512.{exposure,allcuts,wit}.tsv` and line 2 of `rep512.cview.log`. This also settles the binary-provenance question of TDP doc §6.9. If they differ, report it and stop; do not chase the old binary. Then compare the refactored `hmap_affine` against the baseline on rep512, on packed + pre-repair bounds, on a split-candidate file, on a run without ALLCUTS, on SPAN, and on a small heatmap run (`cmp` of every file and of stdout).
-2. `tdp_packing pack tdp.mpmct1 s3.mpmct1 512 512 24576 3000 …` must give a sha256 of `packed_G512.mpmct1` and `.bounds` equal to Appendix B.
-3. `tdp_packing repair` on `packed_G512` must give a byte-identical `rep512.mpmct1` and `rep512.bounds`, plus identical TSVs against the archived last-scan files.
-4. `tdp_packing serialize rep512.mpmct1 rep512.bounds` must give a body with the sha256 of the archived `deliverable.bin`. With `--container 64|128`, the output must be byte-identical to the updated DE `--container`, run in the sandbox.
-5. `check_zero_slice` of the archived `deliverable.bin` against C.
-6. Record times and peak RSS (`/usr/bin/time -l`) and assert the §9 targets.
+0. **Provenance of the archived C-view.** Run the baseline HA and the archive-era HA (§10.1) on the archived `rep512.mpmct1` + `rep512.bounds`, and compare both with the archived `rep512.{exposure,allcuts,wit}.tsv` and line 2 of `rep512.cview.log`.
+   - **If the baseline reproduces the archive:** the targets are Appendix B.
+   - **If it does not (fallback, planned):** re-run the Python repair and serialization (`repair.sh` + DE, sandboxed, `$ORACLE_PY`, baseline HA) on the archived `packed_G512.mpmct1` + `.bounds`, into `port_runs/retarget_<tag>/`. Those outputs become the parity targets, and their sha256s are added as Appendix B′. The report lists the diff against the archived `rep512`/`deliverable.bin`, including the visible count per iteration and whether the final visible set changes. The pack targets are unaffected, because the packer does not use HA.
 
-### 10.6 Reproduction test (required acceptance): `tests/manual/stage4/reproduce_val_chain.sh`
+   Then compare the refactored HA with the baseline on rep512, on packed + pre-repair bounds, on a split-candidate file, without ALLCUTS, on SPAN and on a small heatmap run: `cmp` every file and stdout.
+1. `tdp_packing pack tdp.mpmct1 s3.mpmct1 512 512 24576 3000 …`: the sha256 of `packed_G512.mpmct1` and `.bounds` must equal Appendix B.
+2. `tdp_packing repair` on `packed_G512` gives a byte-identical `rep512.mpmct1` and `rep512.bounds`, and TSVs identical to the targets of step 0.
+3. `tdp_packing serialize`: the body sha256 equals the target `deliverable.bin`. `container_header.py` rebuilds the container from the oracle body, and it must be `cmp`-equal to `deliverable.tdp4`.
+4. `check_zero_slice` of the archived `deliverable.bin` against C, and `tdp_packing check-final` on the archived rep512, which reports the final identity and budget status.
+5. **Census parity (gated):** `tdp_packing census` output against the archived `link_rep512.txt` (all lines), and `anf_size_report` against the first three lines of `anf_rep512.txt`.
+6. Replay the window ANF of `packed_G512` and its bounds on vA64a and vL128b: every compose abort is reproduced (2 and 6), with `order_dependent` counts equal to the instrumented oracle's.
+7. Record times and peak RSS (`/usr/bin/time -l`) and assert the §9 targets. Include a dedicated memory run of `fits` on the vA64a ambiguous window.
 
-Usage: `reproduce_val_chain.sh N MC [L8|A]`.
+### 10.6 CI differential test of the oracle (new CI job `stage4-oracle`)
 
-1. Draw `GEN` and `MIX` from the CSPRNG; these are calibration values. Keep them in the private `port_runs/repro_<stamp>/SEEDS` and never echo them.
-2. **Reference side.** Run a sandbox copy of `W/val_chain.sh` (paths rewritten as in `regen.sh`). Its two seed lines are replaced by `SEED=$VAL_GEN_SEED` and `MSEED=$VAL_MIX_SEED` (each asserted to match once), and it is run under `env -i` with only `HOME`, `PATH`, `VAL_*` and `FROZEN_DB_DIR`. Arguments: `TAG N MC sandwich_default_s(N) 20N CFG`. Stage 4 runs with `/usr/bin/python3` 3.9.6. The DE call is made a second time with `--container N`.
-3. **Managed side.** `local_mixing_bin tdp_gen --config <generated toml>` with:
-   - `source.wires = N` and `source.gates = MC`;
-   - `[calibration] enabled = true` with the seed file holding `GEN` and `MIX`;
-   - every other setting at its default (preset L8 or A).
-4. `cmp` each pair; all must be identical:
+Stage 4 needs no frozen store, so the oracle itself can run in CI. The job:
+
+1. `actions/checkout` with `fetch-depth: 0`. Installs uv and `uv python install 3.9.6`, then runs `pyset_selftest.py`. **The job fails if the self-test fails**, which pins set semantics, not the version string.
+2. Builds the baseline HA from `492564f0` in a `git worktree`, caches it by commit, and checks it against the recorded sha256. The sha256 is recorded per platform: `README.md` holds a Linux and a macOS value.
+3. Builds `tdp_packing` (release).
+4. Runs `tests/stage4/differential.sh`:
+   - every committed fixture input;
+   - **K = 20 random small triples** from `synth.py`. The seeds are derived from the CI run id, printed and labelled calibration, and span n ∈ {4, 6, 8, 12}, random caps in and around the ambiguous zone, and random budgets.
+
+   For each, it runs the sandboxed oracle (pack, `repair.sh` with rewritten literals, DE) and `tdp_packing`, and `cmp`s every artifact under the §10.4 rule. On a mismatch it uploads the failing triple as a CI artifact.
+
+This replaces revision 1's claim that "CI cannot run the Python stage-4 oracle". Rust/oracle parity is then exercised on fresh random inputs on every push, not only on frozen fixtures.
+
+### 10.7 Reproduction test (required acceptance): `tests/manual/stage4/reproduce_val_chain.sh`
+
+Usage: `reproduce_val_chain.sh N [L8|A]`. MC defaults to the §2.4 table and is required for other n.
+
+1. Draw `GEN` and `MIX` from the CSPRNG (calibration values). Keep them in the private `port_runs/repro_<stamp>/SEEDS` (format 2) and never echo them.
+2. **Reference side.** A sandbox copy of `W/val_chain.sh`, with the paths rewritten as in `regen.sh` and HA set to the **baseline**. Its two seed lines are replaced by `SEED=$VAL_GEN_SEED` and `MSEED=$VAL_MIX_SEED` (each asserted to match once). It runs under `env -i HOME PATH VAL_* FROZEN_DB_DIR`, with arguments `TAG N MC sandwich_default_s(N) 20N CFG` and `python3` set to `$ORACLE_PY`.
+3. **Managed side.** `local_mixing_bin tdp_gen --config <generated v2 toml>` with:
+   - `source.wires = N` (and `source.gates` only when N is not in the table);
+   - `[calibration] enabled = true` and the seed file;
+   - **nothing else**, so preset L8 or A and every other setting is at its default.
+
+   The harness exports a set of decoy variables (`MIXER_DB_LEN_BAND`, `SLICE_GUARD_LEGACY`, `EMBEDDED_MASKING_RETIRE`, …) in the caller and expects the driver to refuse them (§11.5). It then reruns with them removed.
+4. Compare:
 
    | reference | managed |
    |---|---|
    | `tdp.mpmct1`, `.source_c.g57`, `.sandwich.mpmct1` | the same files |
    | `s3.mpmct1` | `db_mixing.mpmct1` |
    | `packed_G512.mpmct1(.bounds)` | `packing/packed_G512.mpmct1(.bounds)` |
-   | `rep512.mpmct1`, `rep512.bounds` | `packing/rep512.mpmct1`, `packing/rep512.bounds` |
+   | `rep512.mpmct1`, `rep512.bounds` | `packing/rep512.*` |
    | `rep512.{exposure,allcuts,wit}.tsv` | `packing/` copies |
-   | `deliverable.bin` (raw) | `packing/deliverable.bin[48:]` |
-   | container from DE `--container` | `packing/deliverable.bin` |
+   | `deliverable.bin` | `packing/deliverable.bin` and `packing/deliverable.tdp4[48:]` |
+   | `link_rep512.txt`, `anf_rep512.txt` head | `packing/` copies |
+   | `span_s2.txt`, `mult_s2.txt` | `stage2_span.txt`, `stage2_mult.txt` (§11.1) |
 
-   Also compare `pack_G512.txt` line by line. Exit 0 only if everything is identical.
-5. Required runs:
-   - `N=16 MC=64 L8` (quick, minutes);
-   - `N=64 MC=1000 L8`, the scale of vL64a/b (about 40 min per side);
-   - one `A` run at N=16.
-   The script prints a summary table; RC keeps it in the PR description.
-6. **Historic anchor (optional, strongly recommended).** Re-run the managed driver with vL64a's archived seeds (read from `seed.txt` in a subshell, never printed) and `MC=1000`. Compare against the archived `tdp.mpmct1`, `s3.mpmct1`, `packed_G512*`, `rep512*` and `deliverable.bin`. A match proves the managed defaults reproduce the actual validation run, not just today's `val_chain.sh`. A mismatch in stages 1-3 only means the binaries changed since Oct 7; the cleanup branch claims they did not.
+   `pack_G512.txt` is compared line by line after normalization.
+5. **Exits 5 and 6.** The managed side may exit 5 or 6 where the oracle shipped (count floor met but identity failed, or an over-budget 1-2 gate window kept). Then:
+   - every pre-decision artifact (packed, rep, bounds, last-scan TSVs) must be identical;
+   - `tdp_packing check-final` on the **oracle's** rep must report the same violation;
+   - the harness reruns stage 4 alone with the matching `--allow-*` flag, and `deliverable.bin` must equal the oracle's.
 
-### 10.7 CI-sized version
+   That outcome counts as a pass, labelled `faithful (failure path)`. Any other nonzero exit is a failure.
+6. Required runs: `N=16 MC=64 L8`, `N=16 MC=64 A`, `N=64 L8` (MC 1000 by default, about 40 min per side). The script prints a summary table, including the stage-3 wall-time ratio (§9), which RC keeps in the PR description. The table contains no seeds and no hashes of private files.
 
-The full chain needs the frozen store, which CI does not have, and CPython 3.9.6 for the Python packer, which CI's Ubuntu image does not guarantee. The required equivalence is therefore split into three CI checks whose composition is the reproduction claim, plus a local small end-to-end run:
+### 10.8 Historic anchor (required): `tests/manual/stage4/anchor.sh`
 
-1. **`tests/shell/tdp_defaults.bash`** (new, mocks). Mock `gen_sandwich_gadget`, `circuit_mixer` and `tdp_packing` record their argv and the filtered environment (`EMBEDDED_MASKING_*`, `CANON_*`, `*_CACHE_MB`, `FROZEN_*`, `SANDWICH_VARIANT`, `TDP_SOURCE_C`). The test asserts exact equality with the expected transcript literally derived from `val_chain.sh`:
+The anchor proves that the managed defaults reproduce the **chosen runs themselves**, not just today's `val_chain.sh`.
 
-   ```
-   gen: <out> N MC MC S 1 SLICE GEN GEN GEN embedded-masking
-   gen env: EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0
-            EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1
-            EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8
-            SANDWICH_VARIANT=classic   (+ nothing else in the filtered set)
-   mixer: --input … --output … --tdp --db-mixing --profile 2,2,2,2,2 --moves floor(4·G·1.3)
-          --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048
-          --no-local-verify --seed MIX            (as a set of options; clap is order-insensitive)
-   mixer env: FROZEN_DB_DIR=… FROZEN_FILTER=1 FROZEN_REGULAR_VALUE_CONVENTION=native (no CANON_*, no *_CACHE_MB)
-   packing: run --stage2 … --stage3 … --source-c … --n N --out-dir …/packing   (no parameter flags = defaults)
-   ```
+**A. Pre-P7 binary check, cheap and done first.** Build `gen_sandwich_gadget` at `492564f0`, which includes `d9631d0e`. For all 8 tags, run gen with the archived seeds (read from `seed.txt` in a subshell, never printed) under `env -i` and the tag's CONFIG environment, and `cmp` with the archived `tdp.mpmct1`, `.source_c.g57` and `.sandwich.mpmct1`.
 
-   It includes an `A` case with no `CHAIN*`, a case with `EMBEDDED_MASKING_RETIRE=1` exported in the caller to prove it is scrubbed, and `G` values where `4·G·1.3` has a fractional part of at least .5, to pin floor against round.
-2. **`tests/shell/tdp_stage12_parity.bash`** (new, real debug binaries). At n=16 with `|C|=|D|=32`, run gen exactly as `val_chain.sh` would (sandboxed env and argv) and `tdp_gen.sh --run-stop-after-stage 2` with explicit seeds, then `cmp` the three artifacts. This is the real-binary proof for stages 1+2. The stage-1+2 identity at small n relies on the same code path as at scale.
-3. **`tests/integration/tdp_packing.rs`** (§10.3). Rust stage 4 against the committed Python outputs, including the cap-abort case.
-4. **`tests/shell/tdp_reproduce_small.bash`**: the full §10.6 at `N=8 MC=16`, run for real. It **skips with a clear message** when no frozen store or no Python 3.9.6 is available, which is the case in CI. RC runs it locally before merging.
+- `d9631d0e`'s message argues that generated sources never contain zero-control gates, so no bytes should change. This step proves or refutes that.
+- Then run `circuit_mixer` at `492564f0` on the archived `tdp.mpmct1` of vL64a and vL128a with the archived mix seed, and `cmp` with `s3.mpmct1`. This covers the Oct 8 mixer cleanup commits `8070f5a0..b5608cd9`, which re-baselined goldens.
+
+**B. After P7.** Run the managed driver with the archived seeds (calibration seed file, default size table) for **vL64a and vL128a**, and `cmp` every artifact against the archive: `tdp.mpmct1`, `s3.mpmct1` vs `db_mixing.mpmct1`, `packed_G512*`, `rep512.*`, and `deliverable.bin` (or the Appendix B′ targets if §10.5 step 0 fell back).
+
+**If A or B mismatches.** Bisect over `e720d5c0..492564f0` (the run binaries were built from `e720d5c0`) to the responsible commit, and record it in §2.1 and in TDP doc §4.7. State plainly that the chosen runs are no longer reproducible by the current binaries. The **new reference** is then the oracle chain run with the archived seeds on the current binaries, regenerated into `port_runs/anchor_<tag>/` and with sha256s recorded as Appendix B″. RC decides whether to re-validate (L2/M2 and floor) on it. P7 does not start until A is resolved.
+
+### 10.9 CI-sized version of the reproduction claim
+
+1. **`tests/shell/tdp_defaults.bash`** (mocks). This is a transcript diff against the **oracle script itself**, not a hand transcription:
+   - Run a path-rewritten sandbox copy of `val_chain.sh` (the `regen.sh` rewrite rules) with `target/release/{gen_sandwich_gadget,circuit_mixer,hmap_affine}` replaced by recording mocks, and the stage-4 Python scripts replaced by recording stubs.
+   - Run `tdp_gen.sh` (and, in a second case, `local_mixing_bin tdp_gen` with a v2 TOML) with the same seeds against the same mocks.
+   - Each mock records its argv as an option set (positional order kept) and its **complete** environment.
+   - The test asserts:
+     - (a) gen argv identical;
+     - (b) mixer argv identical as an option set;
+     - (c) for every **output-affecting** registry variable (§11.5), the effective value (unset ≡ the registry's built-in default) is identical;
+     - (d) the managed mocks' environment is exactly allow-list ∪ recipe ∪ driver-set;
+     - (e) the stage-4 stub's WP/repair/DE arguments map to `tdp_packing run` parameters that are all at their defaults (`PACKFLAGS` empty).
+   - A literal expected transcript is kept as a secondary pin.
+   - Cases: L8, A, G values where `4·G·1.3` has a fractional part ≥ .5 (floor versus round), n=64 and n=128 default sizes, n=32 without size (fatal), and one case per forbidden variable exported in the caller (fatal with a message naming it).
+2. **`tests/shell/tdp_stage12_parity.bash`** (real debug binaries). At n=16 with `|C|=|D|=32`, run gen exactly as `val_chain.sh` would (sandboxed env and argv) and `tdp_gen.sh --run-stop-after-stage 2 --seed-file …`, then `cmp` the three artifacts.
+3. **`tests/integration/tdp_packing.rs`** (§10.4) and the **`stage4-oracle` job** (§10.6).
+4. **`tests/shell/tdp_reproduce_small.bash`:** the full §10.7 at `N=8 MC=16` for real. It skips with a clear message when there is no frozen store (as in CI); the CI job covers stage 4. RC runs it locally before merging.
+5. **`cache_neutrality`** (local, once per P7, result recorded in §2.2 D10b): n=16, same seeds, with `LOOKUP_CACHE_MB=0 CANON_CACHE_MB=0 XPOLY_CANON_CACHE_MB=0` versus the driver values. `db_mixing.mpmct1` must be identical.
+6. **`filter_neutrality`** (once, on a host whose store has `filters.bin`; recorded in §2.2 D11): same seed with `FROZEN_FILTER=0` and `=1`, and `db_mixing.mpmct1` must be identical. Until this is recorded, `auto` never loads a filter.
+7. **`tests/shell/tdp_seeds.bash`:**
+   - malformed `SEEDS` (missing key, non-decimal, out of range, short `run_key`) is fatal;
+   - a one-line legacy seed file is rejected with the migration text;
+   - `-s` is rejected;
+   - a gen mock whose banner reports a different seed is fatal;
+   - no seed value appears in `tdp_gen.log`, stdout or the dry-run output.
+8. **`tests/shell/tdp_stage4_resume.bash`:**
+   - a resume after an `--allow-floor-miss` run does not print `PIPELINE COMPLETE`;
+   - regenerating stage 3 forces stage 4;
+   - a changed packing parameter forces stage 4;
+   - a tampered `packing.recipe` forces stage 4;
+   - exits 5, 6 and 7 are reported with their meanings.
 
 The CI workflow adds:
 
 - `--test tdp_packing` to "Runtime and command correctness";
-- `bash tests/shell/tdp_defaults.bash && bash tests/shell/tdp_stage12_parity.bash` to "TDP script flags and block sizing";
-- `--features security-tools --test hmap_affine_exposure` to "Trace-affine heatmap".
+- `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash` and `tdp_stage4_resume.bash` to "TDP script flags and block sizing";
+- `--features security-tools --test hmap_affine_exposure` to "Trace-affine heatmap". This test runs the **refactored** HA on the n8 fixture and compares with TSVs produced by the **baseline** HA;
+- the new `stage4-oracle` job (§10.6).
 
 ---
 
@@ -969,224 +1207,308 @@ The CI workflow adds:
 
 ### 11.1 `scripts/tdp_gen.sh`
 
-**Usage and flags.** New flags:
+**Flags.**
 
-- `--preprocessing-preset L8|A`, default L8;
-- `--mix-seed N`;
-- `--source-gates N`, an alias of today's `-m/--source-gates`, documented as the one size option;
-- `--packing-window-gates`, `--packing-split-budget`, `--packing-anf-cap-semantics`, `--packing-allow-floor-miss`.
+- `--preprocessing-preset L8|A|custom`, default L8. Not applicable to `nonlinear291`: an explicit preset there is fatal.
+- `--source-gates N` (alias `-m`) and `--source-gates-rule validated|formula`.
+- `--seed-file PATH`.
+- `--packing-window-gates`, `--packing-split-budget`, `--packing-anf-cap-semantics`, `--packing-allow-floor-miss`, `--packing-allow-over-budget`.
+- The stop/rerun range is `2..4`; `5` and `6` keep the "historic" error.
 
-The stop/rerun range becomes `2..4`. `5` and `6` keep the "historic" error. The error message for `4` used to say "historic split" and now explains that 4 is packing.
+**Environment discipline** (§11.5).
 
-**Stage-2 environment.**
+- At start, the script checks the inherited environment against the registry. Any inherited **output-affecting** variable is fatal, with the message "X is not honoured by the managed recipe; unset it (use flags/config)". This includes every `EMBEDDED_MASKING_*`, `CANON_RULE_L_BRANCH_CAP`, `CANON_MONOMIAL_CAP`, `MIXER_DB_LEN_BAND`, `MIXER_STOP_AT_*`, `SLICE_GUARD_*`, `TWIST_G57_*`, `MIN_DIR_LOOKUP`, `PROD_*`, `SAT_*`, `DB_QC*`, `TDP_SOURCE_C` and `SANDWICH_VARIANT`.
+- **This replaces today's inherited-default semantics.** `${EMBEDDED_MASKING_K_ARG:-${EMBEDDED_MASKING_K:-2}}` becomes `${EMBEDDED_MASKING_K_ARG:-2}`. Flags remain the way to set custom values (preset `custom`). `tdp_flags.bash`'s `EMBEDDED_MASKING_K=1 reject` and `SHUFFLING=8 RETURN_HOME=false reject` cases still reject, now with the inherited-variable message. The `precedence` case (line 87) becomes "inherited values are rejected even when flags are given".
+- Every stage binary is launched through one helper, `stage_exec`, as `env -i "${ALLOW_ENV[@]}" "${RECIPE_ENV[@]}" "$BIN/…" …`:
+  - `ALLOW_ENV` = `PATH HOME TMPDIR LANG=C LC_ALL=C`, plus `RAYON_NUM_THREADS` only when the config pins threads;
+  - `RECIPE_ENV` is built per stage from the registry.
 
-1. Unset every inherited `EMBEDDED_MASKING_*` variable: `while read v; do unset "$v"; done < <(compgen -A variable EMBEDDED_MASKING_)`.
-2. Export only the recipe set:
-   - `SHUFFLING=8`, `SHUFFLING_RETURN_HOME=0`, `PREMASK=1`, `SEED_AVOID_C1=1`;
-   - for L8 also `CHAIN=2` and `CHAIN_LEN=8`;
-   - `K`, `MAX_OPEN`, `MIN_OPEN` and `BALANCED` **only when they differ from the production preset** (2, 3, 2, 1). They are always recorded in the marker and the manifest.
-   - `QUAD_FIRE` is no longer exported; the preset value is true.
+**Stage 2.**
 
-Remove the `return_home=0` rejection (`tdp_gen.sh:257-260`). Persistent migration restores the ports at the stage-2 tail (gen `mod.rs:62-70`).
+- The preset sets `RECIPE_ENV`: `SHUFFLING=8`, `SHUFFLING_RETURN_HOME=0`, `PREMASK=1`, `SEED_AVOID_C1=1`, plus for L8 `CHAIN=2` and `CHAIN_LEN=8`. Nothing else, so K, MAX_OPEN, MIN_OPEN, BALANCED and QUAD_FIRE stay unset.
+- Under preset `custom`, the flag values are exported only when they differ from gen's base parameters, and every value is recorded in the marker.
+- Under `nonlinear291`, no `EMBEDDED_MASKING_*` variable is exported.
+- The `return_home=0` rejection (`tdp_gen.sh:257-260`) is removed. Persistent migration restores the ports at the stage-2 tail.
+- Gen call (D14: no mode positional for embedded-masking): `stage_exec "$GADGET_BIN" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" "$GEN_SEED" "$GEN_SEED" "$GEN_SEED"`.
+- After gen: the banner seed check (§8.4).
+- **Side reports**, report-only and parallel with stage 3, written to `$RUN`:
+  - `stage2_mult.txt`, from `mult_census.py` under `python3 -I` (copied into `scripts/tdp_reports/`, unchanged);
+  - `stage2_span.{tsv,txt}`, from `hmap_affine` SPAN mode with val_chain's arguments, **when a `security-tools` build of `hmap_affine` is present**; otherwise the note "span_s2 skipped (hmap_affine not built)".
 
-**Seeds.** `GEN_SEED` and `MIX_SEED` replace `SEED`. Files and rules:
-
-- `$RUN/SEEDS` holds both seeds, chmod 600. A v9 `$RUN/SEED` is rejected with "created by recipe v9; resume with the checkout that created it".
-- An explicit `-s` or `--mix-seed` that conflicts with an existing `SEEDS` file is fatal, as today.
-- Gen is called as `"$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" "$GEN_SEED" "$GEN_SEED" "$GEN_SEED" "$PREPROCESSING_MODE"`.
-
-**Stage-12 marker.** `tdp_stage12_recipe=7` adds `preprocessing_preset`, `premask=1`, `seed_avoid_c1=1`, `chain`, `chain_len` and `gadget_seed_rule=gen`.
+  A failure of either is a note, never fatal.
+- Stage-12 marker `tdp_stage12_recipe=7`: adds `preprocessing_preset`, every effective stage-2 knob, `gadget_seed_rule=gen`, `seeds_mac` and `source_gates_rule`.
+- **If stage 2 actually runs** (fresh, forced, or a missing artifact), then `FORCE_FROM=min(FORCE_FROM,3)`.
 
 **Stage 3.**
 
 - `G_IN` comes from the header field.
-- The profile comes from `n0=GROWTH n1=n0+HOLD n2=n1 r1=EXPAND r2=r1`. With the defaults (GROWTH=2, HOLD=0, EXPAND=2) it is `2,2,2,2,2`.
-- `A_MOVES = int(n2*r1*G*1.3)`, computed with Python `int()`, i.e. truncation.
+- The profile comes from the schedule. The `validated` schedule is fixed at `2,2,2,2,2` (n0=2, hold 0, expand 2). The `custom` schedule takes `growth/hold/expand`.
+- `A_MOVES = int(n2*r1*G*1.3)`, computed with Python `int()`.
 - `--seed "$MIX_SEED"`.
-- Delete `--verify-every 2000000 --report-every 100000 --state-out …`.
-- Delete the `CANON_*` and `LOOKUP_CACHE_MB` exports.
-- `FROZEN_FILTER`: `auto` exports `1`, with no `/proc/meminfo` gate and a background prewarm when `filters.bin` exists. The mixer itself falls back to unfiltered when the file is absent. `on` and `off` behave as today.
-- Keep `MIXER_STOP_FLAG` and `MIXER_DUMP_FLAG`: they are polled only at report cadence and have no RNG effect when the files are absent.
+- `--verify-every 2000000 --report-every 100000 --state-out …` are deleted.
+- `CANON_RULE_L_BRANCH_CAP` and `CANON_MONOMIAL_CAP` are no longer exported. The three cache sizes stay (D10b).
+- `FROZEN_FILTER` follows D11:
+  - `auto` = `1` when `$FROZEN_DB_DIR/filters.bin` is absent; when it is present, `0` until filter neutrality is recorded, then `1` iff available RAM ≥ 60 GiB (Linux `MemAvailable`; macOS `vm_stat` free + inactive + speculative pages × page size);
+  - `on` and `off` force it.
+- `MIXER_STOP_FLAG` and `MIXER_DUMP_FLAG` are driver-set paths (no RNG effect when the files are absent) and stay.
+- **If stage 3 actually runs**, then `FORCE_FROM=min(FORCE_FROM,4)`.
 
-**Stage 4** is a new block after stage 3:
+**Stage 4.** A completion marker makes resume safe:
 
 ```bash
-PACK_DIR=$RUN/packing
-if [ "$FORCE_FROM" -le 4 ] || [ ! -s "$PACK_DIR/deliverable.bin" ]; then
-  rm -rf "$PACK_DIR"
+PACK_DIR=$RUN/packing; MARKER=$RUN/packing.recipe
+expected_marker() {   # params + MACs of the three inputs, keyed by run_key; never unkeyed hashes
+  python3 -I "$LIB/packing_marker.py" expect "$RUN/SEEDS" "$GADGET" "$DB_MIXING" "$GADGET.source_c.g57" \
+          "$BIN/tdp_packing" "${PACKING_RECIPE[@]}"
+}
+stage4_done=0
+if [ "$FORCE_FROM" -gt 4 ] && [ -s "$MARKER" ]; then
+  if python3 -I "$LIB/packing_marker.py" check "$MARKER" "$PACK_DIR" < <(expected_marker); then stage4_done=1
+  else note "stage 4: completion marker does not match inputs/parameters/deliverable; re-running stage 4"; fi
+fi
+if [ "$stage4_done" -eq 0 ]; then
+  rm -f "$MARKER"; rm -rf "$PACK_DIR"
   note "stage 4: tdp_packing run (G=$PACK_G, split budget $SPLIT_BUDGET, caps $CAP_SEM)"
   set +e
-  "$BIN/tdp_packing" run --stage2 "$GADGET" --stage3 "$DB_MIXING" --source-c "$GADGET.source_c.g57" \
+  stage_exec "$BIN/tdp_packing" run --stage2 "$GADGET" --stage3 "$DB_MIXING" --source-c "$GADGET.source_c.g57" \
       --n "$N" --out-dir "$PACK_DIR" ${PACKFLAGS[@]+"${PACKFLAGS[@]}"} > "$RUN/stage4.log" 2>&1
   rc=$?; set -e
-  [ "$rc" -eq 0 ] || { note "stage 4 FAILED (exit $rc; see $RUN/stage4.log, $PACK_DIR/packing.report)"; exit "$rc"; }
-  printf '%s\n' "${PACKING_RECIPE[@]}" > "$RUN/packing.recipe"
+  if [ "$rc" -ne 0 ]; then
+    note "stage 4 FAILED: exit $rc ($(stage4_exit_meaning "$rc")); see $RUN/stage4.log"; exit "$rc"
+  fi
+  status=$(kv status "$PACK_DIR/packing.report")
+  # atomic: write .tmp then mv; records status, params, input MACs, MAC of deliverable.tdp4
+  expected_marker | python3 -I "$LIB/packing_marker.py" write "$MARKER" "$PACK_DIR" "$status"
 fi
-note "PIPELINE COMPLETE (stages 1-4): $PACK_DIR/deliverable.bin"
+status=$(kv status "$MARKER")
+if [ "$status" = ok ]; then
+  note "PIPELINE COMPLETE (stages 1-4): $PACK_DIR/deliverable.tdp4"
+else
+  : > "$PACK_DIR/NOT_RECOMMENDED"
+  note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (status=$status): $PACK_DIR/deliverable.tdp4 is NOT a recommended deliverable"
+fi
 ```
 
-- `PACKFLAGS` is empty at the defaults, so the call carries exactly the defaults.
-- `packing.recipe` holds `tdp_packing_recipe=1`, the binary sha256, the parameters, and the xxh3 of `tdp.mpmct1` and `db_mixing.mpmct1`. A mismatch on resume is fatal unless the run is rerun from 4.
-- Add `tdp_packing` to the binary presence check (`tdp_gen.sh:292-294`). Delete the "stage 4 is not run" note.
+- `PACKFLAGS` is empty at the defaults.
+- `stage4_exit_meaning` mirrors `Stage4Error::meaning`, and a unit test checks that the two tables agree.
+- `packing_marker.py` (new, in `scripts/tdp_reports/`) computes HMAC-SHA256 with `run_key`.
+- The marker is written **only after exit 0**, and `status` is either `ok` or `allowed_floor_miss`/`allowed_over_budget`.
+- On a skip path the marker is **re-checked** against the current inputs, parameters, binary and deliverable.
+- `tdp_packing` is added to the binary presence check, and the "stage 4 is not run" note is deleted.
 
-### 11.2 `src/tdp` (managed path)
+### 11.2 `src/tdp` (managed path): config schema v2
 
-**`config/parse.rs` (`TOML_FIELDS`, sections).**
+**`config_version = 2` is required.** A v1 file fails with this migration message:
 
-- `preprocessing.preset`: string, `"L8"` or `"A"`, default `"L8"`.
-- `preprocessing.shuffling_segments`: default 8 (was 0).
-- `preprocessing.shuffling_return_home`: default false (was true).
-- `db_mixing.growth_work_units` (new): number, default 2.0. It is the profile's n0.
-- `db_mixing.hold_work_units`: default 0.0 (was 27.0).
-- `db_mixing.target_size_factor`: stays 2.0.
-- A new `[packing]` section with:
-  - `window_gates=512`, `interval_cap=512`, `monomial_budget=24576`, `span_cap=3000`;
-  - `split_budget=65536`, `fix_iterations=4`, `fallback_iterations=4`;
-  - `anf_cap_semantics="cpython39"`, `allow_floor_miss=false`.
-  Add it to the section list (`parse.rs:255-266`).
-- `[calibration] seed_file`: a two-line `gen_seed=`/`mix_seed=` file.
+> config_version 1 is not supported by recipe v10: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.
+
+**Authoritative presets.**
+
+- `preprocessing.preset = "L8" | "A" | "custom"`, default `"L8"`.
+  - Under L8 or A, **any** of `mask_pair_wires`, `max_open_masks`, `min_open_masks`, `balanced_masks`, `shuffling_segments`, `shuffling_return_home`, `premask`, `seed_avoid_c1`, `chain`, `chain_len` that is present is an error, even when it equals the preset: "field X is set by preset L8; remove it or use preset = \"custom\"".
+  - Under `custom` they are all required.
+  - With `mode = "nonlinear291"`, `preset` must be absent.
+- `db_mixing.schedule = "validated" | "custom"`, default `"validated"` (profile 2,2,2,2,2, moves `int(4·G·1.3)`).
+  - Under `validated`, the fields `growth_work_units`, `hold_work_units` and `target_size_factor` must be absent.
+  - Under `custom` they are required. `growth_work_units` is new in v2 (it is the profile's n0), and `hold_work_units` keeps its meaning only under `custom`.
+
+**Other fields.**
+
+- `source.gates`: optional, default per §2.4. `source.gates_rule = "validated" | "formula"`, default `validated`.
+- `[packing]`: `window_gates=512`, `interval_cap=512`, `monomial_budget=24576`, `span_cap=3000`, `split_budget=65536`, `fix_iterations=4`, `fallback_iterations=4`, `anf_cap_semantics="cpython39"`, `allow_floor_miss=false`, `allow_over_budget=false`. The section is added to the list at `parse.rs:255-266`. Any non-default value is recorded as `packing_params=custom`.
+- `[calibration] seed_file`: format 2 (§8.2).
 - `run.stop_after_stage`: default 4, range 2..4.
+- `run.threads`: optional; when present it pins `RAYON_NUM_THREADS` and `--threads`.
 
-**`config/validate.rs`.** Delete the `return_home` rejection. Validate the preset. Validate that the packing integers are positive and that `monomial_budget·8` fits in usize. The `2*n > K + balanced` rule stays.
+**`config/validate.rs`.**
+
+- Delete the `return_home` rejection.
+- Validate the preset and schedule exclusivity rules.
+- n ≤ 256 when stop_after_stage is 4.
+- Packing integers positive, and `monomial_budget·8` fits in usize.
+- The `2*n > K + balanced` rule stays.
+- `read_calibration_seed` becomes `read_seed_file`: format 2 only, with the §8.3 legacy message.
 
 **`ResolvedConfig`** gains:
 
-- `preprocessing_preset: PreprocessingPreset { L8, A }`;
-- `growth: String`;
+- `preprocessing_preset: Preset { L8, A, Custom(Stage2Knobs) }`;
+- `schedule: Schedule { Validated, Custom { growth, hold, expand } }`;
+- `source_gates_rule`;
 - `packing: PackingConfig`;
-- `seeds: SeedPlan { Random | Explicit { gen, mix } }`.
+- `seeds: SeedPlan { Random | Explicit(path) }`.
 
 **`runner.rs`.**
 
-- `configure_environment`: stop setting `EMBEDDED_MASKING_{K,MAX_OPEN,MIN_OPEN,BALANCED,QUAD_FIRE}`. Instead pass the resolved values as `TDP_PREPROCESSING_*` script variables, which `tdp_gen.sh` translates following the rule in §11.1. Stop setting `CANON_*` and `*_CACHE_MB`. Set `FROZEN_FILTER` per §11.1.
-- `script_args`: add `--preprocessing-preset`, the `--packing-*` flags and `--mix-seed`.
-- The build list and the dry-run list (`runner.rs:185-188`, `521-524`) add `--bin tdp_packing`.
-- Delete the "not driven yet" message (`215-220`).
+- Resolve the seeds and create `$RUN/SEEDS` (create_new, 0600) **before** `prepare_recipe_manifest` (§8.2).
+- `configure_environment` becomes **allow-list based**: `command.env_clear()`, then `ALLOW_ENV`, then the registry's driver-set variables (`FROZEN_DB_DIR`, `FROZEN_FILTER` per D11, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `TDP_SOURCE_C` when `source.path`, the cache sizes), then the script variables `TDP_PREPROCESSING_PRESET` / `TDP_SCHEDULE` / `TDP_PACKING_*`.
+- Before launching, the inherited environment is checked against the registry and refused with the same message as bash.
+- `render_command` redaction per §8.4.
+- `script_args`: `--preprocessing-preset`, `--source-gates-rule`, the `--packing-*` flags. No seed flags.
+- Map `tdp_gen.sh`'s exit codes to messages via the shared table (`Stage4Error::meaning` for 2-8 and 101).
+- The build and dry-run lists add `--bin tdp_packing`. Delete the "not driven yet" message.
 
-**`paths.rs`.** Add the stage-4 prerequisites (`tdp.mpmct1`, `db_mixing.mpmct1`, `tdp.mpmct1.source_c.g57`) for `rerun_from_stage = 4`.
+**`paths.rs`.** Stage-4 prerequisites for `rerun_from_stage = 4`.
 
 **`manifest.rs`.**
 
-- `CURRENT_RECIPE_VERSION = 10`.
-- `read_recipe_version` accepts only 10. A v9 manifest gives the explicit error "recipe v9 run: resume with the checkout that created it".
+- `CURRENT_RECIPE_VERSION = 10`. `read_recipe_version` accepts only 10; v9 gives "recipe v9 run: resume with the checkout that created it".
 - `production_binary_fingerprints` adds `tdp_packing`.
-- `recipe_manifest` adds:
+- The manifest prints **resolved** values only, which removes the `hold` "30" text (D18):
 
-  ```
-  preprocessing_preset=L8
-  preprocessing_premask=1
-  preprocessing_seed_avoid_c1=1
-  preprocessing_chain=2
-  preprocessing_chain_len=8
-  gadget_seed_rule=gen
-  growth=2
-  stage3_profile=2,2,2,2,2
-  stage3_moves_rule=floor(n2*r1*G*1.3)
-  stage3_verify_every=default(10000)
-  stage3_report_every=default(50000)
-  source_gates=<resolved number>
-  source_gates_rule=derived|explicit
-  seed_record=SEEDS
-  seed_source=random|explicit
-  seed_bits=63
-  seeds_xxh3=…
-  packing_window_gates=512  packing_interval_cap=512  packing_monomial_budget=24576
-  packing_span_cap=3000  packing_split_budget=65536
-  packing_fix_iterations=4  packing_fallback_iterations=4
-  packing_anf_cap_semantics=cpython39  packing_allow_floor_miss=false
-  ```
+```
+preprocessing_preset=L8
+preprocessing_shuffling=8  preprocessing_return_home=0  preprocessing_premask=1
+preprocessing_seed_avoid_c1=1  preprocessing_chain=2  preprocessing_chain_len=8
+gadget_seed_rule=gen
+db_mixing_schedule=validated  stage3_profile=2,2,2,2,2  stage3_moves_rule=int(n2*r1*G*1.3)
+stage3_verify_every=default(10000)  stage3_report_every=default(50000)
+source_gates=1000  source_gates_rule=validated|explicit|formula
+seed_record=SEEDS  seed_source=random|explicit  seed_bits=63  calibration_only=false
+env_policy=allowlist-v1  cache_mb=lookup:2048,canon:256,xpoly:1024  canon_caps=unbounded
+frozen_filter=auto(<resolved>)
+packing_params=default  packing_window_gates=512  packing_interval_cap=512  packing_monomial_budget=24576
+packing_span_cap=3000  packing_split_budget=65536  packing_fix_iterations=4  packing_fallback_iterations=4
+packing_anf_cap_semantics=cpython39  packing_allow_floor_miss=false  packing_allow_over_budget=false
+pinned_recipe=val_chain-L8-20261007
+```
 
-  The pinned line becomes `pinned_recipe=canon-unbounded-cache-default-native-regular`.
-
-**`configs/tdp.toml`.** Shows the new defaults and the `[packing]` section, with comments: "defaults reproduce `val_chain.sh` CONFIG=L8 (docs/STAGE4_RUST_DESIGN.md §2)" and "`source.gates`: the validation runs used 1000 (n=64) and 3000 (n=128)".
+**`configs/tdp.toml`** becomes a v2 template. `wires = 128`, and no stage-2 or stage-3 knob appears uncommented. A comment says: "defaults reproduce val_chain.sh CONFIG=L8 as run for vL64a/b, vL128a/b (docs/STAGE4_RUST_DESIGN.md §2); source.gates defaults to 1000 (n=64) / 3000 (n=128)". `lookup_miss_filter` documents the D11 rule.
 
 ### 11.3 Test updates
 
 **`tests/unit/tdp.rs`:**
 
-- `243-284`: stop/rerun 4 is now accepted; 5 and 6 are rejected.
-- `913-949`: `return_home=false` is now accepted; the rejection test is replaced by "shuffling 1..7 rejected".
-- `986-1007`: the new exact default manifest text.
-- `1009-1067`: three mock binaries; a v10 fresh run.
-- New tests:
-  - `default_profile_is_2_2_2_2_2`;
-  - `moves_floor_not_round`;
-  - `preset_a_drops_chain`;
-  - `v9_manifest_rejected_with_message`;
-  - `explicit_seed_file_two_lines`;
-  - `seeds_never_in_narrative_log`;
-  - `env_has_no_canon_caps`.
+- stop/rerun 4 accepted, 5 and 6 rejected;
+- `return_home=false` accepted under `custom`;
+- the exact default manifest text;
+- three mock binaries; a v10 fresh run.
 
-**`tests/shell/tdp_flags.bash`.** Lines 40-41 now expect `return_home 0` to be accepted. The mock key list at line 64 gains PREMASK, SEED_AVOID_C1, CHAIN and CHAIN_LEN, and drops K, MAX_OPEN, MIN_OPEN, BALANCED and QUAD_FIRE at the defaults.
+New tests:
 
-**`tests/shell/tdp_block_size.bash`.** Lines 35-40: only 5 and 6 are rejected. Line 89: three stage calls. Line 96: the "PIPELINE COMPLETE (stages 1-4)" line. Add a `tdp_packing` mock.
+- `v1_config_rejected_with_migration`;
+- `old_template_with_preset_l8_rejected` (the v1 template text with `config_version` bumped to 2 is rejected for its explicit knobs);
+- `preset_field_conflict_rejected`;
+- `schedule_field_conflict_rejected`;
+- `preset_rejected_for_nonlinear291`;
+- `default_source_gates_table` (64 → 1000, 128 → 3000, 32 → error, 32 + formula → 1280 recorded `formula`);
+- `default_profile_is_2_2_2_2_2`;
+- `moves_floor_not_round`;
+- `preset_a_drops_chain`;
+- `seeds_file_created_before_manifest`;
+- `seed_file_format_1_rejected`;
+- `all_seed_flags_redacted`;
+- `seeds_never_in_narrative_log`;
+- `env_is_allowlist_only`;
+- `inherited_output_affecting_var_rejected` (one per registry class);
+- `env_registry_covers_every_env_read` (§11.5);
+- `exit_code_tables_agree`;
+- `v9_manifest_rejected_with_message`.
 
-**New:** `tests/shell/tdp_defaults.bash`, `tests/shell/tdp_stage12_parity.bash` and `tests/shell/tdp_reproduce_small.bash` (§10.7).
+**`tests/shell/tdp_flags.bash`:**
 
-### 11.4 Stage-2 knobs: environment now, typed parameters later
+- lines 40-41: `return_home 0` accepted under `--preprocessing-preset custom`;
+- the inherited-variable cases now expect the inherited-variable message;
+- the mock key list at line 64 expects exactly the preset's variables;
+- new cases: an explicit preset with `nonlinear291` is fatal, and `nonlinear291` exports no `EMBEDDED_MASKING_*`.
 
-The four knobs that distinguish L8 and A are read from the environment **inside stage code**:
+**`tests/shell/tdp_block_size.bash`:** lines 35-40 reject only 5 and 6; line 89 has three stage calls; line 96 is the "PIPELINE COMPLETE (stages 1-4)" line; add a `tdp_packing` mock. Callers that relied on the derived source size pass `-m`.
 
-- `construct.rs:89`: `SEED_AVOID_C1`;
-- `embedded_masking.rs:1611-1620`: `CHAIN`, `CHAIN_LEN`;
-- `embedded_masking.rs:1927`: `PREMASK`.
+**New:** `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash`, `tdp_stage4_resume.bash` and `tdp_reproduce_small.bash` (§10.9).
 
-Phase 1 of the port (§12) keeps them there and drives them by the exact environment of §11.1. That is literally what `val_chain.sh` does, and it is proven by `tdp_stage12_parity.bash`.
+**Gen strict parsing (D17).**
 
-Phase 2 (optional, separate commit) moves them into `EmbeddedMaskingParams { premask, seed_avoid_c1, chain_k, chain_len }`, with the gen adapter keeping the env names. Its acceptance test is `stage2_typed_params_byte_identical`: for 3 fixed seeds at n=16, each in A and in L8, the sha256 of the outputs from the pre-refactor binary is committed, and the refactored output must match.
+- `gen_sandwich_gadget` positionals use `parse_positional::<T>(name, a.next())`: absent means the default, **present and unparsable (including empty) is fatal** with exit 2 and a message naming the argument.
+- P7 greps `scripts/`, `tests/` and `security_tests/` for gen invocations that relied on the fallback (for example a placeholder `""` to reach later positionals) and fixes them.
+- Unit test `gen_rejects_unparsable_positionals`.
+
+### 11.4 Stage-2 knobs become typed parameters (part of P7)
+
+The `src/stages` contract says construction never reads process configuration (`preprocessing/types.rs:31`). In **P7** (not optional), every output-affecting stage-2 environment read moves into typed fields:
+
+- `EmbeddedMaskingParams { premask, seed_avoid_c1, chain_k, chain_len, chain_rotate, retire: RetireParams, drift: DriftParams, anc_reserve }`;
+- the preprocessing slice guard `legacy_slice_guard` (`SLICE_GUARD_LEGACY`, `construct.rs:67`).
+
+These are today's reads at `construct.rs:89`, `embedded_masking.rs:1214, 1611-1668, 1927, 2409-2410` and `construct.rs:67`.
+
+- Gen's adapter (`gen mod.rs`) is the only place that maps the environment names to these fields.
+- Diagnostic-only reads (`LGI_DEBUG`, `STRADDLE_CENSUS`, `DRIFT_DEBUG`, `DUMP_GATES`) move into a `Diagnostics` field passed the same way.
+
+Acceptance is `stage2_typed_params_byte_identical`: for 3 fixed calibration seeds at n=16, in A, L8 and one RETIRE configuration, the sha256 of the outputs from the pre-refactor binary is committed, and the refactored output must match.
+
+The stage-3 engine reads (`MIXER_STOP_AT_*`, `TWIST_G57_*`, `MIXER_DB_LEN_BAND`, `MIN_DIR_LOOKUP`) are outside the stage-4 scope. They are classified `forbidden` in the registry, so the driver can never pass them, and their typed migration is recorded as a follow-up (§13.4).
+
+### 11.5 Environment registry
+
+New `src/tdp/env_registry.rs` holds one table: `(name or prefix, class, built-in default)`. The classes are:
+
+| class | meaning | examples | managed handling |
+|---|---|---|---|
+| `recipe` | output-affecting, set by preset or schedule | `EMBEDDED_MASKING_SHUFFLING…CHAIN_LEN`, `EMBEDDED_MASKING_K…QUAD_FIRE` (custom only) | set by driver only; inherited → fatal |
+| `driver` | output-affecting, set by driver from config | `FROZEN_DB_DIR`, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `TDP_SOURCE_C`, `FROZEN_FILTER`, `MIXER_STOP_FLAG`, `MIXER_DUMP_FLAG`, `MIXER_DUMP_OUT` | set by driver only; inherited `FROZEN_DB_DIR` accepted as the store path (as today), others → fatal |
+| `neutral` | proven output-neutral (named test) | `LOOKUP_CACHE_MB`, `CANON_CACHE_MB`, `XPOLY_CANON_CACHE_MB` | driver values; inherited ignored with a note |
+| `forbidden` | output-affecting, not part of any recipe | every other `EMBEDDED_MASKING_*`, `CANON_RULE_L_BRANCH_CAP`, `CANON_MONOMIAL_CAP`, `MIXER_DB_LEN_BAND`, `MIXER_STOP_AT_PHASE`, `MIXER_STOP_AT_SPLICES`, `SLICE_GUARD_LEGACY`, `TWIST_G57_NO_RETRY`, `TWIST_G57_NO_SLIDE`, `MIN_DIR_LOOKUP`, `PROD_*`, `SAT_*`, `DB_QC*`, `BV5_*`, `FROZEN_CURATED_*`, `FROZEN_REF_DIR` | inherited → fatal |
+| `tooling` | not read by stage binaries | `CARGO`, `RUSTC`, `COMPRESSION_TRACE*` | ignored; never passed |
+
+`env_registry_covers_every_env_read` scans `src/**/*.rs` for string literals passed to `env::var`, `env::var_os`, `envu`, `value_convention` and `env_flag`. It fails if a name is not covered by the table. A new knob anywhere in the crate therefore forces a classification decision.
+
+`tdp_gen.sh` reads the same table from a generated file `scripts/tdp_env_registry.tsv`, which `cargo test` checks is in sync. The transcript test (§10.9 item 1) compares effective values of the `recipe` and `driver` classes.
 
 ---
 
 ## 12. Implementation phases and commits
 
-Each phase ends with gates G1-G7, `cargo fmt --check` and clippy green, and a WIP commit.
+Each phase ends with G1-G7, `cargo fmt --check` and clippy green, and a WIP commit.
 
 | phase | content | acceptance |
 |---|---|---|
 | P0 | this document | committed |
-| P1 | `oracle_io`, `pyrand`, `pyset` (+ traces), `mono`, `anf`; `apply_lanes16` | unit tests; trace replay; window-ANF replay of vA64a and vL128b packs reproduces all 8 aborts |
-| P2 | `gf2` + `cview` extraction; `hmap_affine` refactor | byte-identical against the baseline `hmap_affine` (§10.5 step 1) on vA64a and vA128a |
-| P3 | `fingerprint`, `intervals`, `scheduler`; `tdp_packing pack` | sha256 of the 8 packs and bounds (Appendix B); `pack.txt` lines |
-| P4 | `repair/*`; `tdp_packing repair` | byte-identical `rep512.*` and TSVs on the 8 replicates |
-| P5 | `serialize`, `verify`, container; DE `--container` | sha256 of the 8 `deliverable.bin`; container equals DE; zero slice |
-| P6 | `run`, report, exit codes; `census`; fixtures + `regen.sh`; integration tests | `tests/integration/tdp_packing.rs` in CI |
-| P7 | driver defaults (D1-D14), presets, seeds, stage-4 step, manifest v10, shell and unit tests | G4 and the new shell tests |
-| P8 | reproduction tests §10.6 (N=16 L8, N=16 A, N=64 L8), historic anchor | all `cmp` identical; times and RSS within §9 |
+| P0.5 | **anchor A** (§10.8): gen at `492564f0` on all 8 archived seeds; mixer on vL64a and vL128a. Pin the baseline and archive-era HA (§10.1); uv CPython 3.9.6 and the trace recording | results recorded in §2.1; P7 blocked until resolved |
+| P1 | `oracle_io`, `pyrand`, `blake2b`, `pyset` (arena) + traces (small and large), `mono` (Mersenne hash), `anf`; `apply_lanes16` | unit tests; trace replays; vA64a window fixture; window-ANF replay of the vA64a and vL128b packs reproduces all 8 aborts |
+| P2 | `gf2` + `cview` extraction; `hmap_affine` refactor | §10.5 step 0 (provenance, fallback if needed); refactored HA byte-identical to the **baseline** on vA64a and vA128a |
+| P3 | `fingerprint`, `intervals`, `scheduler`, `certify_reorder`; `tdp_packing pack` | sha256 of the 8 packs and bounds; `pack.txt` lines |
+| P4 | `repair/*`, `certify_cancel`/`certify_repair`, single window, `check-final`; `tdp_packing repair` | byte-identical `rep512.*` and TSVs against the §10.5 step-0 targets on the 8 replicates |
+| P5 | `serialize` (streamed, flat-arena decoder), `verify`, container, `container_header.py` | 8 payload sha256s; container `cmp`; zero slice |
+| P6 | `run`, report, exit codes 0-8; `census`; fixtures + `regen.sh` with coverage assertions; integration tests; `stage4-oracle` CI job | `tests/integration/tdp_packing.rs` and the differential job green in CI; census parity on 8 tags |
+| P7 | driver: D1-D18, config v2, presets and schedule, env registry and allow-list, seeds (§8), gen strict parsing, stage-4 step with marker, manifest v10, side reports, typed stage-2 knobs (§11.4), shell and unit tests; cache neutrality | G4 + new shell tests; `stage2_typed_params_byte_identical`; `cache_neutrality` recorded |
+| P8 | reproduction tests §10.7 (N=16 L8, N=16 A, N=64 L8); **anchor B** for vL64a and vL128a; filter neutrality when a host with `filters.bin` is available | all comparisons identical (or `faithful (failure path)`); §9 times and RSS |
 | P9 | docs (§14) | — |
-| P10 (optional) | typed stage-2 knobs (§11.4) | `stage2_typed_params_byte_identical` |
 
 ---
 
 ## 13. Open decisions for RC
 
-1. **Source size default:** formula (2304 at n=64, 6272 at n=128) versus the validated 1000 and 3000. The formula is kept until RC decides. It is one option, `source.gates`, and is recorded.
-2. **Where the seed values live:** the hash-pinned private `$RUN/SEEDS` (proposed), or inside `tdp_command.conf`.
-3. **Seed width:** 63-bit (proposed, §2.3) versus the reference's 31-bit gen and 40-bit mix.
-4. **Repair improvements** (TDP doc §4.9): slide across markers, marker-identity cuts, all exposing cuts, finer split candidates against leaky-split cycles. Each would be a new `RepairMode` variant behind a flag, never the default, until RC re-validates.
-5. **Canonical caps:** whether to ever switch the default to `CapSemantics::Canonical`. That would change bytes relative to the oracle on real runs.
+1. **Seed entropy beyond 64 bits** (§2.3): route (a) a 256-bit ChaCha-derived C and gadget streams, which changes bytes and needs re-validation, or route (b) a CSPRNG-generated C via `source.path` for production deliverables. Until RC decides, the default is the reference algorithm with 63-bit seeds, recorded as a stopgap.
+2. **Sizes for other n.** Today other n require an explicit size or the `formula` opt-in (§2.4). RC may add validated rows (for example after new runs at n=96 or n=256).
+3. **Repair improvements** (TDP doc §4.9): slide across markers, marker-identity cuts, all exposing cuts, finer split candidates. Each would be a new `RepairMode` behind a flag, never the default until RC re-validates.
+4. **Typed stage-3 knobs** (`MIXER_STOP_AT_*`, `TWIST_G57_*`, `MIXER_DB_LEN_BAND`, `MIN_DIR_LOOKUP`): a follow-up after the port. The driver already forbids them.
+5. **`CapSemantics::Canonical` as the default:** never, unless RC re-validates. It changes bytes relative to the oracle on real runs.
+
+Revision 1's open items "source size" and "where the seed values live" are resolved: §2.4, and the private `$RUN/SEEDS` with no seed-derived value in any publishable file (§8).
 
 ## 14. Documentation to update (P9)
 
 - `docs/TDP_FOUR_STAGE_PIPELINE.md`:
-  - §4.5 and line 171: the snapshot and canonical `order_repair.py` are now one file;
-  - §4.7: all 8 replicates were re-repaired with the canonical version and re-serialized;
-  - §4.9 and §5.7: the port status, linking here;
+  - §4.5 and line 171: one canonical `order_repair.py`;
+  - §4.7: all 8 replicates re-repaired, and the anchor result;
+  - §4.9 and §5.7: port status, linking here;
+  - §6.9: HA provenance result;
   - §6.10 and §6.12: decisions taken;
-  - Appendix A: the gaps closed by D1-D14.
+  - Appendix A: gaps closed by D1-D18.
 - `docs/tdp_pipeline.md`:
-  - the quick start runs stages 1-4;
-  - the configuration reference gains the preset, seeds, `growth_work_units` and `[packing]`;
-  - "Stage 4: packing" describes `tdp_packing`, the outputs, the exit codes and the container;
+  - quick start for stages 1-4;
+  - config v2 (presets, schedule, size table, seeds format 2, `[packing]`);
+  - the environment policy;
+  - "Stage 4: packing" (`tdp_packing`, outputs, exit codes, `deliverable.tdp4`);
   - the reference driver becomes a parity tool.
-- `docs/ANF_WINDOW_DELIVERY.md`: §1.2 wrongly says every window is re-verified; the format section adds container v1.
-- `docs/windowed_delivery_design.md` §7: the plan is replaced by a pointer here.
-- `docs/STAGE2_LINKABILITY.md` §6: the managed default is L8.
-- `scripts/windowed_delivery/README.md`: the oracle role, the `--container` flag, the sandbox rule.
-- `configs/tdp.toml` comments.
+- `docs/ANF_WINDOW_DELIVERY.md`: §1.2 wrongly says every window is re-verified; the format section adds container v1 under its own name.
+- `docs/windowed_delivery_design.md` §7: replaced by a pointer here.
+- `docs/STAGE2_LINKABILITY.md` §6: the managed default is L8; §7: small-n L8 gen feasibility.
+- `scripts/windowed_delivery/README.md`: the oracle role, the sandbox rule, the pinned interpreter and baseline HA.
+- `configs/tdp.toml`: the v2 template.
 
 ---
 
-## Appendix A. Golden vectors (from `/usr/bin/python3` 3.9.6)
+## Appendix A. Golden vectors (from CPython 3.9.6)
 
 **`random.Random(20261004)`:**
 
@@ -1200,9 +1522,11 @@ Each phase ends with gates G1-G7, `cargo fmt --check` and clippy green, and a WI
 - `Random(77)`: `0x32833106536e95df40b2d002cc92d33d`;
 - `Random(1)`: `0xcd613e30d8f16adf91b7584a2265b1f5`.
 
+**Set order** (`{1,2,3}`, discard 2, add 10): `[10, 1, 3]` on 3.9.6, because 3.9 does not reuse the dummy slot.
+
 ## Appendix B. Parity targets (sha256 of archived files in `runs/ncdb_ab_20261001/waist/<tag>/`)
 
-Hashes of the source C, `tdp.mpmct1` and `s3.mpmct1` are intentionally not listed (§2.3).
+Hashes of the source C, `tdp.mpmct1` and `s3.mpmct1` are intentionally not listed (§2.3). If §10.5 step 0 or §10.8 falls back, Appendix B′ or B″ will be added; these tables are not edited.
 
 | tag | `packed_G512.mpmct1` | `packed_G512.mpmct1.bounds` |
 |---|---|---|
@@ -1226,4 +1550,45 @@ Hashes of the source C, `tdp.mpmct1` and `s3.mpmct1` are intentionally not liste
 | vL128a | `e987ce0407b5160ff0359f08d4480ead39c63625b2c97b1235d6728afdb8131f` | `9ed0c259af91a4cd6c1a2bf882c86804409a6cc9b5a13d3cfc9c75a649895f99` | `aa2d8845db0be1c367c2e345334f1b9a2792695b726c73950990076ae437b11e` |
 | vL128b | `6ed654388b6e52951eb0165c536c5a119e137eb08746daf4b26cb51b4abf2b1a` | `3150c3a4d8fc3abbc6c4c86bc358793a4c15fda95c1c92acfe3ef1284697dfa8` | `710baf59423c7f2a5ab2cb84d24d432f206c334c6ec39b7e4bebda2edc6bf68c` |
 
-The `rep512.*` and `deliverable.bin` files are the Oct 8 re-repairs made with the canonical `order_repair.py`. The superseded versions are in `rep512_v1/`. None of the eight `packed_G512.mpmct1.bounds` files contains a duplicate.
+The `rep512.*` and `deliverable.bin` files are the Oct 8 re-repairs made with the canonical `order_repair.py`; the superseded versions are in `rep512_v1/`. None of the eight `.bounds` files contains a duplicate.
+
+Archive-era `hmap_affine` (main checkout, mtime 2026-10-07 18:54:28): `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3`.
+
+## Appendix C. Review issues (revision 1) and resolutions
+
+All 37 issues are accepted; none is rejected. Duplicates are grouped. Numbers are the review's order.
+
+| # | issue | resolution |
+|---|---|---|
+| 1, 20 | default source size is the formula, not the validated 1000/3000 | §2.4: the validated table is the default; other n need an explicit size or the `formula` opt-in; `source_gates_rule` is recorded. D16 |
+| 2, 22 | old `local.toml` (v1 template) silently overrides the new preset; hold "30" in the manifest versus 27 in the script | §11.2: `config_version = 2` with a migration error; presets and schedule are authoritative (explicit knobs are rejected unless `custom`); `growth_work_units` is v2 and custom-only; the manifest prints resolved values only (D18); tests `v1_config_rejected_with_migration`, `old_template_with_preset_l8_rejected`, `preset_field_conflict_rejected` |
+| 3, 25 | deny-list scrub misses `MIXER_DB_LEN_BAND`, `SLICE_GUARD_LEGACY`, `MIXER_STOP_AT_*`; the test filter cannot see them | §11.5: registry + allow-list launch (`env_clear` / `env -i`); inherited output-affecting variables are fatal; `env_registry_covers_every_env_read` covers every env read in `src/`; the mocks dump and assert the complete environment (§10.9 item 1). D15 |
+| 4 | gen silently turns an unparsable seed into 1 | D17 and §11.3: strict positional parsing; `SEEDS` validated with `bounded_uint`; gen banner seed check without printing; `tdp_seeds.bash`. Verified 2026-10-08: an unparsable `s` positional silently became the default 24 |
+| 5 | exposure-engine parity becomes self-referential after P2 | §10.1: baseline HA built from `492564f0`, sha256 pinned; used for regen, reproduction, `tdp_reproduce_small.bash` and the CI differential job; `regen.sh` refuses any other HA binary |
+| 6 | historic anchor optional; post-Oct-7 changes (d9631d0e, Oct 8 mixer cleanup) could break "defaults reproduce the chosen runs" | §10.8: anchor required for vL64a and vL128a; step A (P0.5, before P7) checks gen on all 8 tags and the mixer on 2; bisect, document and re-baseline (Appendix B″) on mismatch |
+| 7 | fixtures never exercise W ≥ 2, wires ≥ 61, multi-limb hash and ordering | `crafted/wide128` (W=2) and `crafted/wide300` (W=8); unit tests of hashes, PySet order and emission bytes for keys with bits ≥ 61 and ≥ 128 against recorded 3.9 output (§10.2) |
+| 8 | small pyset traces cannot cover the large-table regime where aborts happen | `pyset39_large.txt` (regenerated ops, checkpoint sha256s up to 6×10^5 elements), one unit test per resize branch including the small-table purge, and the `vA64a_window` replay fixture under both `CapSemantics` |
+| 9, 30 | CI repair coverage may be empty; small-cap claim unproven; budget literal; n=8 L8 feasibility; path-bearing logs | §10.3: `regen.sh` coverage assertions with a seed search; crafted cases; split budget and iteration literals rewritten with exactly-once asserts; L8 gen at n=8 and n=16 proven; logs compared after path normalization, artifacts byte for byte |
+| 10 | move legality only checked by debug asserts, sampling and a gate multiset | §4.11a: exact release-mode certificates (per-wire run-canonical trace equivalence for pack and repair; cancellation replay; exact decode = ANF; exhaustive check of windows with support ≤ 16); sampled checks kept |
+| 11 | exits 5/6 make reproduction seed-dependent; exit-6 predicate undefined; `--allow-*` still exits 5/6 | §5.4: exit 6 is exactly `split::fits` with the configured `CapSemantics`; `--allow-*` exits 0 with `status=floor_miss/over_budget`; §10.7 step 5 compares pre-decision artifacts and confirms the oracle's state violates the same test |
+| 12 | secret-derived hashes in `packing.report`, `packing.recipe`, `tdp_command.conf` | §2.3 and §5.5: no unkeyed hash of C, G2, G3 or the seeds anywhere; input pins are HMAC-SHA256 keyed by `run_key` in private files; publishable files are listed explicitly |
+| 13 | the baseline-mismatch path is a dead end; C-view provenance unresolved | §10.5 step 0: planned fallback (re-run the oracle repair and serialization on archived packs with the baseline HA, giving Appendix B′ and a diff report including visible counts and the final visible set); archive-era HA sha256 recorded (Appendix B) and copied at P2 start |
+| 14 | fix-loop sequence state underspecified | §4.11 step 3: every iteration restarts from `to_seq(gates, bounds)` of the previous `from_seq`; test `fix_iteration_restarts_from_to_seq` |
+| 15 | census not compared; span_s2 and mult_census dropped | §10.5 step 5 gates census parity on all 8 tags; §11.1 side reports `stage2_mult` and `stage2_span` (report-only); compared in §10.7 |
+| 16, 24 | `FROZEN_FILTER` auto removes the RAM guard; neutrality unmeasured | D11: `1` when there is no `filters.bin` (the exact reference line); `0` when present until `filter_neutrality` is recorded; then a 60 GiB gate that also works on macOS (`vm_stat`) |
+| 17 | container reuses the name `deliverable.bin`; format auto-detection is ambiguous | §5.3 and §6: `deliverable.bin` stays raw; the container is `deliverable.tdp4`; `decode` takes an explicit `--format raw --n N` or `--format container` |
+| 18 | single-window lattice treated as a hard error | §4.11: defined behaviour (scans skipped, `final_visible=0`, one window); `single_window` fixture and unit test |
+| 19 | PySet memory not budgeted | §4.4: 12-byte slots with arena indices and cached hashes (order semantics unchanged); `max_concurrent_anf`; memory run (§10.5 step 7); §9 RSS revised |
+| 21 | seed plumbing: manifest written before seeds exist; `--mix-seed` on argv not redacted; two-line seed file breaks old calibration files | §8.2-8.4: Rust draws seeds or reads the seed file and creates `$RUN/SEEDS` (create_new, 0600) before the manifest; bash only reads `SEEDS`; no seeds on argv between Rust and bash; standalone bash writes `SEEDS` itself; every seed flag redacted; legacy one-line files and `-s` rejected with migration messages; calibration never draws a random mix seed |
+| 23 | stage-4 block resume and invalidation holes; allow flags can never succeed | §11.1: atomic, MAC-keyed completion marker written only after exit 0 and re-checked on skip; `FORCE_FROM` propagates from stages 2 and 3; allowed failures get `NOT_RECOMMENDED` and no COMPLETE line; `tdp_stage4_resume.bash` |
+| 26 | CI transcript compared with a hand transcription | §10.9 item 1: the sandboxed `val_chain.sh` runs against the same mocks and the transcripts are diffed; the literal transcript is a secondary pin |
+| 27 | "CI cannot run the oracle" is weak; brittle pin on `/usr/bin/python3` and `sys.version` | §10.6: `stage4-oracle` CI job with uv CPython 3.9.6, gated by the set-trace self-test, K random triples; §10.1: pinned uv interpreter as the oracle runtime |
+| 28 | u128-modulo hash too slow; fingerprint index too large | §4.5: exact Mersenne folding and a microbenchmark; §4.7: the value index is keyed on the oracle's own blake2b-128 (exact, and about 250 MB smaller) |
+| 29 | 63-bit seeds are not a fix (C has at most 64 bits); hashes contradict hygiene | §2.3: stated as a stopgap; routes (a) 256-bit ChaCha and (b) CSPRNG C via `source.path` in §13.1; hashes removed per issue 12 |
+| 31 | nine monomorphized widths; config allows n up to 4095 | §4: supported range n ≤ 256 (W ∈ {1,2,4,8,16}), validated in config and CLI; const generics only on the hot set, mul and ANF code |
+| 32 | wasteful decoded-window and output layouts | §4.12: flat-arena `Deliverable`; streamed body; no in-memory body or container copy |
+| 33 | no I/O or internal exit code; codes not mapped to meanings | §4.1: `Io` (7) and `Internal` (8); one meaning table used by `tdp_packing`, `runner.rs` and `tdp_gen.sh`, with a test that they agree |
+| 34 | editing the oracle for `--container` | §6: the oracle is untouched; standalone `container_header.py` plus decoder unit tests |
+| 35 | L8/A knobs stay environment reads inside library code; typed params optional | §11.4: typed parameters in P7 (required), covering all output-affecting stage-2 reads including `SLICE_GUARD_LEGACY`; `stage2_typed_params_byte_identical` |
+| 36 | unsetting inherited `EMBEDDED_MASKING_*` changes standalone semantics; nonlinear291 interaction | §11.1: decision: inherited values are a hard error, and the tests are updated (`tdp_flags.bash` cases listed); the preset is not applicable to nonlinear291 (explicit preset rejected, nothing exported) |
+| 37 | dropping cache sizes slows stage 3 with no output change; no stage-3 budget | D10b keeps the three cache sizes, proven neutral by `cache_neutrality`; caps stay unset (output-affecting); §9 adds the stage-3 wall-time expectation |
