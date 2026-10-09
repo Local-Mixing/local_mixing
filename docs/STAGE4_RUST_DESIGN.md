@@ -1713,6 +1713,42 @@ Both managed runs have smaller deliverables than the §5 replicates. The size sp
 
 The first attempt was lost to an environment problem. The driver launches `bash` from `PATH`, and that `PATH` started with `/bin/bash` 3.2. After a 9-minute wait on the shared build lock, the run stopped at `scripts/tdp_gen.sh` line 138 with `declare: -A: invalid option` and exit 2. It had already written `SEEDS` and the manifest. With Homebrew bash first on `PATH`, the resume matched the manifest, kept the seeds, and skipped the build. Neither the runner nor `tdp_gen.sh` checks the bash version (open item).
 
+**End-to-end managed run, round 2, n=128 L8 (2026-10-09, binaries built from `4dc934e9`; outputs `port_runs/e2e128_r2/`, checks in `port_runs/e2e128_r2_cfg/checks/`).** `tdp_gen` with a config that sets only `source.wires = 128`, the run and build directories and the regular store `frozen_m1_m11`. Every other value is the managed default: preset L8, schedule `validated`, packing `default`. The manifest records `pinned_recipe=val_chain-L8-20261007`, `seed_source=random` and `packing_params=default`. The driver exited 0 with `status=ok`.
+
+- Stages 1+2: 2,231,499 gates (sandwich 7,920), with 316,328 chained brackets. Forward and reverse verification PASS (256 samples each). The stage-2 span check is 0 at all 8,718 sampled cuts.
+- Stage 3: `--moves 11603794` (= int(2·2·|G|·1.3)) with `FROZEN_FILTER=1` (auto); output 4,595,765 gates.
+- Stage 4:
+  - packing: 7,066 windows; 34,377 distinct values exposed at window boundaries;
+  - repair: cancelled 168,520 pairs, leaving 4,258,725 gates; the fix loop was already at the floor (128); the fallback added no split, giving 7,065 boundaries;
+  - result: 0 windows over budget; 7,066 ANF windows with 4,187,470 monomials (window max 57,489); every certificate and check in the report is `ok`, including the zero slice with 4,096 samples.
+- Independent checks:
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` reports 3,000 born values and **128 visible** (4.3 %), all at t* = 1. That is the exact floor, with 0 non-output values visible. Its three TSVs are identical to the run's.
+  - `verify_zero_slice C rep512.mpmct1 128 512` PASS (random seed, recorded in `checks/check_seeds.txt`), and the same check PASS on `packed_G512.mpmct1`.
+  - The oracle's `link_census.py` (sandboxed) on the Rust `rep512` gives the run's `link_rep512.txt` byte for byte.
+  - The oracle's `anf_dump_eval.py` (sandboxed) on the Rust `rep512` gives the Rust `deliverable.bin` byte for byte. `deliverable.tdp4` is a 48-byte header followed by that body.
+
+| n=128 L8 metric | e2e128_r2 | e2e128_r1 | STAGE2_LINKABILITY §5 range |
+|---|---|---|---|
+| exposed | 34,947 | 34,603 | 34.5–35.0k |
+| linkable (L2) | 16,201 | 15,992 | 16.06–16.11k (r2 is 0.6 % above, r1 0.4 % below) |
+| sightings (M2) | 187,800 | 188,350 | 187–188k (r1 is 0.2 % above) |
+| linkable froth | 5,575 | 5,747 | 5,544–5,765 |
+| anchors (100+) | 719 | 719 | 701–718 (both runs one above) |
+| `deliverable.bin` | 107,027,606 B (107.0 MB) | 108.7 MB | 102.8–106.8 MB (r2 is 0.2 % above, r1 1.8 % above) |
+| xz -9 | 9.62 MB | 9.69 MB | 9.50–9.62 MB |
+| eval, ANF form (Python, 1,024 lanes) | 1.94 ms/input | not measured | 1.83–1.99 |
+
+Every metric is within 2 % of the §5 range. Where a value falls outside the range, it does so by less than the 1–2 % spread between replicates that §5 reports.
+
+| e2e128_r2 time | wall | awake time (from the tools' own timers) |
+|---|---|---|
+| stages 1+2 (`gen_sandwich_gadget`) | ≈ 6 s (the span report then ran in the background, about 10 min) | |
+| stage 3 (`circuit_mixer`) | 28,142 s | chain 5,708.6 s + final float 4.7 s |
+| stage 4 (`tdp_packing run`: pack 38.2 / repair 14.5 / reports 4.4 / emit+checks 18.9 s) | 3,909 s | 76.6 s |
+| driver total (incl. a build that waited on the shared lock) | 32,615 s | CPU 4,176 s; peak RSS 7.5 GB (the mixer) |
+
+The wall times are not representative. From about 08:00 the laptop's lid was closed (`AppleClamshellState = Yes`, and `pmset` logs show repeated maintenance sleeps), so the processes ran only during dark wakes. The internal timers use `Instant`, which on macOS does not advance during sleep, so they count only time awake. The awake times are comparable with round 1 (chain 4,829 s) and with the n=128 stage-4 figures in this section.
+
 ---
 
 ## 13. Open decisions for RC
