@@ -1677,6 +1677,42 @@ The machine was slower than in round 1 for both implementations alike, so the ro
 
 Measured side by side under the same conditions, the Rust stage 4 takes 18.5× less wall time than the oracle and 3.5× less CPU. Its peak RSS is 0.35× the oracle packer's. It stays within the §9 n=128 targets (≤ 6 min, ≤ 3 GB).
 
+**End-to-end managed run, round 2, n=64 L8 (2026-10-09, binaries built from `4dc934e9`; outputs `port_runs/e2e64_r2/`).** `tdp_gen` with a config that sets only `source.wires = 64`, the run and build directories and `database.regular_dir` (the frozen store `frozen_m1_m11`); every other setting is the managed default (preset L8, schedule `validated`, stage 4 at G = 512, split budget 65,536, cpython39 caps). Seeds are fresh CSPRNG draws, kept in the private `run/SEEDS`; the zero-slice check seed is in the private `checks/SEEDS.checks`. No seed value appears in any log, the manifest or `packing.report`. The driver exited 0 with `status=ok`.
+
+- Stages 1+2: 778,166 gates (sandwich 2,832), with 109,331 chained brackets. Forward and reverse verification PASS (256 samples each). The stage-2 span check (`stage2_span.txt`) is 0 at all 12,160 cuts.
+- Stage 3: `--moves 4046463` (= int(2·2·|G|·1.3)) with `FROZEN_FILTER=1` (auto, no `filters.bin`); output 1,592,588 gates.
+- Stage 4:
+  - packing: 2,579 windows; 11,511 distinct values exposed at window boundaries;
+  - repair: cancelled 57,986 pairs, leaving 1,476,616 gates; the fix loop was already at the floor (64); the fallback added 4 splits, giving 2,582 boundaries;
+  - result: 0 windows over budget; 2,583 ANF windows with 1,477,260 monomials (window max 71,243); every certificate and check in the report is `ok`, including the zero slice with 4,096 samples.
+- Independent checks (`checks/`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` reports 1,000 born values and **64 visible**, all at t* = 1. That is the exact floor, with 0 non-output values visible. Its TSVs are identical to the run's.
+  - `verify_zero_slice C rep512.mpmct1 64 512` PASS, and the same check PASS on `packed_G512.mpmct1`.
+  - The oracle's `link_census.py` on the Rust `rep512` gives the run's `link_rep512.txt` byte for byte.
+  - The oracle's `anf_dump_eval.py` on the Rust `rep512` gives the Rust `deliverable.bin` byte for byte. `deliverable.tdp4` is a 48-byte header followed by that body.
+
+| n=64 L8 metric | e2e64_r2 | e2e64_r1 | STAGE2_LINKABILITY §5 range |
+|---|---|---|---|
+| exposed | 11,761 | 11,799 | 11.7k |
+| linkable (L2) | 5,305 | 5,371 | 5.27–5.37k |
+| sightings (M2) | 58,360 | 58,793 | 58.5–58.9k (r2 is 0.2 % below) |
+| linkable froth | 1,114 | 1,080 | 1,110–1,126 (r1 is below) |
+| anchors (100+) | 194 | 183 | 185–200 (r1 is below) |
+| `deliverable.bin` | 27,959,712 B (28.0 MB) | 28.9 MB | 30.2–32.8 MB (both runs are below) |
+| xz -9 | 2.91 MB | 2.96 MB | 3.05–3.10 MB (both runs are below) |
+| eval, ANF form (Python, 1,024 lanes) | 1.21 ms/input | 1.00 | 0.79–1.00 (r2 is above; load average ~12) |
+
+Both managed runs have smaller deliverables than the §5 replicates. The size spread across seeds is wider than the "1–2 %" stated in §5: the `anf_compose` size estimates are 26.6 MB (r2), 27.5 MB (r1), 28.7 MB (vL64b) and 31.2 MB (vL64a).
+
+| e2e64_r2 wall time (load average 11-14, other sessions building and running) | wall |
+|---|---|
+| stages 1+2 (`gen_sandwich_gadget`) | ≈ 1 s (the span report then ran in the background, 220 s) |
+| stage 3 (`circuit_mixer`; chain 2,557 s) | 2,560 s |
+| stage 4 (`tdp_packing run`: pack 25.7 / repair 12.1 / reports 5.8 / emit+checks 16.7 s) | 61 s |
+| driver total, resumed attempt (build skipped) | 2,622 s (CPU 1,816 s) |
+
+The first attempt was lost to an environment problem. The driver launches `bash` from `PATH`, and that `PATH` started with `/bin/bash` 3.2. After a 9-minute wait on the shared build lock, the run stopped at `scripts/tdp_gen.sh` line 138 with `declare: -A: invalid option` and exit 2. It had already written `SEEDS` and the manifest. With Homebrew bash first on `PATH`, the resume matched the manifest, kept the seeds, and skipped the build. Neither the runner nor `tdp_gen.sh` checks the bash version (open item).
+
 ---
 
 ## 13. Open decisions for RC
