@@ -1619,6 +1619,8 @@ Cost on this Mac (machine shared with another session, load about 5):
 
 The sandboxed oracle rerun reproduced the archived outputs byte for byte. Its repair wall time is far above its CPU time (the machine was shared during the four fix scans and the fallback), so the ratio is about 58× in wall time and 3× in CPU time. Both §9 n=128 targets hold (wall ≤ 6 min, peak RSS ≤ 3 GB).
 
+**Review fixes round 1 (2026-10-09).** Seeds no longer travel on stage-binary argv (gen `@/dev/fd/N`, mixer `--seed-file /dev/fd/3`; banners print `(file)`; §8.5); the managed build adds the report-only `hmap_affine` (fingerprinted; `stage2_span_report=`); the manifest records `frozen_filter=<mode>(<resolved>)` and a derived `pinned_recipe`, and `$RUN/stage3.settings` records the `FROZEN_FILTER` set; `tdp_packing run` clears a reused `--out-dir`, commits the report last and bounds its parameters (§5); the shell tests no longer rely on `!`/`&&` under errexit; CI runs `stage2_typed_params`. Checked: all gates; `reproduce_val_chain.sh 8 L8 16` at the fix commit (every artifact identical, failure path faithful, span report identical to val_chain.sh's, no seed value in any log); a default managed build run produces `stage2_span.*`. The n=64 L8 reproduction at the fix commit was started in `port_runs/fix_r1/repro_n64_L8/` (result in `repro_n64_L8.out`).
+
 ---
 
 ## 13. Open decisions for RC
