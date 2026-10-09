@@ -22,7 +22,10 @@
 //! when enabled here to preserve the sandwich's physical output ports.
 //!
 //! `seed` fixes C (fastrand), `sandwich_seed` drives D, slicing and N-float,
-//! and `gadget_seed` drives gadgetization. TDP_SOURCE_C optionally supplies C
+//! and `gadget_seed` drives gadgetization. Any seed may be given as `@PATH`
+//! (one decimal seed read from PATH, e.g. `@/dev/fd/3`) so its value stays off
+//! argv; the banner then prints `(file)` in its place (and for a seed that
+//! defaults to it). TDP_SOURCE_C optionally supplies C
 //! as a g57 circuit with matching dimensions. Source and sandwich artifacts
 //! are written beside the output as .source_c.g57 and .sandwich.mpmct1.
 
@@ -182,7 +185,7 @@ pub fn run() {
     let mut a = std::env::args().skip(1);
     let out = a
         .next()
-        .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed gadget_seed sandwich_seed gadgetization_mode]");
+        .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed gadget_seed sandwich_seed gadgetization_mode] (a seed may be @FILE)");
     let n: usize = positional_or_exit("n", a.next()).unwrap_or(128);
     let m_c: usize = positional_or_exit("m_C", a.next()).unwrap_or(3000);
     let m_d: usize = positional_or_exit("m_D", a.next()).unwrap_or(3000);
@@ -190,9 +193,31 @@ pub fn run() {
     let rg_freq: usize = positional_or_exit("rg_freq", a.next()).unwrap_or(1);
     let sandwich_n = 2 * n;
     let slice_gates: usize = positional_or_exit("slice_gates", a.next()).unwrap_or(10 * sandwich_n);
-    let seed: u64 = positional_or_exit("seed", a.next()).unwrap_or(1);
-    let gadget_seed: u64 = positional_or_exit("gadget_seed", a.next()).unwrap_or(seed);
-    let sandwich_seed: u64 = positional_or_exit("sandwich_seed", a.next()).unwrap_or(seed);
+    // (value, read from a file): a file-borne seed is never printed.
+    let seed_or_exit = |name: &str, value: Option<String>| -> Option<(u64, bool)> {
+        match value {
+            Some(v) if v.starts_with('@') => Some((
+                crate::programs::read_seed_file(&v[1..]).unwrap_or_else(|error| {
+                    eprintln!("gen_sandwich_gadget: argument {name}: {error}");
+                    std::process::exit(2)
+                }),
+                true,
+            )),
+            other => positional_or_exit(name, other).map(|v| (v, false)),
+        }
+    };
+    let (seed, seed_private) = seed_or_exit("seed", a.next()).unwrap_or((1, false));
+    let (gadget_seed, gadget_seed_private) =
+        seed_or_exit("gadget_seed", a.next()).unwrap_or((seed, seed_private));
+    let (sandwich_seed, sandwich_seed_private) =
+        seed_or_exit("sandwich_seed", a.next()).unwrap_or((seed, seed_private));
+    let shown = |value: u64, private: bool| {
+        if private {
+            "(file)".to_owned()
+        } else {
+            value.to_string()
+        }
+    };
     let gadgetization_mode = a
         .next()
         .as_deref()
@@ -262,7 +287,10 @@ pub fn run() {
     .unwrap_or_else(|error| panic!("invalid preprocessing settings: {error}"));
 
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={seed} gadget_seed={gadget_seed} sandwich_seed={sandwich_seed} gadgetization_mode={} sandwich_variant={}",
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={}",
+        shown(seed, seed_private),
+        shown(gadget_seed, gadget_seed_private),
+        shown(sandwich_seed, sandwich_seed_private),
         gadgetization_mode.canonical_name(),
         variant.name()
     );

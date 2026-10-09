@@ -983,9 +983,7 @@ fn repair_params(a: &Args) -> Result<RepairParams, Stage4Error> {
     p.fix_iterations = opt_usize(a, "fix-iterations", p.fix_iterations)?;
     p.fallback_iterations = opt_usize(a, "fallback-iterations", p.fallback_iterations)?;
     p.cap_semantics = cap_semantics(a)?;
-    if p.split_budget == 0 {
-        return Err(Stage4Error::Usage("--split-budget must be positive".into()));
-    }
+    p.validate().map_err(Stage4Error::Usage)?;
     Ok(p)
 }
 
@@ -1053,7 +1051,10 @@ fn private_dir(dir: &Path) -> Result<(), Stage4Error> {
 /// Writes one output file's content.
 type FileBody<'a> = Box<dyn FnOnce(&mut BufWriter<File>) -> io::Result<()> + 'a>;
 
-/// Write each (path, writer) via *.tmp; commit all or none.
+/// Write each (path, writer) via *.tmp, then rename them in order. A write
+/// failure commits nothing; a rename failure leaves the earlier renames in
+/// place (renames cannot be undone as a group) and removes the remaining
+/// *.tmp files.
 fn write_all_staged(files: Vec<(PathBuf, FileBody<'_>)>) -> Result<(), Stage4Error> {
     let mut staged: Vec<Staged> = Vec::new();
     let r = (|| -> Result<(), Stage4Error> {
@@ -1072,8 +1073,14 @@ fn write_all_staged(files: Vec<(PathBuf, FileBody<'_>)>) -> Result<(), Stage4Err
         }
         return Err(e);
     }
-    for s in staged {
-        s.commit()?;
+    let mut staged = staged.into_iter();
+    while let Some(s) = staged.next() {
+        if let Err(e) = s.commit() {
+            for rest in staged {
+                rest.abandon();
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }

@@ -6,13 +6,19 @@ pub(crate) const CURRENT_RECIPE_VERSION: u8 = 10;
 /// The managed binaries, fingerprinted in the manifest and built for fresh runs.
 pub(crate) const PRODUCTION_BINARIES: [&str; 3] =
     ["gen_sandwich_gadget", "circuit_mixer", "tdp_packing"];
+/// The report-only binary behind val_chain.sh's stage-2 span check
+/// (`hmap_affine --exposure ... SPAN_INTERSECT`, $RUN/stage2_span.*). Built
+/// for fresh runs (it needs the `security-tools` feature) and fingerprinted
+/// when present; without it the driver skips the report and the manifest says
+/// `stage2_span_report=skipped`.
+pub(crate) const REPORT_BINARY: &str = "hmap_affine";
 
 pub(crate) fn prepare_recipe_manifest(
     config: &ResolvedConfig,
     binary_dir: &Path,
     script: &Path,
 ) -> Result<(), TdpError> {
-    let fingerprints = production_binary_fingerprints(binary_dir)?;
+    let fingerprints = run_binary_fingerprints(binary_dir)?;
     let script_hash = hash_file(script).map_err(|error| {
         TdpError::io(format!(
             "cannot fingerprint orchestrator {}: {error}",
@@ -75,6 +81,24 @@ pub(crate) fn production_binary_fingerprints(
                 })
         })
         .collect()
+}
+
+/// The production fingerprints plus the report binary's, when it is built.
+pub(crate) fn run_binary_fingerprints(
+    binary_dir: &Path,
+) -> Result<Vec<(&'static str, u128)>, TdpError> {
+    let mut fingerprints = production_binary_fingerprints(binary_dir)?;
+    let report = binary_dir.join(REPORT_BINARY);
+    if report.is_file() {
+        let hash = hash_file(&report).map_err(|error| {
+            TdpError::io(format!(
+                "cannot fingerprint report binary {}: {error}",
+                report.display()
+            ))
+        })?;
+        fingerprints.push((REPORT_BINARY, hash));
+    }
+    Ok(fingerprints)
 }
 
 pub(crate) fn hash_file(path: &Path) -> std::io::Result<u128> {
@@ -155,6 +179,52 @@ pub(crate) fn compare_recipe_manifest(path: &Path, desired: &str) -> Result<(), 
     )))
 }
 
+/// The stage-3 `FROZEN_FILTER` value scripts/tdp_gen.sh sets for this
+/// config (D11): `auto` is 1 when the store has no filters.bin (the reference
+/// situation: val_chain.sh's FROZEN_FILTER=1 on an unfiltered store) and 0
+/// when it has one (no filtered/unfiltered neutrality comparison recorded,
+/// FILTER_NEUTRALITY_RECORDED=0); without a store the variable is not set
+/// (plumbing mode). The driver also records the value it set in
+/// $RUN/stage3.settings.
+pub(crate) fn resolved_frozen_filter(config: &ResolvedConfig) -> &'static str {
+    let Some(store) = config.frozen_db.path.as_deref() else {
+        return "unset";
+    };
+    match config.frozen_filter {
+        FrozenFilter::On => "1",
+        FrozenFilter::Off => "0",
+        FrozenFilter::Auto => {
+            let filtered =
+                fs::metadata(store.join("filters.bin")).is_ok_and(|m| m.is_file() && m.len() > 0);
+            if filtered { "0" } else { "1" }
+        }
+    }
+}
+
+/// The validation recipe this run reproduces, if any: val_chain.sh CONFIG=L8
+/// or A as run for the chosen runs (vL64a/b, vL128a/b, vA64a, vA128a). Only
+/// a run whose every recipe setting is that chain's: embedded masking with
+/// preset L8 or A, the validated |C| for a generated source, schedule
+/// validated in one piece, FROZEN_FILTER=1 on a real store, no leakage
+/// repair, and default packing. Anything else records `none`.
+pub(crate) fn pinned_recipe(config: &ResolvedConfig) -> &'static str {
+    let matches_chain = config.preprocessing_mode == PreprocessingMode::EmbeddedMasking
+        && config.mcd_rule == SourceGatesRule::Validated
+        && config.source_path.is_none()
+        && config.schedule == Schedule::Validated
+        && config.pieces.as_deref().unwrap_or("1") == "1"
+        && config.min_block_size.is_none()
+        && !config.allow_empty_store
+        && resolved_frozen_filter(config) != "0"
+        && !config.qc_enabled
+        && config.packing.is_default();
+    match (matches_chain, config.preset) {
+        (true, Preset::L8) => "val_chain-L8-20261007",
+        (true, Preset::A) => "val_chain-A-20261007",
+        _ => "none",
+    }
+}
+
 /// The resolved recipe (§11.2): every value printed is the value the run
 /// uses, never a hard-coded description. No seed, no seed-derived value and
 /// no hash of C or of a private circuit appears here.
@@ -174,7 +244,7 @@ pub(crate) fn recipe_manifest(
         let _ = writeln!(m, "{k}={v}");
     };
     kv("tdp_command_recipe", &config.recipe_version.to_string());
-    kv("pinned_recipe", "val_chain-L8-20261007");
+    kv("pinned_recipe", pinned_recipe(config));
     kv("n", &config.n.to_string());
     kv("source_gates", &config.mcd.to_string());
     kv("source_gates_rule", config.mcd_rule.name());
@@ -234,11 +304,15 @@ pub(crate) fn recipe_manifest(
     kv("frozen_db_dir", &path_or_unset(&config.frozen_db.path));
     kv(
         "frozen_filter",
-        match config.frozen_filter {
-            FrozenFilter::Auto => "auto",
-            FrozenFilter::On => "on",
-            FrozenFilter::Off => "off",
-        },
+        &format!(
+            "{}({})",
+            match config.frozen_filter {
+                FrozenFilter::Auto => "auto",
+                FrozenFilter::On => "on",
+                FrozenFilter::Off => "off",
+            },
+            resolved_frozen_filter(config)
+        ),
     );
     kv("frozen_regular_value_convention", "native");
     kv("allow_empty_store", &config.allow_empty_store.to_string());
@@ -289,6 +363,14 @@ pub(crate) fn recipe_manifest(
             &format!("{fingerprint:032x}"),
         );
     }
+    kv(
+        "stage2_span_report",
+        if binaries.iter().any(|(name, _)| *name == REPORT_BINARY) {
+            REPORT_BINARY
+        } else {
+            "skipped"
+        },
+    );
     kv("script_tdp_gen_xxh3", &format!("{script_hash:032x}"));
     m
 }

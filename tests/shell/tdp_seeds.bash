@@ -2,7 +2,10 @@
 # Seeds (docs/STAGE4_RUST_DESIGN.md §8, §10.9 item 7): the private SEEDS file,
 # strict parsing, legacy inputs rejected with migration messages, the gen
 # banner check, and no seed value in the narrative log, stdout or argv
-# renderings. Mock binaries (tests/shell/lib/tdp_mock.py).
+# renderings, and never on a stage binary's argv (ps): gen and the mixer read
+# them from inherited descriptors. Mock binaries (tests/shell/lib/tdp_mock.py).
+# (`[ a ] && [ b ]` is not checked by errexit except for its last command, so
+# every assertion below is its own command.)
 set -euo pipefail
 if [[ ${1-} != --isolated-environment ]]; then
   exec env -i PATH="$PATH" HOME="${HOME:-/tmp}" bash "$0" --isolated-environment
@@ -28,29 +31,41 @@ drive "$tmp/r1" > "$tmp/r1.stdout" 2>&1
 S=$tmp/r1/SEEDS
 [ "$(stat -f %Lp "$S" 2>/dev/null || stat -c %a "$S")" = 600 ]
 mapfile -t L < "$S"
-[ "${#L[@]}" = 5 ] && [ "${L[0]}" = seeds_format=2 ] && [ "${L[4]}" = seed_source=random ]
+[ "${#L[@]}" = 5 ]
+[ "${L[0]}" = seeds_format=2 ]
+[[ ${L[1]} =~ ^gen_seed=[0-9]+$ ]]
+[[ ${L[2]} =~ ^mix_seed=[0-9]+$ ]]
+[[ ${L[3]} =~ ^run_key=[0-9a-f]{64}$ ]]
+[ "${L[4]}" = seed_source=random ]
 gen=${L[1]#gen_seed=}; mix=${L[2]#mix_seed=}; key=${L[3]#run_key=}
-[[ $gen =~ ^[0-9]+$ ]] && [[ $mix =~ ^[0-9]+$ ]] && [[ $key =~ ^[0-9a-f]{64}$ ]]
 for v in "$gen" "$mix" "$key"; do
-  for f in "$tmp/r1.stdout" "$tmp/r1/tdp_gen.log" "$tmp/r1/stage12.recipe" "$tmp/r1/packing.recipe"; do
+  for f in "$tmp/r1.stdout" "$tmp/r1/tdp_gen.log" "$tmp/r1/stage12.recipe" "$tmp/r1/packing.recipe" \
+           "$tmp/r1/stage12.log" "$tmp/r1/stage3.log" "$tmp/r1/stage3.settings"; do
     if grep -qF -- "$v" "$f"; then echo "a seed value reached $f" >&2; exit 1; fi
   done
 done
 grep -q 'gen seeds: verified' "$tmp/r1/tdp_gen.log"
-# the gen and mix seeds reach exactly their binaries' argv (as in val_chain.sh)
+# the gen and mix seeds reach exactly their binaries (as in val_chain.sh), but
+# through descriptors: no seed value on any stage binary's raw argv
 python3 -I - "$tmp/r1.calls" "$gen" "$mix" <<'PY'
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 gen, mix = sys.argv[2], sys.argv[3]
+names = set()
 for c in calls:
-    a = c["args"]
+    a, raw = c["args"], c["argv"]
+    names.add(c["name"])
+    assert gen not in raw and mix not in raw, ("seed on argv", c["name"], raw)
     if c["name"] == "gen_sandwich_gadget":
         assert a[7:10] == [gen] * 3, a
+        assert raw[7:10] == ["@/dev/fd/3", "@/dev/fd/4", "@/dev/fd/5"], raw
         assert mix not in a
     elif c["name"] == "circuit_mixer":
         assert a[a.index("--seed") + 1] == mix and gen not in a, a
+        assert "--seed" not in raw and raw[raw.index("--seed-file") + 1] == "/dev/fd/3", raw
     else:
         assert gen not in a and mix not in a, c
+assert {"gen_sandwich_gadget", "circuit_mixer"} <= names, names
 PY
 # two fresh runs draw different seeds
 drive "$tmp/r2" > /dev/null 2>&1
@@ -76,7 +91,8 @@ for bad in 'gen_seed=1' 'gen_seed=1\nmix_seed=x' 'gen_seed=1\nmix_seed=922337203
   printf "$bad\n" > "$tmp/bad"; chmod 600 "$tmp/bad"
   expect_fail 'seed-file' "$tmp/x5" --seed-file "$tmp/bad"
 done
-test ! -e "$tmp/x1" && test ! -e "$tmp/x5"
+test ! -e "$tmp/x1"
+test ! -e "$tmp/x5"
 # 3. malformed SEEDS in a run directory are fatal (exit 2)
 mk() { mkdir -p "$tmp/$1"; printf "$2" > "$tmp/$1/SEEDS"; chmod 600 "$tmp/$1/SEEDS"; }
 K=$(printf 'a%.0s' $(seq 64))

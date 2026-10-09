@@ -1047,3 +1047,91 @@ fn run_exit_codes() {
         let _ = fs::remove_dir_all(d);
     }
 }
+
+/// A reused --out-dir: a failed run removes the earlier run's deliverable,
+/// report and intermediates, so nothing in the directory belongs to another
+/// run; a success commits the report (the completion record) last.
+#[test]
+fn run_reused_out_dir_leaves_no_stale_deliverable() {
+    let g3 = fx("n8_L8/g3.mpmct1");
+    let dir = scratch();
+    let (o, out) = run_n8(&dir, &g3, &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(out.join("deliverable.tdp4").exists() && out.join("deliverable.bin").exists());
+    // a stale oracle file that --no-oracle-files would not rewrite
+    assert!(out.join("rep512.wit.tsv").exists());
+    // exit 5 into the same directory
+    let (o, out) = run_n8(&dir, &g3, &["--split-budget", "50", "--no-oracle-files"]);
+    assert_eq!(
+        o.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(!out.join("deliverable.bin").exists() && !out.join("deliverable.tdp4").exists());
+    assert!(!out.join("rep512.wit.tsv").exists() && !out.join("rep512.cview.log").exists());
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "floor_miss");
+    // exit 4 (a flipped G3 gate fails the packer's VERIFY): no report, no
+    // deliverable, no intermediate of the earlier run
+    let text = fs::read_to_string(&g3).unwrap();
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let mut q: Vec<String> = lines[5000].split(' ').map(String::from).collect();
+    q[1] = if q[1] == "0" { "1".into() } else { "0".into() };
+    lines[5000] = q.join(" ");
+    let flipped = dir.join("flip.mpmct1");
+    fs::write(&flipped, lines.join("\n") + "\n").unwrap();
+    let (o, out) = run_n8(&dir, &flipped, &[]);
+    assert_eq!(
+        o.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    for f in [
+        "packing.report",
+        "deliverable.bin",
+        "deliverable.tdp4",
+        "rep512.mpmct1",
+        "rep512.bounds",
+    ] {
+        assert!(!out.join(f).exists(), "{f} left by an earlier run");
+    }
+    let leftovers: Vec<_> = fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Parameters beyond the driver's bounds are usage errors (exit 2), never a
+/// silently wrapped cap (2·G, G − load) or a product cap that never fires.
+#[test]
+fn run_parameter_bounds() {
+    let g3 = fx("n8_L8/g3.mpmct1");
+    let dir = scratch();
+    for extra in [
+        ["--window-gates", "9223372036854775808"],
+        ["--window-gates", "18446744073709551615"],
+        ["--window-gates", "1000001"],
+        ["--interval-cap", "1000001"],
+        ["--monomial-budget", "2305843009213693951"],
+        ["--monomial-budget", "1000000001"],
+        ["--span-cap", "1000000001"],
+        ["--split-budget", "1000000001"],
+        ["--fix-iterations", "1001"],
+        ["--fallback-iterations", "1001"],
+    ] {
+        let (o, out) = run_n8(&dir, &g3, &extra);
+        assert_eq!(
+            o.status.code(),
+            Some(2),
+            "{extra:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!out.join("packing.report").exists(), "{extra:?}");
+    }
+    let _ = fs::remove_dir_all(dir);
+}

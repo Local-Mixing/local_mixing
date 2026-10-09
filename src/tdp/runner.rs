@@ -52,7 +52,7 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     validate_external_paths(&config).map_err(TdpError::config)?;
     let script = repo_root.join("scripts/tdp_gen.sh");
     if managed_resume {
-        let fingerprints = production_binary_fingerprints(&binary_dir)?;
+        let fingerprints = run_binary_fingerprints(&binary_dir)?;
         let script_hash = hash_file(&script).map_err(|error| {
             TdpError::io(format!("cannot fingerprint scripts/tdp_gen.sh: {error}"))
         })?;
@@ -104,6 +104,20 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         if !status.success() {
             return Err(TdpError::child("cargo build", status));
         }
+        // The stage-2 span report (val_chain.sh runs it on every chain) needs
+        // hmap_affine, a security-tools binary: a separate build, so the
+        // feature never reaches the production binaries.
+        println!("[tdp_gen] building the stage-2 span report tool ({REPORT_BINARY})");
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+        let status = ProcessCommand::new(cargo)
+            .current_dir(&repo_root)
+            .args(report_build_args(&config.build_target_dir, &host_target))
+            .env_remove("CARGO_BUILD_TARGET")
+            .status()
+            .map_err(|error| TdpError::io(format!("cannot start cargo build: {error}")))?;
+        if !status.success() {
+            return Err(TdpError::child("cargo build (hmap_affine)", status));
+        }
     }
 
     if !managed_resume {
@@ -150,6 +164,23 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     Ok(())
 }
 
+/// `cargo build` arguments for the report binary (after `cargo`).
+pub(crate) fn report_build_args(target_dir: &Path, host_target: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("build"),
+        OsString::from("--release"),
+        OsString::from("--locked"),
+        OsString::from("--target-dir"),
+        target_dir.as_os_str().to_owned(),
+        OsString::from("--target"),
+        OsString::from(host_target),
+        OsString::from("--features"),
+        OsString::from("security-tools"),
+        OsString::from("--bin"),
+        OsString::from(REPORT_BINARY),
+    ]
+}
+
 /// Draw `[0, MAX_SEED]` uniformly from the OS CSPRNG (rejection sampling).
 fn os_seed() -> Result<u64, TdpError> {
     use rand::TryRngCore;
@@ -173,7 +204,13 @@ pub(crate) fn seeds_text(gen_seed: u64, mix_seed: u64, run_key: &[u8; 32], sourc
 }
 
 /// Create `$RUN/SEEDS` (create_new, mode 0600) before anything else is
-/// written to the run directory. Values never leave this file.
+/// written to the run directory. The values are read from this file by
+/// scripts/tdp_gen.sh and handed to gen and the mixer on inherited file
+/// descriptors (`@/dev/fd/N`, `--seed-file /dev/fd/3`): never on argv (ps),
+/// never in the environment, and never printed: gen's and the mixer's banners
+/// in stage12.log and stage3.log show `(file)` in their place. The private
+/// SEEDS file is the only on-disk copy (plus, for a calibration run, the
+/// operator's own seed file).
 pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> {
     use rand::TryRngCore;
     fs::create_dir_all(&config.run_dir).map_err(|error| {
@@ -626,6 +663,9 @@ pub(crate) fn print_dry_run(
             OsString::from("tdp_packing"),
         ];
         println!("[tdp_gen] would build: {}", render_command(&build));
+        let mut report = vec![OsString::from("cargo")];
+        report.extend(report_build_args(&config.build_target_dir, host_target));
+        println!("[tdp_gen] would build: {}", render_command(&report));
     } else if managed_resume && config.build_release {
         println!(
             "[tdp_gen] release build: would be skipped for resume; the fingerprinted binaries would be reused"

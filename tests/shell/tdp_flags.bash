@@ -126,6 +126,8 @@ for name, (env, preset) in expected.items():
     mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking'
     args = gen['args']
     assert args[1:] == ['4', '1', '1', '8', '1', '80'] + [args[7]] * 3 + (['nonlinear291'] if mode == 'nonlinear291' else []), args
+    # the seeds reach gen through descriptors, never on its argv
+    assert gen['argv'][7:10] == ['@/dev/fd/3', '@/dev/fd/4', '@/dev/fd/5'], gen['argv']
     recipe = (root / name / 'stage12.recipe').read_text()
     assert recipe.startswith('tdp_stage12_recipe=7\n'), recipe
     assert f'preprocessing_mode={mode}\n' in recipe, recipe
@@ -141,12 +143,15 @@ if [ -e "$tmp/defaults.calls" ] && grep -q gen_sandwich_gadget "$tmp/defaults.ca
 fi
 cmp "$tmp/original.recipe" "$tmp/defaults/stage12.recipe"
 # A changed stage-2 recipe must fail before regenerating or replacing its marker.
-for changed in "--preprocessing-mode nonlinear291" "--preprocessing-preset A" "--preprocessing-preset custom" "--source-gates 2"; do
+# (each case replaces the base --source-gates 1, so a changed |C| reaches the
+# recipe comparison instead of the duplicate-flag check)
+for changed in "--source-gates 1 --preprocessing-mode nonlinear291" "--source-gates 1 --preprocessing-preset A" \
+               "--source-gates 1 --preprocessing-preset custom" "--source-gates 2"; do
   # shellcheck disable=SC2086
-  if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/defaults" --source-gates 1 --run-stop-after-stage 2 $changed >"$tmp/changed.log" 2>&1; then
+  if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/defaults" --run-stop-after-stage 2 $changed >"$tmp/changed.log" 2>&1; then
     echo "changed preprocessing recipe unexpectedly resumed: $changed" >&2; exit 1
   fi
-  grep -q 'does not match' "$tmp/changed.log" || grep -q 'duplicate setting' "$tmp/changed.log" || { cat "$tmp/changed.log" >&2; exit 1; }
+  grep -q 'stage-2 recipe.*does not match' "$tmp/changed.log" || { echo "expected a recipe mismatch for: $changed" >&2; cat "$tmp/changed.log" >&2; exit 1; }
   if [ -e "$tmp/defaults.calls" ] && grep -q gen_sandwich_gadget "$tmp/defaults.calls"; then
     echo 'changed recipe regenerated stage 2' >&2; exit 1
   fi

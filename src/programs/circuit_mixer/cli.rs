@@ -444,6 +444,11 @@ pub struct Args {
     pub(super) origins_out: Option<String>,
     #[arg(long, default_value_t = 0)]
     pub(super) seed: u64,
+    /// Read the seed from this file (one decimal u64) instead of `--seed`, so
+    /// its value stays off argv where `ps` shows it; the managed driver passes
+    /// `/dev/fd/3`. The banner then prints `seed=(file)`.
+    #[arg(long, conflicts_with = "seed")]
+    pub(super) seed_file: Option<String>,
     /// Write a resume file on every stop (and at each snapshot). Holds what the
     /// circuit file cannot: per-gate direction/generation/litter, the ORIGINAL
     /// circuit that global_check verifies against, and the condition state

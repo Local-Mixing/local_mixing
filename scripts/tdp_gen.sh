@@ -15,7 +15,9 @@
 # stage-2 environment, same mixer argv and environment (serial), the same
 # stage 4 (bit-exact port of the Python oracle). Seeds are fresh CSPRNG draws
 # kept in the private $RUN/SEEDS; explicit seeds (--seed-file) are for
-# calibration and reproduction only.
+# calibration and reproduction only. Unlike val_chain.sh, the seeds reach gen
+# and the mixer on inherited descriptors (@/dev/fd/N, --seed-file /dev/fd/3),
+# never on argv where ps shows them; their banners print "(file)".
 #
 # Environment discipline: every stage binary starts from an EMPTY environment
 # plus PATH/HOME/TMPDIR/LANG/LC_ALL and the variables the recipe sets
@@ -547,19 +549,21 @@ for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache siz
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   RECIPE_ENV=(${GEN_ENV[@]+"${GEN_ENV[@]}"})
   [ -z "$SOURCE_PATH" ] || RECIPE_ENV+=(TDP_SOURCE_C="$SOURCE_PATH")
-  GEN_ARGS=("$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" "$GEN_SEED" "$GEN_SEED" "$GEN_SEED")
+  # val_chain.sh's argv, except that the three seeds (all = the gen seed) arrive
+  # as @/dev/fd/N here-strings: a seed on argv is visible in ps to every local
+  # user, and the gen seed regenerates C. gen prints them as "(file)".
+  GEN_ARGS=("$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" @/dev/fd/3 @/dev/fd/4 @/dev/fd/5)
   [ "$PREPROCESSING_MODE" = embedded-masking ] || GEN_ARGS+=("$PREPROCESSING_MODE")
   note "stage 1+2: gen_sandwich_gadget (mode=$PREPROCESSING_MODE preset=$PRESET env: ${gen_env_text:-none})"
   rm -f "$STAGE12_RECIPE_FILE" "$RUN/stage2_mult.txt" "$RUN/stage2_span.txt" "$RUN/stage2_span.tsv"
-  stage_exec "$BIN/gen_sandwich_gadget" "${GEN_ARGS[@]}" > "$RUN/stage12.log" 2>&1 ||
+  stage_exec "$BIN/gen_sandwich_gadget" "${GEN_ARGS[@]}" 3<<< "$GEN_SEED" 4<<< "$GEN_SEED" 5<<< "$GEN_SEED" \
+      > "$RUN/stage12.log" 2>&1 ||
     { note "stage 1+2 FAILED; see $RUN/stage12.log"; exit 1; }
   banner=$(head -1 "$RUN/stage12.log")
-  if [[ $banner =~ \ seed=([0-9]+)\ gadget_seed=([0-9]+)\ sandwich_seed=([0-9]+) ]] &&
-     [ "${BASH_REMATCH[1]}" = "$GEN_SEED" ] && [ "${BASH_REMATCH[2]}" = "$GEN_SEED" ] &&
-     [ "${BASH_REMATCH[3]}" = "$GEN_SEED" ]; then
-    note "gen seeds: verified"
+  if [[ $banner == *" seed=(file) gadget_seed=(file) sandwich_seed=(file) "* ]]; then
+    note "gen seeds: verified (all three read from the driver's descriptors)"
   else
-    rm -f "$GADGET"; fatal "gen used a different seed than SEEDS (or printed no banner); stage-2 artifact removed"
+    rm -f "$GADGET"; fatal "gen used a different seed than SEEDS (its banner does not show the three driver-supplied seeds); stage-2 artifact removed"
   fi
   printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
   mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
@@ -585,7 +589,7 @@ if [ ! -s "$RUN/stage2_span.txt" ]; then
         echo "[tdp_gen] note: stage2_span failed (report only)" >> "$LOGALL" ) &
     SIDE_PIDS+=($!)
   else
-    note "stage2_span skipped (hmap_affine not built; cargo build --release --features security-tools --bin hmap_affine)"
+    note "stage2_span skipped: no $BIN/hmap_affine (the managed driver builds it; standalone: cargo build --release --features security-tools --bin hmap_affine, then place it in $BIN)"
   fi
 fi
 wait_side() { local p; for p in ${SIDE_PIDS[@]+"${SIDE_PIDS[@]}"}; do wait "$p" || true; done; SIDE_PIDS=(); }
@@ -602,6 +606,7 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
   else
     A_MOVES=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:4]); G=int(sys.argv[4]); print(int((n0+h)*r*G*1.3))" "$GROWTH" "$HOLD" "$EXPAND" "$G_IN")
   fi
+  rm -f "$RUN/stage3.settings"; FF=""
   RECIPE_ENV=(FROZEN_REGULAR_VALUE_CONVENTION=native LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
               XPOLY_CANON_CACHE_MB=1024 MIXER_STOP_FLAG="$RUN/stage3.stop" MIXER_DUMP_FLAG="$RUN/stage3.dump")
   rm -f "$RUN/stage3.stop"
@@ -611,6 +616,9 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
     RECIPE_ENV+=(FROZEN_DB_DIR="$FROZEN_DB_DIR")
     # D11: FILTER_NEUTRALITY_RECORDED flips to 1 once a filtered/unfiltered
     # db_mixing comparison is recorded (docs/STAGE4_RUST_DESIGN.md §10.9 item 6).
+    # The managed manifest predicts this resolution (src/tdp/manifest.rs
+    # resolved_frozen_filter, frozen_filter=auto(<value>)); keep them in step.
+    # The value set is recorded in $RUN/stage3.settings.
     FILTER_NEUTRALITY_RECORDED=0
     case "$FILTER" in
       on) [ -s "$FROZEN_DB_DIR/filters.bin" ] || fatal "--database-lookup-miss-filter on needs $FROZEN_DB_DIR/filters.bin"
@@ -638,13 +646,16 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
     note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
   fi
   note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES (schedule $SCHEDULE, $PIECE_DESCRIPTION)$FILTER_NOTE"
-  # val_chain.sh's argv, in its order; optional flags only when enabled.
+  # val_chain.sh's argv, in its order (the seed as --seed-file /dev/fd/3, off argv); optional flags only when enabled.
   stage_exec "$BIN/circuit_mixer" --input "$GADGET" --output "$DB_MIXING" --tdp --db-mixing \
       --profile "$PROFILE" --moves "$A_MOVES" "${DBFLAGS[@]}" \
       --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
-      --no-local-verify --seed "$MIX_SEED" \
-      ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} > "$RUN/stage3.log" 2>&1 ||
+      --no-local-verify --seed-file /dev/fd/3 \
+      ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} 3<<< "$MIX_SEED" > "$RUN/stage3.log" 2>&1 ||
     { note "stage 3 FAILED; see $RUN/stage3.log"; exit 1; }
+  # The stage-3 settings resolved at run time (FROZEN_FILTER under auto).
+  printf 'stage3_settings=1\nfrozen_filter_mode=%s\nfrozen_filter=%s\np_db=%s\n' \
+    "$FILTER" "${FF:-unset}" "${DBFLAGS[1]}" > "$RUN/stage3.settings"
   [ "$FORCE_FROM" -le 4 ] || FORCE_FROM=4
   note "stage 3 done: $(gates_of "$DB_MIXING") gates"
 else

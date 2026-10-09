@@ -80,7 +80,32 @@ impl PackParams {
     pub fn mul_cap(&self) -> usize {
         self.b_mono.saturating_mul(8)
     }
+
+    /// Bounds shared with the managed driver (`[packing]`,
+    /// src/tdp/config/validate.rs): the scheduler's caps (`2·G`, `2·b_mono`,
+    /// `8·b_mono`, `G − load`) are plain usize/i64 arithmetic, which wraps in
+    /// release builds beyond these.
+    pub fn validate(&self) -> Result<(), String> {
+        for (v, name, max) in [
+            (self.g, "--window-gates", MAX_WINDOW_GATES),
+            (self.w_cap, "--interval-cap", MAX_WINDOW_GATES),
+            (self.b_mono, "--monomial-budget", MAX_BUDGET),
+            (self.span_cap, "--span-cap", MAX_BUDGET),
+        ] {
+            if v == 0 || v > max {
+                return Err(format!("{name} {v}: must be in 1..={max}"));
+            }
+        }
+        Ok(())
+    }
 }
+
+/// Largest window gate cap / interval cap accepted (the driver's bound).
+pub const MAX_WINDOW_GATES: usize = 1_000_000;
+/// Largest monomial budget, span cap and split budget accepted.
+pub const MAX_BUDGET: usize = 1_000_000_000;
+/// Largest fix / fallback iteration count accepted.
+pub const MAX_ITERATIONS: usize = 1000;
 
 /// The repair algorithm. Later improvements are new variants behind flags,
 /// never the default until RC re-validates (§13.3).
@@ -110,6 +135,27 @@ pub struct RepairParams {
     pub cview: crate::stages::packing::cview::CviewParams,
     pub cap_semantics: CapSemantics,
     pub mode: RepairMode,
+}
+
+impl RepairParams {
+    /// The driver's bounds (see [`PackParams::validate`]).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.split_budget == 0 || self.split_budget > MAX_BUDGET {
+            return Err(format!(
+                "--split-budget {}: must be in 1..={MAX_BUDGET}",
+                self.split_budget
+            ));
+        }
+        for (v, name) in [
+            (self.fix_iterations, "--fix-iterations"),
+            (self.fallback_iterations, "--fallback-iterations"),
+        ] {
+            if v > MAX_ITERATIONS {
+                return Err(format!("{name} {v}: must be in 0..={MAX_ITERATIONS}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for RepairParams {

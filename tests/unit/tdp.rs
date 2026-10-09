@@ -631,7 +631,7 @@ fn the_exact_default_manifest_text() {
         "preprocessing_chain=2\npreprocessing_chain_len=8\npreprocessing_quadratic_fire=1\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
-        "stage3_report_every=default(50000)\npieces=1\nfrozen_db_dir=unset\nfrozen_filter=auto\n",
+        "stage3_report_every=default(50000)\npieces=1\nfrozen_db_dir=unset\nfrozen_filter=auto(unset)\n",
         "frozen_regular_value_convention=native\nallow_empty_store=false\nenv_policy=allowlist-v1\n",
         "cache_mb=lookup:2048,canon:256,xpoly:1024\ncanon_caps=unbounded\npacking_params=default\n",
         "packing_window_gates=512\npacking_interval_cap=512\npacking_monomial_budget=24576\n",
@@ -640,7 +640,7 @@ fn the_exact_default_manifest_text() {
         "packing_allow_floor_miss=false\npacking_allow_over_budget=false\nseed_record=SEEDS\n",
         "seed_source=random\nseed_bits=63\ncalibration_only=false\nqc_enabled=false\nqc_seed=20803\n",
         "qc_reference=unset\nbinary_tdp_packing_xxh3=00000000000000000000000000000003\n",
-        "script_tdp_gen_xxh3=00000000000000000000000000000001\n",
+        "stage2_span_report=skipped\nscript_tdp_gen_xxh3=00000000000000000000000000000001\n",
     );
     assert_eq!(recipe_manifest(&config, &[("tdp_packing", 3)], 1), expected);
     // no hard-coded "hold" text: every value is resolved (D18)
@@ -886,6 +886,54 @@ fn run_target_and_store_trees_must_not_overlap() {
     assert!(validate_path_separation(&run, &target, Some(&target.join("store"))).is_err());
     validate_path_separation(&run, &target, Some(&store)).unwrap();
     fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn pinned_recipe_and_resolved_filter_follow_the_run() {
+    let pinned = |c: &ResolvedConfig| {
+        recipe_manifest(c, &[], 1)
+            .lines()
+            .find_map(|l| l.strip_prefix("pinned_recipe=").map(str::to_owned))
+            .unwrap()
+    };
+    let filter = |c: &ResolvedConfig| {
+        recipe_manifest(c, &[], 1)
+            .lines()
+            .find_map(|l| l.strip_prefix("frozen_filter=").map(str::to_owned))
+            .unwrap()
+    };
+    let store = temp_path("pinned-store");
+    fs::create_dir_all(&store).unwrap();
+    let body = format!("source.wires = 64\ndatabase.regular_dir = {store:?}\n");
+    let l8 = resolve_body(&body).unwrap();
+    assert_eq!(pinned(&l8), "val_chain-L8-20261007");
+    assert_eq!(filter(&l8), "auto(1)");
+    let a = resolve_body(&format!("{body}preprocessing.preset = \"A\"")).unwrap();
+    assert_eq!(pinned(&a), "val_chain-A-20261007");
+    let mut changed = l8.clone();
+    changed.preset = Preset::Custom;
+    assert_eq!(pinned(&changed), "none");
+    let mut changed = l8.clone();
+    changed.packing.split_budget = 1024;
+    assert_eq!(pinned(&changed), "none");
+    let mut changed = l8.clone();
+    changed.qc_enabled = true;
+    assert_eq!(pinned(&changed), "none");
+    let custom = resolve_body(&format!(
+        "{body}db_mixing.schedule = \"custom\"\ndb_mixing.growth_work_units = 3\ndb_mixing.hold_work_units = 27\ndb_mixing.target_size_factor = 2"
+    ))
+    .unwrap();
+    assert_eq!(pinned(&custom), "none");
+    let off = resolve_body(&format!("{body}database.lookup_miss_filter = \"off\"")).unwrap();
+    assert_eq!(
+        (filter(&off).as_str(), pinned(&off).as_str()),
+        ("off(0)", "none")
+    );
+    // a store with filters.bin: auto resolves to 0, which val_chain.sh never ran
+    fs::write(store.join("filters.bin"), "filter").unwrap();
+    assert_eq!(filter(&l8), "auto(0)");
+    assert_eq!(pinned(&l8), "none");
+    fs::remove_dir_all(store).unwrap();
 }
 
 #[test]

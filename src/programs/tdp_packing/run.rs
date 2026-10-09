@@ -17,6 +17,14 @@
 //! check passed: the exact pack and repair certificates, both sampled
 //! equivalence checks, decode == window ANF, window ANF == gates, DE's
 //! evaluation check and the zero slice against C.
+//!
+//! Once the inputs have loaded, every output name of an earlier run in a
+//! reused `--out-dir` is removed first, so a failed run never leaves a
+//! deliverable, report or intermediate that belongs to another run. On
+//! success the commit order is deliverable.bin, deliverable.tdp4, then
+//! packing.report: the report is the completion record, and a directory
+//! without one (or with a status other than `ok`) holds no recommended
+//! deliverable.
 use super::*;
 use crate::stages::packing::census::{LinkCensus, link_census};
 use crate::stages::packing::oracle_io::OracleCircuit;
@@ -79,19 +87,7 @@ fn pack_params(a: &Args) -> Result<PackParams, Stage4Error> {
     p.w_cap = opt_usize(a, "interval-cap", p.w_cap)?;
     p.b_mono = opt_usize(a, "monomial-budget", p.b_mono)?;
     p.span_cap = opt_usize(a, "span-cap", p.span_cap)?;
-    for (v, name) in [
-        (p.g, "--window-gates"),
-        (p.w_cap, "--interval-cap"),
-        (p.b_mono, "--monomial-budget"),
-        (p.span_cap, "--span-cap"),
-    ] {
-        if v == 0 {
-            return Err(Stage4Error::Usage(format!("{name} must be positive")));
-        }
-    }
-    if p.b_mono.checked_mul(8).is_none() {
-        return Err(Stage4Error::Usage("--monomial-budget too large".into()));
-    }
+    p.validate().map_err(Stage4Error::Usage)?;
     Ok(p)
 }
 
@@ -445,6 +441,7 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
     )?;
     let n = n as usize;
     private_dir(&out_dir)?;
+    remove_stale_outputs(&out_dir, g)?;
 
     // ---- pack (window_pack3.py)
     let mut tee = Tee { buf: Vec::new() };
@@ -634,21 +631,53 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
         Some(&ser),
         [t_pack, t_repair, t_reports, t_emit],
     );
-    let wr = write_all_staged(vec![(
-        report_path,
-        Box::new(|w| w.write_all(text.as_bytes())),
-    )]);
-    if let Err(e) = wr {
-        ser.body.abandon();
-        ser.container.abandon();
-        return Err(e);
-    }
+    // the deliverables first, the report (the completion record) last
     if let Err(e) = ser.body.commit() {
         ser.container.abandon();
         return Err(e);
     }
     ser.container.commit()?;
+    write_all_staged(vec![(
+        report_path,
+        Box::new(|w| w.write_all(text.as_bytes())),
+    )])?;
     eprintln!("{summary} ({:.1}s)", t0.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// Every file `run` writes into `--out-dir` for window size `g` (and its
+/// `*.tmp`): removed before a run so a reused directory never mixes runs.
+fn remove_stale_outputs(out_dir: &Path, g: usize) -> Result<(), Stage4Error> {
+    let mut names: Vec<String> = ["deliverable.bin", "deliverable.tdp4", "packing.report"]
+        .map(String::from)
+        .to_vec();
+    names.extend([
+        format!("packed_G{g}.mpmct1"),
+        format!("packed_G{g}.mpmct1.bounds"),
+        format!("pack_G{g}.txt"),
+        format!("repair{g}.log"),
+        format!("anf_rep{g}.txt"),
+        format!("link_rep{g}.txt"),
+    ]);
+    for suffix in [
+        "mpmct1",
+        "bounds",
+        "exposure.tsv",
+        "allcuts.tsv",
+        "wit.tsv",
+        "cview.log",
+    ] {
+        names.push(format!("rep{g}.{suffix}"));
+    }
+    for name in names {
+        for path in [out_dir.join(&name), out_dir.join(format!("{name}.tmp"))] {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Stage4Error::io(&path, e)),
+            }
+        }
+    }
     Ok(())
 }
 

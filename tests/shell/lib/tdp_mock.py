@@ -5,7 +5,11 @@ circuit_mixer, tdp_packing, hmap_affine), selected by argv[0]'s name.
 The driver launches stage binaries under `env -i`, so the mock cannot rely on
 an inherited variable: it appends one JSON line {name, args, env} to
 `<run dir>.calls` (the run directory is derived from the artifact paths in
-argv) and writes small placeholder artifacts. Optional behaviour is read from
+argv) and writes small placeholder artifacts. Seeds handed over as files
+(gen's `@PATH` positionals, the mixer's `--seed-file PATH`, both /dev/fd/N
+from the driver) are read as the real binaries read them: `args` records the
+resolved argv (`--seed-file P` as `--seed V`, as val_chain.sh passes it),
+`argv` the raw one (what ps would show). Optional behaviour is read from
 `<run dir>.mock` (key=value lines): gen_seed_override=K makes the gen banner
 report a different seed; packing_exit=K makes `tdp_packing run` exit K;
 packing_status=S writes that status.
@@ -16,7 +20,30 @@ import sys
 from pathlib import Path
 
 name = Path(sys.argv[0]).name
-args = sys.argv[1:]
+argv = sys.argv[1:]
+private = set()
+
+
+def read_seed(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+args = []
+i = 0
+while i < len(argv):
+    a = argv[i]
+    if name == "circuit_mixer" and a == "--seed-file":
+        args += ["--seed", read_seed(argv[i + 1])]
+        private.add("--seed")
+        i += 2
+        continue
+    if name == "gen_sandwich_gadget" and 7 <= i <= 9 and a.startswith("@"):
+        args.append(read_seed(a[1:]))
+        private.add(i)
+    else:
+        args.append(a)
+    i += 1
 
 
 def run_dir():
@@ -35,7 +62,7 @@ def run_dir():
 
 rd = run_dir()
 with open(str(rd) + ".calls", "a") as f:
-    f.write(json.dumps({"name": name, "args": args, "env": dict(os.environ)}) + "\n")
+    f.write(json.dumps({"name": name, "args": args, "argv": argv, "env": dict(os.environ)}) + "\n")
 opts = {}
 cfg = Path(str(rd) + ".mock")
 if cfg.exists():
@@ -46,7 +73,7 @@ if cfg.exists():
 if name == "gen_sandwich_gadget":
     out = args[0]
     n = int(args[1])
-    seed, gseed, sseed = args[7], args[8], args[9]
+    seed, gseed, sseed = (("(file)" if k in private else args[k]) for k in (7, 8, 9))
     if "gen_seed_override" in opts:
         seed = opts["gen_seed_override"]
     print(f"[gen] n={n} |C|={args[2]} |D|={args[3]} s={args[4]} rg_freq={args[5]} slice_gates={args[6]} "

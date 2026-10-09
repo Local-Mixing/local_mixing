@@ -19,6 +19,12 @@ pub fn run(matches: clap::ArgMatches) {
     let given =
         |name: &str| matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine);
     let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches).expect("parse args");
+    if let Some(path) = &args.seed_file {
+        args.seed = crate::programs::read_seed_file(path).unwrap_or_else(|error| {
+            eprintln!("[circuit_mixer] --seed-file: {error}");
+            std::process::exit(2)
+        });
+    }
 
     if args.quality.qc {
         if args.resume.is_some() {
@@ -292,7 +298,17 @@ pub fn run(matches: clap::ArgMatches) {
     if args.resume.is_none() {
         println!(
             "[circuit_mixer] input: {} gates ({} g57 fossils), {} wires; k_max={} dir_q={} moves={} seed={}",
-            input_len, comp0, num_wires, args.k_max, args.dir_q, args.moves, args.seed
+            input_len,
+            comp0,
+            num_wires,
+            args.k_max,
+            args.dir_q,
+            args.moves,
+            if args.seed_file.is_some() {
+                "(file)".to_owned()
+            } else {
+                args.seed.to_string()
+            }
         );
     }
     if args.p_pair > 0.0 {

@@ -50,9 +50,10 @@ jobs:
           assert not names.intersection({'rocksdb', 'librocksdb-sys', 'rhai', 'pyo3', 'numpy', 'lmdb', 'lmdb-sys'}), names
           PY
 
-      # tdp_packing (stage 4) against Python-oracle fixtures in tests/fixtures/stage4.
+      # tdp_packing (stage 4) against Python-oracle fixtures in tests/fixtures/stage4;
+      # stage2_typed_params pins gen's L8/A output bytes to the validated binary.
       - name: Runtime and command correctness
-        run: cargo test --locked --lib --test circuit_cli --test tdp_packing
+        run: cargo test --locked --lib --test circuit_cli --test tdp_packing --test stage2_typed_params
 
       # The managed driver runs all four stages (docs/STAGE4_RUST_DESIGN.md §11).
       # tdp_defaults diffs its transcript against the oracle script

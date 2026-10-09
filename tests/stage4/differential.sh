@@ -12,8 +12,9 @@
 #          normalized (verify lines as a set);
 #   emit   anf_dump_eval.py vs `tdp_packing serialize` on the oracle's
 #          repaired circuit: the body byte for byte.
-# Plus the committed fixtures' expected files are re-derived by the oracle only
-# where cheap (the integration tests compare Rust with them on every push).
+# The committed fixtures under tests/fixtures/stage4 are not re-derived here:
+# tests/fixtures/stage4/regen.sh rebuilds them with the oracle (by hand), and
+# the integration tests compare Rust with them on every push.
 #
 # Environment: TDP_PACKING (release binary), HMAP_BASELINE (baseline
 # hmap_affine built from 492564f0), ORACLE_PY (passes pyset_selftest.py),

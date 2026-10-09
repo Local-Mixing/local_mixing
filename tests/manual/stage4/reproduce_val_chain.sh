@@ -70,6 +70,8 @@ REF=$RD/waist/$TAG
 MT=$WORK/managed_target/$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')/release
 mkdir -p "$MT"
 for b in gen_sandwich_gadget circuit_mixer tdp_packing; do ln -sf "$BIN_DIR/$b" "$MT/$b"; done
+# the stage-2 span report's tool, as val_chain.sh runs it (report only)
+ln -sf "$HMAP_BASELINE" "$MT/hmap_affine"
 MAN=$WORK/managed; mkdir -p "$MAN"
 size=""; case $N in 64|128) [ "$MC" = "$( [ "$N" = 64 ] && echo 1000 || echo 3000)" ] || size="gates = $MC" ;; *) size="gates = $MC" ;; esac
 preset=""; [ "$CFG" = A ] && preset='preset = "A"'
@@ -120,6 +122,15 @@ row "managed driver exit" "$mrc"
 for f in tdp.mpmct1 tdp.mpmct1.source_c.g57 tdp.mpmct1.sandwich.mpmct1; do same "stage 2: $f" "$REF/$f" "$RUN/$f"; done
 same "stage 3: s3.mpmct1 = db_mixing.mpmct1" "$REF/s3.mpmct1" "$RUN/db_mixing.mpmct1"
 same "stage 2 report: mult_s2 (label normalized)" <(sed "s/^ $TAG:/ X:/" "$REF/mult_s2.txt") <(sed "s/^ tdp:/ X:/" "$RUN/stage2_mult.txt")
+same "stage 2 report: span_s2.txt = stage2_span.txt" "$REF/span_s2.txt" "$RUN/stage2_span.txt"
+same "stage 2 report: span_s2.tsv = stage2_span.tsv" "$REF/span_s2.tsv" "$RUN/stage2_span.tsv"
+grep -q '^stage2_span_report=hmap_affine$' "$RUN/tdp_command.conf" && row "manifest: stage2_span_report" hmap_affine ||
+  { row "manifest: stage2_span_report" "not recorded"; fail=1; }
+grep -q '^frozen_filter=1$' "$RUN/stage3.settings" && row "stage3.settings: frozen_filter" "1 (= val_chain.sh)" ||
+  { row "stage3.settings: frozen_filter" "not 1"; fail=1; }
+for f in "$RUN/stage12.log" "$RUN/stage3.log" "$RUN/tdp_gen.log" "$RUN/tdp_command.conf" "$WORK/managed.out"; do
+  if grep -qF -f <(sed -nE 's/^(gen|mix)_seed=//p' "$SF") "$f"; then row "seed values in $(basename "$f")" PRESENT; fail=1; fi
+done
 for f in packed_G512.mpmct1 packed_G512.mpmct1.bounds rep512.mpmct1 rep512.bounds \
          rep512.exposure.tsv rep512.allcuts.tsv rep512.wit.tsv; do
   same "stage 4: $f" "$REF/$f" "$P/$f"

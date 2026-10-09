@@ -109,9 +109,15 @@ def effective(env):
     return out
 def norm_paths(args):
     return [os.path.basename(a) if "/" in a else a for a in args]
-# (a) gen argv
+# (a) gen argv (the managed seeds resolved from their descriptors; raw, they
+# are never on argv)
 rg, mg = one(ref, "gen_sandwich_gadget"), one(man, "gen_sandwich_gadget")
 assert norm_paths(rg["args"]) == norm_paths(mg["args"]), (rg["args"], mg["args"])
+assert mg["argv"][7:10] == ["@/dev/fd/3", "@/dev/fd/4", "@/dev/fd/5"], mg["argv"]
+for c in man:
+    for secret in (rg["args"][7], one(ref, "circuit_mixer")["args"][-1]):
+        if len(secret) >= 4:  # (short test seeds such as 1 collide with argv values)
+            assert secret not in c["argv"], (c["name"], "seed on argv")
 # (b) mixer argv as an option set (positional order kept)
 def optset(args):
     pos, opts, i = [], {}, 0
@@ -127,6 +133,8 @@ def optset(args):
     return pos, opts
 rm_, mm = one(ref, "circuit_mixer"), one(man, "circuit_mixer")
 rp, ro = optset(rm_["args"]); mp, mo = optset(mm["args"])
+assert "--seed" not in mm["argv"] and ro["--seed"] not in mm["argv"], mm["argv"]
+assert mm["argv"][mm["argv"].index("--seed-file") + 1] == "/dev/fd/3", mm["argv"]
 ro["--output"] = "db_mixing.mpmct1"  # val_chain's s3.mpmct1 is the driver's db_mixing.mpmct1
 assert (rp, ro) == (mp, mo), (ro, mo)
 # (c) effective recipe/driver values; no forbidden variable

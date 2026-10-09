@@ -751,6 +751,7 @@ pub fn pack(
     label: &str,
     log: &mut dyn Write,
 ) -> Result<Packed, Stage4Error> {
+    p.validate().map_err(Stage4Error::Usage)?;
     if b.gates.is_empty() {
         return Err(Stage4Error::Input(
             "B has no gates (window_pack3.py fails on an empty circuit)".into(),
