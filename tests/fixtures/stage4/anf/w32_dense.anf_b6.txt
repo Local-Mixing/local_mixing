@@ -1,0 +1,4 @@
+w32_dense-b6: 36 windows, budget=6 monomials; overflow 34 (94.44%)
+monomials/window: med=0 p90=0 p99=0 max=0; total=0
+size: ANF 0.0 MB vs gate-list 0.0 MB (x1.00)
+spot checks: 2 windows re-evaluated, 0 failures (OK)

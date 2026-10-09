@@ -1,0 +1,4 @@
+w32_dense-b200: 36 windows, budget=200 monomials; overflow 11 (30.56%)
+monomials/window: med=68 p90=181 p99=198 max=198; total=1843
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.60)
+spot checks: 13 windows re-evaluated, 0 failures (OK)

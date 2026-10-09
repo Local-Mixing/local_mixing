@@ -1,0 +1,4 @@
+w128-b30: 41 windows, budget=30 monomials; overflow 33 (80.49%)
+monomials/window: med=14 p90=26 p99=26 max=26; total=105
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.90)
+spot checks: 4 windows re-evaluated, 0 failures (OK)

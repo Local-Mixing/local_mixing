@@ -1,0 +1,3 @@
+orderdep-b30: 5 windows, budget=30 monomials; overflow 5 (100.00%)
+size: ANF 0.0 MB vs gate-list 0.0 MB (x1.00)
+spot checks: 0 windows re-evaluated, 0 failures (OK)

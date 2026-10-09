@@ -1,0 +1,4 @@
+w64_top-b100: 29 windows, budget=100 monomials; overflow 15 (51.72%)
+monomials/window: med=40 p90=77 p99=86 max=86; total=490
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.69)
+spot checks: 9 windows re-evaluated, 0 failures (OK)

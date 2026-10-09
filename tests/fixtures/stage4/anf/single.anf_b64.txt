@@ -1,0 +1,3 @@
+single-b64: 1 windows, budget=64 monomials; overflow 1 (100.00%)
+size: ANF 0.0 MB vs gate-list 0.0 MB (x1.00)
+spot checks: 0 windows re-evaluated, 0 failures (OK)

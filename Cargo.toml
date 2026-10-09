@@ -92,6 +92,10 @@ path = "src/programs/gen_sandwich_gadget/main.rs"
 name = "local_mixing_bin"
 path = "src/main.rs"
 
+[[bin]]
+name = "tdp_packing"
+path = "src/programs/tdp_packing/main.rs"
+
 [[test]]
 name = "circuit_cli"
 path = "tests/integration/circuit_cli.rs"
@@ -103,6 +107,11 @@ path = "tests/integration/frozen_roundtrip.rs"
 [[test]]
 name = "mixer_db_replacement"
 path = "tests/integration/mixer_db_replacement.rs"
+
+# Stage-4 tdp_packing against Python-oracle fixtures (tests/fixtures/stage4).
+[[test]]
+name = "tdp_packing"
+path = "tests/integration/tdp_packing.rs"
 
 # hmap_affine --exposure (library C-view engine) against the pinned baseline.
 [[test]]

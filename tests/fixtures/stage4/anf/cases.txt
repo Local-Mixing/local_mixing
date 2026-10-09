@@ -1,0 +1,11 @@
+w32_dense 6 12 40 200
+w64_top 16 100
+w128 30 300
+w256 50
+w300 40
+w512 40
+w1024 40
+cancel 4 64
+single 64 4096
+orderdep 30 56 70 90 104 200
+nogates 8

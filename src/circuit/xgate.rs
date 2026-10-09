@@ -177,6 +177,25 @@ impl XGate {
         }
     }
 
+    /// 1024-lane bit-sliced application (stage 4's sample width): per word
+    /// bit-for-bit `apply_lanes` on that word alone.
+    #[inline]
+    pub fn apply_lanes16(&self, state: &mut [[u64; 16]]) {
+        let mut acc = [!0u64; 16];
+        for &(w, p) in &self.ctrls {
+            let v = &state[w as usize];
+            let m = pol_mask(p);
+            for b in 0..16 {
+                acc[b] &= v[b] ^ m;
+            }
+        }
+        let c = comp_mask(self.comp);
+        let t = &mut state[self.target as usize];
+        for b in 0..16 {
+            t[b] ^= acc[b] ^ c;
+        }
+    }
+
     pub fn max_wire(&self) -> u16 {
         self.ctrls
             .iter()

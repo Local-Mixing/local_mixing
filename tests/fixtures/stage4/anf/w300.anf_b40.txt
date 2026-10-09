@@ -1,0 +1,4 @@
+w300-b40: 28 windows, budget=40 monomials; overflow 20 (71.43%)
+monomials/window: med=12 p90=38 p99=38 max=38; total=114
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.80)
+spot checks: 5 windows re-evaluated, 0 failures (OK)

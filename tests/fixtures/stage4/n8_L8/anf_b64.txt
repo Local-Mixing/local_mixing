@@ -1,0 +1,4 @@
+n8_L8-b64: 73 windows, budget=64 monomials; overflow 72 (98.63%)
+monomials/window: med=12 p90=12 p99=12 max=12; total=12
+size: ANF 0.1 MB vs gate-list 0.1 MB (x1.00)
+spot checks: 1 windows re-evaluated, 0 failures (OK)

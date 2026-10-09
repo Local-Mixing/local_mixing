@@ -1,0 +1,4 @@
+cancel-b4: 48 windows, budget=4 monomials; overflow 11 (22.92%)
+monomials/window: med=0 p90=3 p99=4 max=4; total=21
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.88)
+spot checks: 18 windows re-evaluated, 0 failures (OK)

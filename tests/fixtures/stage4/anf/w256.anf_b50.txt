@@ -1,0 +1,4 @@
+w256-b50: 37 windows, budget=50 monomials; overflow 23 (62.16%)
+monomials/window: med=20 p90=39 p99=50 max=50; total=287
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.78)
+spot checks: 7 windows re-evaluated, 0 failures (OK)

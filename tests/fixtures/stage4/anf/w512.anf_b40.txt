@@ -1,0 +1,4 @@
+w512-b40: 28 windows, budget=40 monomials; overflow 16 (57.14%)
+monomials/window: med=24 p90=31 p99=35 max=35; total=230
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.72)
+spot checks: 6 windows re-evaluated, 0 failures (OK)

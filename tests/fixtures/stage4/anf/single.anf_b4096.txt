@@ -1,0 +1,4 @@
+single-b4096: 1 windows, budget=4096 monomials; overflow 0 (0.00%)
+monomials/window: med=140 p90=140 p99=140 max=140; total=140
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.20)
+spot checks: 1 windows re-evaluated, 0 failures (OK)

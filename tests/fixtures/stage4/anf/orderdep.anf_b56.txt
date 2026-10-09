@@ -1,0 +1,4 @@
+orderdep-b56: 5 windows, budget=56 monomials; overflow 4 (80.00%)
+monomials/window: med=2 p90=2 p99=2 max=2; total=2
+size: ANF 0.0 MB vs gate-list 0.0 MB (x0.91)
+spot checks: 1 windows re-evaluated, 0 failures (OK)
