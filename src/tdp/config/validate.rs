@@ -49,16 +49,18 @@ where
             "requires `calibration.enabled = true`; explicit seeds must never be used for deliverables",
         ));
     }
-    let calibration_seed = calibration_seed_file
-        .as_ref()
-        .map(|path| read_calibration_seed(path))
-        .transpose()?;
+    let seeds = match &calibration_seed_file {
+        Some(path) => {
+            let (gen_seed, mix_seed) = read_seed_file(path)?;
+            SeedPlan::Explicit { gen_seed, mix_seed }
+        }
+        None => SeedPlan::Random,
+    };
 
     let mut mcd = parse_optional_u64(raw, "mcd", 1, 1_000_000_000)?;
     let source_path = raw
         .value("source_path")
         .map(|value| resolve_path(repo_root, Path::new(value)));
-    let mut source_hash = None;
     if let Some(path) = &source_path {
         let bytes =
             fs::read(path).map_err(|e| format!("cannot read source {}: {e}", path.display()))?;
@@ -77,45 +79,104 @@ where
             return Err("source.gates must match the supplied circuit".into());
         }
         mcd = Some(count);
-        source_hash = Some(xxhash_rust::xxh3::xxh3_128(&bytes));
     }
-    // Validate the mask layout together with the preprocessing choice below.
-    // Nonlinear291 does not use the default mask controls.
-    let mask_pair_wires = parse_usize(raw, "mask_pair_wires", 2, 1, 64)?;
-    let max_open_masks = parse_usize(raw, "max_open_masks", 3, 2, 64)?;
-    let min_open_masks = parse_usize(raw, "min_open_masks", 2, 1, 63)?;
-    if min_open_masks >= max_open_masks {
-        return Err(
-            "preprocessing.min_open_masks must be less than preprocessing.max_open_masks".into(),
-        );
-    }
-    let balanced_masks = parse_bool(raw, "balanced_masks", true)?;
-    let shuffling_segments = parse_usize(raw, "shuffling_segments", 0, 0, usize::MAX)?;
-    if (1..8).contains(&shuffling_segments) {
-        return Err(config_error(
-            raw,
-            "shuffling_segments",
-            "must be 0 (off) or at least 8",
-        ));
-    }
-    let shuffling_return_home = parse_bool(raw, "shuffling_return_home", true)?;
-    if shuffling_segments > 0 && !shuffling_return_home {
-        return Err(config_error(
-            raw,
-            "shuffling_return_home",
-            "must be true for TDP's fixed physical output layout; carried layouts are supported only by the embedded-masking API and Gauntlet",
-        ));
-    }
-    let explicit_mask_controls = [
+    // Stage-2 preset (§11.2): authoritative; L8/A forbid every knob field.
+    const KNOB_KEYS: [&str; 10] = [
         "mask_pair_wires",
         "max_open_masks",
         "min_open_masks",
         "balanced_masks",
         "shuffling_segments",
         "shuffling_return_home",
-    ]
-    .iter()
-    .any(|key| raw.value(key).is_some());
+        "premask",
+        "seed_avoid_c1",
+        "chain",
+        "chain_len",
+    ];
+    let present: Vec<&str> = KNOB_KEYS
+        .iter()
+        .copied()
+        .filter(|key| raw.value(key).is_some())
+        .collect();
+    let (preset, knobs) = if preprocessing_mode == PreprocessingMode::Nonlinear291 {
+        if raw.value("preset").is_some() {
+            return Err(config_error(
+                raw,
+                "preset",
+                "applies only to embedded-masking; remove it for nonlinear291",
+            ));
+        }
+        if let Some(key) = present.first() {
+            return Err(config_error(
+                raw,
+                key,
+                "preprocessing mask controls apply only to embedded-masking; omit them for nonlinear291",
+            ));
+        }
+        (Preset::None, Stage2Knobs::BASE)
+    } else {
+        match raw.value("preset").unwrap_or("L8") {
+            name @ ("L8" | "A") => {
+                if let Some(key) = present.first() {
+                    return Err(config_error(
+                        raw,
+                        key,
+                        &format!(
+                            "field {} is set by preset {name}; remove it or use preset = \"custom\"",
+                            canonical_config_key(key)
+                        ),
+                    ));
+                }
+                if name == "L8" {
+                    (Preset::L8, Stage2Knobs::L8)
+                } else {
+                    (Preset::A, Stage2Knobs::A)
+                }
+            }
+            "custom" => {
+                if let Some(key) = KNOB_KEYS.iter().find(|key| raw.value(key).is_none()) {
+                    return Err(config_error(
+                        raw,
+                        "preset",
+                        &format!(
+                            "preset \"custom\" requires every stage-2 field; {} is missing",
+                            canonical_config_key(key)
+                        ),
+                    ));
+                }
+                let knobs = Stage2Knobs {
+                    mask_pair_wires: parse_usize(raw, "mask_pair_wires", 2, 2, 64)?,
+                    max_open_masks: parse_usize(raw, "max_open_masks", 3, 2, 64)?,
+                    min_open_masks: parse_usize(raw, "min_open_masks", 2, 1, 63)?,
+                    balanced_masks: parse_bool(raw, "balanced_masks", true)?,
+                    shuffling_segments: parse_usize(raw, "shuffling_segments", 0, 0, usize::MAX)?,
+                    shuffling_return_home: parse_bool(raw, "shuffling_return_home", true)?,
+                    premask: parse_bool(raw, "premask", false)?,
+                    seed_avoid_c1: parse_bool(raw, "seed_avoid_c1", false)?,
+                    chain: parse_usize(raw, "chain", 0, 0, 64)?,
+                    chain_len: parse_usize(raw, "chain_len", 0, 0, 1_000_000)?,
+                };
+                if knobs.min_open_masks >= knobs.max_open_masks {
+                    return Err("preprocessing.min_open_masks must be less than preprocessing.max_open_masks".into());
+                }
+                if (1..8).contains(&knobs.shuffling_segments) {
+                    return Err(config_error(
+                        raw,
+                        "shuffling_segments",
+                        "must be 0 (off) or at least 8",
+                    ));
+                }
+                (Preset::Custom, knobs)
+            }
+            other => {
+                return Err(config_error(
+                    raw,
+                    "preset",
+                    &format!("expected \"L8\", \"A\" or \"custom\"; got {other:?}"),
+                ));
+            }
+        }
+    };
     let qc_enabled = parse_bool(raw, "qc_enabled", false)?;
     let qc_seed = parse_optional_u64(raw, "qc_seed", 0, u64::MAX)?
         .unwrap_or_else(|| "20803".into())
@@ -127,24 +188,64 @@ where
     if !qc_enabled && (qc_reference.is_some() || raw.value("qc_seed").is_some()) {
         return Err("leakage_repair.seed/reference require leakage_repair.enabled = true".into());
     }
-    let qc_reference_hash = qc_reference
-        .as_ref()
-        .map(|path| {
-            fs::read(path)
-                .map(|bytes| xxhash_rust::xxh3::xxh3_128(&bytes))
-                .map_err(|e| {
-                    format!(
-                        "cannot read leakage-repair reference {}: {e}",
-                        path.display()
-                    )
-                })
-        })
-        .transpose()?;
+    if let Some(path) = &qc_reference {
+        fs::metadata(path).map_err(|e| {
+            format!(
+                "cannot read leakage-repair reference {}: {e}",
+                path.display()
+            )
+        })?;
+    }
+    // Source size (§2.4): the validated table, an explicit size, or the
+    // opt-in formula.
+    let validated = VALIDATED_SOURCE_GATES
+        .iter()
+        .find(|(wires, _)| *wires == n)
+        .map(|(_, gates)| *gates);
+    let (mcd, mcd_rule) = match mcd {
+        Some(value) => {
+            if raw.value("source_gates_rule").is_some() {
+                return Err(config_error(
+                    raw,
+                    "source_gates_rule",
+                    "is exclusive with source.gates (and source.path)",
+                ));
+            }
+            let value: usize = value.parse().expect("validated mcd");
+            let rule = if Some(value) == validated {
+                SourceGatesRule::Validated
+            } else {
+                SourceGatesRule::Explicit
+            };
+            (value, rule)
+        }
+        None => match raw.value("source_gates_rule").unwrap_or("validated") {
+            "validated" => match validated {
+                Some(gates) => (gates, SourceGatesRule::Validated),
+                None => {
+                    return Err(format!(
+                        "no validated source size for n={n}; set source.gates or source.gates_rule = \"formula\""
+                    ));
+                }
+            },
+            "formula" => {
+                let l = (n as f64).log2();
+                (
+                    (n as f64 * l * l).round_ties_even() as usize,
+                    SourceGatesRule::Formula,
+                )
+            }
+            other => {
+                return Err(config_error(
+                    raw,
+                    "source_gates_rule",
+                    &format!("expected \"validated\" or \"formula\"; got {other:?}"),
+                ));
+            }
+        },
+    };
     if preprocessing_mode == PreprocessingMode::Nonlinear291 {
-        let m = mcd
-            .as_deref()
-            .map(|value| value.parse::<usize>().expect("validated mcd"))
-            .unwrap_or_else(|| sandwich_default_m(n));
+        let m = mcd;
         let s = sandwich_default_s(n);
         let gate_count = m
             .checked_mul(2)
@@ -164,27 +265,118 @@ where
                 raw,
                 "preprocessing_mode",
                 &format!(
-                    "requested nonlinear layout exceeds the current wire capacity/resource budget: {error}; reduce n or set a smaller mcd"
+                    "requested nonlinear layout exceeds the current wire capacity/resource budget: {error}; reduce n or set a smaller source.gates"
                 ),
             )
         })?;
     }
-    let expand = parse_optional_f64(
-        raw,
-        "expand",
-        |value| value > 1.0 && value <= 16.0,
-        "must be greater than 1 and at most 16",
-    )?;
-    let hold = parse_optional_f64(
-        raw,
-        "hold",
-        |value| (0.0..=10_000.0).contains(&value),
-        "must be in 0..=10000",
-    )?;
-    // The shell's hold is 27 (profile 3,30,30); lock the resolved default.
-    let hold = Some(hold.unwrap_or_else(|| "27".into()));
+    // Stage-3 schedule (§11.2): authoritative.
+    let schedule = match raw.value("schedule").unwrap_or("validated") {
+        "validated" => {
+            for key in ["growth", "hold", "expand"] {
+                if raw.value(key).is_some() {
+                    return Err(config_error(
+                        raw,
+                        key,
+                        &format!(
+                            "field {} is set by schedule validated; remove it or use db_mixing.schedule = \"custom\"",
+                            canonical_config_key(key)
+                        ),
+                    ));
+                }
+            }
+            Schedule::Validated
+        }
+        "custom" => {
+            for key in ["growth", "hold", "expand"] {
+                if raw.value(key).is_none() {
+                    return Err(config_error(
+                        raw,
+                        "schedule",
+                        &format!("schedule \"custom\" requires {}", canonical_config_key(key)),
+                    ));
+                }
+            }
+            let growth = parse_optional_f64(
+                raw,
+                "growth",
+                |value| value > 0.0 && value <= 10_000.0,
+                "must be greater than 0 and at most 10000",
+            )?
+            .expect("checked");
+            let hold = parse_optional_f64(
+                raw,
+                "hold",
+                |value| (0.0..=10_000.0).contains(&value),
+                "must be in 0..=10000",
+            )?
+            .expect("checked");
+            let expand = parse_optional_f64(
+                raw,
+                "expand",
+                |value| value > 1.0 && value <= 16.0,
+                "must be greater than 1 and at most 16",
+            )?
+            .expect("checked");
+            Schedule::Custom {
+                growth,
+                hold,
+                expand,
+            }
+        }
+        other => {
+            return Err(config_error(
+                raw,
+                "schedule",
+                &format!("expected \"validated\" or \"custom\"; got {other:?}"),
+            ));
+        }
+    };
     let stop_after = parse_optional_stage(raw, "stop_after")?;
     let force_from = parse_optional_stage(raw, "force_from")?;
+    if stop_after.as_deref().unwrap_or("4") == "4" && n > 256 {
+        return Err(config_error(
+            raw,
+            "n",
+            "stage 4 (packing) supports source.wires up to 256; set run.stop_after_stage = 3 for larger n",
+        ));
+    }
+    // [packing]
+    let d = PackingConfig::default();
+    let packing_u64 = |key: &str, default: u64, max: u64| -> Result<u64, String> {
+        Ok(parse_optional_u64(raw, key, 1, max)?
+            .map(|v| v.parse::<u64>().expect("validated"))
+            .unwrap_or(default))
+    };
+    let packing = PackingConfig {
+        window_gates: packing_u64("packing_window_gates", d.window_gates, 1_000_000)?,
+        interval_cap: packing_u64("packing_interval_cap", d.interval_cap, 1_000_000)?,
+        monomial_budget: packing_u64("packing_monomial_budget", d.monomial_budget, 1_000_000_000)?,
+        span_cap: packing_u64("packing_span_cap", d.span_cap, 1_000_000_000)?,
+        split_budget: packing_u64("packing_split_budget", d.split_budget, 1_000_000_000)?,
+        fix_iterations: parse_optional_u64(raw, "packing_fix_iterations", 0, 1000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(d.fix_iterations),
+        fallback_iterations: parse_optional_u64(raw, "packing_fallback_iterations", 0, 1000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(d.fallback_iterations),
+        anf_cap_semantics: match raw
+            .value("packing_anf_cap_semantics")
+            .unwrap_or("cpython39")
+        {
+            v @ ("cpython39" | "canonical") => v.to_string(),
+            other => {
+                return Err(config_error(
+                    raw,
+                    "packing_anf_cap_semantics",
+                    &format!("expected \"cpython39\" or \"canonical\"; got {other:?}"),
+                ));
+            }
+        },
+        allow_floor_miss: parse_bool(raw, "packing_allow_floor_miss", false)?,
+        allow_over_budget: parse_bool(raw, "packing_allow_over_budget", false)?,
+    };
+    let threads = parse_optional_u64(raw, "threads", 1, 1024)?;
     let pieces = parse_optional_u64(raw, "pieces", 1, 64)?;
     let min_block_size = parse_optional_u64(raw, "min_block_size", 2, 1_000_000_000)?;
     if pieces.is_some() && min_block_size.is_some() {
@@ -222,18 +414,11 @@ where
     Ok(ResolvedConfig {
         recipe_version: CURRENT_RECIPE_VERSION,
         source_path,
-        source_hash,
-        mask_pair_wires,
-        max_open_masks,
-        min_open_masks,
-        balanced_masks,
-        shuffling_segments,
-        shuffling_return_home,
-        explicit_mask_controls,
+        preset,
+        knobs,
         qc_enabled,
         qc_seed,
         qc_reference,
-        qc_reference_hash,
         n,
         run_dir,
         generated_run_dir: run_dir_value.is_none(),
@@ -243,10 +428,12 @@ where
         frozen_db,
         preprocessing_mode,
         calibration_only,
-        calibration_seed,
+        seeds,
         mcd,
-        expand,
-        hold,
+        mcd_rule,
+        schedule,
+        packing,
+        threads,
         stop_after,
         force_from,
         allow_empty_store,
@@ -280,18 +467,18 @@ pub(crate) fn parse_usize(
     Ok(parsed)
 }
 
-/// A pipeline stage number: 2 or 3. The old stages 4 (split), 5 (crossing
-/// walk) and 6 (fcompress) are historic and get a pointer to the archive.
+/// A pipeline stage number: 2, 3 or 4. The old stages 5 (crossing walk) and
+/// 6 (fcompress) are historic and get a pointer to the archive.
 fn parse_optional_stage(raw: &RawConfig, key: &str) -> Result<Option<String>, String> {
     let stage = parse_optional_u64(raw, key, 2, 6)?;
     if stage
         .as_deref()
-        .is_some_and(|stage| stage != "2" && stage != "3")
+        .is_some_and(|stage| stage == "5" || stage == "6")
     {
         return Err(config_error(
             raw,
             key,
-            "stages 4-6 (split, crossing walk, fcompress) are historic; use 2 or 3 (see branch ran/archive/curated-and-postmix)",
+            "stages 5-6 (crossing walk, fcompress) are historic; use 2, 3 or 4 (see branch ran/archive/curated-and-postmix)",
         ));
     }
     Ok(stage)
@@ -401,22 +588,22 @@ pub(crate) fn canonicalize_if_present(path: PathBuf) -> Result<PathBuf, String> 
         .map_err(|error| format!("cannot canonicalize {}: {error}", path.display()))
 }
 
-pub(crate) fn read_calibration_seed(path: &Path) -> Result<String, String> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        format!(
-            "calibration_seed_file {} cannot be read: {error}",
-            path.display()
-        )
-    })?;
+/// `[calibration] seed_file`, format 2 (§8.2): a private file (mode 0600,
+/// at most 256 bytes) with exactly the lines `gen_seed=<u63>` and
+/// `mix_seed=<u63>`. A one-integer file (format 1) is rejected with the
+/// migration message. Values are never echoed in errors.
+pub(crate) fn read_seed_file(path: &Path) -> Result<(u64, u64), String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("seed_file {} cannot be read: {error}", path.display()))?;
     if !metadata.is_file() {
         return Err(format!(
-            "calibration_seed_file {} is not a regular file",
+            "seed_file {} is not a regular file",
             path.display()
         ));
     }
     if metadata.len() > MAX_SEED_FILE_BYTES {
         return Err(format!(
-            "calibration_seed_file {} is too large (maximum {MAX_SEED_FILE_BYTES} bytes)",
+            "seed_file {} is too large (maximum {MAX_SEED_FILE_BYTES} bytes)",
             path.display()
         ));
     }
@@ -425,35 +612,47 @@ pub(crate) fn read_calibration_seed(path: &Path) -> Result<String, String> {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err(format!(
-                "calibration_seed_file {} must not be accessible by group/other (use chmod 600)",
+                "seed_file {} must not be accessible by group/other (use chmod 600)",
                 path.display()
             ));
         }
     }
-    let contents = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "calibration_seed_file {} cannot be read: {error}",
-            path.display()
-        )
-    })?;
-    let seed = contents.trim();
-    if seed.is_empty() || seed.chars().any(|ch| !ch.is_ascii_digit()) {
-        return Err(format!(
-            "calibration_seed_file {} must contain one unsigned decimal integer",
-            path.display()
-        ));
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("seed_file {} cannot be read: {error}", path.display()))?;
+    parse_seed_text(&contents).map_err(|e| format!("seed_file {}: {e}", path.display()))
+}
+
+pub(crate) fn parse_seed_text(contents: &str) -> Result<(u64, u64), String> {
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    if lines.len() == 1 && lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
+        return Err("seed file format 1 holds one seed; recipe v10 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
     }
-    let parsed = seed.parse::<u64>().map_err(|_| {
-        format!(
-            "calibration_seed_file {} contains an out-of-range integer",
-            path.display()
-        )
-    })?;
-    let max = i64::MAX as u64 - 15;
-    if parsed > max {
-        return Err(format!(
-            "calibration seed is too large for Bash stage-seed arithmetic (maximum {max})"
-        ));
+    let mut gen_seed = None;
+    let mut mix_seed = None;
+    for line in lines {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or("unexpected line (only gen_seed= and mix_seed=)")?;
+        let slot = match key {
+            "gen_seed" => &mut gen_seed,
+            "mix_seed" => &mut mix_seed,
+            _ => return Err("unexpected line (only gen_seed= and mix_seed=)".into()),
+        };
+        if slot.is_some() {
+            return Err(format!("duplicate {key}"));
+        }
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("{key} must be an unsigned decimal integer"));
+        }
+        let parsed: u64 = value
+            .parse()
+            .ok()
+            .filter(|v| *v <= MAX_SEED)
+            .ok_or_else(|| format!("{key} out of range 0..={MAX_SEED}"))?;
+        *slot = Some(parsed);
     }
-    Ok(parsed.to_string())
+    match (gen_seed, mix_seed) {
+        (Some(g), Some(m)) => Ok((g, m)),
+        _ => Err("needs both gen_seed= and mix_seed=".into()),
+    }
 }

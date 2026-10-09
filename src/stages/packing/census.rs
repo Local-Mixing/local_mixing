@@ -394,6 +394,39 @@ pub fn link_census(
     }
 }
 
+/// `mult_census.py A label` (waist/mult_census.py): birth multiplicity of
+/// the stage-2 circuit's values (fingerprints as in [`link_census`]), one
+/// line, byte for byte. Report-only.
+pub fn mult_census(a: &OracleCircuit, label: &str) -> String {
+    use super::fingerprint::{inputs, normalize, value_key};
+    use rustc_hash::FxHashMap;
+    let na = wp_width(a);
+    let mut st = inputs(na, AC_SEED);
+    let mut mult: FxHashMap<[u8; 16], u64> = FxHashMap::default();
+    let mut born: u64 = 0;
+    for g in &a.gates {
+        g.apply_lanes16(&mut st);
+        if let Some(fp) = normalize(&st[g.target as usize]) {
+            born += 1;
+            *mult.entry(value_key(&fp)).or_insert(0) += 1;
+        }
+    }
+    let mut vals: Vec<u64> = mult.values().copied().collect();
+    vals.sort_unstable_by(|x, y| y.cmp(x));
+    let distinct = vals.len() as u64;
+    let big: Vec<u64> = vals.iter().copied().filter(|&v| v >= 65).collect();
+    let big_sum: u64 = big.iter().sum();
+    let pct = |num: u64| (100 * num) as f64 / born as f64;
+    format!(
+        " {label}: born={born:>8} distinct={distinct:>8} repeats={:>5.1}%  top={:>5}  vals>=65: {:>4} (cover {big_sum:>7} = {:.1}%)  >=257: {}\n",
+        pct(born - distinct),
+        vals.first().copied().unwrap_or(0),
+        big.len(),
+        pct(big_sum),
+        vals.iter().filter(|&&v| v >= 257).count()
+    )
+}
+
 #[cfg(test)]
 #[path = "../../../tests/unit/stages/packing/census.rs"]
 mod tests;

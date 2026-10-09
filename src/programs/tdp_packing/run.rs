@@ -650,6 +650,24 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
     Ok(())
 }
 
+/// `tdp_packing mult-census <A> <label>`: mult_census.py's stdout
+/// (the driver's report-only stage-2 side report).
+pub(super) fn cmd_mult_census(a: &Args) -> Result<(), Stage4Error> {
+    a.check_known(&[])?;
+    if a.pos.len() != 2 {
+        return Err(Stage4Error::Usage("mult-census <A.mpmct1> <label>".into()));
+    }
+    let ca = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    if ca.gates.is_empty() {
+        return Err(Stage4Error::Input("mult-census: no gates".into()));
+    }
+    print!(
+        "{}",
+        crate::stages::packing::census::mult_census(&ca, &a.pos[1])
+    );
+    Ok(())
+}
+
 /// `tdp_packing census <A> <P> <B> <label>`: link_census.py's stdout.
 pub(super) fn cmd_census(a: &Args) -> Result<(), Stage4Error> {
     a.check_known(&[])?;

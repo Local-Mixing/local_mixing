@@ -228,6 +228,7 @@ fn dispatch(argv: &[String]) -> Result<(), Stage4Error> {
         "check-final" => cmd_check_final(&a),
         "run" => run::cmd_run(&a),
         "census" => run::cmd_census(&a),
+        "mult-census" => run::cmd_mult_census(&a),
         other => Err(Stage4Error::Usage(format!("unknown command {other:?}"))),
     }
 }

@@ -87,3 +87,19 @@ fn managed_preset_is_explicit_and_raw_defaults_stay_unchanged() {
     assert_eq!((managed.k, managed.max_open, managed.min_open), (2, 3, 2));
     assert_eq!((managed.seed, managed.active_wires), (19, 6));
 }
+
+#[test]
+fn gen_rejects_unparsable_positionals() {
+    // D17 (docs/STAGE4_RUST_DESIGN.md §2.2): absent = default, present and
+    // unparsable (including empty) = an error naming the argument.
+    assert_eq!(parse_positional::<u64>("seed", None).unwrap(), None);
+    assert_eq!(
+        parse_positional::<u64>("seed", Some("42".into())).unwrap(),
+        Some(42)
+    );
+    for bad in ["", "x", "-1", "1.5", "18446744073709551616", " 7"] {
+        let e = parse_positional::<u64>("seed", Some(bad.into())).unwrap_err();
+        assert!(e.contains("seed"), "{e}");
+    }
+    assert!(parse_positional::<usize>("s", Some("abc".into())).is_err());
+}

@@ -8,12 +8,7 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
             config.run_dir.display()
         ));
     }
-    let stop_after = config
-        .stop_after
-        .as_deref()
-        .unwrap_or("3")
-        .parse::<u64>()
-        .expect("validated stop_after");
+    let stop_after = config.stop_after_stage();
     let force_from = config
         .force_from
         .as_deref()
@@ -131,19 +126,21 @@ pub(crate) fn validate_run_destination(repo_root: &Path, run_dir: &Path) -> Resu
             .map_err(|error| format!("cannot inspect run_dir {}: {error}", run_dir.display()))?
             .collect::<Result<_, _>>()
             .map_err(|error| format!("cannot inspect run_dir {}: {error}", run_dir.display()))?;
-        let has_only_wrapper_manifest =
-            entries.len() == 1 && entries[0].file_name() == OsStr::new("tdp_command.conf");
-        let seed_path = run_dir.join("SEED");
-        let has_seed =
-            fs::metadata(&seed_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
-        if has_seed {
-            read_calibration_seed(&seed_path).map_err(|error| {
-                format!("existing run has an invalid or unprotected SEED file: {error}")
-            })?;
-        }
-        if !entries.is_empty() && !has_only_wrapper_manifest && !has_seed {
+        if run_dir.join("SEED").exists() {
             return Err(format!(
-                "existing run_dir {} is nonempty but has no protected SEED file; refusing to mix pipeline artifacts into an unrelated or incomplete directory",
+                "{} was created by recipe v9 (a one-line SEED file); resume it with the checkout that created it; the original run is unchanged",
+                run_dir.display()
+            ));
+        }
+        let only_driver_files = entries.iter().all(|entry| {
+            let name = entry.file_name();
+            name == OsStr::new("tdp_command.conf") || name == OsStr::new("SEEDS")
+        });
+        let has_seeds = fs::metadata(run_dir.join("SEEDS"))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+        if !entries.is_empty() && !only_driver_files && !has_seeds {
+            return Err(format!(
+                "existing run_dir {} is nonempty but has no SEEDS file; refusing to mix pipeline artifacts into an unrelated or incomplete directory",
                 run_dir.display()
             ));
         }
@@ -157,7 +154,7 @@ pub(crate) fn reject_legacy_run(run_dir: &Path) -> Result<(), String> {
     for marker in ["gss_command.conf", "gss.mpmct1"] {
         if run_dir.join(marker).exists() {
             return Err(format!(
-                "existing run_dir {} contains legacy GSS artifact {marker}; tdp_gen requires a fresh run.directory or a TDP v9 run; resume this run with the checkout that created it; the original run is unchanged",
+                "existing run_dir {} contains legacy GSS artifact {marker}; tdp_gen requires a fresh run.directory or a TDP v10 run; resume this run with the checkout that created it; the original run is unchanged",
                 run_dir.display()
             ));
         }

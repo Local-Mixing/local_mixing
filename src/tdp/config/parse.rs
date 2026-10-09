@@ -67,6 +67,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
     ("source.gates", "source.gates", "mcd", "integer"),
     ("source.path", "source.path", "source_path", "string"),
     (
+        "source.gates_rule",
+        "source.gates_rule",
+        "source_gates_rule",
+        "string",
+    ),
+    (
         "database.regular_dir",
         "database.regular_dir",
         "frozen_db_dir",
@@ -89,6 +95,36 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "preprocessing.mode",
         "preprocessing_mode",
         "string",
+    ),
+    (
+        "preprocessing.preset",
+        "preprocessing.preset",
+        "preset",
+        "string",
+    ),
+    (
+        "preprocessing.premask",
+        "preprocessing.premask",
+        "premask",
+        "bool",
+    ),
+    (
+        "preprocessing.seed_avoid_c1",
+        "preprocessing.seed_avoid_c1",
+        "seed_avoid_c1",
+        "bool",
+    ),
+    (
+        "preprocessing.chain",
+        "preprocessing.chain",
+        "chain",
+        "integer",
+    ),
+    (
+        "preprocessing.chain_len",
+        "preprocessing.chain_len",
+        "chain_len",
+        "integer",
     ),
     (
         "preprocessing.mask_pair_wires",
@@ -127,6 +163,18 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "bool",
     ),
     (
+        "db_mixing.schedule",
+        "db_mixing.schedule",
+        "schedule",
+        "string",
+    ),
+    (
+        "db_mixing.growth_work_units",
+        "db_mixing.growth_work_units",
+        "growth",
+        "number",
+    ),
+    (
         "db_mixing.target_size_factor",
         "phase_a.expand",
         "expand",
@@ -137,6 +185,67 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "phase_a.hold",
         "hold",
         "number",
+    ),
+    ("run.threads", "run.threads", "threads", "integer"),
+    (
+        "packing.window_gates",
+        "packing.window_gates",
+        "packing_window_gates",
+        "integer",
+    ),
+    (
+        "packing.interval_cap",
+        "packing.interval_cap",
+        "packing_interval_cap",
+        "integer",
+    ),
+    (
+        "packing.monomial_budget",
+        "packing.monomial_budget",
+        "packing_monomial_budget",
+        "integer",
+    ),
+    (
+        "packing.span_cap",
+        "packing.span_cap",
+        "packing_span_cap",
+        "integer",
+    ),
+    (
+        "packing.split_budget",
+        "packing.split_budget",
+        "packing_split_budget",
+        "integer",
+    ),
+    (
+        "packing.fix_iterations",
+        "packing.fix_iterations",
+        "packing_fix_iterations",
+        "integer",
+    ),
+    (
+        "packing.fallback_iterations",
+        "packing.fallback_iterations",
+        "packing_fallback_iterations",
+        "integer",
+    ),
+    (
+        "packing.anf_cap_semantics",
+        "packing.anf_cap_semantics",
+        "packing_anf_cap_semantics",
+        "string",
+    ),
+    (
+        "packing.allow_floor_miss",
+        "packing.allow_floor_miss",
+        "packing_allow_floor_miss",
+        "bool",
+    ),
+    (
+        "packing.allow_over_budget",
+        "packing.allow_over_budget",
+        "packing_allow_over_budget",
+        "bool",
     ),
     ("parallel.pieces", "parallel.pieces", "pieces", "integer"),
     (
@@ -183,6 +292,9 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// The migration message for a config_version 1 file (§11.2).
+pub(crate) const CONFIG_V1_MIGRATION: &str = "config_version 1 is not supported by recipe v10: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.";
+
 pub(crate) fn canonical_config_key(key: &str) -> &str {
     TOML_FIELDS
         .iter()
@@ -192,12 +304,13 @@ pub(crate) fn canonical_config_key(key: &str) -> &str {
 
 pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
     let doc = toml_edit::Document::parse(document).map_err(|e| e.to_string())?;
-    if doc
+    match doc
         .get("config_version")
         .and_then(toml_edit::Item::as_integer)
-        != Some(1)
     {
-        return Err("config_version must be the integer 1".into());
+        Some(2) => {}
+        Some(1) => return Err(CONFIG_V1_MIGRATION.into()),
+        _ => return Err("config_version must be the integer 2".into()),
     }
     let mut raw = RawConfig::default();
     for (section, item) in doc.iter() {
@@ -263,6 +376,7 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                 "quality_control",
                 "leakage_repair",
                 "calibration",
+                "packing",
             ]
             .contains(&section)
         {

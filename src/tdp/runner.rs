@@ -1,103 +1,8 @@
 //! Build preparation and stage-driver invocation.
 use super::*;
 
-/// Low-level research/debug switches are intentionally outside the supported
-/// TDP recipe. The direct Bash interface may still use them; the `tdp_gen`
-/// command removes them so the selected recipe defines its control surface.
-pub(crate) const SCRUBBED_ENV: &[&str] = &[
-    "PROD_K",
-    "PROD_DEG",
-    "PROD_K_HI",
-    "PROD_DEG_HI",
-    "PROD_BAND",
-    "PROD_RSRC",
-    "PROD_MAX_WIDTH",
-    "PROD_FILL_NL",
-    "PROD_ROLL",
-    "PROD_SRC_DIST",
-    "PROD_SRC_HORIZON",
-    "PROD_SRC_LO",
-    "PROD_SRC_HI",
-    "PROD_FILL_PIVOTS",
-    "PROD_G57_NARROW",
-    "PROD_LADDER_CAP",
-    "PROD_CG_JITTER",
-    "PROD_RUNG_MENU",
-    "PROD_EPOCH",
-    "PROD_REFILL_DATA",
-    "PROD_SINGLE",
-    "PROD_GRAY_FOLD",
-    "PROD_DISJOINT",
-    "PROD_BARE_CENSUS",
-    "PROD_DUMP_PAIRS",
-    "ABSORB_NOTS",
-    "CENTRALIZE",
-    "COMPRESSION_TRACE",
-    "COMPRESSION_TRACE_MS",
-    "COMPRESS_CHUNK_BUDGET_MS",
-    "COMPRESS_STALL_FRAC",
-    "COMPRESS_STALL_WINDOW",
-    "DEGREE_FILTER",
-    "DEGREE_FILTER_PROBES",
-    "FLOAT_SWEEP",
-    "MIXER_DUMP_OUT",
-    "LITTER_RULES",
-    "LITTER_WINDOW_SAMPLES",
-    "MIN_DIR_LOOKUP",
-    "SAMF_HIDE_PAIRS",
-    "SAT_BCP_MIN_RESISTANCE",
-    "SAT_BCP",
-    "SAT_BCP_ASSIGN_PROB",
-    "SAT_BCP_OUTPUT_BITS",
-    "SAT_BCP_TRIALS",
-    "SAT_COMPRESS_PROTECT",
-    "SAT_COMPRESS_PRESERVE_DELTA",
-    "SAT_CONE_AWARE",
-    "SAT_CONE_MIN_FRACTION",
-    "SAT_EXPAND_MIN_DELTA",
-    "SAT_HARDEN",
-    "SAT_HIDDEN_SAMF_CANDIDATES",
-    "SAT_PROBE",
-    "SAT_PROBE_FREQUENCY",
-    "SAT_PROBE_SOLVER",
-    "SAT_PROBE_TARGET_BITS",
-    "SAT_PROBE_TIMEOUT_MS",
-    "SAT_PROBE_WINDOW_GATES",
-    "SAT_SCORE",
-    "SAT_SCORE_SEED",
-    "SAT_SCORE_SLACK",
-    "SHOOT_PARALLEL",
-    "SHOOT_PROFILE",
-    "SLOW_COMPRESS",
-    "SLOW_COMPRESS_MOVE_STALL",
-    "STABLE_MAX",
-    "STAGEC_CHECK",
-    "SURVIVOR_LOG_EVERY",
-    "TWIST_G57_NO_RETRY",
-    "TWIST_G57_NO_SLIDE",
-    "VERIFY_DB_HITS",
-    // Historic curated-store controls (circuit_mixer warns and ignores them);
-    // removed so a stale shell export never reaches stage 3.
-    "FROZEN_CURATED_DIR",
-    "FROZEN_CURATED_KEY",
-    "FROZEN_CURATED_VALUE_CONVENTION",
-    "FROZEN_REF_DIR",
-    "SymmetricCD",
-    "SymmetricG",
-    "BASH_ENV",
-    "ENV",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "BASH_XTRACEFD",
-    "PS4",
-    "CDPATH",
-    "GLOBIGNORE",
-    "PYTHONPATH",
-    "PYTHONHOME",
-];
-
 pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
-    reject_legacy_mask_controls(std::env::vars_os().map(|(key, _)| key))?;
+    reject_inherited_environment(std::env::vars_os().map(|(key, _)| key))?;
     let repo_root = find_repo_root()?;
     let config_path = sub
         .get_one::<PathBuf>("config")
@@ -115,10 +20,14 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         .map_err(TdpError::config)?;
     let manifest_path = config.run_dir.join("tdp_command.conf");
     let managed_resume = manifest_path.is_file();
-    let legacy_resume = fs::metadata(config.run_dir.join("SEED"))
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-        && !managed_resume;
-    if legacy_resume || config.adopt_existing_run {
+    let legacy_resume = config.run_dir.join("SEED").exists();
+    if legacy_resume {
+        return Err(TdpError::config(format!(
+            "{} was created by recipe v9 (a one-line SEED file); resume it with the checkout that created it; the original run is unchanged",
+            config.run_dir.display()
+        )));
+    }
+    if config.adopt_existing_run {
         return Err(TdpError::config(format!(
             "pre-wrapper run adoption has been retired; use a fresh run.directory or the checkout that created {}; the original run is unchanged",
             config.run_dir.display()
@@ -131,9 +40,6 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         CURRENT_RECIPE_VERSION
     };
     validate_current_recipe(&config)?;
-    if config.hold.is_none() {
-        config.hold = Some("27".into());
-    }
     let host_target = rustc_host_triple()?;
     let binary_dir = config.build_target_dir.join(&host_target).join("release");
     print_resolved(&config_path, &config, &binary_dir);
@@ -182,11 +88,10 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
             .arg(&config.build_target_dir)
             .arg("--target")
             .arg(&host_target)
-            .arg("--bin")
-            .arg("gen_sandwich_gadget")
-            .arg("--bin")
-            .arg("circuit_mixer")
             .env_remove("CARGO_BUILD_TARGET");
+        for name in PRODUCTION_BINARIES {
+            build.arg("--bin").arg(name);
+        }
         let status = build
             .status()
             .map_err(|error| TdpError::io(format!("cannot start cargo build: {error}")))?;
@@ -196,7 +101,11 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     }
 
     if !managed_resume {
+        // §8.2: the private SEEDS file exists before the manifest.
+        create_seeds_file(&config)?;
         prepare_recipe_manifest(&config, &binary_dir, &script)?;
+    } else {
+        check_seeds_file(&config)?;
     }
 
     println!("[tdp_gen] starting {}", script.display());
@@ -210,33 +119,170 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         .status()
         .map_err(|error| TdpError::io(format!("cannot start bash: {error}")))?;
     if !status.success() {
-        return Err(TdpError::child("TDP_GEN pipeline", status));
+        let code = status.code().unwrap_or(1);
+        let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
+        let mut error = TdpError::child("TDP_GEN pipeline", status);
+        if (2..=8).contains(&code) || code == 101 {
+            error.message = format!("{} ({meaning})", error.message);
+        }
+        return Err(error);
     }
-    if config.stop_after.as_deref().unwrap_or("3") == "3" {
-        println!(
-            "[tdp_gen] stages 1-3 complete: {}; stage 4 (packing) is not driven by tdp_gen yet: run the scripts/windowed_delivery/ prototypes (docs/tdp_pipeline.md)",
-            config.run_dir.join("db_mixing.mpmct1").display()
-        );
+    if config.stop_after_stage() == 4 {
+        let pack = config.run_dir.join("packing");
+        if pack.join("NOT_RECOMMENDED").exists() {
+            eprintln!(
+                "[tdp_gen] stages 1-4 finished with an ALLOWED FAILURE: {} is NOT a recommended deliverable (see packing/packing.report)",
+                pack.join("deliverable.tdp4").display()
+            );
+        } else {
+            println!(
+                "[tdp_gen] stages 1-4 complete: {}",
+                pack.join("deliverable.tdp4").display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Draw `[0, MAX_SEED]` uniformly from the OS CSPRNG (rejection sampling).
+fn os_seed() -> Result<u64, TdpError> {
+    use rand::TryRngCore;
+    loop {
+        let v = rand::rngs::OsRng
+            .try_next_u64()
+            .map_err(|e| TdpError::io(format!("OS random source failed: {e}")))?
+            >> 1;
+        if v <= MAX_SEED {
+            return Ok(v);
+        }
+    }
+}
+
+/// The SEEDS text (format 2, §8.2).
+pub(crate) fn seeds_text(gen_seed: u64, mix_seed: u64, run_key: &[u8; 32], source: &str) -> String {
+    let key: String = run_key.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "seeds_format=2\ngen_seed={gen_seed}\nmix_seed={mix_seed}\nrun_key={key}\nseed_source={source}\n"
+    )
+}
+
+/// Create `$RUN/SEEDS` (create_new, mode 0600) before anything else is
+/// written to the run directory. Values never leave this file.
+pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> {
+    use rand::TryRngCore;
+    fs::create_dir_all(&config.run_dir).map_err(|error| {
+        TdpError::io(format!(
+            "cannot create run_dir {}: {error}",
+            config.run_dir.display()
+        ))
+    })?;
+    let path = config.run_dir.join("SEEDS");
+    if path.exists() {
+        // a fresh managed run whose manifest write was interrupted
+        return check_seeds_file(config);
+    }
+    let (gen_seed, mix_seed, source) = match config.seeds {
+        SeedPlan::Random => (os_seed()?, os_seed()?, "random"),
+        SeedPlan::Explicit { gen_seed, mix_seed } => (gen_seed, mix_seed, "explicit"),
+    };
+    let mut key = [0u8; 32];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut key)
+        .map_err(|e| TdpError::io(format!("OS random source failed: {e}")))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|error| TdpError::io(format!("cannot create {}: {error}", path.display())))?;
+    file.write_all(seeds_text(gen_seed, mix_seed, &key, source).as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|error| TdpError::io(format!("cannot write {}: {error}", path.display())))
+}
+
+/// On resume, SEEDS must exist, parse, be private, and agree with an
+/// explicit seed file (compared here, never printed).
+pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> {
+    let path = config.run_dir.join("SEEDS");
+    let text = fs::read_to_string(&path).map_err(|error| {
+        TdpError::config(format!(
+            "this run has no readable {} ({error}); use a fresh run.directory",
+            path.display()
+        ))
+    })?;
+    let lines: Vec<&str> = text.lines().collect();
+    let field = |i: usize, key: &str| {
+        lines
+            .get(i)
+            .and_then(|l| l.strip_prefix(key))
+            .filter(|v| !v.is_empty())
+    };
+    let parsed = (|| {
+        if lines.len() != 5 || lines[0] != "seeds_format=2" {
+            return None;
+        }
+        let g: u64 = field(1, "gen_seed=")?
+            .parse()
+            .ok()
+            .filter(|v| *v <= MAX_SEED)?;
+        let m: u64 = field(2, "mix_seed=")?
+            .parse()
+            .ok()
+            .filter(|v| *v <= MAX_SEED)?;
+        let k = field(3, "run_key=")?;
+        if k.len() != 64
+            || !k
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return None;
+        }
+        matches!(field(4, "seed_source="), Some("random" | "explicit")).then_some((g, m))
+    })();
+    let (g, m) = parsed.ok_or_else(|| {
+        TdpError::config(format!(
+            "{} is malformed (seeds_format=2 expected)",
+            path.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0);
+        if mode & 0o077 != 0 {
+            return Err(TdpError::config(format!(
+                "{} must not be accessible by group/other (chmod 600)",
+                path.display()
+            )));
+        }
+    }
+    if let SeedPlan::Explicit { gen_seed, mix_seed } = config.seeds
+        && (gen_seed, mix_seed) != (g, m)
+    {
+        return Err(TdpError::config(format!(
+            "calibration.seed_file conflicts with the existing {}; use the original seeds or a fresh run.directory",
+            path.display()
+        )));
     }
     Ok(())
 }
 
 pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), TdpError> {
-    if config.preprocessing_mode == PreprocessingMode::Nonlinear291 && config.explicit_mask_controls
-    {
-        return Err(TdpError::config(
-            "preprocessing mask controls apply only to embedded-masking; omit them for nonlinear291",
-        ));
-    }
     match config.preprocessing_mode {
         PreprocessingMode::EmbeddedMasking => {
-            if config.mask_pair_wires < 2 {
+            let k = config.knobs.mask_pair_wires;
+            if !(2..=64).contains(&k) {
                 return Err(TdpError::config(
                     "preprocessing.mask_pair_wires must be in 2..64 for new runs",
                 ));
             }
-            let cycle_width = config.mask_pair_wires - config.mask_pair_wires % 2
-                + usize::from(config.balanced_masks);
+            let cycle_width = k - k % 2 + usize::from(config.knobs.balanced_masks);
             if 2 * config.n <= cycle_width {
                 return Err(TdpError::config(
                     "Embedded masking requires 2 * source.wires > preprocessing.mask_pair_wires rounded down to an even number + balanced_masks; reduce preprocessing.mask_pair_wires or increase source.wires",
@@ -248,25 +294,29 @@ pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), Tdp
     Ok(())
 }
 
-pub(crate) fn reject_legacy_mask_controls(
+/// §11.5: an inherited variable that could change output is refused (the
+/// same rule as scripts/tdp_gen.sh, from the same registry).
+pub(crate) fn reject_inherited_environment(
     keys: impl IntoIterator<Item = OsString>,
 ) -> Result<(), TdpError> {
-    if keys
+    let names: Vec<String> = keys
         .into_iter()
-        .any(|key| key.to_string_lossy().starts_with("BV5_"))
-    {
-        return Err(TdpError::config(
-            "BV5_* controls have been removed; unset them and use the preprocessing section in configs/tdp.toml",
-        ));
+        .map(|k| k.to_string_lossy().into_owned())
+        .collect();
+    let refused = crate::tdp::env_registry::refused_inherited(&names);
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(TdpError::config(crate::tdp::env_registry::refusal_message(
+            &refused,
+        )))
     }
-    Ok(())
 }
 
 pub(crate) fn canonical_script_flag(flag: &str) -> &str {
     match flag {
         "-n" => "--source-wires",
         "-o" => "--run-directory",
-        "-s" => "--calibration-seed",
         "--mcd" => "--source-gates",
         "--expand" => "--db-mixing-target-size-factor",
         "--hold" => "--db-mixing-hold-work-units",
@@ -288,31 +338,95 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         OsString::from("--preprocessing-mode"),
         OsString::from(config.preprocessing_mode.canonical_name()),
     ];
-    push_optional_arg(&mut args, "--mcd", config.mcd.as_deref());
-    push_optional_arg(&mut args, "--expand", config.expand.as_deref());
-    push_optional_arg(&mut args, "--hold", config.hold.as_deref());
-    push_optional_arg(&mut args, "--stop-after", config.stop_after.as_deref());
-    push_optional_arg(&mut args, "--force-from", config.force_from.as_deref());
-    push_optional_arg(&mut args, "--pieces", config.pieces.as_deref());
+    let mut push = |flag: &str, value: String| {
+        args.push(OsString::from(flag));
+        args.push(OsString::from(value));
+    };
+    if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
+        push("--preprocessing-preset", config.preset.name().to_owned());
+        if config.preset == Preset::Custom {
+            for (_, flag, value) in config.knobs.fields() {
+                push(&format!("--preprocessing-{flag}"), value);
+            }
+        }
+    }
+    match config.mcd_rule {
+        SourceGatesRule::Validated => {}
+        SourceGatesRule::Explicit => push("--mcd", config.mcd.to_string()),
+        SourceGatesRule::Formula => push("--source-gates-rule", "formula".into()),
+    }
+    if let Some(path) = &config.source_path {
+        if config.mcd_rule == SourceGatesRule::Validated {
+            push("--mcd", config.mcd.to_string());
+        }
+        args.push(OsString::from("--source-path"));
+        args.push(path.as_os_str().to_owned());
+    }
+    let mut push = |flag: &str, value: String| {
+        args.push(OsString::from(flag));
+        args.push(OsString::from(value));
+    };
+    if let Schedule::Custom {
+        growth,
+        hold,
+        expand,
+    } = &config.schedule
+    {
+        push("--db-mixing-schedule", "custom".into());
+        push("--db-mixing-growth-work-units", growth.clone());
+        push("--hold", hold.clone());
+        push("--expand", expand.clone());
+    }
+    match config.frozen_filter {
+        FrozenFilter::Auto => {}
+        FrozenFilter::On => push("--database-lookup-miss-filter", "on".into()),
+        FrozenFilter::Off => push("--database-lookup-miss-filter", "off".into()),
+    }
+    for (flag, value, default) in config.packing.flags() {
+        if value != default {
+            push(flag, value);
+        }
+    }
+    if let Some(t) = &config.threads {
+        push("--threads", t.clone());
+    }
+    if config.qc_enabled {
+        push("--leakage-repair-seed", config.qc_seed.to_string());
+    }
+    let mut args_tail: Vec<OsString> = Vec::new();
+    push_optional_arg(&mut args_tail, "--stop-after", config.stop_after.as_deref());
+    push_optional_arg(&mut args_tail, "--force-from", config.force_from.as_deref());
+    push_optional_arg(&mut args_tail, "--pieces", config.pieces.as_deref());
     push_optional_arg(
-        &mut args,
+        &mut args_tail,
         "--min-block-size",
         config.min_block_size.as_deref(),
     );
     push_optional_arg(
-        &mut args,
+        &mut args_tail,
         "--piece-threads",
         config.piece_threads.as_deref(),
     );
-    if let Some(seed) = &config.calibration_seed {
-        args.push(OsString::from("-s"));
-        args.push(OsString::from(seed));
-    }
+    args.extend(args_tail);
     // Only option positions are translated; path/value strings may equal an alias.
     for option in args.iter_mut().step_by(2) {
         if let Some(name) = option.to_str() {
             *option = OsString::from(canonical_script_flag(name));
         }
+    }
+    // Switches (no value) go last so the pairwise translation above holds.
+    if config.qc_enabled {
+        args.push(OsString::from("--leakage-repair"));
+        if let Some(reference) = &config.qc_reference {
+            args.push(OsString::from("--leakage-repair-reference"));
+            args.push(reference.as_os_str().to_owned());
+        }
+    }
+    if config.packing.allow_floor_miss {
+        args.push(OsString::from("--packing-allow-floor-miss"));
+    }
+    if config.packing.allow_over_budget {
+        args.push(OsString::from("--packing-allow-over-budget"));
     }
     args
 }
@@ -324,84 +438,27 @@ pub(crate) fn push_optional_arg(args: &mut Vec<OsString>, flag: &str, value: Opt
     }
 }
 
+/// §11.5 allow-list: the bash driver starts from an EMPTY environment plus
+/// PATH/HOME/TMPDIR, the locale, the binary directory, the store path and the
+/// plumbing-test switch. Every recipe setting travels as a flag; bash builds
+/// each stage binary's environment itself (`stage_exec`).
 pub(crate) fn configure_environment(
     command: &mut ProcessCommand,
     config: &ResolvedConfig,
     binary_dir: &Path,
 ) {
-    // Clear inherited stage controls before applying the resolved recipe.
-    // Retired namespaces are scrubbed too so stale shells cannot affect a run.
-    for (key, _) in std::env::vars_os() {
-        let key_text = key.to_string_lossy();
-        if key_text.starts_with("PROD_")
-            || key_text.starts_with("SAT_")
-            || key_text.starts_with("EMBEDDED_MASKING_")
-            || key_text.starts_with("DB_QC")
-        {
-            command.env_remove(key);
+    command.env_clear();
+    for key in crate::tdp::env_registry::ALLOW_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
         }
     }
-    for key in SCRUBBED_ENV {
-        command.env_remove(key);
-    }
+    command.env("LANG", "C");
+    command.env("LC_ALL", "C");
     command.env("TDP_BIN_DIR", binary_dir);
-    command.env("SANDWICH_VARIANT", "classic");
-    set_or_remove_env(command, "TDP_SOURCE_C", config.source_path.as_deref());
-    command.env("DB_QC", if config.qc_enabled { "1" } else { "0" });
-    command.env("DB_QC_SEED", config.qc_seed.to_string());
-    set_or_remove_env(command, "DB_QC_REFERENCE", config.qc_reference.as_deref());
-    if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
-        command.env("EMBEDDED_MASKING_K", config.mask_pair_wires.to_string());
-        command.env(
-            "EMBEDDED_MASKING_MAX_OPEN",
-            config.max_open_masks.to_string(),
-        );
-        command.env(
-            "EMBEDDED_MASKING_MIN_OPEN",
-            config.min_open_masks.to_string(),
-        );
-        command.env(
-            "EMBEDDED_MASKING_BALANCED",
-            if config.balanced_masks { "1" } else { "0" },
-        );
-        command.env("EMBEDDED_MASKING_QUAD_FIRE", "1");
-        command.env(
-            "EMBEDDED_MASKING_SHUFFLING",
-            config.shuffling_segments.to_string(),
-        );
-        command.env(
-            "EMBEDDED_MASKING_SHUFFLING_RETURN_HOME",
-            if config.shuffling_return_home {
-                "1"
-            } else {
-                "0"
-            },
-        );
-    }
     set_or_remove_env(command, "FROZEN_DB_DIR", config.frozen_db.path.as_deref());
-    command.env("FROZEN_REGULAR_VALUE_CONVENTION", "native");
-    command.env("CANON_RULE_L_BRANCH_CAP", "512");
-    command.env("CANON_MONOMIAL_CAP", "200000");
-    command.env("CANON_CACHE_MB", "256");
-    command.env("XPOLY_CANON_CACHE_MB", "1024");
-    command.env("LOOKUP_CACHE_MB", "2048");
-    command.env_remove("PROD_PRESET");
-    command.env_remove("PROD_POST_FRAGMENT");
     if config.allow_empty_store {
         command.env("TDP_GEN_ALLOW_EMPTY_STORE", "1");
-    } else {
-        command.env_remove("TDP_GEN_ALLOW_EMPTY_STORE");
-    }
-    match config.frozen_filter {
-        FrozenFilter::Auto => {
-            command.env_remove("FROZEN_FILTER");
-        }
-        FrozenFilter::On => {
-            command.env("FROZEN_FILTER", "1");
-        }
-        FrozenFilter::Off => {
-            command.env("FROZEN_FILTER", "0");
-        }
     }
 }
 
@@ -442,21 +499,62 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         config.preprocessing_mode.canonical_name()
     );
     println!(
-        "[tdp_gen] seed: {}",
-        if config.calibration_seed.is_some() {
-            "EXPLICIT FROM PRIVATE FILE (redacted; CALIBRATION ONLY)"
-        } else {
-            "CSPRNG for a fresh run / protected SEED file for resume"
+        "[tdp_gen] seeds: {}",
+        match config.seeds {
+            SeedPlan::Explicit { .. } =>
+                "EXPLICIT FROM PRIVATE FILE (redacted; CALIBRATION ONLY) -> $RUN/SEEDS",
+            SeedPlan::Random => "CSPRNG for a fresh run -> private $RUN/SEEDS (kept on resume)",
         }
     );
     println!(
-        "[tdp_gen] stage 1-2: source.gates={}",
-        config.mcd.as_deref().unwrap_or("derived")
+        "[tdp_gen] stage 1-2: source.gates={} ({}{}) preset={}",
+        config.mcd,
+        config.mcd_rule.name(),
+        if config.mcd_rule == SourceGatesRule::Formula {
+            ", UNVALIDATED SIZE"
+        } else {
+            ""
+        },
+        config.preset.name()
     );
+    match &config.schedule {
+        Schedule::Validated => println!(
+            "[tdp_gen] db_mixing (stage 3): schedule validated (profile 2,2,2,2,2, moves int(G*2*2*1.3))"
+        ),
+        Schedule::Custom {
+            growth,
+            hold,
+            expand,
+        } => println!(
+            "[tdp_gen] db_mixing (stage 3): schedule custom growth={growth} hold={hold} target_size_factor={expand}"
+        ),
+    }
     println!(
-        "[tdp_gen] db_mixing (stage 3): target_size_factor={} hold_work_units={}",
-        config.expand.as_deref().unwrap_or("2"),
-        config.hold.as_deref().unwrap_or("27")
+        "[tdp_gen] packing (stage 4): {}",
+        if config.packing.is_default() {
+            "default (G=512, split budget 65536, cpython39 caps)".to_owned()
+        } else {
+            config
+                .packing
+                .flags()
+                .into_iter()
+                .filter(|(_, v, d)| v != d)
+                .map(|(f, v, _)| format!("{f} {v}"))
+                .chain(
+                    config
+                        .packing
+                        .allow_floor_miss
+                        .then(|| "--packing-allow-floor-miss (NOT recommended)".to_owned()),
+                )
+                .chain(
+                    config
+                        .packing
+                        .allow_over_budget
+                        .then(|| "--packing-allow-over-budget (NOT recommended)".to_owned()),
+                )
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
     );
     if let Some(size) = &config.min_block_size {
         println!(
@@ -473,7 +571,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     }
     println!(
         "[tdp_gen] lifecycle: stop_after_stage={} rerun_from_stage={} build_binaries={}",
-        config.stop_after.as_deref().unwrap_or("3"),
+        config.stop_after.as_deref().unwrap_or("4"),
         config.force_from.as_deref().unwrap_or("none"),
         config.build_release
     );
@@ -522,8 +620,10 @@ pub(crate) fn print_dry_run(
             OsString::from("gen_sandwich_gadget"),
             OsString::from("--bin"),
             OsString::from("circuit_mixer"),
+            OsString::from("--bin"),
+            OsString::from("tdp_packing"),
         ];
-        println!("[tdp_gen] would build: {}", render_command(&build, None));
+        println!("[tdp_gen] would build: {}", render_command(&build));
     } else if managed_resume && config.build_release {
         println!(
             "[tdp_gen] release build: would be skipped for resume; the fingerprinted binaries would be reused"
@@ -533,13 +633,12 @@ pub(crate) fn print_dry_run(
     }
     let mut invocation = vec![OsString::from("bash"), script.as_os_str().to_owned()];
     invocation.extend_from_slice(args);
-    println!(
-        "[tdp_gen] would run: {}",
-        render_command(&invocation, Some("-s"))
-    );
+    println!("[tdp_gen] would run: {}", render_command(&invocation));
 }
 
-pub(crate) fn render_command(args: &[OsString], redact_value_after: Option<&str>) -> String {
+/// Render argv for display, redacting the value after EVERY flag whose name
+/// contains `seed` (except `--seed-file`, whose path is not secret; §8.4).
+pub(crate) fn render_command(args: &[OsString]) -> String {
     let mut rendered = Vec::with_capacity(args.len());
     let mut redact_next = false;
     for arg in args {
@@ -550,9 +649,8 @@ pub(crate) fn render_command(args: &[OsString], redact_value_after: Option<&str>
         }
         let text = arg.to_string_lossy();
         rendered.push(shell_quote_for_display(&text));
-        if redact_value_after
-            .is_some_and(|flag| canonical_script_flag(flag) == canonical_script_flag(text.as_ref()))
-        {
+        let flag = canonical_script_flag(text.as_ref());
+        if flag.starts_with('-') && flag.contains("seed") && flag != "--seed-file" {
             redact_next = true;
         }
     }

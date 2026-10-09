@@ -92,27 +92,44 @@ fn parse_shuffling_controls(
     Ok((segments, return_home, jit_gap))
 }
 
+/// A positional argument: absent (`None`) means the default; present but
+/// unparsable, including empty, is an error naming the argument (D17: a parse
+/// slip must never silently become a default such as seed 1).
+pub(crate) fn parse_positional<T: std::str::FromStr>(
+    name: &str,
+    value: Option<String>,
+) -> Result<Option<T>, String> {
+    match value {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<T>()
+            .map(Some)
+            .map_err(|_| format!("argument {name}: {v:?} is not a valid value")),
+    }
+}
+
+fn positional_or_exit<T: std::str::FromStr>(name: &str, value: Option<String>) -> Option<T> {
+    parse_positional(name, value).unwrap_or_else(|error| {
+        eprintln!("gen_sandwich_gadget: {error}");
+        std::process::exit(2)
+    })
+}
+
 pub fn run() {
     let mut a = std::env::args().skip(1);
     let out = a
         .next()
         .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed gadget_seed sandwich_seed gadgetization_mode]");
-    let n: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(128);
-    let m_c: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
-    let m_d: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
-    let s: usize = a
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| sandwich_default_s(n));
-    let rg_freq: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let n: usize = positional_or_exit("n", a.next()).unwrap_or(128);
+    let m_c: usize = positional_or_exit("m_C", a.next()).unwrap_or(3000);
+    let m_d: usize = positional_or_exit("m_D", a.next()).unwrap_or(3000);
+    let s: usize = positional_or_exit("s", a.next()).unwrap_or_else(|| sandwich_default_s(n));
+    let rg_freq: usize = positional_or_exit("rg_freq", a.next()).unwrap_or(1);
     let sandwich_n = 2 * n;
-    let slice_gates: usize = a
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10 * sandwich_n);
-    let seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(1);
-    let gadget_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
-    let sandwich_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
+    let slice_gates: usize = positional_or_exit("slice_gates", a.next()).unwrap_or(10 * sandwich_n);
+    let seed: u64 = positional_or_exit("seed", a.next()).unwrap_or(1);
+    let gadget_seed: u64 = positional_or_exit("gadget_seed", a.next()).unwrap_or(seed);
+    let sandwich_seed: u64 = positional_or_exit("sandwich_seed", a.next()).unwrap_or(seed);
     let gadgetization_mode = a
         .next()
         .as_deref()

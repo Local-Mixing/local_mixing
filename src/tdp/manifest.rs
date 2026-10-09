@@ -2,7 +2,10 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 9;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 10;
+/// The managed binaries, fingerprinted in the manifest and built for fresh runs.
+pub(crate) const PRODUCTION_BINARIES: [&str; 3] =
+    ["gen_sandwich_gadget", "circuit_mixer", "tdp_packing"];
 
 pub(crate) fn prepare_recipe_manifest(
     config: &ResolvedConfig,
@@ -58,7 +61,7 @@ pub(crate) fn prepare_recipe_manifest(
 pub(crate) fn production_binary_fingerprints(
     binary_dir: &Path,
 ) -> Result<Vec<(&'static str, u128)>, TdpError> {
-    ["gen_sandwich_gadget", "circuit_mixer"]
+    PRODUCTION_BINARIES
         .into_iter()
         .map(|name| {
             let path = binary_dir.join(name);
@@ -66,7 +69,7 @@ pub(crate) fn production_binary_fingerprints(
                 .map(|hash| (name, hash))
                 .map_err(|error| {
                     TdpError::io(format!(
-                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing both binaries",
+                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing all three binaries",
                         path.display()
                     ))
                 })
@@ -109,24 +112,9 @@ pub(crate) fn compare_recipe_manifest(path: &Path, desired: &str) -> Result<(), 
     let adopted_unverified = existing
         .lines()
         .any(|line| line == "adopted_unverified=true");
-    // Earlier v8 embedded-masking runs predate these fields and therefore
-    // mean shuffling off / return home. Only those exact defaults may be
-    // omitted; enabling shuffling remains a locked recipe change. Binary
-    // and script fingerprints still have to match for any managed resume.
     let normalize = |text: &str| -> String {
-        let embedded = text
-            .lines()
-            .any(|line| line == "preprocessing_mode=embedded-masking");
         text.lines()
-            .filter(|line| {
-                *line != "adopted_unverified=true"
-                    && !(embedded
-                        && matches!(
-                            *line,
-                            "preprocessing_shuffling_segments=0"
-                                | "preprocessing_shuffling_return_home=true"
-                        ))
-            })
+            .filter(|line| *line != "adopted_unverified=true")
             .map(|line| format!("{line}\n"))
             .collect()
     };
@@ -167,101 +155,142 @@ pub(crate) fn compare_recipe_manifest(path: &Path, desired: &str) -> Result<(), 
     )))
 }
 
+/// The resolved recipe (§11.2): every value printed is the value the run
+/// uses, never a hard-coded description. No seed, no seed-derived value and
+/// no hash of C or of a private circuit appears here.
 pub(crate) fn recipe_manifest(
     config: &ResolvedConfig,
     binaries: &[(&str, u128)],
     script_hash: u128,
 ) -> String {
+    use std::fmt::Write as _;
     let path_or_unset = |path: &Option<PathBuf>| {
         path.as_deref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unset".to_owned())
     };
-    let mut manifest = format!(
-        concat!(
-            "tdp_command_recipe={}\n",
-            "n={}\n",
-            "frozen_db_dir={}\n",
-            "preprocessing_mode={}\n",
-            "production_preset={}\n",
-            "post_fragment={}\n",
-            "mcd={}\n",
-            "expand={}\n",
-            "hold={}\n",
-            "pieces={}\n",
-            "allow_empty_store={}\n",
-            "calibration_only={}\n",
-            "pinned_recipe=canon512/200000-cache256/1024/2048-native-regular\n",
-        ),
-        config.recipe_version,
-        config.n,
-        path_or_unset(&config.frozen_db.path),
+    let mut m = String::new();
+    let mut kv = |k: &str, v: &str| {
+        let _ = writeln!(m, "{k}={v}");
+    };
+    kv("tdp_command_recipe", &config.recipe_version.to_string());
+    kv("pinned_recipe", "val_chain-L8-20261007");
+    kv("n", &config.n.to_string());
+    kv("source_gates", &config.mcd.to_string());
+    kv("source_gates_rule", config.mcd_rule.name());
+    kv(
+        "source",
+        if config.source_path.is_some() {
+            "path"
+        } else {
+            "generated"
+        },
+    );
+    kv("source_path", &path_or_unset(&config.source_path));
+    kv("sandwich_variant", "classic");
+    kv(
+        "preprocessing_mode",
         config.preprocessing_mode.canonical_name(),
-        // Reserved fields retain their explicit non-applicable values.
-        "not-applicable",
-        "not-applicable",
-        config.mcd.as_deref().unwrap_or("derived"),
-        config.expand.as_deref().unwrap_or("2"),
-        config.hold.as_deref().unwrap_or("30"),
+    );
+    kv("preprocessing_preset", config.preset.name());
+    if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
+        for (key, _, value) in config.knobs.fields() {
+            kv(&format!("preprocessing_{key}"), &value);
+        }
+        kv("preprocessing_quadratic_fire", "1");
+    }
+    kv("gadget_seed_rule", "gen");
+    match &config.schedule {
+        Schedule::Validated => {
+            kv("db_mixing_schedule", "validated");
+            kv("stage3_profile", "2,2,2,2,2");
+            kv("stage3_moves_rule", "int(G*2*2*1.3)");
+        }
+        Schedule::Custom {
+            growth,
+            hold,
+            expand,
+        } => {
+            kv("db_mixing_schedule", "custom");
+            kv("stage3_growth_work_units", growth);
+            kv("stage3_hold_work_units", hold);
+            kv("stage3_target_size_factor", expand);
+            kv("stage3_moves_rule", "int((n0+hold)*r*G*1.3)");
+        }
+    }
+    kv("stage3_verify_every", "default(10000)");
+    kv("stage3_report_every", "default(50000)");
+    kv(
+        "pieces",
         if config.min_block_size.is_some() {
             "auto"
         } else {
             config.pieces.as_deref().unwrap_or("1")
         },
-        config.allow_empty_store,
-        config.calibration_only,
     );
-    {
-        use std::fmt::Write as _;
-        let _ = writeln!(manifest, "sandwich_variant=classic");
-        if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
-            let _ = writeln!(
-                manifest,
-                "preprocessing_mask_pair_wires={}\npreprocessing_max_open_masks={}\npreprocessing_min_open_masks={}\npreprocessing_balanced_masks={}\npreprocessing_quadratic_fire=1\npreprocessing_extra_lgis=0\npreprocessing_encoded_io=false",
-                config.mask_pair_wires,
-                config.max_open_masks,
-                config.min_open_masks,
-                u8::from(config.balanced_masks)
-            );
-            let _ = writeln!(
-                manifest,
-                "preprocessing_shuffling_segments={}\npreprocessing_shuffling_return_home={}",
-                config.shuffling_segments, config.shuffling_return_home,
-            );
-        }
-        let _ = writeln!(
-            manifest,
-            "source_path={}\nsource_xxh3={}",
-            path_or_unset(&config.source_path),
-            config
-                .source_hash
-                .map(|h| format!("{h:032x}"))
-                .unwrap_or_else(|| "generated".into())
-        );
-        let _ = writeln!(
-            manifest,
-            "qc_enabled={}\nqc_seed={}\nqc_reference={}\nqc_reference_xxh3={}",
-            config.qc_enabled,
-            config.qc_seed,
-            path_or_unset(&config.qc_reference),
-            config
-                .qc_reference_hash
-                .map(|h| format!("{h:032x}"))
-                .unwrap_or_else(|| "unset".into())
-        );
-    }
-    // Preserve fixed/serial manifest text; automatic sizing is a locked recipe value.
     if let Some(size) = &config.min_block_size {
-        use std::fmt::Write as _;
-        let _ = writeln!(manifest, "min_block_size={size}");
+        kv("min_block_size", size);
     }
+    kv("frozen_db_dir", &path_or_unset(&config.frozen_db.path));
+    kv(
+        "frozen_filter",
+        match config.frozen_filter {
+            FrozenFilter::Auto => "auto",
+            FrozenFilter::On => "on",
+            FrozenFilter::Off => "off",
+        },
+    );
+    kv("frozen_regular_value_convention", "native");
+    kv("allow_empty_store", &config.allow_empty_store.to_string());
+    kv("env_policy", "allowlist-v1");
+    kv("cache_mb", "lookup:2048,canon:256,xpoly:1024");
+    kv("canon_caps", "unbounded");
+    kv(
+        "packing_params",
+        if config.packing.is_default() {
+            "default"
+        } else {
+            "custom"
+        },
+    );
+    let p = &config.packing;
+    kv("packing_window_gates", &p.window_gates.to_string());
+    kv("packing_interval_cap", &p.interval_cap.to_string());
+    kv("packing_monomial_budget", &p.monomial_budget.to_string());
+    kv("packing_span_cap", &p.span_cap.to_string());
+    kv("packing_split_budget", &p.split_budget.to_string());
+    kv("packing_fix_iterations", &p.fix_iterations.to_string());
+    kv(
+        "packing_fallback_iterations",
+        &p.fallback_iterations.to_string(),
+    );
+    kv("packing_anf_cap_semantics", &p.anf_cap_semantics);
+    kv("packing_allow_floor_miss", &p.allow_floor_miss.to_string());
+    kv(
+        "packing_allow_over_budget",
+        &p.allow_over_budget.to_string(),
+    );
+    kv("seed_record", "SEEDS");
+    kv(
+        "seed_source",
+        match config.seeds {
+            SeedPlan::Random => "random",
+            SeedPlan::Explicit { .. } => "explicit",
+        },
+    );
+    kv("seed_bits", "63");
+    kv("calibration_only", &config.calibration_only.to_string());
+    kv("qc_enabled", &config.qc_enabled.to_string());
+    kv("qc_seed", &config.qc_seed.to_string());
+    kv("qc_reference", &path_or_unset(&config.qc_reference));
     for (name, fingerprint) in binaries {
-        use std::fmt::Write as _;
-        let _ = writeln!(manifest, "binary_{name}_xxh3={fingerprint:032x}");
+        kv(
+            &format!("binary_{name}_xxh3"),
+            &format!("{fingerprint:032x}"),
+        );
     }
-    use std::fmt::Write as _;
-    let _ = writeln!(manifest, "script_tdp_gen_xxh3={script_hash:032x}");
-    manifest
+    kv("script_tdp_gen_xxh3", &format!("{script_hash:032x}"));
+    m
 }
 
 pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
@@ -273,9 +302,12 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=9") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=10") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=9") => Err(TdpError::config(
+            "recipe v9 run: resume with the checkout that created it (recipe v10 changed the defaults to the chosen L8 runs and added stage 4); the original run is unchanged",
+        )),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v9 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v10 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

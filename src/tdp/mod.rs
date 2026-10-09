@@ -1,6 +1,7 @@
 //! TDP application: resolve a recipe, preserve run identity, and execute stages.
 mod cli;
 pub(crate) mod config;
+pub(crate) mod env_registry;
 pub use cli::command;
 mod manifest;
 pub(crate) mod paths;

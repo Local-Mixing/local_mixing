@@ -1,111 +1,153 @@
 #!/bin/bash
-# TDP generation — the end-to-end pipeline for preprocessed sliced-sandwich
-# circuits. Manual: docs/tdp_pipeline.md.
+# TDP generation: the end-to-end four-stage pipeline. Manual: docs/tdp_pipeline.md;
+# design and the reference recipe: docs/STAGE4_RUST_DESIGN.md.
 #
 # Stages:
-#   1+2  generate the sliced sandwich S and gadgetize it with the selected
-#        representation family
-#        (gen_sandwich_gadget; |C| = |D| = round(n·(log2 n)^2), the library
-#        convention; Embedded masking with K=2, max_open=3, min_open=2
-#        is the default)
-#   3    circuit_mixer db_mixing: --tdp --db-mixing --profile 3,(3+HOLD),(3+HOLD),R1,R1
-#        (no compression leg since 2026-08-17: it only simplified the
-#        circuit). Stage 3 runs piecewise-parallel under --parallel-pieces
-#        P > 1: docs/tdp_pipeline.md; P = 1 is the serial run, unchanged.
-#   (stage 4, packing, is not driven from here yet: Python prototypes under
-#   scripts/windowed_delivery/. The old stages 4 (split), 5 (crossing walk)
-#   and 6 (fcompress) are historic: branch ran/archive/curated-and-postmix)
+#   1+2  gen_sandwich_gadget: sliced sandwich S of a source C, then embedded
+#        masking (preset L8 by default; A = no bounded chains) or nonlinear291
+#   3    circuit_mixer db_mixing: --tdp --db-mixing, schedule `validated`
+#        (--profile 2,2,2,2,2, --moves int(G*2*2*1.3)), regular frozen store
+#   4    tdp_packing run: windowed ANF delivery (pack G=512, repair, ANF
+#        serialization with budget 65536) -> packing/deliverable.tdp4
+#
+# DEFAULTS reproduce scripts/windowed_delivery/waist/val_chain.sh CONFIG=L8 as
+# run for the chosen validation runs vL64a/b, vL128a/b: same gen argv and
+# stage-2 environment, same mixer argv and environment (serial), the same
+# stage 4 (bit-exact port of the Python oracle). Seeds are fresh CSPRNG draws
+# kept in the private $RUN/SEEDS; explicit seeds (--seed-file) are for
+# calibration and reproduction only.
+#
+# Environment discipline: every stage binary starts from an EMPTY environment
+# plus PATH/HOME/TMPDIR/LANG/LC_ALL and the variables the recipe sets
+# (scripts/tdp_env_registry.tsv). An inherited variable that could change
+# output is a fatal error, never silently honoured or dropped.
 #
 # Every stage writes its artifact + log into the run dir and is skipped when
-# the artifact already exists (rerun with --run-rerun-from-stage K). bash only — do not
-# port to zsh (word-splitting changes silently).
+# the artifact already exists (rerun with --run-rerun-from-stage K). bash only:
+# do not port to zsh (word-splitting changes silently).
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   -h, --help    show this help and exit
-  --source-wires N
-                 wires of the source computation C (required)
-  --run-directory DIR
-                 run directory (created; all artifacts + logs land here)
-  --calibration-seed SEED
-                 master seed. DEFAULT: a fresh CSPRNG draw — the seed
-                 regenerates the secret C, so a predictable seed (1, 2, a
-                 counter) makes the output reconstructible and worthless as
-                 a deliverable. Pass --calibration-seed only for CALIBRATION arms that must
-                 share an input; label such outputs calibration-only.
-  --source-gates M
-                 override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
-  --preprocessing-mode MODE
-                  stage-2 representation: embedded-masking (default) or nonlinear291
-  --preprocessing-mask-pair-wires K
-                 Embedded masking only: wires in each mask’s paired component.
-                 Exported as EMBEDDED_MASKING_K to gen_sandwich_gadget [2; range 2..64]
-  --preprocessing-max-open-masks N
-                 Embedded masking only: open-mask cap per wire, exported as
-                 EMBEDDED_MASKING_MAX_OPEN [3; range 2..64; 2 = size-neutral balanced variant, weaker
-                 against two-feature correlation scans]
-  --preprocessing-balanced-masks 0|1
-                 Embedded masking only: balanced masks (CNOT from a fresh band wire
-                 per LGI), exported as EMBEDDED_MASKING_BALANCED [1; 0 = plain g57 masks]
-  --preprocessing-min-open-masks N
-                 Embedded masking only: minimum open masks per data wire at every
-                 covered interval, exported as EMBEDDED_MASKING_MIN_OPEN [2; range 1..63; must be < max_open]
-  --preprocessing-shuffling-segments N
-                 Embedded masking only: target-write segments per fire block.
-                 0 disables carrier transfers; enabled values must be >=8 [0]
-  --preprocessing-shuffling-return-home 0|1
-                 Return shuffled data roles to their physical ports; must be 1
-                 when shuffling is enabled in this pipeline [1]
-  --db-mixing-target-size-factor R
-                 db_mixing target gate-count multiplier          [2]
-  --db-mixing-hold-work-units E
-                 db_mixing hold duration in effective work units            [27 -> profile 3,30,30,2,2]
-  --run-stop-after-stage K stop after stage K (2 or 3)               [3]
-  --run-rerun-from-stage K rebuild from stage K (2 or 3) even if
-                 artifacts exist                                  [unset]
-  --parallel-pieces P
-                 stage-3 piecewise-parallel mixing: cut the circuit into
-                 P pieces, mix them in parallel on one shared store,
-                 concatenate, shift the cuts by half a slice, repeat
-                 [1 = serial; range 1..64; docs/tdp_pipeline.md]
-  --parallel-target-piece-gates B
-                 nominal divisor for automatic stage-3 sizing (2..1000000000);
-                 each round P=max(1,current gates/B), then fixed-P cutting
-                 (shifted ends may be smaller);
-                 mutually exclusive with explicit --parallel-pieces, including 1
-  --parallel-threads T
-                 threads for the piece pool (1..1024; requires pieces > 1 or auto)
-                 [P+1 for fixed pieces; available CPU count in automatic mode]
-env:
-  FROZEN_DB_DIR       required for stage 3 (the frozen replacement store)
+  --source-wires N         wires of the source computation C (required; 3..4095)
+  --run-directory DIR      run directory (created; artifacts + logs land here)
+  --seed-file PATH         CALIBRATION/REPRODUCTION ONLY: private file (chmod 600,
+                           <= 256 bytes) with lines gen_seed=<u63> and mix_seed=<u63>.
+                           Default: fresh CSPRNG seeds, kept in the private $RUN/SEEDS
+  --source-gates M (-m)    |C| = |D| gate count [default: the validated table,
+                           1000 at n=64 and 3000 at n=128]
+  --source-gates-rule R    validated (default; other n need --source-gates) or
+                           formula (round(n·log2(n)^2); prints UNVALIDATED SIZE)
+  --source-path PATH       load C (G57) instead of generating it; needs --source-gates
+  --preprocessing-mode M   embedded-masking (default) or nonlinear291
+  --preprocessing-preset P L8 (default) | A | custom (embedded-masking only).
+                           L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
+                           CHAIN=2 CHAIN_LEN=8; A = L8 without the chains
+    custom only (defaults = gen's base parameters):
+    --preprocessing-mask-pair-wires K      [2; 2..64]
+    --preprocessing-max-open-masks N       [3; 2..64]
+    --preprocessing-min-open-masks N       [2; 1..63, < max_open]
+    --preprocessing-balanced-masks 0|1     [1]
+    --preprocessing-shuffling-segments N   [0; 0 = off, else >= 8]
+    --preprocessing-shuffling-return-home 0|1  [1; 0 = persistent migration]
+    --preprocessing-premask 0|1            [0]
+    --preprocessing-seed-avoid-c1 0|1      [0]
+    --preprocessing-chain K                [0; 0 = off, 0..64]
+    --preprocessing-chain-len L            [0; 0..1000000]
+  --db-mixing-schedule S   validated (default: profile 2,2,2,2,2, moves int(4·G·1.3))
+                           or custom:
+    --db-mixing-growth-work-units G        [3]  profile n0
+    --db-mixing-hold-work-units E          [27] profile n1 = n2 = n0 + E
+    --db-mixing-target-size-factor R       [2]  profile r1 = r2
+  --database-lookup-miss-filter F   auto (default) | on | off (FROZEN_FILTER)
+  --leakage-repair                  sampled gate-wise audit + DB repair after stage 3
+  --leakage-repair-seed S           [20803]
+  --leakage-repair-reference PATH   [stage-3 input]
+  --packing-window-gates G          [512]
+  --packing-interval-cap W          [512]
+  --packing-monomial-budget B       [24576]
+  --packing-span-cap S              [3000]
+  --packing-split-budget B          [65536]
+  --packing-fix-iterations K        [4]
+  --packing-fallback-iterations K   [4]
+  --packing-anf-cap-semantics C     cpython39 (default, the oracle) | canonical
+  --packing-allow-floor-miss        ship despite a visible non-output row (NOT recommended)
+  --packing-allow-over-budget       ship despite an over-budget window (NOT recommended)
+  --threads T              pin RAYON_NUM_THREADS and tdp_packing --threads
+  --run-stop-after-stage K   stop after stage K (2, 3 or 4)                [4]
+  --run-rerun-from-stage K   rebuild from stage K (2, 3 or 4)          [unset]
+  --parallel-pieces P      stage-3 piecewise-parallel mixing [1 = serial; 1..64]
+                           (changes the stage-3 bytes; not the validated recipe)
+  --parallel-target-piece-gates B   automatic piece sizing (2..1000000000)
+  --parallel-threads T     piece pool threads (1..1024; needs pieces > 1 or auto)
+env (inputs only; every other output-affecting variable is refused):
+  FROZEN_DB_DIR       the regular frozen store (required for stage 3)
   TDP_GEN_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
-  DB_QC=1             optional gate-wise audit and DB repair at the end of stage 3
-  DB_QC_REFERENCE     original reference in matching input/wire coordinates
-                      (mpmct1; default: stage-3 input); see docs/tdp_pipeline.md
-  DB_QC_SEED          independent QC seed [20803]; existing stage-3 artifacts
-                      are still skipped unless --run-rerun-from-stage 3 is supplied
-  TDP_BIN_DIR         directory containing gen_sandwich_gadget and circuit_mixer
+  TDP_BIN_DIR         directory with gen_sandwich_gadget, circuit_mixer, tdp_packing
                       [default: repository target/release]
 EOF
   exit "${1:-1}"
 }
 
-N=""; RUN=""; SEED=""; EXPAND=2; HOLD=27; MCD=0
-PREPROCESSING_MODE=embedded-masking
-EMBEDDED_MASKING_K_ARG=""; EMBEDDED_MASKING_MAX_OPEN_ARG=""; EMBEDDED_MASKING_BALANCED_ARG=""; EMBEDDED_MASKING_MIN_OPEN_ARG=""
-EMBEDDED_MASKING_SHUFFLING_ARG=""; EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG=""
-STOP_AFTER=3; FORCE_FROM=99
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REGISTRY=$SCRIPT_DIR/tdp_env_registry.tsv
+LIB=$SCRIPT_DIR/tdp_reports
+fatal() { echo "FATAL: $*" >&2; exit 2; }
+
+# ---- inherited environment against the registry (§11.5) ----
+[ -s "$REGISTRY" ] || fatal "$REGISTRY missing"
+REG_NAMES=(); REG_KINDS=(); REG_CLASSES=()
+while IFS=$'\t' read -r entry kind class _; do
+  case "$entry" in '#'*|'') continue ;; esac
+  REG_NAMES+=("$entry"); REG_KINDS+=("$kind"); REG_CLASSES+=("$class")
+done < "$REGISTRY"
+classify_env() { # NAME -> class or empty
+  local name=$1 i best="" bestlen=-1
+  for i in "${!REG_NAMES[@]}"; do
+    if [ "${REG_KINDS[$i]}" = exact ] && [ "${REG_NAMES[$i]}" = "$name" ]; then
+      echo "${REG_CLASSES[$i]}"; return
+    fi
+    if [ "${REG_KINDS[$i]}" = prefix ] && [[ $name == "${REG_NAMES[$i]}"* ]] &&
+       [ "${#REG_NAMES[$i]}" -gt "$bestlen" ]; then
+      best=${REG_CLASSES[$i]}; bestlen=${#REG_NAMES[$i]}
+    fi
+  done
+  echo "$best"
+}
+refused=(); ignored=()
+while IFS= read -r var; do
+  case "$(classify_env "$var")" in
+    recipe|driver|forbidden|diagnostic) refused+=("$var") ;;
+    neutral) ignored+=("$var") ;;
+  esac
+done < <(compgen -e)
+if [ "${#refused[@]}" -gt 0 ]; then
+  list=$(printf '%s, ' "${refused[@]}"); list=${list%, }
+  if [ "${#refused[@]}" -eq 1 ]; then
+    fatal "$list is not honoured by the managed recipe; unset it (use flags/config)"
+  fi
+  fatal "$list are not honoured by the managed recipe; unset them (use flags/config)"
+fi
+
+N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""
+PREPROCESSING_MODE=embedded-masking; PRESET=""
+declare -A KNOB=()
+SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
+STOP_AFTER=4; FORCE_FROM=99
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""
-declare -A PREPROCESSING_FLAGS_SEEN=()
+FILTER=auto; QC=0; QC_SEED=20803; QC_REF=""; THREADS=""
+PACK_WINDOW_GATES=512; PACK_INTERVAL_CAP=512; PACK_MONOMIAL_BUDGET=24576; PACK_SPAN_CAP=3000
+PACK_SPLIT_BUDGET=65536; PACK_FIX_ITERATIONS=4; PACK_FALLBACK_ITERATIONS=4; PACK_CAP_SEM=cpython39
+PACK_ALLOW_FLOOR=0; PACK_ALLOW_BUDGET=0
+declare -A SEEN=()
+KNOB_FLAGS=" --preprocessing-mask-pair-wires --preprocessing-max-open-masks --preprocessing-min-open-masks --preprocessing-balanced-masks --preprocessing-shuffling-segments --preprocessing-shuffling-return-home --preprocessing-premask --preprocessing-seed-avoid-c1 --preprocessing-chain --preprocessing-chain-len "
 while [ $# -gt 0 ]; do
-  # Historical spellings remain accepted; use canonical names below.
   case "$1" in
     -n) set -- --source-wires "${@:2}" ;;
     -o) set -- --run-directory "${@:2}" ;;
-    -s) set -- --calibration-seed "${@:2}" ;;
-    --mcd) set -- --source-gates "${@:2}" ;;
+    -m|--mcd) set -- --source-gates "${@:2}" ;;
     --expand) set -- --db-mixing-target-size-factor "${@:2}" ;;
     --hold) set -- --db-mixing-hold-work-units "${@:2}" ;;
     --stop-after) set -- --run-stop-after-stage "${@:2}" ;;
@@ -115,72 +157,63 @@ while [ $# -gt 0 ]; do
     --piece-threads) set -- --parallel-threads "${@:2}" ;;
   esac
   case "$1" in
+    -s|--calibration-seed)
+      fatal "seeds on argv are no longer accepted (they appear in ps); use --seed-file (lines gen_seed= and mix_seed=)" ;;
     --crossing-*|--xr|--xb|--xc|--xtdiv|--xmoves)
-      echo "FATAL: $1 configured the crossing walk (old stage 5), which is historic; see branch ran/archive/curated-and-postmix" >&2
-      exit 2
-      ;;
-    --preprocessing-*)
-      if [ "${PREPROCESSING_FLAGS_SEEN[$1]+present}" ]; then
-        echo "FATAL: duplicate preprocessing setting $1" >&2
-        exit 2
-      fi
-      PREPROCESSING_FLAGS_SEEN[$1]=1
-      ;;
+      fatal "$1 configured the crossing walk (old stage 5), which is historic; see branch ran/archive/curated-and-postmix" ;;
   esac
   case "$1" in
-    --source-wires|--run-directory|--calibration-seed|--source-gates|--preprocessing-mode|--preprocessing-mask-pair-wires|--preprocessing-max-open-masks|--preprocessing-balanced-masks|--preprocessing-min-open-masks|--preprocessing-shuffling-segments|--preprocessing-shuffling-return-home|--db-mixing-target-size-factor|--db-mixing-hold-work-units|--run-stop-after-stage|--run-rerun-from-stage|--parallel-pieces|--parallel-target-piece-gates|--parallel-threads)
-      if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then
-        echo "FATAL: $1 requires an argument" >&2
-        exit 2
-      fi ;;
+    --*)
+      if [ "${SEEN[$1]+present}" ]; then fatal "duplicate setting $1"; fi
+      SEEN[$1]=1 ;;
+  esac
+  case "$1" in
+    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget) ;;
+    --*)
+      if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then fatal "$1 requires an argument"; fi ;;
   esac
   case "$1" in
     -h|--help) usage 0 ;;
     --source-wires) N=$2; shift 2 ;;
     --run-directory) RUN=$2; shift 2 ;;
-    --calibration-seed) SEED=$2; shift 2 ;;
+    --seed-file) SEED_FILE=$2; shift 2 ;;
     --source-gates) MCD=$2; shift 2 ;;
+    --source-gates-rule) MCD_RULE=$2; shift 2 ;;
+    --source-path) SOURCE_PATH=$2; shift 2 ;;
     --preprocessing-mode) PREPROCESSING_MODE=$2; shift 2 ;;
-    --preprocessing-mask-pair-wires) EMBEDDED_MASKING_K_ARG=$2; shift 2 ;;
-    --preprocessing-max-open-masks) EMBEDDED_MASKING_MAX_OPEN_ARG=$2; shift 2 ;;
-    --preprocessing-balanced-masks) EMBEDDED_MASKING_BALANCED_ARG=$2; shift 2 ;;
-    --preprocessing-min-open-masks) EMBEDDED_MASKING_MIN_OPEN_ARG=$2; shift 2 ;;
-    --preprocessing-shuffling-segments) EMBEDDED_MASKING_SHUFFLING_ARG=$2; shift 2 ;;
-    --preprocessing-shuffling-return-home) EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG=$2; shift 2 ;;
-    --db-mixing-target-size-factor) EXPAND=$2; shift 2 ;;
+    --preprocessing-preset) PRESET=$2; shift 2 ;;
+    --preprocessing-*)
+      [[ $KNOB_FLAGS == *" $1 "* ]] || fatal "unknown argument $1"
+      KNOB[${1#--preprocessing-}]=$2; shift 2 ;;
+    --db-mixing-schedule) SCHEDULE=$2; shift 2 ;;
+    --db-mixing-growth-work-units) GROWTH=$2; shift 2 ;;
     --db-mixing-hold-work-units) HOLD=$2; shift 2 ;;
+    --db-mixing-target-size-factor) EXPAND=$2; shift 2 ;;
+    --database-lookup-miss-filter) FILTER=$2; shift 2 ;;
+    --leakage-repair) QC=1; shift ;;
+    --leakage-repair-seed) QC_SEED=$2; shift 2 ;;
+    --leakage-repair-reference) QC_REF=$2; shift 2 ;;
+    --packing-window-gates) PACK_WINDOW_GATES=$2; shift 2 ;;
+    --packing-interval-cap) PACK_INTERVAL_CAP=$2; shift 2 ;;
+    --packing-monomial-budget) PACK_MONOMIAL_BUDGET=$2; shift 2 ;;
+    --packing-span-cap) PACK_SPAN_CAP=$2; shift 2 ;;
+    --packing-split-budget) PACK_SPLIT_BUDGET=$2; shift 2 ;;
+    --packing-fix-iterations) PACK_FIX_ITERATIONS=$2; shift 2 ;;
+    --packing-fallback-iterations) PACK_FALLBACK_ITERATIONS=$2; shift 2 ;;
+    --packing-anf-cap-semantics) PACK_CAP_SEM=$2; shift 2 ;;
+    --packing-allow-floor-miss) PACK_ALLOW_FLOOR=1; shift ;;
+    --packing-allow-over-budget) PACK_ALLOW_BUDGET=1; shift ;;
+    --threads) THREADS=$2; shift 2 ;;
     --run-stop-after-stage) STOP_AFTER=$2; shift 2 ;;
     --run-rerun-from-stage) FORCE_FROM=$2; shift 2 ;;
     --parallel-pieces) PIECES=$2; PIECES_SET=1; shift 2 ;;
     --parallel-target-piece-gates) MIN_BLOCK_SIZE=$2; shift 2 ;;
     --parallel-threads) PIECE_THREADS=$2; shift 2 ;;
-    *) echo "FATAL: unknown argument $1" >&2; usage ;;
+    *) echo "FATAL: unknown argument $1" >&2; usage 2 ;;
   esac
 done
 [ -n "$N" ] && [ -n "$RUN" ] || usage
-case "$PREPROCESSING_MODE" in
-  product-2223|2223|nonlinear193)
-    echo "FATAL: $PREPROCESSING_MODE is retired from new TDP runs; resume saved runs with the checkout that created them" >&2
-    exit 2
-    ;;
-  nonlinear291|embedded-masking) ;;
-  *)
-    echo "FATAL: --preprocessing-mode must be embedded-masking or nonlinear291" >&2
-    exit 2
-    ;;
-esac
-# Reject obsolete controls even when canonical flags are also supplied.
-legacy_mask_controls=()
-while IFS= read -r key; do
-  [ -n "$key" ] && legacy_mask_controls+=("$key")
-done < <(compgen -A variable BV5_ || true)
-if [ "${#legacy_mask_controls[@]}" -gt 0 ]; then
-  echo "FATAL: BV5_* controls have been removed; use EMBEDDED_MASKING_* controls and unset: ${legacy_mask_controls[*]}" >&2
-  exit 2
-fi
-# Piecewise-parallel stage 3 (docs/tdp_pipeline.md). The serial command
-# lines stay byte-identical: flags are passed only in piece mode. The
-# same rules live in `local_mixing_bin tdp_gen`, so both entry points agree.
+
 # Normalize decimal input before arithmetic (leading zeros are not octal).
 # Check digit length first so very large inputs cannot overflow shell integers.
 bounded_uint() {
@@ -199,298 +232,482 @@ bounded_uint() {
   echo "FATAL: $label must be an integer in $minimum..$maximum" >&2
   return 2
 }
+bounded_number() { # LABEL VALUE LO HI LO_OPEN(0|1) -> normalized number
+  python3 -I - "$@" <<'PY'
+import math, sys
+label, value, lo, hi, lo_open = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), sys.argv[5] == "1"
+try:
+    v = float(value)
+except ValueError:
+    v = math.nan
+if not math.isfinite(v) or (v <= lo if lo_open else v < lo) or v > hi:
+    sys.stderr.write(f"FATAL: {label} must be a number in {'(' if lo_open else '['}{lo:g}, {hi:g}]\n")
+    sys.exit(2)
+print(f"{v:g}")
+PY
+}
 N=$(bounded_uint --source-wires "$N" 3 4095)
-# The old stages 4 (split), 5 (crossing walk) and 6 (fcompress) are historic:
-# the driver ends at stage 3, so they are no valid stop or rerun point.
+case "$PREPROCESSING_MODE" in
+  product-2223|2223|nonlinear193)
+    fatal "$PREPROCESSING_MODE is retired from new TDP runs; resume saved runs with the checkout that created them" ;;
+  nonlinear291|embedded-masking) ;;
+  *) fatal "--preprocessing-mode must be embedded-masking or nonlinear291" ;;
+esac
 for stage_arg in "$STOP_AFTER" "$FORCE_FROM"; do
   case "$stage_arg" in
-    4|5|6)
-      echo "FATAL: stage $stage_arg (old split/crossing/fcompress) is historic; use 2 or 3 (see branch ran/archive/curated-and-postmix)" >&2
-      exit 2
-      ;;
+    5|6) fatal "stage $stage_arg (old crossing/fcompress) is historic; use 2, 3 or 4 (see branch ran/archive/curated-and-postmix)" ;;
   esac
 done
-STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 3)
-[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 3)
+STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 4)
+[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 4)
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
-  [ "$PIECES_SET" -eq 0 ] || {
-    echo "FATAL: --parallel-target-piece-gates is mutually exclusive with --parallel-pieces (including 1)" >&2
-    exit 2
-  }
+  [ "$PIECES_SET" -eq 0 ] || fatal "--parallel-target-piece-gates is mutually exclusive with --parallel-pieces (including 1)"
   MIN_BLOCK_SIZE=$(bounded_uint --parallel-target-piece-gates "$MIN_BLOCK_SIZE" 2 1000000000)
 fi
 if [ -n "$PIECE_THREADS" ]; then
   PIECE_THREADS=$(bounded_uint --parallel-threads "$PIECE_THREADS" 1 1024)
-  [ "$PIECES" -gt 1 ] || [ -n "$MIN_BLOCK_SIZE" ] || {
-    echo "FATAL: --parallel-threads applies only with --parallel-pieces > 1 or --parallel-target-piece-gates" >&2
-    exit 2
-  }
+  [ "$PIECES" -gt 1 ] || [ -n "$MIN_BLOCK_SIZE" ] ||
+    fatal "--parallel-threads applies only with --parallel-pieces > 1 or --parallel-target-piece-gates"
 fi
 PIECEFLAGS=()
-PIECE_DESCRIPTION="pieces $PIECES"
+PIECE_DESCRIPTION="serial"
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   PIECEFLAGS=(--parallel-target-piece-gates "$MIN_BLOCK_SIZE")
   PIECE_DESCRIPTION="automatic pieces target_piece_gates=$MIN_BLOCK_SIZE"
 elif [ "$PIECES" -gt 1 ]; then
   PIECEFLAGS=(--parallel-pieces "$PIECES")
+  PIECE_DESCRIPTION="pieces $PIECES"
 fi
 [ -n "$PIECE_THREADS" ] && PIECEFLAGS+=(--parallel-threads "$PIECE_THREADS")
-if [ -n "$EMBEDDED_MASKING_K_ARG$EMBEDDED_MASKING_MAX_OPEN_ARG$EMBEDDED_MASKING_BALANCED_ARG$EMBEDDED_MASKING_MIN_OPEN_ARG$EMBEDDED_MASKING_SHUFFLING_ARG$EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG${EMBEDDED_MASKING_SHUFFLING+x}${EMBEDDED_MASKING_SHUFFLING_RETURN_HOME+x}" ] && [ "$PREPROCESSING_MODE" != embedded-masking ]; then
-  echo "FATAL: preprocessing mask and shuffling controls are only valid with --preprocessing-mode embedded-masking" >&2
-  exit 2
+[ -z "$THREADS" ] || THREADS=$(bounded_uint --threads "$THREADS" 1 1024)
+case "$FILTER" in auto|on|off) ;; *) fatal "--database-lookup-miss-filter must be auto, on or off" ;; esac
+if [ "$QC" != 1 ] && { [ -n "$QC_REF" ] || [ "${SEEN[--leakage-repair-seed]+x}" = x ]; }; then
+  fatal "--leakage-repair-seed/--leakage-repair-reference require --leakage-repair"
 fi
-if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
-  EMBEDDED_MASKING_K=$(bounded_uint --preprocessing-mask-pair-wires "${EMBEDDED_MASKING_K_ARG:-${EMBEDDED_MASKING_K:-2}}" 2 64)
-  EMBEDDED_MASKING_MAX_OPEN=$(bounded_uint --preprocessing-max-open-masks "${EMBEDDED_MASKING_MAX_OPEN_ARG:-${EMBEDDED_MASKING_MAX_OPEN:-3}}" 2 64)
-  EMBEDDED_MASKING_MIN_OPEN=$(bounded_uint --preprocessing-min-open-masks "${EMBEDDED_MASKING_MIN_OPEN_ARG:-${EMBEDDED_MASKING_MIN_OPEN:-2}}" 1 63)
-  EMBEDDED_MASKING_BALANCED=$(bounded_uint --preprocessing-balanced-masks "${EMBEDDED_MASKING_BALANCED_ARG:-${EMBEDDED_MASKING_BALANCED:-1}}" 0 1)
-  EMBEDDED_MASKING_SHUFFLING=$(bounded_uint --preprocessing-shuffling-segments "${EMBEDDED_MASKING_SHUFFLING_ARG:-${EMBEDDED_MASKING_SHUFFLING:-0}}" 0 9223372036854775807)
-  shuffling_home=${EMBEDDED_MASKING_SHUFFLING_RETURN_HOME_ARG:-${EMBEDDED_MASKING_SHUFFLING_RETURN_HOME:-1}}
-  case "$shuffling_home" in true) shuffling_home=1 ;; false) shuffling_home=0 ;; esac
-  EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=$(bounded_uint --preprocessing-shuffling-return-home "$shuffling_home" 0 1)
-  [ "$EMBEDDED_MASKING_SHUFFLING" -eq 0 ] || {
-    [ "$EMBEDDED_MASKING_SHUFFLING" -ge 8 ] || {
-      echo "FATAL: --preprocessing-shuffling-segments must be 0 (off) or at least 8" >&2
-      exit 2
-    }
-    [ "$EMBEDDED_MASKING_SHUFFLING_RETURN_HOME" -eq 1 ] || {
-      echo "FATAL: shuffling must return home to preserve fixed TDP output ports" >&2
-      exit 2
-    }
-  }
-  [ "$EMBEDDED_MASKING_MIN_OPEN" -lt "$EMBEDDED_MASKING_MAX_OPEN" ] || {
-    echo "FATAL: --preprocessing-min-open-masks must be less than --preprocessing-max-open-masks" >&2
-    exit 2
-  }
-  [ "$((2 * N))" -gt "$((EMBEDDED_MASKING_K - EMBEDDED_MASKING_K % 2 + EMBEDDED_MASKING_BALANCED))" ] || {
-    echo "FATAL: Embedded masking requires 2 * N > K rounded down to an even number + balanced; reduce --preprocessing-mask-pair-wires or increase --source-wires" >&2
-    exit 2
-  }
-  export EMBEDDED_MASKING_K EMBEDDED_MASKING_MAX_OPEN EMBEDDED_MASKING_MIN_OPEN EMBEDDED_MASKING_BALANCED
-  export EMBEDDED_MASKING_SHUFFLING EMBEDDED_MASKING_SHUFFLING_RETURN_HOME
-fi
-product_override_names=()
-while IFS= read -r _pvar; do
-  [ -n "$_pvar" ] && product_override_names+=("$_pvar")
-done < <(compgen -A variable PROD_ || true)
-[ "${#product_override_names[@]}" -eq 0 ] || {
-  echo "FATAL: PROD_* controls are retired from new TDP runs; unset: ${product_override_names[*]}" >&2
-  exit 2
-}
+QC_SEED=$(bounded_uint --leakage-repair-seed "$QC_SEED" 0 18446744073709551615)
 
-# Renamed stage artifacts must not make an existing legacy run look fresh.
-# Reject before creating the run directory, logs, seed, or stage artifacts.
-for legacy_artifact in gss_command.conf gss.mpmct1; do
-  if [ -e "$RUN/$legacy_artifact" ]; then
-    echo "FATAL: $RUN contains legacy GSS artifact $legacy_artifact; tdp_gen requires a fresh run directory or a TDP v9 run; resume this run with the checkout that created it" >&2
-    exit 2
-  fi
-done
-
-BIN=${TDP_BIN_DIR:-$(cd "$(dirname "$0")/.." && pwd)/target/release}
-for b in gen_sandwich_gadget circuit_mixer; do
-  [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first"; exit 1; }
-done
-mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
-GADGET=$RUN/tdp.mpmct1
-STAGE12_RECIPE_FILE=$RUN/stage12.recipe
-# A missing stage-2 artifact invalidates every downstream artifact, even when
-# the caller did not explicitly request --run-rerun-from-stage 2.
-[ -s "$GADGET" ] || FORCE_FROM=2
-LOGALL=$RUN/tdp_gen.log
-note() { echo "[tdp_gen] $*" | tee -a "$LOGALL"; }
-
-# The seed regenerates the secret C: default to the OS CSPRNG, never a
-# constant or a counter (docs/tdp_pipeline.md, "seeds"). An explicit -s is for
-# calibration arms only.
-SEED_SRC="RANDOM (CSPRNG)"
-if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ] && [ ! -s "$RUN/SEED" ]; then
-  echo "FATAL: existing stage-2 artifact has no SEED; use a fresh run directory or --run-rerun-from-stage 2" >&2
-  exit 2
-fi
-if [ -n "$SEED" ]; then
-  if [ -s "$RUN/SEED" ]; then
-    EXISTING_SEED=$(cat "$RUN/SEED")
-    [ "$SEED" = "$EXISTING_SEED" ] || {
-      echo "FATAL: explicit seed conflicts with the existing $RUN/SEED; use the original seed or a fresh run directory" >&2
-      exit 1
-    }
-  fi
-  SEED_SRC="EXPLICIT — calibration only, NOT a deliverable"
-elif [ -s "$RUN/SEED" ]; then
-  # A rerun of an existing run dir MUST keep the seed that built the
-  # artifacts on disk, or <run>/SEED would stop describing them.
-  SEED=$(cat "$RUN/SEED")
-  SEED_SRC="RESUMED from $RUN/SEED"
+# ---- stage-2 preset (§11.1; docs/STAGE2_LINKABILITY.md §6) ----
+# gen's base parameters (EmbeddedMaskingParams::managed_tdp): the effective
+# value of each knob when its variable is unset.
+declare -A BASE=([mask-pair-wires]=2 [max-open-masks]=3 [min-open-masks]=2 [balanced-masks]=1
+  [shuffling-segments]=0 [shuffling-return-home]=1 [premask]=0 [seed-avoid-c1]=0 [chain]=0 [chain-len]=0)
+declare -A VAR=([mask-pair-wires]=EMBEDDED_MASKING_K [max-open-masks]=EMBEDDED_MASKING_MAX_OPEN
+  [min-open-masks]=EMBEDDED_MASKING_MIN_OPEN [balanced-masks]=EMBEDDED_MASKING_BALANCED
+  [shuffling-segments]=EMBEDDED_MASKING_SHUFFLING [shuffling-return-home]=EMBEDDED_MASKING_SHUFFLING_RETURN_HOME
+  [premask]=EMBEDDED_MASKING_PREMASK [seed-avoid-c1]=EMBEDDED_MASKING_SEED_AVOID_C1
+  [chain]=EMBEDDED_MASKING_CHAIN [chain-len]=EMBEDDED_MASKING_CHAIN_LEN)
+KNOB_ORDER=(mask-pair-wires max-open-masks min-open-masks balanced-masks shuffling-segments
+  shuffling-return-home premask seed-avoid-c1 chain chain-len)
+declare -A EFF=()
+GEN_ENV=()
+if [ "$PREPROCESSING_MODE" = nonlinear291 ]; then
+  [ -z "$PRESET" ] || fatal "--preprocessing-preset applies only to embedded-masking"
+  [ "${#KNOB[@]}" -eq 0 ] ||
+    fatal "preprocessing mask and shuffling controls are only valid with --preprocessing-mode embedded-masking"
+  PRESET=none
 else
-  # 63-bit draw: the stage seeds are SEED+k, and a full 64-bit value
-  # overflows bash's signed arithmetic into a negative number that circuit_mixer
-  # parses as a flag ("unexpected argument '-8...'").
-  SEED=$(python3 -I -c "import secrets; print(secrets.randbelow(2**63 - 16))")
+  PRESET=${PRESET:-L8}
+  case "$PRESET" in
+    L8|A)
+      for k in "${!KNOB[@]}"; do
+        fatal "--preprocessing-$k is set by preset $PRESET; remove it or use --preprocessing-preset custom"
+      done
+      for k in "${KNOB_ORDER[@]}"; do EFF[$k]=${BASE[$k]}; done
+      EFF[shuffling-segments]=8; EFF[shuffling-return-home]=0; EFF[premask]=1; EFF[seed-avoid-c1]=1
+      GEN_ENV=(EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0
+               EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1)
+      if [ "$PRESET" = L8 ]; then
+        EFF[chain]=2; EFF[chain-len]=8
+        GEN_ENV+=(EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8)
+      fi ;;
+    custom)
+      v() { echo "${KNOB[$1]:-${BASE[$1]}}"; }
+      EFF[mask-pair-wires]=$(bounded_uint --preprocessing-mask-pair-wires "$(v mask-pair-wires)" 2 64)
+      EFF[max-open-masks]=$(bounded_uint --preprocessing-max-open-masks "$(v max-open-masks)" 2 64)
+      EFF[min-open-masks]=$(bounded_uint --preprocessing-min-open-masks "$(v min-open-masks)" 1 63)
+      EFF[balanced-masks]=$(bounded_uint --preprocessing-balanced-masks "$(v balanced-masks)" 0 1)
+      EFF[shuffling-segments]=$(bounded_uint --preprocessing-shuffling-segments "$(v shuffling-segments)" 0 9223372036854775807)
+      home=$(v shuffling-return-home); case "$home" in true) home=1 ;; false) home=0 ;; esac
+      EFF[shuffling-return-home]=$(bounded_uint --preprocessing-shuffling-return-home "$home" 0 1)
+      EFF[premask]=$(bounded_uint --preprocessing-premask "$(v premask)" 0 1)
+      EFF[seed-avoid-c1]=$(bounded_uint --preprocessing-seed-avoid-c1 "$(v seed-avoid-c1)" 0 1)
+      EFF[chain]=$(bounded_uint --preprocessing-chain "$(v chain)" 0 64)
+      EFF[chain-len]=$(bounded_uint --preprocessing-chain-len "$(v chain-len)" 0 1000000)
+      [ "${EFF[shuffling-segments]}" -eq 0 ] || [ "${EFF[shuffling-segments]}" -ge 8 ] ||
+        fatal "--preprocessing-shuffling-segments must be 0 (off) or at least 8"
+      [ "${EFF[min-open-masks]}" -lt "${EFF[max-open-masks]}" ] ||
+        fatal "--preprocessing-min-open-masks must be less than --preprocessing-max-open-masks"
+      for k in "${KNOB_ORDER[@]}"; do
+        [ "${EFF[$k]}" = "${BASE[$k]}" ] || GEN_ENV+=("${VAR[$k]}=${EFF[$k]}")
+      done ;;
+    *) fatal "--preprocessing-preset must be L8, A or custom" ;;
+  esac
+  K=${EFF[mask-pair-wires]}
+  [ "$((2 * N))" -gt "$((K - K % 2 + EFF[balanced-masks]))" ] ||
+    fatal "Embedded masking requires 2 * N > K rounded down to an even number + balanced; reduce --preprocessing-mask-pair-wires or increase --source-wires"
 fi
 
-# Derived sizes (the library conventions, computed here so they are pinned in
-# the log): |C| = |D| = round(n (log2 n)^2), s = round(n log2 n),
-# slice_gates = 10 * 2n, rg_freq = 1.
-read -r M_CD S_SL SLICE_G <<< "$(python3 -I - "$N" "$MCD" <<'EOF'
+# ---- stage-3 schedule ----
+case "$SCHEDULE" in
+  validated)
+    for f in growth-work-units hold-work-units target-size-factor; do
+      [ "${SEEN[--db-mixing-$f]+x}" != x ] ||
+        fatal "--db-mixing-$f is set by schedule validated; remove it or use --db-mixing-schedule custom"
+    done
+    PROFILE=2,2,2,2,2 ;;
+  custom)
+    GROWTH=$(bounded_number --db-mixing-growth-work-units "${GROWTH:-3}" 0 10000 1) || exit 2
+    HOLD=$(bounded_number --db-mixing-hold-work-units "${HOLD:-27}" 0 10000 0) || exit 2
+    EXPAND=$(bounded_number --db-mixing-target-size-factor "${EXPAND:-2}" 1 16 1) || exit 2
+    PROFILE=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:]); n1=n0+h; print(f'{n0:g},{n1:g},{n1:g},{r:g},{r:g}')" "$GROWTH" "$HOLD" "$EXPAND") ;;
+  *) fatal "--db-mixing-schedule must be validated or custom" ;;
+esac
+
+# ---- stage-4 parameters ----
+PACK_WINDOW_GATES=$(bounded_uint --packing-window-gates "$PACK_WINDOW_GATES" 1 1000000)
+PACK_INTERVAL_CAP=$(bounded_uint --packing-interval-cap "$PACK_INTERVAL_CAP" 1 1000000)
+PACK_MONOMIAL_BUDGET=$(bounded_uint --packing-monomial-budget "$PACK_MONOMIAL_BUDGET" 1 1000000000)
+PACK_SPAN_CAP=$(bounded_uint --packing-span-cap "$PACK_SPAN_CAP" 1 1000000000)
+PACK_SPLIT_BUDGET=$(bounded_uint --packing-split-budget "$PACK_SPLIT_BUDGET" 1 1000000000)
+PACK_FIX_ITERATIONS=$(bounded_uint --packing-fix-iterations "$PACK_FIX_ITERATIONS" 0 1000)
+PACK_FALLBACK_ITERATIONS=$(bounded_uint --packing-fallback-iterations "$PACK_FALLBACK_ITERATIONS" 0 1000)
+case "$PACK_CAP_SEM" in cpython39|canonical) ;; *) fatal "--packing-anf-cap-semantics must be cpython39 or canonical" ;; esac
+[ "$STOP_AFTER" -lt 4 ] || [ "$N" -le 256 ] || fatal "stage 4 supports source wires up to 256"
+PACKFLAGS=()
+pf() { [ "$2" = "$3" ] || PACKFLAGS+=("$1" "$2"); }
+pf --window-gates "$PACK_WINDOW_GATES" 512
+pf --interval-cap "$PACK_INTERVAL_CAP" 512
+pf --monomial-budget "$PACK_MONOMIAL_BUDGET" 24576
+pf --span-cap "$PACK_SPAN_CAP" 3000
+pf --split-budget "$PACK_SPLIT_BUDGET" 65536
+pf --fix-iterations "$PACK_FIX_ITERATIONS" 4
+pf --fallback-iterations "$PACK_FALLBACK_ITERATIONS" 4
+pf --anf-cap-semantics "$PACK_CAP_SEM" cpython39
+[ "$PACK_ALLOW_FLOOR" = 0 ] || PACKFLAGS+=(--allow-floor-miss)
+[ "$PACK_ALLOW_BUDGET" = 0 ] || PACKFLAGS+=(--allow-over-budget)
+
+# ---- source size (§2.4) ----
+if [ -n "$SOURCE_PATH" ]; then
+  [ -s "$SOURCE_PATH" ] || fatal "--source-path $SOURCE_PATH is not a readable file"
+  [ -n "$MCD" ] || fatal "--source-path needs --source-gates (its gate count)"
+  SOURCE_PATH=$(cd "$(dirname "$SOURCE_PATH")" && pwd)/$(basename "$SOURCE_PATH")
+fi
+case "$MCD_RULE" in validated|formula) ;; *) fatal "--source-gates-rule must be validated or formula" ;; esac
+validated_gates() { case "$1" in 64) echo 1000 ;; 128) echo 3000 ;; *) echo "" ;; esac; }
+if [ -n "$MCD" ]; then
+  [ "${SEEN[--source-gates-rule]+x}" != x ] || fatal "--source-gates and --source-gates-rule are exclusive"
+  MCD=$(bounded_uint --source-gates "$MCD" 1 1000000000)
+  if [ "$(validated_gates "$N")" = "$MCD" ]; then MCD_RULE=validated; else MCD_RULE=explicit; fi
+elif [ "$MCD_RULE" = validated ]; then
+  MCD=$(validated_gates "$N")
+  [ -n "$MCD" ] || fatal "no validated source size for n=$N; set --source-gates or --source-gates-rule formula"
+fi
+read -r M_CD S_SL SLICE_G <<< "$(python3 -I - "$N" "${MCD:-0}" <<'EOF'
 import math, sys
 n, mcd = int(sys.argv[1]), int(sys.argv[2])
 l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
-# Record the complete stage-2 implementation and selected environment. This
-# prevents silently resuming a different binary, source, or comparison override.
-STAGE12_FINGERPRINT=$(python3 -I - "$BIN/gen_sandwich_gadget" <<'PYHASH'
-import hashlib, json, os, sys
-h = hashlib.sha256()
-with open(sys.argv[1], 'rb') as source:
-    for chunk in iter(lambda: source.read(1024 * 1024), b''):
-        h.update(chunk)
-controls = {key: value for key, value in os.environ.items() if key.startswith(('EMBEDDED_MASKING_', 'PROD_')) or key == 'SANDWICH_VARIANT'}
-h.update(json.dumps(controls, sort_keys=True).encode())
-source_path = os.environ.get('TDP_SOURCE_C')
-if source_path:
-    with open(source_path, 'rb') as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b''):
-            h.update(chunk)
-print(h.hexdigest())
-PYHASH
-)
-STAGE12_RECIPE=(
-  "tdp_stage12_recipe=6"
-  "implementation_sha256=$STAGE12_FINGERPRINT"
-  "sandwich_variant=${SANDWICH_VARIANT:-classic}"
-  "preprocessing_mode=$PREPROCESSING_MODE"
-  "n=$N"
-  "m_cd=$M_CD"
-  "s=$S_SL"
-  "slice_gates=$SLICE_G"
-  "rg_freq=1"
-)
-# Embedded masking knobs are part of the stage-2 identity (a different K/max_open/balanced
-# is a different gadget); appended only for that mode so other modes' markers keep their shape
-if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
-  STAGE12_RECIPE+=("mask_pair_wires=$EMBEDDED_MASKING_K" "max_open_masks=$EMBEDDED_MASKING_MAX_OPEN" "balanced_masks=$EMBEDDED_MASKING_BALANCED" "min_open_masks=$EMBEDDED_MASKING_MIN_OPEN")
-  STAGE12_RECIPE+=("shuffling_segments=$EMBEDDED_MASKING_SHUFFLING" "shuffling_return_home=$EMBEDDED_MASKING_SHUFFLING_RETURN_HOME")
+
+# Renamed stage artifacts must not make an existing legacy run look fresh.
+for legacy_artifact in gss_command.conf gss.mpmct1; do
+  [ ! -e "$RUN/$legacy_artifact" ] ||
+    fatal "$RUN contains legacy GSS artifact $legacy_artifact; use a fresh run directory or the checkout that created it"
+done
+[ ! -e "$RUN/SEED" ] ||
+  fatal "$RUN was created by recipe v9 (a one-line SEED file); resume it with the checkout that created it"
+
+BIN=${TDP_BIN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/target/release}
+need=(gen_sandwich_gadget circuit_mixer)
+[ "$STOP_AFTER" -lt 4 ] || need+=(tdp_packing)
+for b in "${need[@]}"; do
+  [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first" >&2; exit 1; }
+done
+
+# ---- seeds (§8): $RUN/SEEDS, format 2, private ----
+U63=9223372036854775792
+parse_seeds() { # FILE -> sets GEN_SEED MIX_SEED SEED_SOURCE; never prints values
+  local f=$1 lines
+  { [ -f "$f" ] && [ "$(wc -c < "$f")" -le 512 ]; } || fatal "$f is not a valid SEEDS file"
+  mapfile -t lines < "$f"
+  { [ "${#lines[@]}" -eq 5 ] && [ "${lines[0]}" = seeds_format=2 ] &&
+    [[ ${lines[1]} =~ ^gen_seed=([0-9]+)$ ]] && GEN_SEED=${BASH_REMATCH[1]} &&
+    [[ ${lines[2]} =~ ^mix_seed=([0-9]+)$ ]] && MIX_SEED=${BASH_REMATCH[1]} &&
+    [[ ${lines[3]} =~ ^run_key=[0-9a-f]{64}$ ]] &&
+    [[ ${lines[4]} =~ ^seed_source=(random|explicit)$ ]] && SEED_SOURCE=${BASH_REMATCH[1]}; } ||
+    fatal "$f is malformed (expected seeds_format=2, gen_seed=, mix_seed=, run_key=<64 hex>, seed_source=)"
+  GEN_SEED=$(bounded_uint gen_seed "$GEN_SEED" 0 "$U63" 2>/dev/null) || fatal "$f: gen_seed out of range"
+  MIX_SEED=$(bounded_uint mix_seed "$MIX_SEED" 0 "$U63" 2>/dev/null) || fatal "$f: mix_seed out of range"
+}
+read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX
+  local f=$1 lines l mode
+  [ -f "$f" ] || fatal "--seed-file $f is not a regular file"
+  [ "$(wc -c < "$f")" -le 256 ] || fatal "--seed-file $f is too large (maximum 256 bytes)"
+  mode=$(python3 -I -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$f")
+  [ $((8#$mode & 8#077)) -eq 0 ] || fatal "--seed-file $f must not be accessible by group/other (chmod 600)"
+  mapfile -t lines < "$f"
+  if [ "${#lines[@]}" -eq 1 ] && [[ ${lines[0]} =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
+    fatal "seed file format 1 holds one seed; recipe v10 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
+  fi
+  EXPL_GEN=""; EXPL_MIX=""
+  for l in "${lines[@]}"; do
+    if [[ $l =~ ^gen_seed=([0-9]+)$ ]] && [ -z "$EXPL_GEN" ]; then EXPL_GEN=${BASH_REMATCH[1]}
+    elif [[ $l =~ ^mix_seed=([0-9]+)$ ]] && [ -z "$EXPL_MIX" ]; then EXPL_MIX=${BASH_REMATCH[1]}
+    elif [ -n "$l" ]; then fatal "--seed-file $f: unexpected line (only gen_seed= and mix_seed=)"
+    fi
+  done
+  { [ -n "$EXPL_GEN" ] && [ -n "$EXPL_MIX" ]; } || fatal "--seed-file $f needs both gen_seed= and mix_seed="
+  EXPL_GEN=$(bounded_uint gen_seed "$EXPL_GEN" 0 "$U63" 2>/dev/null) || fatal "--seed-file: gen_seed out of range 0..$U63"
+  EXPL_MIX=$(bounded_uint mix_seed "$EXPL_MIX" 0 "$U63" 2>/dev/null) || fatal "--seed-file: mix_seed out of range 0..$U63"
+}
+[ -z "$SEED_FILE" ] || read_seed_file "$SEED_FILE"
+
+mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
+GADGET=$RUN/tdp.mpmct1
+DB_MIXING=$RUN/db_mixing.mpmct1
+SEEDS=$RUN/SEEDS
+STAGE12_RECIPE_FILE=$RUN/stage12.recipe
+LOGALL=$RUN/tdp_gen.log
+note() { echo "[tdp_gen] $*" | tee -a "$LOGALL"; }
+[ -s "$GADGET" ] || FORCE_FROM=2
+if [ -e "$SEEDS" ]; then
+  parse_seeds "$SEEDS"
+  if [ -n "$SEED_FILE" ] && { [ "$EXPL_GEN" != "$GEN_SEED" ] || [ "$EXPL_MIX" != "$MIX_SEED" ]; }; then
+    fatal "--seed-file conflicts with the existing $SEEDS; use the original seeds or a fresh run directory"
+  fi
+  SEED_SRC="RESUMED from $SEEDS ($SEED_SOURCE)"
+else
+  [ ! -s "$GADGET" ] || fatal "existing stage-2 artifact has no SEEDS; use a fresh run directory"
+  KEY=$(python3 -I -c 'import secrets; print(secrets.token_hex(32))')
+  if [ -n "$SEED_FILE" ]; then
+    GEN_SEED=$EXPL_GEN; MIX_SEED=$EXPL_MIX; SEED_SOURCE=explicit
+  else
+    read -r GEN_SEED MIX_SEED < <(python3 -I -c "import secrets; print(secrets.randbelow($U63 + 1), secrets.randbelow($U63 + 1))")
+    SEED_SOURCE=random
+  fi
+  ( umask 077; set -o noclobber
+    printf 'seeds_format=2\ngen_seed=%s\nmix_seed=%s\nrun_key=%s\nseed_source=%s\n' \
+      "$GEN_SEED" "$MIX_SEED" "$KEY" "$SEED_SOURCE" > "$SEEDS" ) || fatal "cannot create $SEEDS"
+  unset KEY
+  SEED_SRC="NEW ($SEED_SOURCE) in $SEEDS"
 fi
+[ "$SEED_SOURCE" = random ] || SEED_SRC="$SEED_SRC — EXPLICIT: calibration only, NOT a deliverable"
+umask 077
+
+# ---- stage launcher: empty environment + allow-list + recipe variables ----
+ALLOW_ENV=(PATH="$PATH" HOME="${HOME:-/}" LANG=C LC_ALL=C)
+[ -z "${TMPDIR:-}" ] || ALLOW_ENV+=(TMPDIR="$TMPDIR")
+[ -z "$THREADS" ] || ALLOW_ENV+=(RAYON_NUM_THREADS="$THREADS")
+RECIPE_ENV=()
+stage_exec() { env -i "${ALLOW_ENV[@]}" ${RECIPE_ENV[@]+"${RECIPE_ENV[@]}"} "$@"; }
+gates_of() { head -1 "$1" | awk '{print $3}'; }
+mac() { python3 -I "$LIB/run_mac.py" "$SEEDS" "$@"; }
+sha_of() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
+
+# ---- stage-2 identity marker (tdp_stage12_recipe=7) ----
+STAGE12_RECIPE=(
+  "tdp_stage12_recipe=7"
+  "gen_binary_sha256=$(sha_of "$BIN/gen_sandwich_gadget")"
+  "sandwich_variant=classic"
+  "preprocessing_mode=$PREPROCESSING_MODE"
+  "preprocessing_preset=$PRESET"
+)
+if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
+  for k in "${KNOB_ORDER[@]}"; do STAGE12_RECIPE+=("preprocessing_${k//-/_}=${EFF[$k]}"); done
+fi
+gen_env_text=$(printf '%s,' ${GEN_ENV[@]+"${GEN_ENV[@]}"}); gen_env_text=${gen_env_text%,}
+STAGE12_RECIPE+=(
+  "stage2_env=${gen_env_text:-none}"
+  "gadget_seed_rule=gen"
+  "n=$N" "m_cd=$M_CD" "source_gates_rule=$MCD_RULE" "s=$S_SL" "slice_gates=$SLICE_G" "rg_freq=1"
+  "source=$([ -n "$SOURCE_PATH" ] && echo path || echo generated)"
+  "$(mac --seeds)"
+)
+[ -z "$SOURCE_PATH" ] || STAGE12_RECIPE+=("$(mac source="$SOURCE_PATH")")
 if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
-  [ -s "$STAGE12_RECIPE_FILE" ] || {
-    echo "FATAL: existing stage-2 artifact has no recipe marker; rerun with --run-rerun-from-stage 2" >&2
-    exit 2
-  }
-  mapfile -t stored_stage12_recipe < "$STAGE12_RECIPE_FILE"
-  [ "${#stored_stage12_recipe[@]}" -eq "${#STAGE12_RECIPE[@]}" ] || {
-    echo "FATAL: existing stage-2 recipe marker is malformed; rerun with --run-rerun-from-stage 2" >&2
-    exit 2
-  }
-  for recipe_index in "${!STAGE12_RECIPE[@]}"; do
-    [ "${stored_stage12_recipe[$recipe_index]}" = "${STAGE12_RECIPE[$recipe_index]}" ] || {
-      echo "FATAL: existing stage-2 recipe does not match the requested mode or dimensions; use a fresh run directory or --run-rerun-from-stage 2" >&2
-      exit 2
-    }
+  [ -s "$STAGE12_RECIPE_FILE" ] ||
+    fatal "existing stage-2 artifact has no recipe marker; rerun with --run-rerun-from-stage 2"
+  mapfile -t stored < "$STAGE12_RECIPE_FILE"
+  [ "${#stored[@]}" -eq "${#STAGE12_RECIPE[@]}" ] ||
+    fatal "existing stage-2 recipe marker does not match (recipe, seeds or binary); use a fresh run directory or --run-rerun-from-stage 2"
+  for i in "${!STAGE12_RECIPE[@]}"; do
+    [ "${stored[$i]}" = "${STAGE12_RECIPE[$i]}" ] ||
+      fatal "existing stage-2 recipe does not match the requested mode, preset, dimensions, seeds or binary; use a fresh run directory or --run-rerun-from-stage 2"
   done
 fi
-gates_of() { python3 -I -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
 
-note "run=$RUN n=$N preprocessing_mode=$PREPROCESSING_MODE |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs $PIECE_DESCRIPTION${PIECE_THREADS:+ piece_threads=$PIECE_THREADS}"
-# The seed goes to the run dir, NOT to the shared narrative log: it is the
-# secret that regenerates C.
-note "seed source: $SEED_SRC (value in $RUN/SEED)"
-umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
+size_note=""; [ "$MCD_RULE" != formula ] || size_note=" UNVALIDATED SIZE"
+note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) s=$S_SL slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION"
+note "seeds: $SEED_SRC (values never printed)"
+for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache sizes are set by the driver (output-neutral)"; done
 
-DB_MIXING=$RUN/db_mixing.mpmct1
-
-# ---- stages 1+2: sandwich + selected gadgetization ----
+# ---- stages 1+2: sandwich + preprocessing ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
-  if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
-    # Embedded masking (LGI compute) reads its knobs from env: K (LGI mask width),
-    # max_open (open-mask cap, 3), balanced (1). Rerand stays at the auto preset
-    # (m/4K straddle burst slots x F=8K gates, no repair).
-    note "stage 1+2: gen_sandwich_gadget (mode=$PREPROCESSING_MODE, EMBEDDED_MASKING_K=${EMBEDDED_MASKING_K:-2}, max_open=${EMBEDDED_MASKING_MAX_OPEN:-3}, min_open=${EMBEDDED_MASKING_MIN_OPEN:-2}, balanced=${EMBEDDED_MASKING_BALANCED:-1}, quad-fire, rerand=auto burst slots m/4K x F=8K, min_mask=auto)"
+  RECIPE_ENV=(${GEN_ENV[@]+"${GEN_ENV[@]}"})
+  [ -z "$SOURCE_PATH" ] || RECIPE_ENV+=(TDP_SOURCE_C="$SOURCE_PATH")
+  GEN_ARGS=("$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" "$GEN_SEED" "$GEN_SEED" "$GEN_SEED")
+  [ "$PREPROCESSING_MODE" = embedded-masking ] || GEN_ARGS+=("$PREPROCESSING_MODE")
+  note "stage 1+2: gen_sandwich_gadget (mode=$PREPROCESSING_MODE preset=$PRESET env: ${gen_env_text:-none})"
+  rm -f "$STAGE12_RECIPE_FILE" "$RUN/stage2_mult.txt" "$RUN/stage2_span.txt" "$RUN/stage2_span.tsv"
+  stage_exec "$BIN/gen_sandwich_gadget" "${GEN_ARGS[@]}" > "$RUN/stage12.log" 2>&1 ||
+    { note "stage 1+2 FAILED; see $RUN/stage12.log"; exit 1; }
+  banner=$(head -1 "$RUN/stage12.log")
+  if [[ $banner =~ \ seed=([0-9]+)\ gadget_seed=([0-9]+)\ sandwich_seed=([0-9]+) ]] &&
+     [ "${BASH_REMATCH[1]}" = "$GEN_SEED" ] && [ "${BASH_REMATCH[2]}" = "$GEN_SEED" ] &&
+     [ "${BASH_REMATCH[3]}" = "$GEN_SEED" ]; then
+    note "gen seeds: verified"
   else
-    note "stage 1+2: gen_sandwich_gadget (mode=$PREPROCESSING_MODE; zero-slice preprocessing)"
+    rm -f "$GADGET"; fatal "gen used a different seed than SEEDS (or printed no banner); stage-2 artifact removed"
   fi
-  "$BIN/gen_sandwich_gadget" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" \
-      "$SEED" "$((SEED + 1))" "$SEED" "$PREPROCESSING_MODE" > "$RUN/stage12.log" 2>&1
   printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
   mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
+  [ "$FORCE_FROM" -le 3 ] || FORCE_FROM=3
   note "stage 1+2 done: TDP $(gates_of "$GADGET") gates (S: $(gates_of "$GADGET.sandwich.mpmct1"))"
 else
   note "stage 1+2: $GADGET exists, skipping"
 fi
-[ "$STOP_AFTER" -le 2 ] && { note "stopped after stage 2"; exit 0; }
 
-# ---- stage 3: circuit_mixer db_mixing (--tdp --db-mixing --profile) ----
+# ---- stage-2 side reports (report-only, val_chain.sh lines 24-27) ----
+SIDE_PIDS=()
+if [ ! -s "$RUN/stage2_mult.txt" ] && [ -x "$BIN/tdp_packing" ]; then
+  ( RECIPE_ENV=(); stage_exec "$BIN/tdp_packing" mult-census "$GADGET" tdp > "$RUN/stage2_mult.txt" 2>&1 ||
+      echo "[tdp_gen] note: stage2_mult failed (report only)" >> "$LOGALL" ) &
+  SIDE_PIDS+=($!)
+fi
+if [ ! -s "$RUN/stage2_span.txt" ]; then
+  if [ -x "$BIN/hmap_affine" ]; then
+    STEP=$([ "$N" = 64 ] && echo 64 || echo 256)
+    ( RECIPE_ENV=(SPAN_OUTPUTS_TRIVIAL=1 SPAN_INTERSECT="$RUN/stage2_span.tsv")
+      stage_exec "$BIN/hmap_affine" --c "$GADGET.source_c.g57" --c-format g57 --g "$GADGET" --n "$N" \
+        --exposure --c-step 1 --g-step "$STEP" --out "$RUN/stage2_span" 2>&1 | grep "\[span\]" > "$RUN/stage2_span.txt" ||
+        echo "[tdp_gen] note: stage2_span failed (report only)" >> "$LOGALL" ) &
+    SIDE_PIDS+=($!)
+  else
+    note "stage2_span skipped (hmap_affine not built; cargo build --release --features security-tools --bin hmap_affine)"
+  fi
+fi
+wait_side() { local p; for p in ${SIDE_PIDS[@]+"${SIDE_PIDS[@]}"}; do wait "$p" || true; done; SIDE_PIDS=(); }
+if [ "$STOP_AFTER" -le 2 ]; then wait_side; note "stopped after stage 2"; exit 0; fi
+
+# ---- stage 3: circuit_mixer db_mixing ----
 if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
   if [ -z "${FROZEN_DB_DIR:-}" ] && [ "${TDP_GEN_ALLOW_EMPTY_STORE:-0}" != "1" ]; then
-    echo "FATAL: stage 3 needs FROZEN_DB_DIR (or TDP_GEN_ALLOW_EMPTY_STORE=1 for a plumbing test)"; exit 1
+    echo "FATAL: stage 3 needs FROZEN_DB_DIR (or TDP_GEN_ALLOW_EMPTY_STORE=1 for a plumbing test)" >&2; exit 1
   fi
   G_IN=$(gates_of "$GADGET")
-  read -r PROFILE A_MOVES <<< "$(python3 -I - "$EXPAND" "$HOLD" "$G_IN" <<'EOF'
-import sys
-r1, hold, g = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
-# No compression leg (2026-08-17): it only simplified the circuit. It made
-# sense when db_mixing was the whole pipeline; with packing following, the run
-# ends at the held size (N2 = N1, R2 = R1 — a zero-length leg is valid,
-# prof_target never enters the interpolation branch).
-n0 = 3.0
-n1 = n0 + hold; n2 = n1
-r2 = r1
-# move ceiling: effs x peak size x margin
-print(f"{n0:g},{n1:g},{n2:g},{r1:g},{r2:g}", round(n2 * r1 * g * 1.3))
-EOF
-)"
-  note "stage 3: circuit_mixer db_mixing --tdp --db-mixing --profile $PROFILE (moves ceiling $A_MOVES, $PIECE_DESCRIPTION)"
-  export CANON_RULE_L_BRANCH_CAP=${CANON_RULE_L_BRANCH_CAP:-512}
-  export CANON_MONOMIAL_CAP=${CANON_MONOMIAL_CAP:-200000}
-  # Lookup-cache headroom for long runs (512MB default never overflows at 200k
-  # moves but 1M+ move runs would epoch-reset; 2GB is <1% of a server's RAM).
-  export LOOKUP_CACHE_MB=${LOOKUP_CACHE_MB:-2048}
-  # FROZEN_FILTER (measured on .32, 2026-08-09): on PRODUCTION runs (fresh
-  # seed, filters.bin page-cached) the in-RAM miss filter cuts db_mixing wall
-  # ~33% at 200k moves and the win grows ~0.30s/1k moves, against a fixed
-  # ~13s cached load. Same-seed reruns (+19%) and fully-cold caches (+41%)
-  # lose — hence the RAM gate and the background prewarm below.
-  if [ -z "${FROZEN_FILTER:-}" ] && [ -n "${FROZEN_DB_DIR:-}" ] \
-     && [ "$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)" -ge 60 ]; then
-    export FROZEN_FILTER=1
-    # Warm the filter files while gen/stage-2 artifacts are checked; a cached
-    # load is ~13s vs ~107s cold.
-    { cat "$FROZEN_DB_DIR/filters.bin" > /dev/null 2>&1 & } 2>/dev/null
-    note "FROZEN_FILTER=1 (auto: >=60GB available; prewarming filters.bin in background)"
+  if [ "$SCHEDULE" = validated ]; then
+    A_MOVES=$(python3 -I -c "import sys; G=int(sys.argv[1]); print(int(G*2*2*1.3))" "$G_IN")
+  else
+    A_MOVES=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:4]); G=int(sys.argv[4]); print(int((n0+h)*r*G*1.3))" "$GROWTH" "$HOLD" "$EXPAND" "$G_IN")
   fi
-  export MIXER_STOP_FLAG=$RUN/stage3.stop MIXER_DUMP_FLAG=$RUN/stage3.dump
-  rm -f "$MIXER_STOP_FLAG"
-  # Plumbing-test mode: circuit_mixer hard-requires the store whenever the DB
-  # move is armed, so the bypass zeroes it (a true null plant — the profile
-  # still walks its eff schedule, no re-encoding happens).
+  RECIPE_ENV=(FROZEN_REGULAR_VALUE_CONVENTION=native LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
+              XPOLY_CANON_CACHE_MB=1024 MIXER_STOP_FLAG="$RUN/stage3.stop" MIXER_DUMP_FLAG="$RUN/stage3.dump")
+  rm -f "$RUN/stage3.stop"
   DBFLAGS=(--p-db 1.0)
-  if [ -z "${FROZEN_DB_DIR:-}" ]; then
+  FILTER_NOTE=""
+  if [ -n "${FROZEN_DB_DIR:-}" ]; then
+    RECIPE_ENV+=(FROZEN_DB_DIR="$FROZEN_DB_DIR")
+    # D11: FILTER_NEUTRALITY_RECORDED flips to 1 once a filtered/unfiltered
+    # db_mixing comparison is recorded (docs/STAGE4_RUST_DESIGN.md §10.9 item 6).
+    FILTER_NEUTRALITY_RECORDED=0
+    case "$FILTER" in
+      on) [ -s "$FROZEN_DB_DIR/filters.bin" ] || fatal "--database-lookup-miss-filter on needs $FROZEN_DB_DIR/filters.bin"
+          FF=1 ;;
+      off) FF=0 ;;
+      auto)
+        if [ ! -s "$FROZEN_DB_DIR/filters.bin" ]; then FF=1   # the reference situation: the mixer runs unfiltered
+        elif [ "$FILTER_NEUTRALITY_RECORDED" = 1 ]; then
+          avail=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo 2>/dev/null ||
+                  vm_stat | awk '/page size of/{ps=$8} /Pages free|Pages inactive|Pages speculative/{gsub("\\.","",$NF); s+=$NF} END{print int(s*ps/1073741824)}')
+          if [ "${avail:-0}" -ge 60 ]; then FF=1; else FF=0; fi
+        else FF=0
+        fi ;;
+    esac
+    RECIPE_ENV+=(FROZEN_FILTER=$FF)
+    FILTER_NOTE=" FROZEN_FILTER=$FF ($FILTER)"
+  else
     DBFLAGS=(--p-db 0)
     note "WARNING: empty-store plumbing mode — db_mixing performs NO re-encoding"
   fi
   QCFLAGS=()
-  if [ "${DB_QC:-0}" = "1" ]; then
-    QCFLAGS=(--leakage-repair --leakage-repair-seed "${DB_QC_SEED:-20803}" --leakage-repair-report "$RUN/db_mixing.leakage_repair.txt")
-    if [ -n "${DB_QC_REFERENCE:-}" ]; then
-      QCFLAGS+=(--leakage-repair-reference "$DB_QC_REFERENCE")
-    fi
+  if [ "$QC" = 1 ]; then
+    QCFLAGS=(--leakage-repair --leakage-repair-seed "$QC_SEED" --leakage-repair-report "$RUN/db_mixing.leakage_repair.txt")
+    [ -z "$QC_REF" ] || QCFLAGS+=(--leakage-repair-reference "$QC_REF")
     note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
   fi
-  "$BIN/circuit_mixer" --input "$GADGET" --tdp --db-mixing --profile "$PROFILE" \
-      --moves "$A_MOVES" --seed "$((SEED + 2))" \
-      "${DBFLAGS[@]}" \
-      "${QCFLAGS[@]}" \
-      ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} \
+  note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES (schedule $SCHEDULE, $PIECE_DESCRIPTION)$FILTER_NOTE"
+  # val_chain.sh's argv, in its order; optional flags only when enabled.
+  stage_exec "$BIN/circuit_mixer" --input "$GADGET" --output "$DB_MIXING" --tdp --db-mixing \
+      --profile "$PROFILE" --moves "$A_MOVES" "${DBFLAGS[@]}" \
       --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
-      --no-local-verify --verify-every 2000000 --report-every 100000 \
-      --state-out "$RUN/db_mixing.state" --output "$DB_MIXING" > "$RUN/stage3.log" 2>&1
-  note "stage 3 done: $(gates_of "$DB_MIXING") gates ($(grep -c '^\[circuit_mixer\] mv=' "$RUN/stage3.log" 2>/dev/null || true) report points)"
+      --no-local-verify --seed "$MIX_SEED" \
+      ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} > "$RUN/stage3.log" 2>&1 ||
+    { note "stage 3 FAILED; see $RUN/stage3.log"; exit 1; }
+  [ "$FORCE_FROM" -le 4 ] || FORCE_FROM=4
+  note "stage 3 done: $(gates_of "$DB_MIXING") gates"
 else
   note "stage 3: $DB_MIXING exists, skipping"
 fi
-note "PIPELINE COMPLETE (stages 1-3): $DB_MIXING"
-# Stage 4 (packing) is not driven from here yet; see docs/tdp_pipeline.md.
-note "stage 4 (packing) is not run by this driver: pack $DB_MIXING with the scripts/windowed_delivery/ prototypes (docs/tdp_pipeline.md)"
+if [ "$STOP_AFTER" -le 3 ]; then
+  wait_side; note "PIPELINE STOPPED after stage 3: $DB_MIXING"; exit 0
+fi
+
+# ---- stage 4: tdp_packing run (windowed ANF delivery) ----
+PACK_DIR=$RUN/packing; MARKER=$RUN/packing.recipe
+stage4_exit_meaning() {
+  case "$1" in
+    2) echo "usage or parameter error" ;; 3) echo "input error" ;;
+    4) echo "verification failure" ;; 5) echo "exposure floor missed" ;;
+    6) echo "over budget" ;; 7) echo "I/O error writing outputs" ;;
+    8) echo "internal invariant violated" ;; 101) echo "panic" ;; *) echo "unknown exit code" ;;
+  esac
+}
+expected_marker() {
+  echo "packing_recipe=1"
+  echo "tdp_packing_sha256=$(sha_of "$BIN/tdp_packing")"
+  echo "params=$(IFS=' '; echo "${PACKFLAGS[*]:-default}")"
+  mac stage2="$GADGET" stage3="$DB_MIXING" source_c="$GADGET.source_c.g57"
+}
+stage4_done=0
+if [ "$FORCE_FROM" -gt 4 ] && [ -s "$MARKER" ]; then
+  exp=$(expected_marker)
+  nexp=$(printf '%s\n' "$exp" | wc -l | tr -d ' ')
+  if [ "$(head -n "$nexp" "$MARKER")" = "$exp" ] && [ -s "$PACK_DIR/deliverable.tdp4" ] &&
+     [ "$(sed -n "$((nexp + 1))p" "$MARKER")" = "$(mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4")" ]; then
+    stage4_done=1
+    note "stage 4: $PACK_DIR/deliverable.tdp4 matches its completion marker, skipping"
+  else
+    note "stage 4: completion marker does not match inputs/parameters/binary/deliverable; re-running stage 4"
+  fi
+fi
+if [ "$stage4_done" -eq 0 ]; then
+  rm -f "$MARKER"; rm -rf "$PACK_DIR"
+  THREADFLAGS=(); [ -z "$THREADS" ] || THREADFLAGS=(--threads "$THREADS")
+  note "stage 4: tdp_packing run (window gates $PACK_WINDOW_GATES, split budget $PACK_SPLIT_BUDGET, caps $PACK_CAP_SEM${PACKFLAGS[*]:+; flags ${PACKFLAGS[*]}})"
+  RECIPE_ENV=()
+  set +e
+  stage_exec "$BIN/tdp_packing" run --stage2 "$GADGET" --stage3 "$DB_MIXING" --source-c "$GADGET.source_c.g57" \
+      --n "$N" --out-dir "$PACK_DIR" ${PACKFLAGS[@]+"${PACKFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} \
+      > "$RUN/stage4.log" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    wait_side
+    note "stage 4 FAILED: exit $rc ($(stage4_exit_meaning "$rc")); see $RUN/stage4.log"
+    exit "$rc"
+  fi
+  status=$(sed -n 's/^status=//p' "$PACK_DIR/packing.report")
+  { expected_marker; mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4"; echo "status=$status"; } > "$MARKER.tmp"
+  mv "$MARKER.tmp" "$MARKER"
+fi
+wait_side
+status=$(sed -n 's/^status=//p' "$MARKER")
+if [ "$status" = ok ]; then
+  rm -f "$PACK_DIR/NOT_RECOMMENDED"
+  note "PIPELINE COMPLETE (stages 1-4): $PACK_DIR/deliverable.tdp4"
+else
+  : > "$PACK_DIR/NOT_RECOMMENDED"
+  note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (status=$status): $PACK_DIR/deliverable.tdp4 is NOT a recommended deliverable"
+fi

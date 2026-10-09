@@ -1,70 +1,77 @@
 # TDP pipeline: the single default recipe and annotated configuration template.
 # Copy to configs/local.toml for your paths/settings; local*.toml is ignored.
-# Every managed setting is shown, including optional settings as comments.
 # Relative paths are resolved from the repository root, not this directory.
 # Check: cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
 # Run:   cargo run --release --locked -- tdp_gen --config configs/local.toml
 # Full explanations and shell-flag mapping: docs/tdp_pipeline.md.
-# Four-stage pipeline: 1 sandwich + 2 preprocessing (one step), 3 db_mixing,
-# 4 packing. This driver runs stages 1-3 and ends at db_mixing.mpmct1; stage 4
-# (packing) still runs from the scripts/windowed_delivery/ prototypes.
-config_version = 1  # required TOML schema version (distinct from saved recipe v9)
+#
+# Four stages: 1 sandwich + 2 preprocessing (one step), 3 db_mixing, 4 packing
+# (windowed ANF delivery). The run ends with packing/deliverable.tdp4.
+#
+# Defaults reproduce val_chain.sh CONFIG=L8 as run for vL64a/b, vL128a/b
+# (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset L8, stage-3 schedule
+# `validated` (profile 2,2,2,2,2, serial), stage 4 G=512 / split budget 65536;
+# source.gates defaults to 1000 (n=64) / 3000 (n=128). No stage-2 or stage-3
+# knob is set here: a preset or schedule field next to `L8` / `validated` is
+# an error, so an old template cannot silently produce a hybrid recipe.
+config_version = 2  # required TOML schema version (distinct from the saved recipe v10)
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
-build_binaries = true  # bool; build the release stage binaries for fresh runs
+build_binaries = true  # bool; build gen_sandwich_gadget, circuit_mixer and tdp_packing for fresh runs
 # build_directory = "target"  # string; default CARGO_TARGET_DIR, otherwise target
-stop_after_stage = 3  # integer 2 or 3; steps 1 and 2 run together; old stages 4-6 are historic
-# rerun_from_stage = 3  # integer 2 or 3; redo this stage and subsequent reached stages
-# adopt_unverified_run = false  # retired compatibility field; true is rejected
+# stop_after_stage = 4  # integer 2, 3 or 4 [4]; steps 1 and 2 run together
+# rerun_from_stage = 3  # integer 2, 3 or 4; redo this stage and every later reached stage
+# threads = 8  # integer 1..1024; pins RAYON_NUM_THREADS and tdp_packing --threads
 
 [source]
-wires = 128  # integer 3..4095; logical wires of C, before sandwich/preprocessing
-# gates = 6272  # integer 1..1_000_000_000; default round(n * log2(n)^2)
-# path = "circuits/source.g57"  # string; load nonempty G57 C and infer its gate count
-# With path set, gates (if supplied) must match the file and all wires must fit.
+wires = 128  # integer 3..4095 (stage 4: at most 256); logical wires of C
+# gates = 3000  # integer; default: the validated table (64 -> 1000, 128 -> 3000);
+#               other wire counts need gates or gates_rule = "formula"
+# gates_rule = "formula"  # "validated" (default) or "formula" = round(n*log2(n)^2), UNVALIDATED
+# path = "circuits/source.g57"  # string; load nonempty G57 C (a CSPRNG-generated C for production)
 
 [database]
 # regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
-lookup_miss_filter = "auto"  # "auto" (>=60 GiB available RAM), "on", or "off"
+lookup_miss_filter = "auto"  # "auto", "on", or "off"
+# auto: FROZEN_FILTER=1 when the store has no filters.bin (the reference
+# situation: the mixer runs unfiltered); with filters.bin the filter stays off
+# until its output neutrality is recorded (docs/STAGE4_RUST_DESIGN.md D11).
 allow_no_database_for_tests = false  # bool; true requires clearing the DB path/env
-# Stage 3 needs regular_dir (the regular frozen store, used with --p-db 1.0).
-# Stores need tables.bin plus all 256 shard files. "on" also requires filters.bin.
 
 [preprocessing]
 mode = "embedded-masking"  # "embedded-masking" or "nonlinear291"
-mask_pair_wires = 2  # integer 2..64; paired band component (odd counts round down)
-max_open_masks = 3  # integer 2..64; ordinary open-mask scheduling cap
-min_open_masks = 2  # integer 1..63; covered-interval floor, strictly below max_open_masks
-balanced_masks = true  # bool; add an independent band variable to each mask function
-shuffling_segments = 0  # integer; 0 disables transfers, >=8 requests target-write segments per fire block
-shuffling_return_home = true  # bool; required when enabled to preserve fixed TDP data ports
-# The band must fit: 2*wires > 2*floor(mask_pair_wires/2) + int(balanced_masks).
-# nonlinear291: REMOVE all six mask/shuffling controls above; its distinct layout must
-# fit the physical wire budget. The default 128-wire source is too large for it.
+preset = "L8"  # "L8" (recommended), "A" (no bounded chains) or "custom"
+# preset = "custom" requires ALL of:
+# mask_pair_wires = 2  shuffling_segments = 8  premask = true  chain = 2
+# max_open_masks = 3   shuffling_return_home = false  seed_avoid_c1 = true  chain_len = 8
+# min_open_masks = 2   balanced_masks = true
+# nonlinear291: remove preset and every knob.
 
 [db_mixing]
-target_size_factor = 2.0  # number >1 and <=16; stage-3 target/incoming gate count
-hold_work_units = 27.0  # number 0..10000; hold after 3 growth work units
-# Defaults yield profile 3,30,30,2,2; each move adds 1/current_gate_count work units.
+schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) or "custom"
+# schedule = "custom" requires growth_work_units, hold_work_units, target_size_factor.
+
+[packing]
+# window_gates = 512  interval_cap = 512  monomial_budget = 24576  span_cap = 3000
+# split_budget = 65536  fix_iterations = 4  fallback_iterations = 4
+# anf_cap_semantics = "cpython39"  # "canonical" deviates from the oracle
+# allow_floor_miss = false  allow_over_budget = false  # true ships a NOT recommended deliverable
 
 [parallel]
-# pieces = 4  # integer 1..64; default 1 (serial); enables piecewise stage 3
+# pieces = 4  # integer 1..64; default 1 (serial); changes stage-3 bytes (not the validated recipe)
 # target_piece_gates = 100000  # integer 2..1_000_000_000; automatic piece sizing
-# Choose pieces OR target_piece_gates; they are mutually exclusive, even pieces=1.
 # threads = 5  # integer 1..1024; requires pieces>1 or target_piece_gates
-# Default threads: pieces+1 for fixed pieces; available CPU count for auto sizing.
 
 [leakage_repair]
 enabled = false  # bool; sampled gate-wise audit and equivalent DB repair after stage 3
-# seed = 20803  # nonnegative TOML integer; independent diagnostic/repair randomness
-# reference = "circuits/reference.mpmct1"  # string; default is stage-3 input
-# seed/reference require enabled=true. Reference must use matching input/wire
-# coordinates. Report: db_mixing.leakage_repair.txt. Existing stage-3 outputs are
-# skipped; enable this on a fresh run (recorded recipe settings cannot change).
+# seed = 20803  # nonnegative TOML integer
+# reference = "circuits/reference.mpmct1"  # string; default is the stage-3 input
 
 [calibration]
 enabled = false  # bool; mark this run as calibration-only and permit an explicit seed file
-# seed_file = "/private/path/seed"  # string; requires enabled=true; never store a seed here
-# File: <=64 bytes, one decimal integer 0..9223372036854775792, private (chmod 600).
-# Omit to use fresh OS randomness (or the protected SEED when continuing a run).
+# seed_file = "/private/path/seeds"  # string; requires enabled=true
+# File (format 2): <=256 bytes, private (chmod 600), two lines
+#   gen_seed=<0..9223372036854775792>
+#   mix_seed=<0..9223372036854775792>
+# Omit to draw fresh OS randomness; seeds are kept in the private $RUN/SEEDS.
