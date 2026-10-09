@@ -52,7 +52,8 @@ if name == "gen_sandwich_gadget":
     print(f"[gen] n={n} |C|={args[2]} |D|={args[3]} s={args[4]} rg_freq={args[5]} slice_gates={args[6]} "
           f"seed={seed} gadget_seed={gseed} sandwich_seed={sseed} gadgetization_mode=embedded-masking "
           f"sandwich_variant=classic")
-    Path(out).write_text(f"mpmct1 {4 * n} 1\n0 0 0\n")
+    g = int(opts.get("gen_gates", "1"))
+    Path(out).write_text(f"mpmct1 {4 * n} {g}\n" + "0 0 0\n" * g)
     Path(out + ".sandwich.mpmct1").write_text(f"mpmct1 {2 * n} 1\n0 0 0\n")
     Path(out + ".source_c.g57").write_text("c\n")
 elif name == "circuit_mixer":
