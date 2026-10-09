@@ -24,6 +24,11 @@
 //! tdp_packing eval   <file> (--format …) (--x HEX | --state HEX)
 //! tdp_packing container <body.bin> <out.tdp4> --source-wires N --state-wires M
 //! tdp_packing verify-equiv <A.mpmct1> <B.mpmct1> [--seed 77]
+//! tdp_packing pack-replay <packed.mpmct1> <packed.bounds> [b_mono=24576]
+//!                       [--anf-cap-semantics …] [--threads K]
+//!     replays the packer's incremental window ANF (WindowState, product cap
+//!     8·b_mono) over a packed circuit's windows: compose aborts (each must be
+//!     a window's last gate), order-dependent aborts, ambiguous products.
 //! ```
 //!
 //! `run`, `pack`, `repair`, `check-final` and `census` belong to later
@@ -174,6 +179,7 @@ fn dispatch(argv: &[String]) -> Result<(), Stage4Error> {
         "eval" => cmd_eval(&a),
         "container" => cmd_container(&a),
         "verify-equiv" => cmd_verify_equiv(&a),
+        "pack-replay" => cmd_pack_replay(&a),
         "run" | "pack" | "repair" | "check-final" | "census" => Err(Stage4Error::Usage(format!(
             "`{cmd}` is not implemented yet (docs/STAGE4_RUST_DESIGN.md §12)"
         ))),
@@ -707,6 +713,95 @@ fn cmd_verify_equiv(a: &Args) -> Result<(), Stage4Error> {
         a.pos[1],
         ca.gates.len(),
         cb.gates.len()
+    );
+    Ok(())
+}
+
+struct PackReplay<'a> {
+    gates: &'a [XGate],
+    cuts: &'a [usize],
+    mul_cap: usize,
+    sem: CapSemantics,
+}
+
+/// (aborts, aborts not at the window's last gate, windows with an ambiguous product, stats)
+type ReplayOut = (usize, usize, usize, MulStats);
+
+impl MonoWidthFn<ReplayOut> for PackReplay<'_> {
+    fn call<const W: usize>(self) -> ReplayOut {
+        use crate::stages::packing::anf::WindowState;
+        use rayon::prelude::*;
+        let per: Vec<(usize, usize, bool, MulStats)> = (0..self.cuts.len() - 1)
+            .into_par_iter()
+            .map(|wi| {
+                let (lo, hi) = (self.cuts[wi], self.cuts[wi + 1]);
+                let mut ws = WindowState::<W>::new(self.mul_cap);
+                let mut st = MulStats::default();
+                let (mut aborts, mut early) = (0, 0);
+                for gi in lo..hi {
+                    if !ws.compose(&self.gates[gi], self.sem, &mut st) {
+                        aborts += 1;
+                        if gi != hi - 1 {
+                            early += 1;
+                        }
+                        break;
+                    }
+                }
+                (aborts, early, st.ambiguous > 0, st)
+            })
+            .collect();
+        let mut out: ReplayOut = (0, 0, 0, MulStats::default());
+        for (a, e, amb, st) in per {
+            out.0 += a;
+            out.1 += e;
+            out.2 += amb as usize;
+            out.3.add(&st);
+        }
+        out
+    }
+}
+
+fn cmd_pack_replay(a: &Args) -> Result<(), Stage4Error> {
+    a.check_known(&["anf-cap-semantics", "threads"])?;
+    if a.pos.len() < 2 || a.pos.len() > 3 {
+        return Err(Stage4Error::Usage(
+            "pack-replay <packed.mpmct1> <packed.bounds> [b_mono=24576]".into(),
+        ));
+    }
+    setup_threads(a)?;
+    let sem = cap_semantics(a)?;
+    let circ = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    let bounds = read_bounds(Path::new(&a.pos[1]))?;
+    let b_mono = a
+        .pos
+        .get(2)
+        .map(|v| parse_u64(v, "b_mono"))
+        .transpose()?
+        .unwrap_or(24576) as usize;
+    let cuts = window_cuts(&bounds, circ.gates.len());
+    let nw = circ.computed_n.max(1);
+    if nw > 1024 {
+        return Err(Stage4Error::Usage(format!("{nw} wires: at most 1024")));
+    }
+    let (aborts, early, amb_windows, st) = with_mono_width(
+        nw,
+        PackReplay {
+            gates: &circ.gates,
+            cuts: &cuts,
+            mul_cap: 8 * b_mono,
+            sem,
+        },
+    );
+    println!(
+        "windows {} aborts {} (not at window end: {}) order_dependent {} windows_with_ambiguous_mul {} mul_calls {} ambiguous {} ({})",
+        cuts.len() - 1,
+        aborts,
+        early,
+        st.aborts_order_dependent,
+        amb_windows,
+        st.calls,
+        st.ambiguous,
+        sem.name()
     );
     Ok(())
 }

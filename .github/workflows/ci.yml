@@ -50,8 +50,9 @@ jobs:
           assert not names.intersection({'rocksdb', 'librocksdb-sys', 'rhai', 'pyo3', 'numpy', 'lmdb', 'lmdb-sys'}), names
           PY
 
+      # tdp_packing (stage 4) against Python-oracle fixtures in tests/fixtures/stage4.
       - name: Runtime and command correctness
-        run: cargo test --locked --lib --test circuit_cli
+        run: cargo test --locked --lib --test circuit_cli --test tdp_packing
 
       # The managed driver runs stages 1-3 of the four-stage TDP pipeline.
       - name: TDP script flags and block sizing

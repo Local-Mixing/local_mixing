@@ -17,20 +17,24 @@
 #          duplicate and out-of-range bounds, empty windows; oracle
 #          anf_dump_eval.py bodies, anf_compose.py reports at several budgets,
 #          and per-window window_anf decisions (anf_windows.py).
+#   container  48-byte container headers of every fixture body, from the
+#          standalone writer tests/manual/stage4/container_header.py.
 #
 # Seeds here are CALIBRATION values, never deliverable seeds.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 : "${HMAP_BASELINE:?}" "${ORACLE_PY:?}" "${WORK:?set WORK to a durable scratch directory}"
-PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf)
-STAMP=$(date +%Y%m%d_%H%M%S)
-SBR=$WORK/fixture_$STAMP
-RD=$(bash "$HERE/oracle_sandbox.sh" "$SBR")
-W=$RD/waist
-echo "sandbox: $SBR"
-
+PARTS=("$@"); [ ${#PARTS[@]} -eq 0 ] && PARTS=(n8_L8 anf container)
 want() { local p; for p in "${PARTS[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
+
+if want n8_L8 || want anf; then
+  STAMP=$(date +%Y%m%d_%H%M%S)
+  SBR=$WORK/fixture_$STAMP
+  RD=$(bash "$HERE/oracle_sandbox.sh" "$SBR")
+  W=$RD/waist
+  echo "sandbox: $SBR"
+fi
 
 if want n8_L8; then
   : "${CARGO_TARGET_DIR:?}" "${FROZEN_DB_DIR:?}"
@@ -89,5 +93,17 @@ if want anf; then
       "$ORACLE_PY" "$HERE/anf_windows.py" "$RD" "$c" "$b" "$bud" > "$out/$name.win_b$bud.txt"
     done
   done < "$out/cases.txt"
+fi
+if want container; then
+  CH=$REPO/tests/manual/stage4/container_header.py
+  hdr() { # BODY N STATE OUT
+    "$ORACLE_PY" -I "$CH" "$1" "$4.full" "$2" "$3"
+    head -c 48 "$4.full" > "$4"; rm -f "$4.full"
+  }
+  hdr "$HERE/n8_L8/deliverable.bin" 8 32 "$HERE/n8_L8/container_header.bin"
+  while read -r name budgets; do
+    state=$(head -1 "$HERE/anf/$name.mpmct1" | awk '{print $2}')
+    hdr "$HERE/anf/$name.bin" 1 "$state" "$HERE/anf/$name.tdp4hdr"
+  done < "$HERE/anf/cases.txt"
 fi
 du -sh "$HERE"

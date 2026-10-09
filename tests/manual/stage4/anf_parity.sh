@@ -10,6 +10,8 @@
 #              AND the archived file; container[48:] must equal the body.
 #   anf        tdp_packing anf-report rep512 65536 TAG-rep512 500: stdout must
 #              equal the archived anf_rep512.txt (all four lines).
+#   container  container_header.py (standalone writer) on the ARCHIVED body
+#              must equal tdp_packing's deliverable.tdp4 byte for byte.
 #   decode     tdp_packing decode of the ARCHIVED deliverable.bin (validator).
 # Wall time and peak RSS come from /usr/bin/time -l. No seed or hash of a
 # private input (C, G2, G3) is printed.
@@ -69,6 +71,14 @@ for TAG in "$@"; do
     fail=1
   fi
   sed -n 2p "$D/ser/stdout.txt" | sed "s/^/  /" | tee -a "$SUM"
+  # the container rebuilt from the ARCHIVED oracle body by the standalone writer
+  python3 -I "$(dirname "$0")/container_header.py" "$R/deliverable.bin" "$D/oracle.tdp4" "$N" $((4 * N))
+  if cmp -s "$D/oracle.tdp4" "$D/deliverable.tdp4"; then
+    note "$TAG container: identical to container_header.py on the oracle body"
+  else
+    note "$TAG container: DIFFERS from container_header.py"; fail=1
+  fi
+  rm -f "$D/oracle.tdp4"
   t=$(timed "$D/anf" "$TDP_PACKING" anf-report "$R/rep512.mpmct1" "$R/rep512.bounds" 65536 "$TAG-rep512" 500)
   if cmp -s "$D/anf/stdout.txt" "$R/anf_rep512.txt"; then
     note "$TAG anf-report: identical to anf_rep512.txt ($t)"
