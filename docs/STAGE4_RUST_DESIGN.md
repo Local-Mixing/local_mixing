@@ -1655,6 +1655,28 @@ The round-2 Rust times are contention, not a regression: run back to back under 
 
 The oracle scripts are unchanged since round 1 (no diff under `scripts/windowed_delivery/` since `ad9eedfe`), so its round-1 measurement stands. The round-2 Rust times are contention: total CPU time rose with wall time (627 s → 1,508 s), every phase slowed, including the single-threaded pack (43 s → 109 s wall), and the review fixes touched no packing, repair or emission code path that runs here (outputs and counters are identical). Under that load the Rust stage 4 is still about 19× faster in wall time than the oracle and below the §9 n=128 targets (≤ 6 min, ≤ 3 GB) — barely on wall time; peak RSS is 0.4× the oracle's.
 
+**Acceptance round 2, vA128a (n=128, config A; 2026-10-09, binary built from `4dc934e9`; outputs `port_runs/vA128a_r2/`).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128 --label vA128a` with **no packing flag** (round 1 passed every flag explicitly). The report records the recommended G=512 chain as the defaults (`window_gates=512 interval_cap=512 monomial_budget=24576 span_cap=3000 split_budget=65536 fix_iterations=4 fallback_iterations=4 anf_cap_semantics=cpython39`); exit 0, `status=ok`. Pack 4,757,723 gates in 7,376 windows. Repair: 159,915 cancelled pairs, the floor already reached at fix iteration 1, one fallback split, 4,437,893 gates and 7,376 boundaries. Final scan 128 visible / 0 non-output, 0 windows over budget. 7,377 ANF windows, 4,185,577 monomials (max 41,026). The counters are identical to round 1's, and `packing.report` differs from round 1's only in `binary_xxh3` and `time.*`.
+
+- Against the archived oracle, with no normalization, these files are byte-identical: `packed_G512.mpmct1`, `.bounds`, `pack_G512.txt`, `rep512.mpmct1`, `rep512.bounds`, `rep512.{exposure,allcuts,wit}.tsv`, `anf_rep512.txt`, `link_rep512.txt` and `deliverable.bin` (106,890,630 bytes). `rep512.cview.log` and `repair512.log` are identical once the absolute output paths are normalized, with line order unchanged. The payload: `deliverable.tdp4[48:]` equals the archived pre-header `deliverable.bin`, `deliverable.tdp4` equals `container_header.py` applied to that body, and `decode --format container --stats` accepts it (7,377 windows, 4,185,577 monomials).
+- Independent checks on the Rust outputs (`checks/`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (HEAD build, `security-tools`) reports 3,000 born values and **128 visible** (4.3 %, all t*=1). This is the exact floor. Its TSVs are identical to both the run's and the oracle's.
+  - `verify_zero_slice C rep512.mpmct1 128 512` and the same check on `packed_G512.mpmct1` both PASS (random seeds, kept private).
+  - The oracle's `link_census.py` on the Rust `rep512` gives exactly the archived and the Rust `link_rep512.txt`: proxy 54,345 values, L2 18,521 / M2 250,448; froth 280,727 values, L2 2,219 / M2 4,661.
+- A second Rust run (`packing_t2/`) produced the same files. A fresh sandboxed oracle chain (`oracle_sb/`, CPython 3.9.6, pinned `hmap_affine`, `oracle_chain.sh`) ran at the same time, and it again reproduced all eleven archived files byte for byte.
+
+| stage 4 on vA128a, round 2 (same session, load 4-14) | wall | CPU (user+sys) | peak RSS |
+|---|---|---|---|
+| Rust `tdp_packing run` (all checks; two runs) | 128 / 139 s | 608 / 705 s | 1.90 / 2.13 GB |
+| — pack / repair / reports / emit+checks (first run) | 47.5 / 49.0 / 7.5 / 22.6 s | | |
+| Rust, round 1 (`a64b61ec`) | 72.9 s | 303.5 s | 2.10 GB |
+| Python oracle, round 2 (fresh sandboxed rerun): `window_pack3.py` / `repair.sh` / `anf_dump_eval.py` | 366 / 1,847 / 160 = 2,373 s | 275 / 1,715 / 159 = 2,149 s | 5.50 GB (the packer; repair 3.54 GB, serializer 2.08 GB) |
+
+The machine was slower than in round 1 for both implementations alike, so the round-2 Rust times do not show a regression:
+- the Rust run retired the same number of instructions (2.884 × 10¹² in both rounds) at about half the effective clock (1.28 × 10¹² cycles over 608 s of CPU, against 1.19 × 10¹² over 303 s);
+- the oracle's single-threaded packer slowed by the same factor (134 s → 273 s user).
+
+Measured side by side under the same conditions, the Rust stage 4 takes 18.5× less wall time than the oracle and 3.5× less CPU. Its peak RSS is 0.35× the oracle packer's. It stays within the §9 n=128 targets (≤ 6 min, ≤ 3 GB).
+
 ---
 
 ## 13. Open decisions for RC
