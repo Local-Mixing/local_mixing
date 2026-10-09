@@ -1,0 +1,8 @@
+[hmap_affine] c=24 gates (8w), g=136 gates (48w), n=8; degree=1 regressors=49; rows=9 cols=9, samples=6144 (train 4608)
+[exposure] 8 born values, 7 visible (87.5%), 0 coset-minimizations skipped (nullity>14)
+[exposure] t*=  1:     4 values ( 50.0%)  cumulative  50.0%
+[exposure] t*=  2:     2 values ( 25.0%)  cumulative  75.0%
+[exposure] t*=  3:     1 values ( 12.5%)  cumulative  87.5%
+[exposure] wrote rich_cuts.exposure.tsv
+[exposure] wrote all-cuts rich_cuts.allcuts.tsv (63 rows)
+[exposure] wrote witness rich_cuts.wit.tsv

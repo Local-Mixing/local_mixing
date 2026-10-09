@@ -1,0 +1,1 @@
+ecf87728491d2ce5c66e06b4fbb319dbc9b2221263d1a30e980b088b18538089 macOS arm64 (Darwin 27), rust 1.97.1, cargo build --locked --release --features security-tools --bin hmap_affine at 492564f0

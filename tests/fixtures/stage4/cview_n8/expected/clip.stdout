@@ -1,0 +1,5 @@
+[hmap_affine] c=16 gates (8w), g=18238 gates (32w), n=8; degree=1 regressors=33; rows=10 cols=47, samples=6144 (train 4608)
+[exposure] 10 born values, 0 visible (0.0%), 0 coset-minimizations skipped (nullity>14)
+[exposure] wrote clip.exposure.tsv
+[exposure] wrote all-cuts clip.allcuts.tsv (0 rows)
+[exposure] wrote witness clip.wit.tsv

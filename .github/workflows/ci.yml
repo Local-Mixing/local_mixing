@@ -97,6 +97,9 @@ jobs:
       - name: Trace-affine heatmap and plot analysis correctness
         run: |
           cargo test --locked --features security-tools --bin hmap_trace_affine
+          # hmap_affine --exposure on the stage-4 C-view engine, byte-compared
+          # with outputs of the pinned baseline binary (tests/fixtures/stage4).
+          cargo test --locked --features security-tools --test hmap_affine_exposure
           python -B security_tests/heatmaps/plot_hmap_trace.py --self-test
 
       - name: Build and install Python extension

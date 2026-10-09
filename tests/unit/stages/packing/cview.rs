@@ -101,28 +101,27 @@ fn reference_scan(
         let mut basis: Vec<(usize, Vec<u64>, Vec<u64>)> = Vec::new();
         let mut nulls: Vec<Vec<u64>> = Vec::new();
         {
-            let mut add = |mut samp: Vec<u64>, idx: usize| {
-                let mut coef = vec![0u64; cw];
-                coef[idx / 64] |= 1 << (idx % 64);
-                for (p, bs, bc) in basis.iter() {
-                    if (samp[p / 64] >> (p % 64)) & 1 == 1 {
-                        for (a, x) in samp.iter_mut().zip(bs) {
-                            *a ^= x;
-                        }
-                        for (a, x) in coef.iter_mut().zip(bc) {
-                            *a ^= x;
+            let mut add =
+                |mut samp: Vec<u64>, idx: usize| {
+                    let mut coef = vec![0u64; cw];
+                    coef[idx / 64] |= 1 << (idx % 64);
+                    for (p, bs, bc) in basis.iter() {
+                        if (samp[p / 64] >> (p % 64)) & 1 == 1 {
+                            for (a, x) in samp.iter_mut().zip(bs) {
+                                *a ^= x;
+                            }
+                            for (a, x) in coef.iter_mut().zip(bc) {
+                                *a ^= x;
+                            }
                         }
                     }
-                }
-                match samp
-                    .iter()
-                    .enumerate()
-                    .find_map(|(wi, &w)| (w != 0).then(|| wi * 64 + w.trailing_zeros() as usize))
-                {
-                    Some(p) => basis.push((p, samp, coef)),
-                    None => nulls.push(coef),
-                }
-            };
+                    match samp.iter().enumerate().find_map(|(wi, &w)| {
+                        (w != 0).then(|| wi * 64 + w.trailing_zeros() as usize)
+                    }) {
+                        Some(p) => basis.push((p, samp, coef)),
+                        None => nulls.push(coef),
+                    }
+                };
             for idx in 0..m {
                 add(reps[idx].clone(), idx);
             }
@@ -276,7 +275,9 @@ fn build_pair(
     linear: bool,
 ) -> (Vec<XGate>, Vec<XGate>) {
     let max_ctrls = if linear { 1 } else { 2 };
-    let c: Vec<XGate> = (0..c_len).map(|_| rand_gate(rng, 0, n, max_ctrls)).collect();
+    let c: Vec<XGate> = (0..c_len)
+        .map(|_| rand_gate(rng, 0, n, max_ctrls))
+        .collect();
     let nw = n + aux;
     let mut p = Vec::new();
     for g in &c {
@@ -348,7 +349,11 @@ fn matches_historic_reference_on_random_pairs() {
     for trial in 0..24 {
         let linear = trial % 3 == 2;
         let n = if linear { 5 + trial % 2 } else { 3 + trial % 5 };
-        let aux = if linear { 48 } else { [2, 6, 24, 40][trial % 4] };
+        let aux = if linear {
+            48
+        } else {
+            [2, 6, 24, 40][trial % 4]
+        };
         let (c, p) = build_pair(&mut rng, n, aux, 10 + trial, linear);
         let b = 2 + trial % 3;
         let seed = rng.random::<u64>();
@@ -363,7 +368,15 @@ fn matches_historic_reference_on_random_pairs() {
         };
         for (allc, wit) in [(true, true), (false, true), (false, false), (true, false)] {
             let r = reference_scan(&c, &p, n, b, seed, &i_idx, &cuts, allc, wit);
-            let rep = scan(&c, &p, n, b, seed, &cuts, ExposureOptions::historic(allc, wit));
+            let rep = scan(
+                &c,
+                &p,
+                n,
+                b,
+                seed,
+                &cuts,
+                ExposureOptions::historic(allc, wit),
+            );
             assert_matches_reference(&rep, &r);
             saw_visible += rep.visible();
             saw_null += r.approx;
@@ -375,7 +388,10 @@ fn matches_historic_reference_on_random_pairs() {
     }
     assert!(saw_visible > 0, "the fixture exercises visible rows");
     assert!(saw_null > 0, "the fixture exercises nullity > 14");
-    assert!(saw_settled_skip > 0, "skip_settled changes the approximate count");
+    assert!(
+        saw_settled_skip > 0,
+        "skip_settled changes the approximate count"
+    );
 }
 
 #[test]
@@ -398,9 +414,23 @@ fn constant_value_tstar_zero() {
     let s = HonestSamples::draw(n, 3, 5);
     let rows = born_rows(&c, n, &prefix_indices(c.len(), 1), &s);
     assert_eq!(rows.len(), 1, "only the target < n row");
-    assert_eq!(rows.rows[0], BornRow { prefix: 2, gate: 1, wire: 0 });
+    assert_eq!(
+        rows.rows[0],
+        BornRow {
+            prefix: 2,
+            gate: 1,
+            wire: 0
+        }
+    );
     let p = vec![XGate::cnot(1, 0)];
-    let rep = exposure_scan(&rows, &p, 2, &s, &[0, 1], &ExposureOptions::historic(true, true));
+    let rep = exposure_scan(
+        &rows,
+        &p,
+        2,
+        &s,
+        &[0, 1],
+        &ExposureOptions::historic(true, true),
+    );
     assert_eq!(rep.best, vec![0]);
     assert_eq!(rep.allcuts, vec![(0, 0, 0), (0, 1, 0)]);
     assert_eq!(rep.witness[0], Some((0, vec![])));
@@ -417,7 +447,13 @@ fn nullity_le_14_exact_minimum() {
     assert_eq!(cc.nullity(), 1);
     assert!(!cc.over_cap());
     let fit = cc.predict(&[x0[0] ^ x1[0]]).unwrap();
-    assert_eq!(fit, CutFit { weight: 1, support: vec![2] });
+    assert_eq!(
+        fit,
+        CutFit {
+            weight: 1,
+            support: vec![2]
+        }
+    );
     assert!(cc.predict(&[x0[0] & x1[0]]).is_none());
 }
 
@@ -448,8 +484,16 @@ fn nullity_gt_14_counts_approx() {
     // visits of rows already at weight <= 1.
     let rows = CRows {
         rows: vec![
-            BornRow { prefix: 1, gate: 0, wire: 0 },
-            BornRow { prefix: 2, gate: 1, wire: 0 },
+            BornRow {
+                prefix: 1,
+                gate: 0,
+                wire: 0,
+            },
+            BornRow {
+                prefix: 2,
+                gate: 1,
+                wire: 0,
+            },
         ],
         batches: 1,
         vecs: vec![target, gens[2]],
@@ -459,15 +503,37 @@ fn nullity_gt_14_counts_approx() {
             cut,
             over_cap: true,
             fits: vec![
-                (0, CutFit { weight: 2, support: vec![0, 1] }),
-                (1, CutFit { weight: 1, support: vec![2] }),
+                (
+                    0,
+                    CutFit {
+                        weight: 2,
+                        support: vec![0, 1],
+                    },
+                ),
+                (
+                    1,
+                    CutFit {
+                        weight: 1,
+                        support: vec![2],
+                    },
+                ),
             ],
         })
     };
     let per = vec![mk(3), mk(5)];
-    let skip = assemble(&rows, &[3, 5], &per, &ExposureOptions::historic(false, false));
+    let skip = assemble(
+        &rows,
+        &[3, 5],
+        &per,
+        &ExposureOptions::historic(false, false),
+    );
     assert_eq!(skip.approx, 3);
-    let all = assemble(&rows, &[3, 5], &per, &ExposureOptions::historic(true, false));
+    let all = assemble(
+        &rows,
+        &[3, 5],
+        &per,
+        &ExposureOptions::historic(true, false),
+    );
     assert_eq!(all.approx, 4);
     assert_eq!(all.allcuts.len(), 4);
 }
@@ -475,7 +541,11 @@ fn nullity_gt_14_counts_approx() {
 #[test]
 fn earliest_cut_wins_tie() {
     let rows = CRows {
-        rows: vec![BornRow { prefix: 1, gate: 0, wire: 0 }],
+        rows: vec![BornRow {
+            prefix: 1,
+            gate: 0,
+            wire: 0,
+        }],
         batches: 1,
         vecs: vec![1],
     };
@@ -483,20 +553,43 @@ fn earliest_cut_wins_tie() {
         Arc::new(CutResult {
             cut,
             over_cap: false,
-            fits: vec![(0, CutFit { weight: w, support: s })],
+            fits: vec![(
+                0,
+                CutFit {
+                    weight: w,
+                    support: s,
+                },
+            )],
         })
     };
-    let per = vec![r(4, 3, vec![1, 2, 3]), r(7, 3, vec![4, 5, 6]), r(9, 2, vec![8, 9])];
-    let rep = assemble(&rows, &[4, 7, 9], &per, &ExposureOptions::historic(true, true));
+    let per = vec![
+        r(4, 3, vec![1, 2, 3]),
+        r(7, 3, vec![4, 5, 6]),
+        r(9, 2, vec![8, 9]),
+    ];
+    let rep = assemble(
+        &rows,
+        &[4, 7, 9],
+        &per,
+        &ExposureOptions::historic(true, true),
+    );
     assert_eq!(rep.best, vec![2]);
     assert_eq!(rep.witness[0], Some((9, vec![8, 9])));
-    let rep = assemble(&rows, &[4, 7], &per[..2], &ExposureOptions::historic(true, true));
+    let rep = assemble(
+        &rows,
+        &[4, 7],
+        &per[..2],
+        &ExposureOptions::historic(true, true),
+    );
     assert_eq!(rep.witness[0], Some((4, vec![1, 2, 3])));
 }
 
 #[test]
 fn cut_file_parse_rules() {
-    assert_eq!(parse_cut_file("5\n\n  3 \n9\n5\n0\n", 8).unwrap(), vec![0, 3, 5]);
+    assert_eq!(
+        parse_cut_file("5\n\n  3 \n9\n5\n0\n", 8).unwrap(),
+        vec![0, 3, 5]
+    );
     assert_eq!(parse_cut_file("", 8).unwrap(), Vec::<usize>::new());
     assert_eq!(parse_cut_file("8\n", 8).unwrap(), vec![8]);
     let e = parse_cut_file("1\nx\n", 8).unwrap_err();
@@ -521,7 +614,13 @@ fn samples_pinned_seed_12345() {
     assert_eq!(s.batch(0)[0], PINNED_12345[0]);
     assert_eq!(s.batch(0)[1], PINNED_12345[1]);
     assert_eq!(s.batch(1)[2], PINNED_12345[2]);
-    assert_eq!(CviewParams::default(), CviewParams { batches: 96, seed: 12345 });
+    assert_eq!(
+        CviewParams::default(),
+        CviewParams {
+            batches: 96,
+            seed: 12345
+        }
+    );
 }
 
 const PINNED_12345: [u64; 3] = [
@@ -574,15 +673,26 @@ fn parallel_equals_serial() {
         assert_eq!(**a, **b);
     }
     let o = ExposureOptions::historic(false, true);
-    assert_eq!(tsvs(&assemble(&rows, &cuts, &par, &o)), tsvs(&assemble(&rows, &cuts, &ser, &o)));
+    assert_eq!(
+        tsvs(&assemble(&rows, &cuts, &par, &o)),
+        tsvs(&assemble(&rows, &cuts, &ser, &o))
+    );
 }
 
 #[test]
 fn tsv_formats_and_summary() {
     let rows = CRows {
         rows: vec![
-            BornRow { prefix: 1, gate: 0, wire: 3 },
-            BornRow { prefix: 2, gate: 1, wire: 0 },
+            BornRow {
+                prefix: 1,
+                gate: 0,
+                wire: 3,
+            },
+            BornRow {
+                prefix: 2,
+                gate: 1,
+                wire: 0,
+            },
         ],
         batches: 1,
         vecs: vec![1, 2],
@@ -590,7 +700,13 @@ fn tsv_formats_and_summary() {
     let per = vec![Arc::new(CutResult {
         cut: 6,
         over_cap: false,
-        fits: vec![(1, CutFit { weight: 2, support: vec![4, 9] })],
+        fits: vec![(
+            1,
+            CutFit {
+                weight: 2,
+                support: vec![4, 9],
+            },
+        )],
     })];
     let rep = assemble(&rows, &[6], &per, &ExposureOptions::historic(true, true));
     let (e, a, w) = tsvs(&rep);
@@ -632,7 +748,13 @@ fn output_gates_and_floor_test() {
     v.sort_unstable();
     assert_eq!(v, vec![1, 2]);
     let rep = ExposureReport {
-        rows: (0..3).map(|g| BornRow { prefix: g + 1, gate: g, wire: 0 }).collect(),
+        rows: (0..3)
+            .map(|g| BornRow {
+                prefix: g + 1,
+                gate: g,
+                wire: 0,
+            })
+            .collect(),
         best: vec![1, -1, 0],
         witness: vec![None; 3],
         allcuts: vec![],

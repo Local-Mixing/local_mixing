@@ -1,0 +1,5 @@
+[hmap_affine] c=16 gates (8w), g=18238 gates (32w), n=8; degree=1 regressors=33; rows=17 cols=241, samples=6144 (train 4608)
+[exposure] 16 born values, 7 visible (43.8%), 0 coset-minimizations skipped (nullity>14)
+[exposure] t*=  1:     7 values ( 43.8%)  cumulative  43.8%
+[exposure] wrote skip.exposure.tsv
+[exposure] wrote witness skip.wit.tsv

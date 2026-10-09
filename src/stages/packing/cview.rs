@@ -455,7 +455,10 @@ impl<'a> CutOracle<'a> {
     /// Change the checkpoint interval (before the first query).
     pub fn with_checkpoint_every(mut self, every: usize) -> Self {
         assert!(every >= 1);
-        assert!(self.pos == 0 && self.checkpoints.len() == 1, "set before use");
+        assert!(
+            self.pos == 0 && self.checkpoints.len() == 1,
+            "set before use"
+        );
         self.checkpoint_every = every;
         self
     }

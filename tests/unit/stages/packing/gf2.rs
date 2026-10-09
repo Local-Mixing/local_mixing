@@ -3,7 +3,10 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// The historic `hmap_affine` basis: not reduced, pivot = lowest set bit,
 /// reduction in insertion order. Returns (independent cols, nulls).
-fn historic_basis(cols: &[Vec<u64>], cw: usize) -> (Vec<(usize, Vec<u64>, Vec<u64>)>, Vec<Vec<u64>>) {
+fn historic_basis(
+    cols: &[Vec<u64>],
+    cw: usize,
+) -> (Vec<(usize, Vec<u64>, Vec<u64>)>, Vec<Vec<u64>>) {
     let mut basis: Vec<(usize, Vec<u64>, Vec<u64>)> = Vec::new();
     let mut nulls = Vec::new();
     for (idx, col) in cols.iter().enumerate() {

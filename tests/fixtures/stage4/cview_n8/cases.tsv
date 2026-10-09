@@ -1,0 +1,9 @@
+full	1	1	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 1 --g-cuts @/cuts.txt
+skip	0	1	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 1 --g-cuts @/cuts.txt
+bare	0	0	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 1 --g-cuts @/cuts.txt
+gstep	1	1	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 2 --g-step 250
+clip	1	1	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 1 --c-from 3 --c-to 12 --g-step 300 --g-from 1000 --g-to 15000
+seed	0	1	--c @/c.g57 --c-format g57 --g @/g2.mpmct1 --n 8 --exposure --c-step 1 --g-cuts @/cuts.txt --seed 7 --batches 40 --train-batches 30
+rich_full	1	1	--c @/rich_c.mpmct1 --c-format mpmct1 --g @/rich_p.mpmct1 --n 8 --exposure --c-step 1 --g-step 1
+rich_skip	0	1	--c @/rich_c.mpmct1 --c-format mpmct1 --g @/rich_p.mpmct1 --n 8 --exposure --c-step 1 --g-step 1 --batches 3 --train-batches 2
+rich_cuts	1	1	--c @/rich_c.mpmct1 --c-format mpmct1 --g @/rich_p.mpmct1 --n 8 --exposure --c-step 3 --g-cuts @/rich_cuts.txt --seed 99

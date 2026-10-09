@@ -551,6 +551,14 @@ The engine **streams** P with one `[batch][wire]` state, 393 KB at n=128. It kee
 
 The engine is not feature-gated, because stage 4 must build with `cargo build --release`. `hmap_affine` stays under `security-tools`.
 
+**As implemented (P2).** Three details differ from the sketch above; none changes an output byte.
+
+- `gf2::TrackedBasis` keeps the basis in **reduced** row-echelon form, so `solve` selects the basis vectors from the pivot bits of the row and tests membership word by word, rejecting a hidden row after a few hundred word operations instead of a full reduction. HA's basis is not reduced (pivot = lowest set bit). Both give the same independent columns (greedy, in insertion order), the same null vectors (the unique `e_d + c_I` with `R_I c_I = R_d`) in the same order, and the same particular solution (the unique one supported on the independent columns), so the Gray walk starts from the same vector and walks the same coset. A unit test checks this against a transcription of HA's basis.
+- The state of P (and of C in `born_rows`) is **wire-major**, `[wire][batch]`, so a cut's column for wire k is a contiguous slice. `CutColumns::build(cols, nw, batches)` takes that layout.
+- `parse_cut_file` returns `CutParseError { line, source }`; HA maps it back to its old `expect("cut index")` panic, so the message is unchanged.
+
+`CutOracle` computes missing cuts in chunks of `2 x threads` snapshots with rayon. `with_parallel(false)` and `with_checkpoint_every(k)` exist for tests. `ExposureOptions::historic(allcuts, witness)` is HA's flag combination (`skip_settled = !allcuts`). In HA, `SPAN_INTERSECT` and the heatmap still materialize `[batch][cut][wire]` with their old code; only the exposure scan streams.
+
 ### 4.11 `repair/`: the oracle repair in-process
 
 ```rust

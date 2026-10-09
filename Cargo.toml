@@ -104,6 +104,12 @@ path = "tests/integration/frozen_roundtrip.rs"
 name = "mixer_db_replacement"
 path = "tests/integration/mixer_db_replacement.rs"
 
+# hmap_affine --exposure (library C-view engine) against the pinned baseline.
+[[test]]
+name = "hmap_affine_exposure"
+path = "tests/integration/hmap_affine_exposure.rs"
+required-features = ["security-tools"]
+
 # Database generation and analysis
 
 [[bin]]

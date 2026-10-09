@@ -1,0 +1,8 @@
+# gate	wire	tstar	cut	G-wires (predictor support)
+2	3	1	30	3
+5	6	2	30	3,6
+8	5	1	30	5
+11	0	3	0	0,1,7
+14	6	2	52	3,5
+17	3	1	52	20
+20	5	1	30	5
