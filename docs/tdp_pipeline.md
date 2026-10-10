@@ -89,8 +89,8 @@ A run directory holds:
 | --- | --- |
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Preprocessing | `tdp.mpmct1`, `stage12.log`, `stage12.recipe`; report-only `stage2_mult.txt` (rebirth census) and `stage2_span.{tsv,txt}` (val_chain.sh's span check; the managed driver builds the `security-tools` `hmap_affine` it needs, a standalone run skips it unless `$TDP_BIN_DIR/hmap_affine` exists) |
-| 3. Database mixing | `db_mixing.mpmct1`, `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER`) (and `db_mixing.leakage_repair.txt` with leakage repair) |
-| 4. Packing | `packing/`: `deliverable.tdp4` (the shipped file), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `stage4.log`; `packing.recipe` (keyed completion marker) |
+| 3. Database mixing | `db_mixing.mpmct1`, `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER` and the mixer's `stop_reason`) (and `db_mixing.leakage_repair.txt` with leakage repair). A chain ended by the operator stop flag (`touch $RUN/stage3.stop`) is under-dosed: its output is moved to `db_mixing.stopped.mpmct1`, the run stops with exit 2 and no deliverable, and a resume re-runs stage 3 from scratch |
+| 4. Packing | a failed `tdp_packing run` leaves `stage4.failed` (`exit=<code>`; the managed driver then reports that code's stage-4 meaning, and no other failure is labelled as stage 4's); `packing/`: `deliverable.tdp4` (the shipped file), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `stage4.log`; `packing.recipe` (keyed completion marker) |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
 Everything except `packing.report` and `deliverable.tdp4` is private: the
@@ -163,6 +163,18 @@ requires a fresh run. The manifest starts with `tdp_command_recipe=10`
 (recipe v9 runs are refused: resume them with the checkout that created
 them); `stage12.recipe` uses `tdp_stage12_recipe=7`.
 
+The manifest's `pinned_recipe` names the validated chain the run reproduces,
+`val_chain-L8-20261007` or `val_chain-A-20261007`, and is `none` for anything
+else. It requires every recipe setting of that chain (embedded masking with
+preset L8 or A, the validated |C| for a generated source, schedule
+`validated` in one piece, no leakage repair, default packing) **and** stage 3
+on the store the chosen runs used, unfiltered: `frozen_db_fingerprint`
+(the name and size of every file in the store plus the text of each `.ok`
+checksum marker, xxh3-128; the shards themselves are not read) must equal
+that of `frozen_m1_m11`, and `FROZEN_FILTER=1` on a store without
+`filters.bin`. A copy of the store with other shards or markers, a curated
+store, or a filtered run (`lookup_miss_filter = "on"`) records `none`.
+
 ### Source circuit
 
 | Setting | Type and default | What it changes and constraints |
@@ -226,7 +238,7 @@ reference runs.
 | `packing.split_budget` | integer, `65536` | `repair.sh`'s split budget (and the final budget test). |
 | `packing.fix_iterations`, `packing.fallback_iterations` | integers, `4`, `4` | `repair.sh`'s loop counts. |
 | `packing.anf_cap_semantics` | string, `"cpython39"` | `"cpython39"` reproduces the oracle's CPython 3.9 set-order cap decisions; `"canonical"` is a recorded deviation. |
-| `packing.allow_floor_miss`, `packing.allow_over_budget` | bools, `false` | Ship despite a visible non-output row / an over-budget window: the run finishes with `status=floor_miss`/`over_budget`, `packing/NOT_RECOMMENDED`, and no `PIPELINE COMPLETE` line. |
+| `packing.allow_floor_miss`, `packing.allow_over_budget` | bools, `false` | Ship despite a visible non-output row / an over-budget window: the run finishes with `status=floor_miss`/`over_budget`, `packing/NOT_RECOMMENDED`, and no `PIPELINE COMPLETE` line. `packing.report`'s `status` always names every violation found (`floor_miss+over_budget` when both occur, allowed or not); the exit code is the first one not allowed (5, then 6). |
 
 Any non-default value is recorded as `packing_params=custom`.
 
@@ -329,7 +341,15 @@ into `$RUN/SEEDS` under the same format and rules. The managed command never
 adopts such a run directory (SEEDS without its manifest): continue it with
 the script, or start a fresh managed run. It reads only
 `FROZEN_DB_DIR`, `TDP_BIN_DIR` and `TDP_GEN_ALLOW_EMPTY_STORE` from its
-environment. It needs bash 4 or newer.
+environment. It needs **bash 5.1 or newer** and refuses an older one
+(exit 2) before doing anything: associative arrays and `mapfile` need 4.0,
+and 5.1 is the first bash that feeds a small here-string through a pipe
+instead of a temporary file under `TMPDIR`, which keeps the seed hand-over
+off disk. macOS's `/bin/bash` is 3.2 (`brew install bash`). The managed
+command finds a suitable bash itself, before building or writing `SEEDS`:
+the first `bash` on `PATH` that is 5.1 or newer, then
+`/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/bin/bash`,
+`/usr/bin/bash`; with none it stops naming every bash it found.
 
 ## Stage 1: the sliced sandwich
 
