@@ -1975,3 +1975,39 @@ Every metric is within 2 % of the §5 range. The deliverable size again varies m
 | stage 4 (`tdp_packing run`: pack 13.4 / repair 3.4 / reports 1.5 / emit+checks 6.2 s) | 24 s |
 | driver total | 1,730 s (CPU 1,018 s) |
 | independent checks (`checks.sh`; oracle serializer 40 s) | 82 s |
+
+**End-to-end managed run, round 3, n=128 L8 (2026-10-09, binaries built from `09552766`; outputs `port_runs/e2e128_r3/`, config, driver log and checks in `port_runs/e2e128_r3_cfg/`).** `tdp_gen` with the same minimal config as round 2: `source.wires = 128`, the run and build directories and `database.regular_dir` (`frozen_m1_m11`). Every other setting is the managed default. The dry run and manifest show preset L8 (the six `EMBEDDED_MASKING_*` values of STAGE2_LINKABILITY §6), schedule `validated` (profile 2,2,2,2,2, moves int(2·2·|G|·1.3), `--db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify`), packing `default` (G = 512, 512/24576/3000, split budget 65,536, cpython39 caps), `pinned_recipe=val_chain-L8-20261007`, store fingerprint `fd1983677e4d5b74267d3802c9c34642`, `seed_source=random`. Seeds are fresh CSPRNG draws in the private `run/SEEDS` (never printed); the zero-slice check seed is in `checks/check_seeds.txt`. The run started first time; the driver exited 0 with `status=ok`. The lid was closed but the machine was on AC and held awake (`caffeinate -ims -w <driver pid>`), so unlike round 2 the wall times are real.
+
+- Stages 1+2: 2,224,109 gates (sandwich 7,920), with 315,321 chained brackets. Forward and reverse verification PASS (256 samples each). The stage-2 span check is 0 at all 8,689 sampled cuts.
+- Stage 3: `--moves 11565366` (= int(2·2·|G|·1.3)) with `FROZEN_FILTER=1` (auto; the store has no `filters.bin`, so unfiltered). `stop_reason=moves budget spent`; output 4,576,658 gates (4,035,543 g57 fossils), final float verified.
+- Stage 4:
+  - packing: 7,070 windows; 34,133 distinct values exposed at window boundaries;
+  - repair: cancelled 166,940 pairs (6 passes), leaving 4,242,778 gates; the fix loop went 129 → 129 → 128 (2 gates moved); the fallback added 2 + 0 splits, giving 7,071 boundaries;
+  - result: 0 windows over budget; 7,072 ANF windows with 4,213,660 monomials (window max 63,925); every certificate and check in the report is `ok` (reorder and repair certificates, pack verify, equivalence, windows = window ANF, decode, eval, zero slice with 4,096 samples).
+- Independent checks (`checks.sh`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` reports 3,000 born values and **128 visible** (4.3 %), all at t* = 1: the exact floor, with 0 non-output values visible. Its exposure, all-cuts and witness TSVs are identical to the run's.
+  - `verify_zero_slice C rep512.mpmct1 128 512` PASS (random seed, recorded), and the same check PASS on `packed_G512.mpmct1`.
+  - The oracle's `link_census.py` (sandboxed HEAD scripts, path rewrites only) on the Rust `rep512` gives the run's `link_rep512.txt` byte for byte.
+  - The oracle's `anf_dump_eval.py` (sandboxed) on the Rust `rep512` gives the Rust `deliverable.bin` byte for byte. `deliverable.tdp4` (106,299,269 B) is a 48-byte header followed by that body.
+
+| n=128 L8 metric | e2e128_r3 | e2e128_r2 | e2e128_r1 | STAGE2_LINKABILITY §5 range |
+|---|---|---|---|---|
+| exposed | 34,692 | 34,947 | 34,603 | 34.5–35.0k |
+| linkable (L2) | 15,897 | 16,201 | 15,992 | 16.06–16.11k (r3 is 1.0 % below) |
+| sightings (M2) | 186,983 | 187,800 | 188,350 | 187–188k (r3 is 0.01 % below) |
+| linkable froth | 5,668 | 5,575 | 5,747 | 5,544–5,765 |
+| anchors (100+) | 711 | 719 | 719 | 701–718 |
+| `deliverable.bin` | 106,299,221 B (106.3 MB) | 107.0 MB | 108.7 MB | 102.8–106.8 MB |
+| xz -9 | 9.62 MB (9,620,688 B) | 9.62 MB | 9.69 MB | 9.50–9.62 MB |
+| eval, ANF form (Python, 1,024 lanes) | 1.96 ms/input | 1.94 | not measured | 1.83–1.99 |
+
+Every metric is inside the §5 range except L2 (1.0 % below) and M2 (0.01 % below), both well within the 1–2 % replicate spread §5 reports. This is the first managed n=128 run with the deliverable inside the §5 size range.
+
+| e2e128_r3 wall time (load average 1–2 at the end) | wall |
+|---|---|
+| build (incremental, including a wait on the shared build lock) | 155 s |
+| stages 1+2 (`gen_sandwich_gadget`) | ≈ 2 s (the span report then ran in the background, 204 s) |
+| stage 3 (`circuit_mixer`; chain 4,416.9 s, final float 4.6 s) | 4,423 s |
+| stage 4 (`tdp_packing run`: pack 40.3 / repair 23.7 / reports 4.2 / emit+checks 21.2 s) | 90 s |
+| driver total | 4,670 s (CPU 3,016 s; peak RSS 7.1 GB, the mixer) |
+| independent checks (`checks.sh`; oracle link census 17 s, oracle serializer 119 s) | ≈ 150 s |
