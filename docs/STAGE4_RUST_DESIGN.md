@@ -36,7 +36,7 @@ Everything not marked "deviation" or "decision" is meant to be bit-exact.
 - stage 3 argv and the output-affecting environment, run serially;
 - stage 4: pack `512 512 24576 3000`; repair as `repair.sh` (4 fix iterations, 4 fallback iterations, ANF budget 65536); serialization as `DE`.
 
-"Output-affecting environment" is defined by the environment registry (§11.5). Variables proven output-neutral (cache sizes) may differ from the reference, and each one has a neutrality test.
+"Output-affecting environment" is defined by the environment registry (§11.5). Variables classified output-neutral (the three cache sizes) may differ from the reference. No dedicated test proves their neutrality; the evidence is stage-3 bytes identical to the reference runs (D10b).
 
 Further requirements:
 
@@ -101,7 +101,7 @@ Each row changes output bytes, could change them, or could let an ambient settin
 | D17 | gen parses positionals with `.parse().ok().unwrap_or(default)` (`gen mod.rs:100-117`): an unparsable seed becomes **1** | strict parsing: a present but unparsable positional is a fatal error. The driver also checks that gen's banner seeds equal `GEN_SEED` (§8.4) | a parse slip gives a public, fixed C that passes every later check |
 | D18 | `HOLD` default 27 in the script, `"30"` in the manifest text (`manifest.rs:197`) | the manifest prints resolved values only | latent inconsistency |
 
-`FROZEN_REGULAR_VALUE_CONVENTION=native` stays exported: the reference log shows `regular=native`, which is the built-in default, so the effective value is equal (§11.5 compares effective values). `SANDWICH_VARIANT=classic` stays for the same reason.
+`FROZEN_REGULAR_VALUE_CONVENTION=native` stays exported: the reference log shows `regular=native`, which is the built-in default, so the effective value is equal (§11.5 compares effective values). `SANDWICH_VARIANT` is not exported (as implemented; `GEN_ENV` holds only `EMBEDDED_MASKING_*` values, and `tests/shell/tdp_flags.bash` asserts that no `SANDWICH_*` variable reaches gen): its built-in default is `classic`, the reference's value, so the effective value is equal; the registry classifies it `driver` (inherited → fatal) and the stage-2 marker records `sandwich_variant=classic`.
 
 ### 2.3 Seeds, entropy and hygiene (deviation; decision for RC)
 
@@ -1205,7 +1205,7 @@ The anchor proves that the managed defaults reproduce the **chosen runs themselv
 2. **`tests/shell/tdp_stage12_parity.bash`** (real debug binaries). At n=16 with `|C|=|D|=32`, run gen exactly as `val_chain.sh` would (sandboxed env and argv) and `tdp_gen.sh --run-stop-after-stage 2 --seed-file …`, then `cmp` the three artifacts.
 3. **`tests/integration/tdp_packing.rs`** (§10.4) and the **`stage4-oracle` job** (§10.6).
 4. **`tests/shell/tdp_reproduce_small.bash`:** the full §10.7 at `N=8 MC=16` for real. It skips with a clear message when there is no frozen store (as in CI); the CI job covers stage 4. RC runs it locally before merging.
-5. **`cache_neutrality`** (local, once per P7, result recorded in §2.2 D10b): n=16, same seeds, with `LOOKUP_CACHE_MB=0 CANON_CACHE_MB=0 XPOLY_CANON_CACHE_MB=0` versus the driver values. `db_mixing.mpmct1` must be identical.
+5. **`cache_neutrality`** (planned, never run; see §2.2 D10b for the evidence used instead) (local, once per P7): n=16, same seeds, with `LOOKUP_CACHE_MB=0 CANON_CACHE_MB=0 XPOLY_CANON_CACHE_MB=0` versus the driver values. `db_mixing.mpmct1` must be identical.
 6. **`filter_neutrality`** (once, on a host whose store has `filters.bin`; recorded in §2.2 D11): same seed with `FROZEN_FILTER=0` and `=1`, and `db_mixing.mpmct1` must be identical. Until this is recorded, `auto` never loads a filter.
 7. **`tests/shell/tdp_seeds.bash`:**
    - malformed `SEEDS` (missing key, non-decimal, out of range, short `run_key`) is fatal;
@@ -1472,15 +1472,17 @@ The stage-3 engine reads (`MIXER_STOP_AT_*`, `TWIST_G57_*`, `MIXER_DB_LEN_BAND`,
 
 ### 11.5 Environment registry
 
-New `src/tdp/env_registry.rs` holds one table: `(name or prefix, class, built-in default)`. The classes are:
+New `src/tdp/env_registry.rs` holds one table: `(name or prefix, class, built-in default)`. The classes are (as implemented; `scripts/tdp_env_registry.tsv` is the generated copy):
 
 | class | meaning | examples | managed handling |
 |---|---|---|---|
 | `recipe` | output-affecting, set by preset or schedule | `EMBEDDED_MASKING_SHUFFLING…CHAIN_LEN`, `EMBEDDED_MASKING_K…QUAD_FIRE` (custom only) | set by driver only; inherited → fatal |
-| `driver` | output-affecting, set by driver from config | `FROZEN_DB_DIR`, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `TDP_SOURCE_C`, `FROZEN_FILTER`, `MIXER_STOP_FLAG`, `MIXER_DUMP_FLAG`, `MIXER_DUMP_OUT` | set by driver only; inherited `FROZEN_DB_DIR` accepted as the store path (as today), others → fatal |
-| `neutral` | proven output-neutral (named test) | `LOOKUP_CACHE_MB`, `CANON_CACHE_MB`, `XPOLY_CANON_CACHE_MB` | driver values; inherited ignored with a note |
-| `forbidden` | output-affecting, not part of any recipe | every other `EMBEDDED_MASKING_*`, `CANON_RULE_L_BRANCH_CAP`, `CANON_MONOMIAL_CAP`, `MIXER_DB_LEN_BAND`, `MIXER_STOP_AT_PHASE`, `MIXER_STOP_AT_SPLICES`, `SLICE_GUARD_LEGACY`, `TWIST_G57_NO_RETRY`, `TWIST_G57_NO_SLIDE`, `MIN_DIR_LOOKUP`, `PROD_*`, `SAT_*`, `DB_QC*`, `BV5_*`, `FROZEN_CURATED_*`, `FROZEN_REF_DIR` | inherited → fatal |
-| `tooling` | not read by stage binaries | `CARGO`, `RUSTC`, `COMPRESSION_TRACE*` | ignored; never passed |
+| `driver` | output-affecting or run plumbing, set by driver from config | `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT` (never exported; built-in `classic`), `TDP_SOURCE_C`, `FROZEN_FILTER`, `MIXER_STOP_FLAG`, `MIXER_DUMP_FLAG` | set by driver only; inherited → fatal |
+| `input` | the driver's own inputs | `FROZEN_DB_DIR` (the store path), `TDP_BIN_DIR`, `TDP_GEN_ALLOW_EMPTY_STORE` | inherited accepted; never passed to a stage binary as such (the store path reaches the mixer as the driver's own `FROZEN_DB_DIR`) |
+| `neutral` | classified output-neutral (exact memo caches; evidence: identical stage-3 bytes against the reference runs, D10b; no dedicated test) | `LOOKUP_CACHE_MB`, `CANON_CACHE_MB`, `XPOLY_CANON_CACHE_MB` | driver values; inherited ignored with a note |
+| `forbidden` | output-affecting, not part of any recipe | every other `EMBEDDED_MASKING_*`, `CANON_RULE_L_BRANCH_CAP`, `CANON_MONOMIAL_CAP`, `MIXER_DUMP_OUT`, `MIXER_DB_LEN_BAND`, `MIXER_STOP_AT_PHASE`, `MIXER_STOP_AT_SPLICES`, `SLICE_GUARD_LEGACY`, `TWIST_G57_NO_RETRY`, `TWIST_G57_NO_SLIDE`, `MIN_DIR_LOOKUP`, `PROD_*`, `SAT_*`, `DB_QC*`, `BV5_*`, `FROZEN_CURATED_*`, `FROZEN_REF_DIR` | inherited → fatal |
+| `diagnostic` | diagnostics of construction experiments | `EMBEDDED_MASKING_LGI_DEBUG`, `…_STRADDLE_CENSUS`, `…_DRIFT_DEBUG`, `…_DUMP_GATES`, `…_DIAG`, `…_HOT_MANIFEST` | inherited → fatal (never passed) |
+| `tooling` | not read by stage binaries | `CARGO`, `CARGO_TARGET_DIR`, `RUSTC`, `RAYON_NUM_THREADS`, `COMPRESSION_TRACE*` | ignored; never passed |
 
 `env_registry_covers_every_env_read` scans `src/**/*.rs` for string literals passed to `env::var`, `env::var_os`, `envu`, `value_convention` and `env_flag`. It fails if a name is not covered by the table. A new knob anywhere in the crate therefore forces a classification decision.
 
@@ -1502,7 +1504,7 @@ Each phase ends with G1-G7, `cargo fmt --check` and clippy green, and a WIP comm
 | P4 | `repair/*`, `certify_cancel`/`certify_repair`, single window, `check-final`; `tdp_packing repair` | byte-identical `rep512.*` and TSVs against the §10.5 step-0 targets on the 8 replicates |
 | P5 | `serialize` (streamed, flat-arena decoder), `verify`, container, `container_header.py` | 8 payload sha256s; container `cmp`; zero slice |
 | P6 | `run`, report, exit codes 0-8; `census`; fixtures + `regen.sh` with coverage assertions; integration tests; `stage4-oracle` CI job | `tests/integration/tdp_packing.rs` and the differential job green in CI; census parity on 8 tags |
-| P7 | driver: D1-D18, config v2, presets and schedule, env registry and allow-list, seeds (§8), gen strict parsing, stage-4 step with marker, manifest v10, side reports, typed stage-2 knobs (§11.4), shell and unit tests; cache neutrality | G4 + new shell tests; `stage2_typed_params_byte_identical`; `cache_neutrality` recorded |
+| P7 | driver: D1-D18, config v2, presets and schedule, env registry and allow-list, seeds (§8), gen strict parsing, stage-4 step with marker, manifest v10, side reports, typed stage-2 knobs (§11.4), shell and unit tests; cache neutrality | G4 + new shell tests; `stage2_typed_params_byte_identical`; `cache_neutrality` NOT run (neutrality rests on identical stage-3 bytes against the reference runs, D10b) |
 | P8 | reproduction tests §10.7 (N=16 L8, N=16 A, N=64 L8); **anchor B** for vL64a and vL128a; filter neutrality when a host with `filters.bin` is available | all comparisons identical (or `faithful (failure path)`); §9 times and RSS |
 | P9 | docs (§14) | — |
 
@@ -1821,6 +1823,17 @@ The Rust stage 4, its checks included, takes 0.055x the oracle's wall time (18x 
 The Rust stage 4, its checks included, takes 0.065x the oracle's wall time (15x faster), 0.37x its CPU and 0.42x its peak memory. This time the oracle ran nearly uncontended (CPU ≈ wall), so the ratio is fair; the round-1 6,921 s wall was contention. Both §9 n=128 targets hold (≤ 6 min, ≤ 3 GB).
 
 ---
+
+**Review fixes round 3 (2026-10-10; WIP commit `52c65427`, then the docs).** Nine minor findings, each reproduced before fixing; the acceptance round 3 cases all passed and needed no change.
+
+- **nonlinear291 with stage 4.** Its stage-2 width is 24n + 12·(2|C| + 2s + n) + 29 (`nonlinear_tdp_wire_count`; 3,677 at n=16, |C|=64), beyond stage 4's 1,024 state wires for any realistic size, so a nonlinear291 run used to fail in stage 4 after stages 1-3. The validator now checks the width `nonlinear_tdp_resource_plan` plans against `MAX_STATE_WIRES` (new in `stages::packing::types`) whenever stage 4 is on, and `tdp_gen.sh` does the same with the same formula; both refuse before anything runs and point at `run.stop_after_stage = 3`. Small plans that fit (n=4, |C|=1: 389 wires) stay accepted.
+- **Stage-3 completion marker.** `$RUN/stage3.recipe` (`tdp_stage3_recipe=1`, the schedule arguments, HMAC tags of `tdp.mpmct1` and `db_mixing.mpmct1`, the stop reason) is written only after an accepted stop; a resume skips stage 3 only when it matches, so a truncated or interrupted output, a changed stage-2 input or a changed schedule re-runs stage 3 instead of failing stage 4 on every resume. The store is not part of it (a resume after stage 3 needs no store, as before). A run from before the marker is adopted without re-mixing when `packing.recipe` carries the tags of exactly these stage-2 and stage-3 bytes and `stage3.settings` records an accepted stop. `circuit_mixer` writes `--output` through `<path>.tmp`, fsync, rename (`formats::write_mpmct_atomic`). The Rust driver's store prediction (`validate_external_paths`) counts `db_mixing.mpmct1` as done only next to a marker.
+- **`--source-wires` overflow.** `container` and `serialize` bound n (1..=65536) before `2·n`, which wrapped at 2^63 in release builds and wrote `source_wires=0`; `eval --format raw` saturates its `4·n` default.
+- **Resource bounds.** The monomial and split budgets are capped at 2^18 = 262,144 (`MAX_MONOMIAL_BUDGET`; Rust config, `tdp_gen.sh`, `tdp_packing`), measured: 10^6-10^9 grew to 5-9 GB, 2^20 held 2-3 GB at one monomial word, 2^18 peaked at 1.2 GB (G = W_cap = 10^6, n=8 fixture, 156 s). Emission uses the same ceiling (`EMIT_BUDGET`) and returns `OverBudget` (exit 6) instead of panicking or allocating without limit: serializing the whole n=8 chain as one window now exits 6 in 0.9 s at 0.3 GB (it reached 5.5 GB before). Bit-exactness is kept: a cap only ever aborts, and every window the repair leaves fits a split budget ≤ 2^18 or has at most 2 gates. The `OverBudget` message names the first window.
+- **Docs.** TDP_FOUR_STAGE_PIPELINE §1.8 open issues carry status notes (seeds, argv, |C| default, presets/`val_chain.sh` resolved; pins, `rg_freq`, D⁻¹ test still open); §3 move budget and §6.3 library size describe the pre-port driver as such; the stage-4 snapshot note records that the oracle snapshot equals the run-tree copies (`cmp` at HEAD) and has the patched slide. The cache sizes are described as classified neutral with the evidence actually available (identical stage-3 bytes against the reference runs; `cache_neutrality` never run) in `env_registry.rs`, §2.2, §11.5, the P7 row, `tdp_gen.sh` and `tdp_pipeline.md`. §2.2 says `SANDWICH_VARIANT` is not exported (built-in `classic`); §11.5 lists the implemented classes (`FROZEN_DB_DIR` is `input`, `MIXER_DUMP_OUT` `forbidden`, plus `input` and `diagnostic`).
+- **Defaults tie.** `packing_defaults_are_the_stage_four_binary_defaults` (unit) ties `PackingConfig::default()` to `PackParams::PRODUCTION`, `RepairParams::default()`, the literal `val_chain.sh` values and `tdp_gen.sh`'s `PACK_*` initial values and `pf` omission defaults; `run_end_to_end_n8` (integration) pins all nine `param.*` defaults of a flagless `tdp_packing run`.
+- **Tests added.** `nonlinear_width_beyond_stage_four_is_refused_up_front`, `packing_budgets_are_bounded_by_the_resource_limit`, the defaults tie above, marker cases in the two resume unit tests; `tdp_flags.bash` (nonlinear291 n=16 refused before any directory, budgets 262,145 refused); `tdp_stage4_resume.bash` (stage-3 skip on a matching marker, truncated output and changed schedule re-run, legacy adoption, no marker and no stage-4 marker re-run); `tdp_packing` integration (`--source-wires` 0, 65537, 2^32, 2^63 refused by `container` and `serialize` with nothing written; whole-chain emission exit 6; budgets 262,145 exit 2).
+- **Checked.** G1-G7, `cargo fmt --check` (incl. the mixer topic files), clippy (no new warnings), `cargo test --features security-tools --test hmap_affine_exposure`, the CI shell set (`tdp_defaults.bash` with `LOCAL_MIXING_BIN`, `tdp_seeds`, `tdp_stage4_resume`, `tdp_stage12_parity`); `tdp_reproduce_small.bash` run for real (regular store, pinned baseline `hmap_affine`): ALL IDENTICAL; `tests/stage4/differential.sh` with a random seed, K=12: 24/24 identical. G5 has the 3 baseline numpy import errors only.
 
 ## 13. Open decisions for RC
 

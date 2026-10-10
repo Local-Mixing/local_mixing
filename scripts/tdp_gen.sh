@@ -562,7 +562,7 @@ fi
 size_note=""; [ "$MCD_RULE" != formula ] || size_note=" UNVALIDATED SIZE"
 note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) s=$S_SL slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION"
 note "seeds: $SEED_SRC (values never printed)"
-for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache sizes are set by the driver (output-neutral)"; done
+for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache sizes are set by the driver (exact memo caches; stage-3 bytes matched the reference runs under the built-in sizes)"; done
 
 # ---- stages 1+2: sandwich + preprocessing ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then

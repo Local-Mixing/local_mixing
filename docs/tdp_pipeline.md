@@ -89,7 +89,7 @@ A run directory holds:
 | --- | --- |
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Preprocessing | `tdp.mpmct1`, `stage12.log`, `stage12.recipe`; report-only `stage2_mult.txt` (rebirth census) and `stage2_span.{tsv,txt}` (val_chain.sh's span check; the managed driver builds the `security-tools` `hmap_affine` it needs, a standalone run skips it unless `$TDP_BIN_DIR/hmap_affine` exists) |
-| 3. Database mixing | `db_mixing.mpmct1`, `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER` and the mixer's `stop_reason`) (and `db_mixing.leakage_repair.txt` with leakage repair). A chain ended by the operator stop flag (`touch $RUN/stage3.stop`) is under-dosed: its output is moved to `db_mixing.stopped.mpmct1`, the run stops with exit 2 and no deliverable, and a resume re-runs stage 3 from scratch |
+| 3. Database mixing | `db_mixing.mpmct1` (the mixer writes `db_mixing.mpmct1.tmp`, fsyncs it and renames it, so a kill or crash never leaves a truncated output under this name), `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER` and the mixer's `stop_reason`), `stage3.recipe` (keyed completion marker: the schedule arguments, HMAC-SHA256 tags of `tdp.mpmct1` and of `db_mixing.mpmct1`, the stop reason; written only after an accepted stop) (and `db_mixing.leakage_repair.txt` with leakage repair). A resume skips stage 3 only when `stage3.recipe` matches; a missing or stale marker (an interrupted output, a changed stage-2 input or schedule) re-runs stage 3, which then needs the store. A run made before the marker existed is adopted without re-mixing when its `packing.recipe` carries the tags of exactly these `tdp.mpmct1` and `db_mixing.mpmct1` bytes and `stage3.settings` records an accepted stop. A chain ended by the operator stop flag (`touch $RUN/stage3.stop`) is under-dosed: its output is moved to `db_mixing.stopped.mpmct1`, the run stops with exit 2 and no deliverable, and a resume re-runs stage 3 from scratch |
 | 4. Packing | a failed `tdp_packing run` leaves `stage4.failed` (`exit=<code>`; the managed driver then reports that code's stage-4 meaning, and no other failure is labelled as stage 4's); `packing/`: `deliverable.tdp4` (the shipped file), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds`, the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `stage4.log`; `packing.recipe` (keyed completion marker) |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
@@ -223,8 +223,10 @@ gen's base value; every effective value is recorded in the manifest and in
 | `db_mixing.target_size_factor` | number, custom only | Profile $r_1 = r_2$, in `(1, 16]`; moves `int((n0+hold)·r·G·1.3)`. |
 
 The mixer runs with `FROZEN_REGULAR_VALUE_CONVENTION=native` and the
-output-neutral cache sizes `LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
-XPOLY_CANON_CACHE_MB=1024`; the canonicalization caps are unbounded, as in the
+cache sizes `LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
+XPOLY_CANON_CACHE_MB=1024` (exact memo caches, classified output-neutral: no
+dedicated test, but stage 3 reproduced the reference runs' bytes, made with
+the built-in 512 MB lookup cache; `docs/STAGE4_RUST_DESIGN.md` D10b); the canonicalization caps are unbounded, as in the
 reference runs.
 
 ### Packing (stage 4)

@@ -20,8 +20,13 @@ pub(crate) enum EnvClass {
     /// The driver's own inputs (store path, binary directory, plumbing-test
     /// switch). Inherited: accepted; never passed to a stage binary as such.
     Input,
-    /// Proven output-neutral (named test). Inherited: ignored with a note;
-    /// the driver passes its own values.
+    /// Classified output-neutral: exact memo-cache sizes. No dedicated test
+    /// proves it (the planned n=16 `cache_neutrality` test was never run);
+    /// the evidence is stage-3 output byte-identical to the reference runs,
+    /// which used the built-in sizes, on the historic anchor (vL64a, vL128a)
+    /// and the n=64 same-seed reproductions (docs/STAGE4_RUST_DESIGN.md
+    /// §2.2 D10b, §12). Inherited: ignored with a note; the driver passes its
+    /// own values.
     Neutral,
     /// Output-affecting and part of no recipe. Inherited: fatal.
     Forbidden,
