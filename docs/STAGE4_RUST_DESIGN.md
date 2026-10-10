@@ -1780,6 +1780,24 @@ On the quiet machine the Rust stage 4, its checks included, takes 0.09x the orac
 | Python oracle rerun, load 7-9: pack / repair / serialize | 49.7 / 153.8 / 37.5 = 241.0 s | 232.2 s | 1.68 GB (packer; repair 0.92, serialize 0.58) |
 
 At comparable load the Rust stage 4, its checks included, takes about 0.10x the oracle's wall time (0.32x its CPU) and 0.7x its peak memory.
+
+**Acceptance round 3, vA128a (n=128, config A; 2026-10-09, binary built from `09552766` = review fixes round 2, clean tree; outputs `port_runs/vA128a_r3/`, sha256 of the three binaries in `binary.sha256`).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128 --label vA128a` with **no packing flag**. The report records the recommended G=512 chain as the defaults (`window_gates=512 interval_cap=512 monomial_budget=24576 span_cap=3000 split_budget=65536 fix_iterations=4 fallback_iterations=4 anf_cap_semantics=cpython39`), which is `window_pack3.py 512 512 24576 3000` + `repair.sh` (budget 65536) + `anf_dump_eval.py` as `val_chain.sh` runs them. Exit 0, `status=ok`. Pack: 4,757,723 gates in 7,376 windows. Repair: 159,915 cancelled pairs, the floor reached at fix iteration 1, fallback 1 + 0 splits, 4,437,893 gates and 7,376 boundaries. Final scan: 128 visible / 0 non-output, 0 windows over budget. 7,377 ANF windows, 4,185,577 monomials. Every counter equals rounds 1 and 2, and `packing.report` equals round 2's except `binary_xxh3` and `time.*`.
+- Against the archived oracle, with no normalization, these files are byte-identical: `packed_G512.mpmct1`, `.bounds`, `pack_G512.txt`, `rep512.mpmct1`, `rep512.bounds`, `rep512.{exposure,allcuts,wit}.tsv`, `anf_rep512.txt`, `link_rep512.txt` and `deliverable.bin` (106,890,630 bytes). `rep512.cview.log` and `repair512.log` are identical after replacing the output directory.
+- Payload: `deliverable.tdp4` (106,890,678 bytes) is a 48-byte `LMTDPANF` v1 header + a body byte-identical to the archived pre-header `deliverable.bin`. It also equals `container_header.py` applied to the archived body, and `decode --format container --stats` accepts it (7,377 windows, 4,185,577 monomials, max support 489). There is no difference to explain.
+- A fresh sandboxed oracle rerun (`oracle_sb/`, `/usr/bin/python3` 3.9.6, baseline `hmap_affine`, the main checkout's oracle scripts with path rewrites only, identical after rewriting to round 2's sandbox) reproduced all eleven files byte for byte. They also equal the Rust files. Its `deliver.txt` differs from the archive only in timings and in the gz/xz size lines.
+- Independent checks on the Rust outputs (`checks/`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (HEAD, `security-tools`) reports 3,000 born values and **128 visible** (4.3 %, all t*=1). This is the exact floor, and the TSVs are identical to the run's and the oracle's.
+  - `verify_zero_slice C rep512.mpmct1 128 512 <random seed>` and the same check on `packed_G512.mpmct1` both PASS.
+  - The oracle's `link_census.py` on the Rust `rep512` equals the archived and the Rust `link_rep512.txt` byte for byte: proxy 54,345 values, L2 18,521 / M2 250,448; froth 280,727 values, L2 2,219 / M2 4,661.
+- Driver defaults: `tests/shell/tdp_defaults.bash` with `LOCAL_MIXING_BIN` set (HEAD build) passes the `tdp_gen.sh` cases (d64L8, d64A, d128, d16) and the Rust-driver cases (d64L8, d64A, d128). Gen argv, mixer argv, recipe environment, allow-list and stage-4 calls are identical to the `val_chain.sh` transcripts. `tdp_flags.bash` and `tdp_block_size.bash` pass.
+
+| stage 4 on vA128a, round 3 | wall | CPU (user+sys) | peak RSS |
+|---|---|---|---|
+| Rust `tdp_packing run` (all checks), load about 1 at start | 55.0 s | 291.9 s | 2.07 GB |
+| — pack / repair / reports / emit+checks | 25.4 / 16.0 / 2.6 / 10.1 s | | |
+| Python oracle rerun, load 5-9: pack / repair / serialize | 155.8 / 770.5 / 81.1 = 1,007 s | 146.2 / 783.4 / 81.0 = 1,010.6 s | 5.32 GB (packer; repair 3.54, serialize 2.08) |
+
+The Rust stage 4, its checks included, takes 0.055x the oracle's wall time (18x faster), 0.29x its CPU and 0.39x its peak memory. It retires the same 2.885 × 10¹² instructions as in rounds 1 and 2. The oracle is mostly single-threaded, so the higher load during its rerun hurts it less than it would hurt Rust. The Rust run is within the §9 n=128 targets (≤ 6 min, ≤ 3 GB).
 ---
 
 ## 13. Open decisions for RC
