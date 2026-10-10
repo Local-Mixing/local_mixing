@@ -13,7 +13,10 @@
 //! ```
 //!
 //! Windows are `[0] + sorted(0 < b < m) + [m]` (no dedup) and each comes from
-//! `window_anf(…, 1 << 30)`, where no cap can fire: the body is canonical.
+//! `window_anf(…, EMIT_BUDGET)`. The oracle uses budget 1<<30, where no cap
+//! fires; the port's ceiling is lower (a resource bound), and since a cap only
+//! ever aborts, every window it emits is the oracle's canonical one; a window
+//! above it fails with `OverBudget` (exit 6).
 use super::anf::{MulStats, WindowAnf, window_anf};
 use super::mono::{MonoWidthFn, mono_words, with_mono_width};
 use super::oracle_io::window_cuts;
@@ -28,8 +31,12 @@ pub const FORMAT_VERSION: u16 = 1;
 pub const HEADER_BYTES: u16 = 48;
 /// Inputs on wires 0..n, answer on wires n..2n, every other wire 0.
 pub const IO_LAYOUT_CLASSIC_ZERO_SLICE: u32 = 1;
-/// The serialization budget (`anf_dump_eval.py`): no cap can fire.
-pub const EMIT_BUDGET: usize = 1 << 30;
+/// The serialization budget. `anf_dump_eval.py` uses 1<<30 (no cap fires,
+/// but a pathological window can then hold billions of monomials); the port
+/// emits at the largest accepted split budget instead. A window the repair's
+/// split accepted fits its split budget (caps at most these) or has at most
+/// 2 gates, so it emits byte-identically; anything larger is refused.
+pub const EMIT_BUDGET: usize = super::types::MAX_MONOMIAL_BUDGET;
 
 // ---------------------------------------------------------------- CRC-32
 
@@ -224,11 +231,23 @@ pub fn encode_window<const W: usize>(anf: &WindowAnf<W>) -> Result<Vec<u8>, Stag
     Ok(b)
 }
 
-/// Canonical ANF of one window for emission (budget 1<<30: never refused).
-pub fn emit_anf<const W: usize>(gates: &[XGate]) -> WindowAnf<W> {
+/// Canonical ANF of one window `[lo, hi)` for emission; `OverBudget` (exit 6)
+/// when it exceeds [`EMIT_BUDGET`].
+pub fn emit_anf<const W: usize>(
+    gates: &[XGate],
+    lo: usize,
+    hi: usize,
+) -> Result<WindowAnf<W>, Stage4Error> {
     let mut stats = MulStats::default();
-    window_anf::<W>(gates, EMIT_BUDGET, CapSemantics::CPython39, &mut stats)
-        .expect("budget 1<<30 cannot overflow")
+    window_anf::<W>(
+        &gates[lo..hi],
+        EMIT_BUDGET,
+        CapSemantics::CPython39,
+        &mut stats,
+    )
+    .map_err(|_| Stage4Error::OverBudget {
+        windows: vec![(lo, hi)],
+    })
 }
 
 struct EncodeBody<'a, O: Write> {
@@ -253,7 +272,7 @@ impl<O: Write> MonoWidthFn<Result<EmitReport, Stage4Error>> for EncodeBody<'_, O
             let blobs: Vec<Result<(Vec<u8>, usize), Stage4Error>> = (start..end)
                 .into_par_iter()
                 .map(|wi| {
-                    let anf = emit_anf::<W>(&self.gates[self.cuts[wi]..self.cuts[wi + 1]]);
+                    let anf = emit_anf::<W>(self.gates, self.cuts[wi], self.cuts[wi + 1])?;
                     Ok((encode_window(&anf)?, anf.total))
                 })
                 .collect();

@@ -24,6 +24,33 @@ pub fn write_mpmct(path: &str, gates: &[XGate], num_wires: usize) -> io::Result<
     out.flush()
 }
 
+/// [`write_mpmct`] through `<path>.tmp`: written, fsynced, then renamed over
+/// `path` (and the directory synced, best effort). A kill or a crash leaves
+/// the previous file or no file at `path`, never a truncated one.
+pub fn write_mpmct_atomic(path: &str, gates: &[XGate], num_wires: usize) -> io::Result<()> {
+    let tmp = format!("{path}.tmp");
+    let result = (|| {
+        let file = std::fs::File::create(&tmp)?;
+        let mut out = BufWriter::with_capacity(1 << 20, file);
+        write_mpmct_to(&mut out, gates, num_wires)?;
+        let file = out.into_inner().map_err(|error| error.into_error())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    let parent = std::path::Path::new(path)
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 fn write_mpmct_to(mut out: impl Write, gates: &[XGate], num_wires: usize) -> io::Result<()> {
     writeln!(out, "mpmct1 {} {}", num_wires, gates.len())?;
     // Every field is a small unsigned integer, so the line is assembled with a

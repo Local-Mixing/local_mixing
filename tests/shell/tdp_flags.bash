@@ -62,6 +62,18 @@ reject 'preset' --preprocessing-preset L9
 reject 'applies only to embedded-masking' --preprocessing-mode nonlinear291 --preprocessing-preset L8
 reject 'source-wires' --source-wires 2
 reject 'source-wires' --source-wires 4096
+# packing budgets are resource bounds (MAX_MONOMIAL_BUDGET = 2^18)
+reject 'packing-monomial-budget' --packing-monomial-budget 262145
+reject 'packing-split-budget' --packing-split-budget 262145
+# nonlinear291 wider than stage 4's 1024 state wires is refused before stage 1
+# (reject() stops after stage 2, so this case runs with the default stop)
+if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
+     --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
+  echo "unexpected success: nonlinear291 n=16 with stage 4" >&2; exit 1
+fi
+test ! -e "$tmp/nl-wide"
+grep -q 'FATAL: nonlinear291 makes a 3677-wire stage-2 circuit; stage 4 supports at most 1024' "$tmp/error" ||
+  { cat "$tmp/error" >&2; exit 1; }
 # inherited stage-2 variables are refused, even with explicit flags (§11.5)
 EMBEDDED_MASKING_K=1 reject 'EMBEDDED_MASKING_K is not honoured'
 EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=false reject \

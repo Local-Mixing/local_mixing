@@ -196,7 +196,7 @@ store, or a filtered run (`lookup_miss_filter = "on"`) records `none`.
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `preprocessing.mode` | string, `"embedded-masking"` | `"embedded-masking"` or `"nonlinear291"` (no preset, no knobs). |
+| `preprocessing.mode` | string, `"embedded-masking"` | `"embedded-masking"` or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·(2\|C\| + 2s + n) + 29 wires: 3,677 at n=16, \|C\|=64), and stage 4 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 4 up front unless the planned width fits; set `run.stop_after_stage = 3`. |
 | `preprocessing.preset` | string, `"L8"` | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
 | `preprocessing.mask_pair_wires` | integer, custom only | Band wires per mask, `2..64` (base 2). |
 | `preprocessing.max_open_masks` | integer, custom only | Open-mask cap, `2..64` (base 3). |
@@ -233,9 +233,9 @@ reference runs.
 | --- | --- | --- |
 | `packing.window_gates` | integer, `512` | Window gate cap G (`window_pack3.py` argv 4). |
 | `packing.interval_cap` | integer, `512` | Interval cap W_cap (argv 3). |
-| `packing.monomial_budget` | integer, `24576` | Soft window monomial budget (argv 5; product cap 8×). |
+| `packing.monomial_budget` | integer, `24576` | Soft window monomial budget (argv 5; product cap 8×). At most 262,144 (a memory bound). |
 | `packing.span_cap` | integer, `3000` | Longest span considered (argv 6). |
-| `packing.split_budget` | integer, `65536` | `repair.sh`'s split budget (and the final budget test). |
+| `packing.split_budget` | integer, `65536` | `repair.sh`'s split budget (and the final budget test). At most 262,144 (a memory bound). |
 | `packing.fix_iterations`, `packing.fallback_iterations` | integers, `4`, `4` | `repair.sh`'s loop counts. |
 | `packing.anf_cap_semantics` | string, `"cpython39"` | `"cpython39"` reproduces the oracle's CPython 3.9 set-order cap decisions; `"canonical"` is a recorded deviation. |
 | `packing.allow_floor_miss`, `packing.allow_over_budget` | bools, `false` | Ship despite a visible non-output row / an over-budget window: the run finishes with `status=floor_miss`/`over_budget`, `packing/NOT_RECOMMENDED`, and no `PIPELINE COMPLETE` line. `packing.report`'s `status` always names every violation found (`floor_miss+over_budget` when both occur, allowed or not); the exit code is the first one not allowed (5, then 6). |
@@ -475,8 +475,14 @@ deliverable is written after every check, and `packing.report` (the
 completion record) after the deliverable. Run standalone into a reused
 `--out-dir`, `tdp_packing run` first removes the earlier run's outputs, so a
 failed run leaves no deliverable or report from another run. Parameters are
-bounded as in `[packing]` (window gates ≤ 10^6, budgets ≤ 10^9, iterations
-≤ 1000; exit 2 otherwise).
+bounded as in `[packing]` (window gates ≤ 10^6, span cap ≤ 10^9, iterations
+≤ 1000; exit 2 otherwise). The monomial and split budgets are resource
+bounds, at most 2^18 = 262,144: a window may hold 4× and a product 8× the
+budget in monomials, and budgets of 10^6 and above exhausted host memory on
+the n=8 fixture within minutes (2^18 is 5× the largest measured packer
+budget and 4× the recommended split budget). The deliverable is emitted at
+the same ceiling; a window above it is exit 6 (`anf_dump_eval.py` emits at
+2^30; every window the repair leaves fitting emits identically).
 
 **`deliverable.tdp4`** is the shipped file: a 48-byte header (`LMTDPANF`,
 version, source and state wires, layout, window count, body length, CRC-32 of

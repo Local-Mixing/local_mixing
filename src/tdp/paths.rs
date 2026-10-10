@@ -15,10 +15,16 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
         .unwrap_or("99")
         .parse::<u64>()
         .expect("validated force_from");
-    let existing_db_mixing = fs::metadata(config.run_dir.join("db_mixing.mpmct1"))
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
-    let existing_gadget = fs::metadata(config.run_dir.join("tdp.mpmct1"))
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    let nonempty = |name: &str| {
+        fs::metadata(config.run_dir.join(name))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+    };
+    // scripts/tdp_gen.sh skips stage 3 only for an output its completion
+    // marker vouches for (stage3.recipe, or for an older run stage 4's
+    // packing.recipe); it checks the keyed tags, this predicts from presence.
+    let existing_db_mixing =
+        nonempty("db_mixing.mpmct1") && (nonempty("stage3.recipe") || nonempty("packing.recipe"));
+    let existing_gadget = nonempty("tdp.mpmct1");
     let stage_three_will_run =
         stop_after >= 3 && (force_from <= 3 || !existing_gadget || !existing_db_mixing);
     if stage_three_will_run {

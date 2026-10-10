@@ -163,12 +163,42 @@ fn nonlinear_capacity_is_validated_before_launch() {
     let error = resolve_for_test(&too_large).err().unwrap();
     assert!(error.contains("wire capacity"), "{error}");
     let formula_fit = parse(
-        "source.wires = 63\nsource.gates_rule = \"formula\"\npreprocessing.mode = \"nonlinear291\"",
+        "source.wires = 63\nsource.gates_rule = \"formula\"\npreprocessing.mode = \"nonlinear291\"\nrun.stop_after_stage = 3",
     );
     assert!(resolve_for_test(&formula_fit).is_ok());
-    let explicit_fit =
-        parse("source.wires = 128\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"");
+    let explicit_fit = parse(
+        "source.wires = 128\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nrun.stop_after_stage = 3",
+    );
     assert!(resolve_for_test(&explicit_fit).is_ok());
+}
+
+/// The monomial and split budgets are resource bounds, shared with
+/// `tdp_packing` (MAX_MONOMIAL_BUDGET): refused before anything runs.
+#[test]
+fn packing_budgets_are_bounded_by_the_resource_limit() {
+    for key in ["monomial_budget", "split_budget"] {
+        assert!(resolve_for_test(&parse(&format!("packing.{key} = 262144"))).is_ok());
+        let error = resolve_for_test(&parse(&format!("packing.{key} = 262145")))
+            .err()
+            .unwrap();
+        assert!(error.contains("262144"), "{error}");
+    }
+}
+
+/// nonlinear291's width (24n + 12(2|C|+2s+n) + 29) is checked against stage
+/// 4's 1024 state wires before anything runs, not after stage 3.
+#[test]
+fn nonlinear_width_beyond_stage_four_is_refused_up_front() {
+    let wide = "source.wires = 16\nsource.gates = 64\npreprocessing.mode = \"nonlinear291\"\n";
+    let error = resolve_for_test(&parse(wide)).err().unwrap();
+    assert!(error.contains("3677-wire"), "{error}");
+    assert!(error.contains("at most 1024 state wires"), "{error}");
+    assert!(resolve_for_test(&parse(&format!("{wide}run.stop_after_stage = 3"))).is_ok());
+    // n=4, |C|=1, s=8: 389 wires, within stage 4
+    let narrow = "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\n";
+    assert!(resolve_for_test(&parse(narrow)).is_ok());
+    // embedded masking is bounded by n <= 256 alone
+    assert!(resolve_for_test(&parse("source.wires = 16\nsource.gates = 64\n")).is_ok());
 }
 
 #[test]
@@ -288,6 +318,10 @@ fn resume_after_db_mixing_does_not_require_the_stage_three_store() {
     );
     let raw = parse(&format!("run.directory = {:?}", run_dir));
     let resolved = resolve_for_test(&raw).unwrap();
+    // an output without a completion marker (interrupted, partial) re-runs
+    // stage 3, which needs the store
+    assert!(validate_external_paths(&resolved).is_err());
+    fs::write(run_dir.join("stage3.recipe"), "tdp_stage3_recipe=1\n").unwrap();
     validate_external_paths(&resolved).unwrap();
     let forced = resolve_for_test(&parse(&format!(
         "run.directory = {:?}\nrun.rerun_from_stage = 3",
@@ -646,6 +680,111 @@ fn the_exact_default_manifest_text() {
     assert_eq!(recipe_manifest(&config, &[("tdp_packing", 3)], 1), expected);
     // no hard-coded "hold" text: every value is resolved (D18)
     assert!(!expected.contains("hold"));
+}
+
+/// Both drivers pass a packing flag only when it differs from
+/// PackingConfig::default(), and the manifest then records
+/// packing_params=default: so the defaults must be what `tdp_packing run`
+/// runs with no flag (PackParams::PRODUCTION, RepairParams::default()) and
+/// what scripts/tdp_gen.sh assumes. The binary side is pinned to the literal
+/// val_chain.sh values in tests/integration/tdp_packing.rs (run_end_to_end_n8).
+#[test]
+fn packing_defaults_are_the_stage_four_binary_defaults() {
+    use crate::stages::packing::types::{CapSemantics, PackParams, RepairMode, RepairParams};
+    let d = PackingConfig::default();
+    let pack = PackParams::PRODUCTION;
+    let repair = RepairParams::default();
+    assert_eq!(d.window_gates, pack.g as u64);
+    assert_eq!(d.interval_cap, pack.w_cap as u64);
+    assert_eq!(d.monomial_budget, pack.b_mono as u64);
+    assert_eq!(d.span_cap, pack.span_cap as u64);
+    assert_eq!(d.split_budget, repair.split_budget as u64);
+    assert_eq!(d.fix_iterations, repair.fix_iterations as u64);
+    assert_eq!(d.fallback_iterations, repair.fallback_iterations as u64);
+    assert_eq!(d.anf_cap_semantics, pack.cap_semantics.name());
+    assert_eq!(d.anf_cap_semantics, repair.cap_semantics.name());
+    assert_eq!(CapSemantics::default(), pack.cap_semantics);
+    assert_eq!(repair.mode, RepairMode::Oracle);
+    assert!(!d.allow_floor_miss && !d.allow_over_budget);
+    // val_chain.sh's stage 4: window_pack3.py A B 512 512 24576 3000, repair.sh 512
+    assert_eq!(
+        (
+            d.interval_cap,
+            d.window_gates,
+            d.monomial_budget,
+            d.span_cap
+        ),
+        (512, 512, 24576, 3000)
+    );
+    assert_eq!(
+        (d.split_budget, d.fix_iterations, d.fallback_iterations),
+        (65536, 4, 4)
+    );
+    // scripts/tdp_gen.sh: its initial values and its pf() omission defaults
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
+            .unwrap();
+    let initial = format!(
+        "PACK_WINDOW_GATES={}; PACK_INTERVAL_CAP={}; PACK_MONOMIAL_BUDGET={}; PACK_SPAN_CAP={}\n\
+         PACK_SPLIT_BUDGET={}; PACK_FIX_ITERATIONS={}; PACK_FALLBACK_ITERATIONS={}; PACK_CAP_SEM={}\n",
+        d.window_gates,
+        d.interval_cap,
+        d.monomial_budget,
+        d.span_cap,
+        d.split_budget,
+        d.fix_iterations,
+        d.fallback_iterations,
+        d.anf_cap_semantics
+    );
+    assert!(
+        script.contains(&initial),
+        "tdp_gen.sh initial PACK_* values"
+    );
+    for (flag, var, value) in [
+        (
+            "--window-gates",
+            "PACK_WINDOW_GATES",
+            d.window_gates.to_string(),
+        ),
+        (
+            "--interval-cap",
+            "PACK_INTERVAL_CAP",
+            d.interval_cap.to_string(),
+        ),
+        (
+            "--monomial-budget",
+            "PACK_MONOMIAL_BUDGET",
+            d.monomial_budget.to_string(),
+        ),
+        ("--span-cap", "PACK_SPAN_CAP", d.span_cap.to_string()),
+        (
+            "--split-budget",
+            "PACK_SPLIT_BUDGET",
+            d.split_budget.to_string(),
+        ),
+        (
+            "--fix-iterations",
+            "PACK_FIX_ITERATIONS",
+            d.fix_iterations.to_string(),
+        ),
+        (
+            "--fallback-iterations",
+            "PACK_FALLBACK_ITERATIONS",
+            d.fallback_iterations.to_string(),
+        ),
+        (
+            "--anf-cap-semantics",
+            "PACK_CAP_SEM",
+            d.anf_cap_semantics.clone(),
+        ),
+    ] {
+        let line = format!("pf {flag} \"${var}\" {value}\n");
+        assert!(script.contains(&line), "tdp_gen.sh lacks {line:?}");
+    }
+    // every Rust-side flag the driver can omit is one of those
+    for (flag, value, default) in d.flags() {
+        assert_eq!(value, default, "{flag}");
+    }
 }
 
 #[test]
@@ -1310,6 +1449,8 @@ fn completed_db_mixing_uses_current_artifact_name() {
     fs::write(root.join("unrelated.mpmct1"), "saved stage3").unwrap();
     assert!(validate_external_paths(&config).is_err());
     fs::write(root.join("db_mixing.mpmct1"), "saved stage3").unwrap();
+    assert!(validate_external_paths(&config).is_err());
+    fs::write(root.join("stage3.recipe"), "tdp_stage3_recipe=1\n").unwrap();
     validate_external_paths(&config).unwrap();
     config.force_from = Some("3".into());
     assert!(validate_external_paths(&config).is_err());

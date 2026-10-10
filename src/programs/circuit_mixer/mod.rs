@@ -807,7 +807,8 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if let Some(out) = &args.output {
         let final_gates = mixer.arena.to_vec();
-        format::write_mpmct(out, &final_gates, num_wires).expect("write output");
+        // atomic: a resume must never find a truncated stage-3 output
+        format::write_mpmct_atomic(out, &final_gates, num_wires).expect("write output");
         println!(
             "[circuit_mixer] wrote {} gates to {}",
             final_gates.len(),

@@ -318,8 +318,59 @@ fn exit_codes() {
         assert_eq!(code(&["census", h, h, p(&one), "x"]), Some(3));
         assert_eq!(code(&["verify-equiv", h, h]), Some(3));
     }
-    // eval --format raw: the state must hold wires 0..2n
+    // source widths are bounded before 2·n (which wraps at 2^63 in release
+    // builds and would write source_wires=0 into the header)
     let n8 = fx("n8_L8/deliverable.bin");
+    let wrapped = dir.join("wrapped.tdp4");
+    for n in ["0", "65537", "4294967296", "9223372036854775808"] {
+        assert_eq!(
+            code(&[
+                "container",
+                p(&n8),
+                p(&wrapped),
+                "--source-wires",
+                n,
+                "--state-wires",
+                "32"
+            ]),
+            Some(2),
+            "container --source-wires {n}"
+        );
+        assert!(!wrapped.exists());
+        let sb = dir.join("s.bin");
+        assert_eq!(
+            code(&[
+                "serialize",
+                p(&fx("n8_L8/rep.mpmct1")),
+                p(&fx("n8_L8/rep.bounds")),
+                p(&sb),
+                "x",
+                "--container",
+                p(&wrapped),
+                "--source-wires",
+                n
+            ]),
+            Some(2),
+            "serialize --source-wires {n}"
+        );
+        assert!(!sb.exists() && !wrapped.exists());
+    }
+    // emission is bounded (EMIT_BUDGET = 2^18): the whole n=8 chain as one
+    // window is refused with exit 6 in about a second instead of growing
+    // past 5 GB (the oracle's 1<<30 budget); nothing is left behind
+    let whole = dir.join("whole.bin");
+    assert_eq!(
+        code(&[
+            "serialize",
+            p(&fx("n8_L8/rep.mpmct1")),
+            p(&empty),
+            p(&whole),
+            "x"
+        ]),
+        Some(6)
+    );
+    assert!(!whole.exists() && !dir.join("whole.bin.tmp").exists());
+    // eval --format raw: the state must hold wires 0..2n
     assert_eq!(
         code(&[
             "eval",
@@ -925,9 +976,23 @@ fn run_end_to_end_n8() {
     );
     let rep = fs::read_to_string(out.join("packing.report")).unwrap();
     assert_eq!(kv(&rep, "status"), "ok");
-    assert_eq!(kv(&rep, "param.window_gates"), "512");
-    assert_eq!(kv(&rep, "param.split_budget"), "65536");
-    assert_eq!(kv(&rep, "param.anf_cap_semantics"), "cpython39");
+    // with no flag, the binary runs val_chain.sh's stage 4 (window_pack3.py
+    // 512 512 24576 3000, repair.sh 65536 with 4 + 4 iterations, CPython 3.9
+    // caps); the driver's PackingConfig::default() is tied to the same
+    // constants in tests/unit/tdp.rs, so neither side can drift alone
+    for (key, want) in [
+        ("param.window_gates", "512"),
+        ("param.interval_cap", "512"),
+        ("param.monomial_budget", "24576"),
+        ("param.span_cap", "3000"),
+        ("param.split_budget", "65536"),
+        ("param.fix_iterations", "4"),
+        ("param.fallback_iterations", "4"),
+        ("param.anf_cap_semantics", "cpython39"),
+        ("param.repair_mode", "oracle"),
+    ] {
+        assert_eq!(kv(&rep, key), want, "{key}");
+    }
     assert_eq!(kv(&rep, "check.zero_slice"), "ok(4096)");
     // publishable: no seed and no hash of C, G2, G3 or the repaired circuit
     for k in rep.lines().filter_map(|l| l.split_once('=').map(|x| x.0)) {
@@ -1190,6 +1255,9 @@ fn run_parameter_bounds() {
         ["--monomial-budget", "1000000001"],
         ["--span-cap", "1000000001"],
         ["--split-budget", "1000000001"],
+        // resource bounds: at most 2^18 monomials (MAX_MONOMIAL_BUDGET)
+        ["--monomial-budget", "262145"],
+        ["--split-budget", "262145"],
         ["--fix-iterations", "1001"],
         ["--fallback-iterations", "1001"],
     ] {

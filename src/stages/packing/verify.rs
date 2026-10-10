@@ -236,7 +236,7 @@ impl MonoWidthFn<Result<WindowCheck, Stage4Error>> for CheckWindows<'_> {
             .into_par_iter()
             .map(|wi| {
                 let gates = &self.gates[self.cuts[wi]..self.cuts[wi + 1]];
-                let anf = emit_anf::<W>(gates);
+                let anf = emit_anf::<W>(self.gates, self.cuts[wi], self.cuts[wi + 1])?;
                 let blob = encode_window(&anf)?;
                 if view_blob(&self.d.window(wi)) != blob {
                     return Err(Stage4Error::Verify(format!(

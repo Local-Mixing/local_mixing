@@ -89,8 +89,8 @@ impl PackParams {
         for (v, name, max) in [
             (self.g, "--window-gates", MAX_WINDOW_GATES),
             (self.w_cap, "--interval-cap", MAX_WINDOW_GATES),
-            (self.b_mono, "--monomial-budget", MAX_BUDGET),
-            (self.span_cap, "--span-cap", MAX_BUDGET),
+            (self.b_mono, "--monomial-budget", MAX_MONOMIAL_BUDGET),
+            (self.span_cap, "--span-cap", MAX_SPAN_CAP),
         ] {
             if v == 0 || v > max {
                 return Err(format!("{name} {v}: must be in 1..={max}"));
@@ -100,10 +100,25 @@ impl PackParams {
     }
 }
 
+/// Widest state stage 4 accepts: the monomial width tops out at 16 words
+/// (`mono::with_mono_width`), so the managed driver refuses wider plans up front.
+pub const MAX_STATE_WIRES: usize = 1024;
+
 /// Largest window gate cap / interval cap accepted (the driver's bound).
 pub const MAX_WINDOW_GATES: usize = 1_000_000;
-/// Largest monomial budget, span cap and split budget accepted.
-pub const MAX_BUDGET: usize = 1_000_000_000;
+/// Largest monomial budget and split budget accepted. These are RESOURCE
+/// bounds: a window's ANF may hold up to 4·budget monomials and a product
+/// 8·budget, so memory grows with the budget (budgets of 1e6 to 1e9 reached
+/// 5-9 GB on the n=8 fixture within two minutes; at 2^20 the packer still
+/// held 2-3 GB at the narrowest monomial width; at 2^18 it peaked at 1.2 GB
+/// and finished, with window gates and interval cap 1e6). 2^18 = 262,144 is
+/// 5x the largest measured packer budget (49,152 at G=1024) and 4x the
+/// recommended split budget 65,536. The deliverable's emission uses the same
+/// ceiling (`serialize::EMIT_BUDGET`), so every window that a split at an
+/// accepted budget leaves fitting also emits.
+pub const MAX_MONOMIAL_BUDGET: usize = 1 << 18;
+/// Largest span cap accepted (a gate count, not a monomial count).
+pub const MAX_SPAN_CAP: usize = 1_000_000_000;
 /// Largest fix / fallback iteration count accepted.
 pub const MAX_ITERATIONS: usize = 1000;
 
@@ -140,9 +155,9 @@ pub struct RepairParams {
 impl RepairParams {
     /// The driver's bounds (see [`PackParams::validate`]).
     pub fn validate(&self) -> Result<(), String> {
-        if self.split_budget == 0 || self.split_budget > MAX_BUDGET {
+        if self.split_budget == 0 || self.split_budget > MAX_MONOMIAL_BUDGET {
             return Err(format!(
-                "--split-budget {}: must be in 1..={MAX_BUDGET}",
+                "--split-budget {}: must be in 1..={MAX_MONOMIAL_BUDGET}",
                 self.split_budget
             ));
         }
@@ -244,7 +259,11 @@ impl fmt::Display for Stage4Error {
                 nonoutput_visible.len()
             ),
             Stage4Error::OverBudget { windows } => {
-                write!(f, "over budget: {} windows", windows.len())
+                write!(f, "over budget: {} windows", windows.len())?;
+                if let Some((lo, hi)) = windows.first() {
+                    write!(f, " (first [{lo}, {hi}))")?;
+                }
+                Ok(())
             }
             Stage4Error::Io { path, source } => {
                 write!(f, "I/O error on {}: {source}", path.display())

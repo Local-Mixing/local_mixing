@@ -5,7 +5,7 @@
 //! symmetric difference. Two entry points reproduce the oracle:
 //!
 //! * [`window_anf`]: `anf_compose.window_anf` (AC:66-91), used by the
-//!   serialization (budget 1<<30, canonical), the split predicate and the
+//!   serialization (`serialize::EMIT_BUDGET`), the split predicate and the
 //!   size report: product cap 8·budget checked after every outer row of a
 //!   product, running sum over ALL entries > 4·budget after each gate, final
 //!   changed total > budget.

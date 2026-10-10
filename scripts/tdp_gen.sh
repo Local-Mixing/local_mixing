@@ -380,9 +380,11 @@ esac
 # ---- stage-4 parameters ----
 PACK_WINDOW_GATES=$(bounded_uint --packing-window-gates "$PACK_WINDOW_GATES" 1 1000000)
 PACK_INTERVAL_CAP=$(bounded_uint --packing-interval-cap "$PACK_INTERVAL_CAP" 1 1000000)
-PACK_MONOMIAL_BUDGET=$(bounded_uint --packing-monomial-budget "$PACK_MONOMIAL_BUDGET" 1 1000000000)
+# monomial and split budgets are resource bounds (memory grows with them):
+# at most 2^18 = MAX_MONOMIAL_BUDGET in src/stages/packing/types.rs
+PACK_MONOMIAL_BUDGET=$(bounded_uint --packing-monomial-budget "$PACK_MONOMIAL_BUDGET" 1 262144)
 PACK_SPAN_CAP=$(bounded_uint --packing-span-cap "$PACK_SPAN_CAP" 1 1000000000)
-PACK_SPLIT_BUDGET=$(bounded_uint --packing-split-budget "$PACK_SPLIT_BUDGET" 1 1000000000)
+PACK_SPLIT_BUDGET=$(bounded_uint --packing-split-budget "$PACK_SPLIT_BUDGET" 1 262144)
 PACK_FIX_ITERATIONS=$(bounded_uint --packing-fix-iterations "$PACK_FIX_ITERATIONS" 0 1000)
 PACK_FALLBACK_ITERATIONS=$(bounded_uint --packing-fallback-iterations "$PACK_FALLBACK_ITERATIONS" 0 1000)
 case "$PACK_CAP_SEM" in cpython39|canonical) ;; *) fatal "--packing-anf-cap-semantics must be cpython39 or canonical" ;; esac
@@ -423,6 +425,12 @@ l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
+if [ "$PREPROCESSING_MODE" = nonlinear291 ] && [ "$STOP_AFTER" -ge 4 ]; then
+  # nonlinear_tdp_wire_count(2n, 2|C|+2s+n): 12 per logical wire, 12 per gate, 29 shared
+  NL_WIRES=$(( 12 * 2 * N + 12 * (2 * M_CD + 2 * S_SL + N) + 29 ))
+  [ "$NL_WIRES" -le 1024 ] ||
+    fatal "nonlinear291 makes a $NL_WIRES-wire stage-2 circuit; stage 4 supports at most 1024 state wires; use --run-stop-after-stage 3 or --preprocessing-mode embedded-masking"
+fi
 
 # Renamed stage artifacts must not make an existing legacy run look fresh.
 for legacy_artifact in gss_command.conf gss.mpmct1; do
@@ -607,17 +615,59 @@ wait_side() { local p; for p in ${SIDE_PIDS[@]+"${SIDE_PIDS[@]}"}; do wait "$p" 
 if [ "$STOP_AFTER" -le 2 ]; then wait_side; note "stopped after stage 2"; exit 0; fi
 
 # ---- stage 3: circuit_mixer db_mixing ----
-if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
+G_IN=$(gates_of "$GADGET")
+if [ "$SCHEDULE" = validated ]; then
+  A_MOVES=$(python3 -I -c "import sys; G=int(sys.argv[1]); print(int(G*2*2*1.3))" "$G_IN")
+else
+  A_MOVES=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:4]); G=int(sys.argv[4]); print(int((n0+h)*r*G*1.3))" "$GROWTH" "$HOLD" "$EXPAND" "$G_IN")
+fi
+QCFLAGS=()
+if [ "$QC" = 1 ]; then
+  QCFLAGS=(--leakage-repair --leakage-repair-seed "$QC_SEED" --leakage-repair-report "$RUN/db_mixing.leakage_repair.txt")
+  [ -z "$QC_REF" ] || QCFLAGS+=(--leakage-repair-reference "$QC_REF")
+fi
+# Stage-3 completion marker: written only after the mixer finished with an
+# accepted stop reason, keyed to the stage-2 input, the schedule and the output
+# bytes. A resume skips stage 3 only when all of them still match, so an
+# interrupted or partially written db_mixing.mpmct1 (kill, crash before the data
+# reached disk) is re-run here instead of failing stage 4 on every resume. The
+# store is deliberately not part of it: a resume after stage 3 needs no store.
+STAGE3_MARKER=$RUN/stage3.recipe
+expected_stage3_marker() {
+  echo "tdp_stage3_recipe=1"
+  echo "stage3_args=--profile $PROFILE --moves $A_MOVES${PIECEFLAGS[*]:+ ${PIECEFLAGS[*]}}${QCFLAGS[*]:+ ${QCFLAGS[*]}}"
+  mac stage2="$GADGET"
+}
+stage3_done=0
+if [ "$FORCE_FROM" -gt 3 ] && [ -s "$DB_MIXING" ]; then
+  if [ -s "$STAGE3_MARKER" ]; then
+    exp3=$(expected_stage3_marker)
+    nexp3=$(printf '%s\n' "$exp3" | wc -l | tr -d ' ')
+    if [ "$(head -n "$nexp3" "$STAGE3_MARKER")" = "$exp3" ] &&
+       [ "$(sed -n "$((nexp3 + 1))p" "$STAGE3_MARKER")" = "$(mac db_mixing="$DB_MIXING")" ]; then
+      stage3_done=1
+    fi
+  fi
+  # A run from before this marker: adopt its output only when stage 4 already
+  # consumed exactly these bytes (packing.recipe's keyed tags of both inputs)
+  # and stage3.settings records an accepted stop.
+  if [ "$stage3_done" -eq 0 ] && [ ! -e "$STAGE3_MARKER" ] && [ -s "$RUN/packing.recipe" ] &&
+     grep -Eqx 'stop_reason=(moves budget spent|profile complete \(size schedule finished\))' "$RUN/stage3.settings" 2>/dev/null &&
+     grep -qxF "$(mac stage2="$GADGET")" "$RUN/packing.recipe" &&
+     grep -qxF "$(mac stage3="$DB_MIXING")" "$RUN/packing.recipe"; then
+    { expected_stage3_marker; mac db_mixing="$DB_MIXING"; sed -n 's/^stop_reason=/stop_reason=/p' "$RUN/stage3.settings"; echo "adopted=packing.recipe"; } > "$STAGE3_MARKER.tmp"
+    mv "$STAGE3_MARKER.tmp" "$STAGE3_MARKER"
+    stage3_done=1
+    note "stage 3: adopted $DB_MIXING (no stage-3 marker; stage 4's completion marker covers these exact bytes)"
+  fi
+  [ "$stage3_done" -eq 1 ] ||
+    note "stage 3: $DB_MIXING has no matching completion marker ($STAGE3_MARKER missing or stale: an interrupted or partial output, or a changed stage-2 input or schedule); re-running stage 3"
+fi
+if [ "$stage3_done" -eq 0 ]; then
   if [ -z "${FROZEN_DB_DIR:-}" ] && [ "${TDP_GEN_ALLOW_EMPTY_STORE:-0}" != "1" ]; then
     echo "FATAL: stage 3 needs FROZEN_DB_DIR (or TDP_GEN_ALLOW_EMPTY_STORE=1 for a plumbing test)" >&2; exit 1
   fi
-  G_IN=$(gates_of "$GADGET")
-  if [ "$SCHEDULE" = validated ]; then
-    A_MOVES=$(python3 -I -c "import sys; G=int(sys.argv[1]); print(int(G*2*2*1.3))" "$G_IN")
-  else
-    A_MOVES=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:4]); G=int(sys.argv[4]); print(int((n0+h)*r*G*1.3))" "$GROWTH" "$HOLD" "$EXPAND" "$G_IN")
-  fi
-  rm -f "$RUN/stage3.settings"; FF=""
+  rm -f "$STAGE3_MARKER" "$DB_MIXING.tmp" "$RUN/stage3.settings"; FF=""
   RECIPE_ENV=(FROZEN_REGULAR_VALUE_CONVENTION=native LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
               XPOLY_CANON_CACHE_MB=1024 MIXER_STOP_FLAG="$RUN/stage3.stop" MIXER_DUMP_FLAG="$RUN/stage3.dump")
   rm -f "$RUN/stage3.stop"
@@ -650,12 +700,7 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
     DBFLAGS=(--p-db 0)
     note "WARNING: empty-store plumbing mode — db_mixing performs NO re-encoding"
   fi
-  QCFLAGS=()
-  if [ "$QC" = 1 ]; then
-    QCFLAGS=(--leakage-repair --leakage-repair-seed "$QC_SEED" --leakage-repair-report "$RUN/db_mixing.leakage_repair.txt")
-    [ -z "$QC_REF" ] || QCFLAGS+=(--leakage-repair-reference "$QC_REF")
-    note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
-  fi
+  [ "$QC" != 1 ] || note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
   note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES (schedule $SCHEDULE, $PIECE_DESCRIPTION)$FILTER_NOTE"
   # val_chain.sh's argv, in its order (the seed as --seed-file /dev/fd/3, off argv); optional flags only when enabled.
   stage_exec "$BIN/circuit_mixer" --input "$GADGET" --output "$DB_MIXING" --tdp --db-mixing \
@@ -680,10 +725,12 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
       fatal "stage 3 ended by ${STOP_REASON:-an unrecognised stop (no chain-done line in $RUN/stage3.log)}, below the recipe's dose: kept as $RUN/db_mixing.stopped.mpmct1 (NOT a stage-3 artifact); this run has no deliverable; a resume re-runs stage 3 from scratch" ;;
     *) note "WARNING: stage 3 ended by \"$STOP_REASON\", not by its move budget or profile; see $RUN/stage3.log" ;;
   esac
+  { expected_stage3_marker; mac db_mixing="$DB_MIXING"; echo "stop_reason=$STOP_REASON"; } > "$STAGE3_MARKER.tmp"
+  mv "$STAGE3_MARKER.tmp" "$STAGE3_MARKER"
   [ "$FORCE_FROM" -le 4 ] || FORCE_FROM=4
   note "stage 3 done: $(gates_of "$DB_MIXING") gates"
 else
-  note "stage 3: $DB_MIXING exists, skipping"
+  note "stage 3: $DB_MIXING matches its completion marker, skipping"
 fi
 if [ "$STOP_AFTER" -le 3 ]; then
   wait_side; note "PIPELINE STOPPED after stage 3: $DB_MIXING"; exit 0

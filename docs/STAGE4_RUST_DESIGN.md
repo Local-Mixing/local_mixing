@@ -674,7 +674,7 @@ impl Deliverable { pub fn eval_lanes16(&self, state: &mut [[u64; 16]]); pub fn e
 `encode_body` follows `DE:14-50` byte for byte:
 
 - `cuts = [0] + sorted(0 < b < m_header) + [m_header]`, without dedup;
-- each window comes from `window_anf(…, 1<<30)`, so no cap can fire and the result is canonical;
+- each window comes from `window_anf(…, EMIT_BUDGET)`. The oracle uses 1<<30, where no cap fires; the port uses `EMIT_BUDGET = MAX_MONOMIAL_BUDGET` (2^18) as a resource ceiling (review round 3). A cap only ever aborts, so a window that emits is the oracle's canonical one; every window the repair leaves (fitting a split budget ≤ 2^18, or of at most 2 gates) emits; a larger one (only reachable with hand-made bounds) is `OverBudget`, exit 6, instead of an unbounded allocation;
 - the support is ascending;
 - the record header is `<HH`;
 - the support ids are `<H` each;
@@ -746,7 +746,7 @@ tdp_packing eval      <file> --format … --input <hex|file>
 tdp_packing census    <A> <P> <B> <label>                                                # link_census parity
 ```
 
-`--label` is the text prefix of the report lines (`<label>-G512`, `<label>-rep512`; the oracle's `TAG`); it reaches no binary artifact. The zero-slice check always draws 4096 samples (the constant `ZERO_SLICE_SAMPLES`; there is no flag). The parameters are bounded as in the managed driver's `[packing]` (`PackParams::validate`, `RepairParams::validate`): window gates and interval cap 1..=10^6, monomial budget, span cap and split budget 1..=10^9, iterations 0..=1000; anything else is exit 2 (beyond these the scheduler's `2·G`, `G − load` and `8·b_mono` caps would wrap in release builds).
+`--label` is the text prefix of the report lines (`<label>-G512`, `<label>-rep512`; the oracle's `TAG`); it reaches no binary artifact. The zero-slice check always draws 4096 samples (the constant `ZERO_SLICE_SAMPLES`; there is no flag). The parameters are bounded as in the managed driver's `[packing]` (`PackParams::validate`, `RepairParams::validate`): window gates and interval cap 1..=10^6, span cap 1..=10^9, monomial budget and split budget 1..=2^18 (`MAX_MONOMIAL_BUDGET`), iterations 0..=1000; anything else is exit 2. The gate bounds keep the scheduler's `2·G` and `G − load` from wrapping in release builds; the budget bound is a resource limit (review round 3): a window holds up to 4·budget monomials and a product 8·budget, budgets of 10^6-10^9 reached 5-9 GB on the n=8 fixture within two minutes, 2^20 still held 2-3 GB at one monomial word, and 2^18 peaked at 1.2 GB (G = W_cap = 10^6, 156 s). 2^18 is 5× the largest measured packer budget (49,152 at G=1024) and 4× the recommended split budget.
 
 ### 5.2 Inputs
 
@@ -880,7 +880,7 @@ The decoder (`serialize::decode`, `tdp_packing decode`) validates the following 
 | split | `anf_split2.py` | bit-exact | `fits` on `PySet` (`CPython39`); per-cut leak memo; candidate, tie and recursion rules |
 | loop control | `repair.sh` | bit-exact | count test `vis <= N`, 4+4 iterations, break rules; final scan report-only |
 | `rep512.mpmct1` + `.bounds` | `order_repair.save` | **byte-exact** | k=0 trailing space; header n carried |
-| body bytes | DE | **byte-exact payload** | canonical (budget 1<<30); sha256 against the 8 archived `deliverable.bin` |
+| body bytes | DE | **byte-exact payload** | canonical (the oracle's budget 1<<30; the port refuses windows above `EMIT_BUDGET` = 2^18 with exit 6, never emits a different one); sha256 against the 8 archived `deliverable.bin` |
 | container | none (new) | header unit tests + standalone writer | |
 | equivalence | sampled in the oracle | **exact certificates** + sampled | §4.11a |
 | link census / AC report | `link_census.py`, AC | numbers equal, gated | §10.5 step 5 |
@@ -1354,7 +1354,7 @@ fi
 - Delete the `return_home` rejection.
 - Validate the preset and schedule exclusivity rules.
 - n ≤ 256 when stop_after_stage is 4.
-- Packing integers positive, and `monomial_budget·8` fits in usize.
+- Packing integers positive; `monomial_budget` and `split_budget` at most 2^18 (a resource bound, `MAX_MONOMIAL_BUDGET`, shared with `tdp_packing`); with `preprocessing.mode = "nonlinear291"` and stage 4 on, the planned stage-2 width (`nonlinear_tdp_resource_plan`) at most 1024 state wires (review round 3).
 - The `2*n > K + balanced` rule stays.
 - `read_calibration_seed` becomes `read_seed_file`: format 2 only, with the §8.3 legacy message.
 

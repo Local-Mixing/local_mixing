@@ -97,4 +97,34 @@ rm -f "$R.mock"
 drive > "$tmp/a3.log" 2>&1
 grep -q 'PIPELINE COMPLETE (stages 1-4)' "$tmp/a3.log"
 test ! -e "$R/packing/NOT_RECOMMENDED"
+# stage 3 is skipped only for an output its completion marker vouches for
+grep -q '^tdp_stage3_recipe=1$' "$R/stage3.recipe"
+grep -q '^mac.db_mixing=' "$R/stage3.recipe"
+mixers=$(count circuit_mixer); packs=$(count tdp_packing run)
+drive > "$tmp/m1.log" 2>&1
+grep -q 'stage 3: .* matches its completion marker, skipping' "$tmp/m1.log"
+[ "$(count circuit_mixer)" = "$mixers" ]
+# a truncated (interrupted) output is re-run, and stage 4 with it
+head -c 5 "$R/db_mixing.mpmct1" > "$R/partial" && mv "$R/partial" "$R/db_mixing.mpmct1"
+drive > "$tmp/m2.log" 2>&1
+grep -q 'no matching completion marker' "$tmp/m2.log"
+grep -q 'PIPELINE COMPLETE (stages 1-4)' "$tmp/m2.log"
+[ "$(count circuit_mixer)" = $((mixers + 1)) ]
+[ "$(count tdp_packing run)" = $((packs + 1)) ]
+# a changed schedule re-runs stage 3
+drive --db-mixing-schedule custom > "$tmp/m3.log" 2>&1
+grep -q 'no matching completion marker' "$tmp/m3.log"
+[ "$(count circuit_mixer)" = $((mixers + 2)) ]
+drive > "$tmp/m4.log" 2>&1
+[ "$(count circuit_mixer)" = $((mixers + 3)) ]
+# an older run (no stage-3 marker): adopted only when stage 4 consumed these bytes
+rm -f "$R/stage3.recipe"
+drive > "$tmp/m5.log" 2>&1
+grep -q 'stage 3: adopted' "$tmp/m5.log"
+grep -q '^adopted=packing.recipe$' "$R/stage3.recipe"
+[ "$(count circuit_mixer)" = $((mixers + 3)) ]
+rm -f "$R/stage3.recipe" "$R/packing.recipe"
+drive > "$tmp/m6.log" 2>&1
+grep -q 'no matching completion marker' "$tmp/m6.log"
+[ "$(count circuit_mixer)" = $((mixers + 4)) ]
 echo 'TDP stage-4 resume shell tests passed'

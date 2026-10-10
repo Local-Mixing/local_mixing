@@ -320,8 +320,9 @@ fn cmd_serialize(a: &Args) -> Result<(), Stage4Error> {
         ));
     }
     let nw = circ.computed_n;
+    // bounded before any arithmetic: 2·n wraps in release builds for n >= 2^63
     if let Some(n) = source_wires
-        && (n == 0 || 2 * n > nw as u64)
+        && (n == 0 || n > MAX_HEADER_WIDTH || n.saturating_mul(2) > nw as u64)
     {
         return Err(Stage4Error::Usage(format!(
             "--source-wires {n} does not fit a {nw}-wire state"
@@ -416,6 +417,10 @@ fn cmd_serialize(a: &Args) -> Result<(), Stage4Error> {
     Ok(())
 }
 
+/// Widest source or state width a container header may name (the decoder's
+/// bound; both fields are u32 on disk).
+const MAX_HEADER_WIDTH: u64 = 65536;
+
 /// The 48-byte header, then a copy of the body file.
 fn write_container(body: &Path, out: &Path, h: &ContainerHeader) -> Result<(), Stage4Error> {
     let (st, mut w) = Staged::create(out)?;
@@ -447,7 +452,7 @@ fn cmd_container(a: &Args) -> Result<(), Stage4Error> {
     let m = a
         .num("state-wires")?
         .ok_or_else(|| Stage4Error::Usage("--state-wires".into()))?;
-    if m == 0 || m > 65536 || 2 * n > m {
+    if n == 0 || n > MAX_HEADER_WIDTH || m == 0 || m > MAX_HEADER_WIDTH || n.saturating_mul(2) > m {
         return Err(Stage4Error::Usage(format!(
             "source {n} / state {m} out of range"
         )));
@@ -649,8 +654,8 @@ fn load_deliverable(a: &Args, path: &str) -> Result<Deliverable, Stage4Error> {
             let n = a
                 .num("n")?
                 .ok_or_else(|| Stage4Error::Usage("--format raw needs --n".into()))?;
-            let m = a.num("state-wires")?.unwrap_or(4 * n);
-            if n > 65536 || m > 65536 {
+            let m = a.num("state-wires")?.unwrap_or(n.saturating_mul(4));
+            if n > MAX_HEADER_WIDTH || m > MAX_HEADER_WIDTH {
                 return Err(Stage4Error::Usage("widths above 65536".into()));
             }
             // as the container header requires: the source and its output

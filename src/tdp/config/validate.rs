@@ -1,5 +1,8 @@
 //! Resolve typed values and validate resource/path constraints before run creation.
 use super::*;
+use crate::stages::packing::types::{
+    MAX_MONOMIAL_BUDGET, MAX_SPAN_CAP, MAX_STATE_WIRES as STAGE4_MAX_STATE_WIRES,
+};
 use crate::tdp::manifest::CURRENT_RECIPE_VERSION;
 
 pub(crate) fn resolve_config<F>(
@@ -244,6 +247,8 @@ where
             }
         },
     };
+    // nonlinear291's state width (embedded masking's is 4n <= 1024 for n <= 256)
+    let mut nonlinear_state_wires = None;
     if preprocessing_mode == PreprocessingMode::Nonlinear291 {
         let m = mcd;
         let s = sandwich_default_s(n);
@@ -260,15 +265,17 @@ where
         let slice_gates = logical_n
             .checked_mul(10)
             .ok_or_else(|| config_error(raw, "preprocessing_mode", "slice gate-count overflow"))?;
-        nonlinear_tdp_resource_plan(logical_n, gate_count, slice_gates).map_err(|error| {
-            config_error(
-                raw,
-                "preprocessing_mode",
-                &format!(
-                    "requested nonlinear layout exceeds the current wire capacity/resource budget: {error}; reduce n or set a smaller source.gates"
-                ),
-            )
-        })?;
+        let (state_wires, _) = nonlinear_tdp_resource_plan(logical_n, gate_count, slice_gates)
+            .map_err(|error| {
+                config_error(
+                    raw,
+                    "preprocessing_mode",
+                    &format!(
+                        "requested nonlinear layout exceeds the current wire capacity/resource budget: {error}; reduce n or set a smaller source.gates"
+                    ),
+                )
+            })?;
+        nonlinear_state_wires = Some(state_wires);
     }
     // Stage-3 schedule (§11.2): authoritative.
     let schedule = match raw.value("schedule").unwrap_or("validated") {
@@ -341,6 +348,19 @@ where
             "stage 4 (packing) supports source.wires up to 256; set run.stop_after_stage = 3 for larger n",
         ));
     }
+    // Refuse up front what stage 4 would refuse only after stages 1-3 ran.
+    if let Some(state_wires) = nonlinear_state_wires
+        && stop_after.as_deref().unwrap_or("4") == "4"
+        && state_wires > STAGE4_MAX_STATE_WIRES
+    {
+        return Err(config_error(
+            raw,
+            "preprocessing_mode",
+            &format!(
+                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 4 (packing) supports at most {STAGE4_MAX_STATE_WIRES} state wires; set run.stop_after_stage = 3, or use embedded-masking"
+            ),
+        ));
+    }
     // [packing]
     let d = PackingConfig::default();
     let packing_u64 = |key: &str, default: u64, max: u64| -> Result<u64, String> {
@@ -351,9 +371,17 @@ where
     let packing = PackingConfig {
         window_gates: packing_u64("packing_window_gates", d.window_gates, 1_000_000)?,
         interval_cap: packing_u64("packing_interval_cap", d.interval_cap, 1_000_000)?,
-        monomial_budget: packing_u64("packing_monomial_budget", d.monomial_budget, 1_000_000_000)?,
-        span_cap: packing_u64("packing_span_cap", d.span_cap, 1_000_000_000)?,
-        split_budget: packing_u64("packing_split_budget", d.split_budget, 1_000_000_000)?,
+        monomial_budget: packing_u64(
+            "packing_monomial_budget",
+            d.monomial_budget,
+            MAX_MONOMIAL_BUDGET as u64,
+        )?,
+        span_cap: packing_u64("packing_span_cap", d.span_cap, MAX_SPAN_CAP as u64)?,
+        split_budget: packing_u64(
+            "packing_split_budget",
+            d.split_budget,
+            MAX_MONOMIAL_BUDGET as u64,
+        )?,
         fix_iterations: parse_optional_u64(raw, "packing_fix_iterations", 0, 1000)?
             .map(|v| v.parse().expect("validated"))
             .unwrap_or(d.fix_iterations),
