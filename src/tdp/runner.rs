@@ -46,6 +46,9 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         CURRENT_RECIPE_VERSION
     };
     validate_current_recipe(&config)?;
+    // Before any build, SEEDS or manifest: scripts/tdp_gen.sh needs a current
+    // bash, and macOS ships 3.2 as /bin/bash (and often first on PATH).
+    let bash = resolve_bash()?;
     let host_target = rustc_host_triple()?;
     let binary_dir = config.build_target_dir.join(&host_target).join("release");
     print_resolved(&config_path, &config, &binary_dir);
@@ -66,6 +69,7 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     let should_build = config.build_release && !managed_resume;
     if sub.get_flag("dry_run") {
         print_dry_run(
+            &bash,
             &script,
             &script_args,
             &config,
@@ -128,8 +132,27 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         check_seeds_file(&config)?;
     }
 
-    println!("[tdp_gen] starting {}", script.display());
-    let mut child = ProcessCommand::new("bash");
+    println!(
+        "[tdp_gen] starting {} (bash {}.{}: {})",
+        script.display(),
+        bash.version.0,
+        bash.version.1,
+        bash.path.display()
+    );
+    // A failed stage 4 leaves this marker (scripts/tdp_gen.sh), so a
+    // tdp_packing exit-code meaning is attached only to a stage-4 failure.
+    let stage4_failed = config.run_dir.join("stage4.failed");
+    match fs::remove_file(&stage4_failed) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(TdpError::io(format!(
+                "cannot remove {}: {error}",
+                stage4_failed.display()
+            )));
+        }
+    }
+    let mut child = ProcessCommand::new(&bash.path);
     child
         .current_dir(&repo_root)
         .arg(&script)
@@ -140,10 +163,10 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         .map_err(|error| TdpError::io(format!("cannot start bash: {error}")))?;
     if !status.success() {
         let code = status.code().unwrap_or(1);
-        let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
         let mut error = TdpError::child("TDP_GEN pipeline", status);
-        if (2..=8).contains(&code) || code == 101 {
-            error.message = format!("{} ({meaning})", error.message);
+        if stage4_failure_code(&stage4_failed) == Some(code) {
+            let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
+            error.message = format!("{} (stage 4 tdp_packing: {meaning})", error.message);
         }
         return Err(error);
     }
@@ -162,6 +185,103 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         }
     }
     Ok(())
+}
+
+/// The oldest bash scripts/tdp_gen.sh runs under. Associative arrays and
+/// `mapfile` need 4.0; 5.1 is the first release that feeds a here-string
+/// smaller than the pipe buffer through a pipe instead of a temporary file
+/// under TMPDIR, and the seed hand-over (`3<<< "$GEN_SEED"`) relies on that
+/// to keep the seeds off disk. tdp_gen.sh checks the same bound.
+pub(crate) const MIN_BASH: (u32, u32) = (5, 1);
+
+pub(crate) struct Bash {
+    pub(crate) path: PathBuf,
+    pub(crate) version: (u32, u32),
+}
+
+/// Where a bash is looked for: every absolute PATH entry in order, then the
+/// usual install locations (Homebrew on Apple silicon and Intel, the system).
+pub(crate) fn bash_candidates(path: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = path
+        .map(|p| {
+            std::env::split_paths(p)
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| dir.join("bash"))
+                .collect()
+        })
+        .unwrap_or_default();
+    for fixed in [
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        "/bin/bash",
+        "/usr/bin/bash",
+    ] {
+        let fixed = PathBuf::from(fixed);
+        if !out.contains(&fixed) {
+            out.push(fixed);
+        }
+    }
+    out
+}
+
+/// `MAJOR.MINOR` as printed by `echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"`.
+pub(crate) fn parse_bash_version(text: &str) -> Option<(u32, u32)> {
+    let (major, minor) = text.trim().split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// The first candidate bash at least [`MIN_BASH`]; an error naming every
+/// bash found (and its version) when none is.
+pub(crate) fn resolve_bash() -> Result<Bash, TdpError> {
+    let mut seen = Vec::new();
+    for candidate in bash_candidates(std::env::var_os("PATH").as_deref()) {
+        if !candidate.is_file() {
+            continue;
+        }
+        let output = ProcessCommand::new(&candidate)
+            .env_clear()
+            .arg("-c")
+            .arg("echo \"${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}\"")
+            .output();
+        let version = output
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| parse_bash_version(&String::from_utf8_lossy(&o.stdout)));
+        match version {
+            Some(version) if version >= MIN_BASH => {
+                return Ok(Bash {
+                    path: candidate,
+                    version,
+                });
+            }
+            Some((major, minor)) => seen.push(format!("{} ({major}.{minor})", candidate.display())),
+            None => seen.push(format!("{} (version unknown)", candidate.display())),
+        }
+    }
+    Err(TdpError::config(format!(
+        "scripts/tdp_gen.sh needs bash >= {}.{} (associative arrays; seed here-strings through a pipe, not a temporary file); found {}; install a current bash (macOS: brew install bash) and put it on PATH; nothing was built or written",
+        MIN_BASH.0,
+        MIN_BASH.1,
+        if seen.is_empty() {
+            "none".to_owned()
+        } else {
+            seen.join(", ")
+        }
+    )))
+}
+
+/// The exit code a failed stage 4 recorded in `$RUN/stage4.failed`
+/// (`exit=<code>`), if that file exists and is well formed.
+pub(crate) fn stage4_failure_code(marker: &Path) -> Option<i32> {
+    let meta = fs::metadata(marker).ok()?;
+    if !meta.is_file() || meta.len() > 64 {
+        return None;
+    }
+    fs::read_to_string(marker)
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("exit="))
+        .and_then(|code| code.trim().parse().ok())
 }
 
 /// `cargo build` arguments for the report binary (after `cargo`).
@@ -525,6 +645,13 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         }
     );
     print_store("regular frozen store", &config.frozen_db);
+    if config.frozen_db.path.is_some() {
+        println!(
+            "[tdp_gen] regular frozen store fingerprint: {}; pinned_recipe={}",
+            store_fingerprint_text(config),
+            pinned_recipe(config)
+        );
+    }
     println!(
         "[tdp_gen] store filter: {}",
         match config.frozen_filter {
@@ -637,6 +764,7 @@ pub(crate) fn print_store(label: &str, store: &SourcedPath) {
 }
 
 pub(crate) fn print_dry_run(
+    bash: &Bash,
     script: &Path,
     args: &[OsString],
     config: &ResolvedConfig,
@@ -673,7 +801,10 @@ pub(crate) fn print_dry_run(
     } else {
         println!("[tdp_gen] release build: skipped by configuration");
     }
-    let mut invocation = vec![OsString::from("bash"), script.as_os_str().to_owned()];
+    let mut invocation = vec![
+        bash.path.clone().into_os_string(),
+        script.as_os_str().to_owned(),
+    ];
     invocation.extend_from_slice(args);
     println!("[tdp_gen] would run: {}", render_command(&invocation));
 }

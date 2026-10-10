@@ -301,6 +301,40 @@ fn exit_codes() {
     // 3: a raw body is not a container
     let raw = fx("anf/single.bin");
     assert_eq!(code(&["decode", p(&raw), "--format", "container"]), Some(3));
+    // widths are bounded before any buffer is sized from them: a wire of
+    // 65535 (anf-report: exit 2, the ANF width is at most 1024) and headers
+    // of 4e8 and 1e18 (census, mult-census, verify-equiv: exit 3)
+    let wide = dir.join("wide.mpmct1");
+    fs::write(&wide, "mpmct1 8 1\n65535 0 0\n").unwrap();
+    let one = dir.join("one.bounds");
+    fs::write(&one, "1\n").unwrap();
+    assert_eq!(code(&["anf-report", p(&wide), p(&one)]), Some(2));
+    for header in ["400000000", "999999999999999999"] {
+        let huge = dir.join(format!("h{header}.mpmct1"));
+        fs::write(&huge, format!("mpmct1 {header} 1\n0 0 0\n")).unwrap();
+        let h = p(&huge);
+        assert_eq!(code(&["anf-report", h, p(&one)]), Some(2));
+        assert_eq!(code(&["mult-census", h, "x"]), Some(3));
+        assert_eq!(code(&["census", h, h, p(&one), "x"]), Some(3));
+        assert_eq!(code(&["verify-equiv", h, h]), Some(3));
+    }
+    // eval --format raw: the state must hold wires 0..2n
+    let n8 = fx("n8_L8/deliverable.bin");
+    assert_eq!(
+        code(&[
+            "eval",
+            p(&n8),
+            "--format",
+            "raw",
+            "--n",
+            "100",
+            "--state-wires",
+            "32",
+            "--x",
+            "5"
+        ]),
+        Some(2)
+    );
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -1017,9 +1051,16 @@ fn run_exit_codes() {
         ),
         "over_budget"
     );
-    // an allowed floor miss does not hide an over-budget window
-    let (o, _) = run_n8(&d6, &g3, &["--split-budget", "10", "--allow-floor-miss"]);
+    // an allowed floor miss does not hide an over-budget window, and the
+    // report names both violations (with or without the allowance)
+    let (o, out) = run_n8(&d6, &g3, &["--split-budget", "10", "--allow-floor-miss"]);
     assert_eq!(code(&o), Some(6), "{}", String::from_utf8_lossy(&o.stderr));
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "floor_miss+over_budget");
+    let (o, out) = run_n8(&d6, &g3, &["--split-budget", "10"]);
+    assert_eq!(code(&o), Some(5), "{}", String::from_utf8_lossy(&o.stderr));
+    let rep = fs::read_to_string(out.join("packing.report")).unwrap();
+    assert_eq!(kv(&rep, "status"), "floor_miss+over_budget");
     // 7: the output directory cannot be created
     #[cfg(unix)]
     {
@@ -1072,6 +1113,28 @@ fn run_reused_out_dir_leaves_no_stale_deliverable() {
     assert!(!out.join("rep512.wit.tsv").exists() && !out.join("rep512.cview.log").exists());
     let rep = fs::read_to_string(out.join("packing.report")).unwrap();
     assert_eq!(kv(&rep, "status"), "floor_miss");
+    // intermediates of a run with ANOTHER window size (and their *.tmp);
+    // a file `run` never writes stays
+    let other_g = [
+        "packed_G256.mpmct1",
+        "packed_G256.mpmct1.bounds",
+        "pack_G256.txt",
+        "repair256.log.tmp",
+        "anf_rep256.txt",
+        "link_rep256.txt",
+        "rep256.mpmct1",
+        "rep256.bounds",
+        "rep256.exposure.tsv",
+        "rep256.allcuts.tsv",
+        "rep256.wit.tsv",
+        "rep256.cview.log",
+    ];
+    for f in other_g {
+        fs::write(out.join(f), "stale").unwrap();
+    }
+    for f in ["notes.txt", "rep.mpmct1", "repX512.log"] {
+        fs::write(out.join(f), "kept").unwrap();
+    }
     // exit 4 (a flipped G3 gate fails the packer's VERIFY): no report, no
     // deliverable, no intermediate of the earlier run
     let text = fs::read_to_string(&g3).unwrap();
@@ -1094,8 +1157,14 @@ fn run_reused_out_dir_leaves_no_stale_deliverable() {
         "deliverable.tdp4",
         "rep512.mpmct1",
         "rep512.bounds",
-    ] {
+    ]
+    .into_iter()
+    .chain(other_g)
+    {
         assert!(!out.join(f).exists(), "{f} left by an earlier run");
+    }
+    for f in ["notes.txt", "rep.mpmct1", "repX512.log"] {
+        assert!(out.join(f).exists(), "{f} is not a run output");
     }
     let leftovers: Vec<_> = fs::read_dir(&out)
         .unwrap()

@@ -92,8 +92,9 @@ $preset
 enabled = true
 seed_file = "$SF"
 CFG
-# the driver needs bash >= 4 (associative arrays) and, for its host query, rustc
-CARGO_BIN=$(dirname "$(command -v cargo)"):$(dirname "$(command -v bash)")
+# the driver finds a bash >= 5.1 itself (PATH, then the usual install
+# locations); it needs rustc on PATH for its host query
+CARGO_BIN=$(dirname "$(command -v cargo)"):$(dirname "$(command -v rustc)")
 # decoys: the driver must refuse inherited output-affecting variables
 for decoy in MIXER_DB_LEN_BAND=3 SLICE_GUARD_LEGACY=1 EMBEDDED_MASKING_RETIRE=4 CANON_MONOMIAL_CAP=10; do
   if env -i HOME="$HOME" PATH="$CARGO_BIN:/usr/bin:/bin" "$decoy" "$BIN_DIR/local_mixing_bin" tdp_gen \
@@ -128,6 +129,16 @@ grep -q '^stage2_span_report=hmap_affine$' "$RUN/tdp_command.conf" && row "manif
   { row "manifest: stage2_span_report" "not recorded"; fail=1; }
 grep -q '^frozen_filter=1$' "$RUN/stage3.settings" && row "stage3.settings: frozen_filter" "1 (= val_chain.sh)" ||
   { row "stage3.settings: frozen_filter" "not 1"; fail=1; }
+grep -qE '^stop_reason=(moves budget spent|profile complete \(size schedule finished\))$' "$RUN/stage3.settings" &&
+  row "stage3.settings: stop_reason" "$(sed -n 's/^stop_reason=//p' "$RUN/stage3.settings")" ||
+  { row "stage3.settings: stop_reason" "not the schedule's end"; fail=1; }
+# the validated store and sizes: the manifest names the chain (n=64/128 only)
+case $N in 64|128)
+  [ -z "$size" ] && want_pin=val_chain-$CFG-20261007 || want_pin=none ;;
+  *) want_pin=none ;;
+esac
+grep -q "^pinned_recipe=$want_pin\$" "$RUN/tdp_command.conf" && row "manifest: pinned_recipe" "$want_pin" ||
+  { row "manifest: pinned_recipe" "$(sed -n 's/^pinned_recipe=//p' "$RUN/tdp_command.conf") (want $want_pin)"; fail=1; }
 for f in "$RUN/stage12.log" "$RUN/stage3.log" "$RUN/tdp_gen.log" "$RUN/tdp_command.conf" "$WORK/managed.out"; do
   if grep -qF -f <(sed -nE 's/^(gen|mix)_seed=//p' "$SF") "$f"; then row "seed values in $(basename "$f")" PRESENT; fail=1; fi
 done

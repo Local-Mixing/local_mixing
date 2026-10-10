@@ -193,36 +193,52 @@ want = ["--input", "tdp.mpmct1", "--output", "db_mixing.mpmct1", "--tdp", "--db-
         "--seed", "67890"]
 assert c == want, c
 PY
-# the Rust driver (when built): same transcript from a v2 TOML
+# the Rust driver (when built): same transcript from a v2 TOML holding only
+# n, the store and the seeds (preset A only for d64A), for every documented
+# default path: L8 and A at n=64, the n=128 validated size, against the same
+# oracle transcripts as the bash driver
 if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
   host=$(rustc -vV | sed -n 's/^host: //p')
   RT=$tmp/rtarget/$host/release; mkdir -p "$RT"
   for b in gen_sandwich_gadget circuit_mixer tdp_packing; do ln -s "$MOCK" "$RT/$b"; done
-  sf=$tmp/rust.seeds; printf 'gen_seed=%s\nmix_seed=%s\n' "$G" 1099511627775 > "$sf"; chmod 600 "$sf"
-  printf 'gen_gates=3\n' > "$tmp/rust.mock"
-  cat > "$tmp/rust.toml" <<TOML
+  # the fake store has no tables: validate_frozen_store would refuse it, so give it the files
+  : > "$STORE/tables.bin"; echo x > "$STORE/tables.bin"
+  for i in $(seq 0 255); do printf 'x' > "$STORE/shard_$(printf %02x "$i").frz"; done
+  rust_case() { # LABEL N CFG GATES GEN MIX
+    local label=$1 n=$2 cfg=$3 gates=$4 gs=$5 ms=$6 run=$tmp/rust_$1
+    local sf=$run.seeds; printf 'gen_seed=%s\nmix_seed=%s\n' "$gs" "$ms" > "$sf"; chmod 600 "$sf"
+    printf 'gen_gates=%s\n' "$gates" > "$run.mock"
+    local preset=""; [ "$cfg" = A ] && preset='preset = "A"'
+    cat > "$run.toml" <<TOML
 config_version = 2
 [run]
-directory = "$tmp/rust"
+directory = "$run"
 build_directory = "$tmp/rtarget"
 build_binaries = false
 [source]
-wires = 64
+wires = $n
 [database]
 regular_dir = "$STORE"
+[preprocessing]
+$preset
 [calibration]
 enabled = true
 seed_file = "$sf"
 TOML
-  # the fake store has no tables: validate_frozen_store would refuse it, so give it the files
-  : > "$STORE/tables.bin"; echo x > "$STORE/tables.bin"
-  for i in $(seq 0 255); do printf 'x' > "$STORE/shard_$(printf %02x "$i").frz"; done
-  env -i HOME="$HOME" PATH="$PATH" "$LOCAL_MIXING_BIN" tdp_gen --config "$tmp/rust.toml" > "$tmp/rust.log" 2>&1 ||
-    { cat "$tmp/rust.log" >&2; exit 1; }
-  python_compare d64L8 64 "$tmp/rust.calls"
-  if grep -q "$G" "$tmp/rust.log" "$tmp/rust/tdp_gen.log" "$tmp/rust/tdp_command.conf"; then
-    echo "a seed value reached the Rust driver's output or logs" >&2; exit 1
-  fi
+    env -i HOME="$HOME" PATH="$PATH" "$LOCAL_MIXING_BIN" tdp_gen --config "$run.toml" > "$run.log" 2>&1 ||
+      { cat "$run.log" >&2; exit 1; }
+    python_compare "$label" "$n" "$run.calls"
+    if [ "${#gs}" -ge 4 ] && grep -q "$gs" "$run.log" "$run/tdp_gen.log" "$run/tdp_command.conf"; then
+      echo "a seed value reached the Rust driver's output or logs ($label)" >&2; exit 1
+    fi
+    # a test store is not the validated one: the manifest must not claim the recipe
+    grep -q '^pinned_recipe=none$' "$run/tdp_command.conf"
+    grep -q "^preprocessing_preset=$cfg\$" "$run/tdp_command.conf"
+  }
+  rust_case d64L8 64 L8 3 "$G" 1099511627775
+  rust_case d64A 64 A 7 12345 67890
+  rust_case d128 128 L8 3 1 2
+  echo "Rust driver: d64L8, d64A, d128 identical to the oracle transcripts"
 else
   echo "(Rust driver case skipped: set LOCAL_MIXING_BIN to target/release/local_mixing_bin)"
 fi

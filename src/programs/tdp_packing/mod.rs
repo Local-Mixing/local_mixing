@@ -475,6 +475,25 @@ fn cmd_container(a: &Args) -> Result<(), Stage4Error> {
 
 // ---------------------------------------------------------------- reports
 
+/// Widest circuit the census and equivalence commands accept: their buffers
+/// are sized from the header n (1024-lane states, per-wire tables), so an
+/// unchecked header of 4e8 or 1e18 would allocate tens of GB or overflow.
+const MAX_CENSUS_WIRES: usize = 65536;
+
+/// Exit 3 for a circuit wider than [`MAX_CENSUS_WIRES`] (header n or a gate).
+pub(super) fn check_census_width(
+    c: &crate::stages::packing::oracle_io::OracleCircuit,
+    path: &str,
+) -> Result<(), Stage4Error> {
+    let w = c.header_n.max(c.computed_n);
+    if w > MAX_CENSUS_WIRES {
+        return Err(Stage4Error::Input(format!(
+            "{path}: {w} wires; at most {MAX_CENSUS_WIRES}"
+        )));
+    }
+    Ok(())
+}
+
 fn cmd_anf_report(a: &Args) -> Result<(), Stage4Error> {
     a.check_known(&["anf-cap-semantics", "stats", "threads"])?;
     if a.pos.len() < 2 || a.pos.len() > 5 {
@@ -485,6 +504,13 @@ fn cmd_anf_report(a: &Args) -> Result<(), Stage4Error> {
     setup_threads(a)?;
     let sem = cap_semantics(a)?;
     let circ = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    // the ANF composer's monomial width (with_mono_width panics above 1024)
+    if circ.computed_n > 1024 {
+        return Err(Stage4Error::Usage(format!(
+            "{} wires: at most 1024",
+            circ.computed_n
+        )));
+    }
     let bounds = read_bounds(Path::new(&a.pos[1]))?;
     let budget = a
         .pos
@@ -627,6 +653,14 @@ fn load_deliverable(a: &Args, path: &str) -> Result<Deliverable, Stage4Error> {
             if n > 65536 || m > 65536 {
                 return Err(Stage4Error::Usage("widths above 65536".into()));
             }
+            // as the container header requires: the source and its output
+            // copy (wires 0..2n) live in the state
+            if 2 * n > m {
+                return Err(Stage4Error::Usage(format!(
+                    "--n {n} needs --state-wires >= {}, got {m}",
+                    2 * n
+                )));
+            }
             decode(
                 &bytes,
                 Format::Raw {
@@ -764,7 +798,9 @@ fn cmd_verify_equiv(a: &Args) -> Result<(), Stage4Error> {
         ));
     }
     let ca = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    check_census_width(&ca, &a.pos[0])?;
     let cb = read_oracle_mpmct(Path::new(&a.pos[1]))?;
+    check_census_width(&cb, &a.pos[1])?;
     let seed = a.num("seed")?.unwrap_or(77);
     verify_equiv(&ca.gates, &cb.gates, ca.header_n.max(cb.header_n), seed)?;
     println!(

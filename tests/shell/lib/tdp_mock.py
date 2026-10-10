@@ -86,6 +86,8 @@ if name == "gen_sandwich_gadget":
 elif name == "circuit_mixer":
     out = args[args.index("--output") + 1]
     Path(out).write_text("mpmct1 16 2\n0 0 0\n0 0 0\n")
+    reason = opts.get("mixer_stop", "moves budget spent")
+    print(f"[circuit_mixer] chain done in 0.0s: {reason} (1 -> 2 gates, 0 -> 0 g57 fossils)")
 elif name == "tdp_packing":
     if args[0] == "mult-census":
         print(f" {args[2]}: born=1 distinct=1")

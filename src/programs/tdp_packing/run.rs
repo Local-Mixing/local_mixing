@@ -441,7 +441,7 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
     )?;
     let n = n as usize;
     private_dir(&out_dir)?;
-    remove_stale_outputs(&out_dir, g)?;
+    remove_stale_outputs(&out_dir)?;
 
     // ---- pack (window_pack3.py)
     let mut tee = Tee { buf: Vec::new() };
@@ -486,10 +486,16 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
     let status = r
         .report
         .status(a.flag("allow-floor-miss"), a.flag("allow-over-budget"));
-    let status_name = match &status {
-        Ok(s) => *s,
-        Err(Stage4Error::Floor { .. }) => "floor_miss",
-        Err(_) => "over_budget",
+    // every violation the final tests found, allowed or not (the exit code
+    // is `status`'s: Floor first, then OverBudget)
+    let status_name = match (
+        !r.report.final_nonoutput_visible.is_empty(),
+        !r.report.final_over_budget.is_empty(),
+    ) {
+        (false, false) => "ok",
+        (true, false) => "floor_miss",
+        (false, true) => "over_budget",
+        (true, true) => "floor_miss+over_budget",
     };
 
     // ---- reports (anf_compose.py, link_census.py) and repair.sh's tail
@@ -645,37 +651,63 @@ pub(super) fn cmd_run(a: &Args) -> Result<(), Stage4Error> {
     Ok(())
 }
 
-/// Every file `run` writes into `--out-dir` for window size `g` (and its
-/// `*.tmp`): removed before a run so a reused directory never mixes runs.
-fn remove_stale_outputs(out_dir: &Path, g: usize) -> Result<(), Stage4Error> {
-    let mut names: Vec<String> = ["deliverable.bin", "deliverable.tdp4", "packing.report"]
-        .map(String::from)
-        .to_vec();
-    names.extend([
-        format!("packed_G{g}.mpmct1"),
-        format!("packed_G{g}.mpmct1.bounds"),
-        format!("pack_G{g}.txt"),
-        format!("repair{g}.log"),
-        format!("anf_rep{g}.txt"),
-        format!("link_rep{g}.txt"),
-    ]);
-    for suffix in [
-        "mpmct1",
-        "bounds",
-        "exposure.tsv",
-        "allcuts.tsv",
-        "wit.tsv",
-        "cview.log",
-    ] {
-        names.push(format!("rep{g}.{suffix}"));
+/// Whether `name` is one of the files `run` writes into `--out-dir` for SOME
+/// window size (or its `*.tmp`): deliverable.bin, deliverable.tdp4,
+/// packing.report, packed_G{g}.mpmct1[.bounds], pack_G{g}.txt,
+/// repair{g}.log, anf_rep{g}.txt, link_rep{g}.txt and
+/// rep{g}.{mpmct1,bounds,exposure.tsv,allcuts.tsv,wit.tsv,cview.log}.
+pub(super) fn is_run_output(name: &str) -> bool {
+    let name = name.strip_suffix(".tmp").unwrap_or(name);
+    if matches!(
+        name,
+        "deliverable.bin" | "deliverable.tdp4" | "packing.report"
+    ) {
+        return true;
     }
-    for name in names {
-        for path in [out_dir.join(&name), out_dir.join(format!("{name}.tmp"))] {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Stage4Error::io(&path, e)),
-            }
+    // PREFIX <digits> SUFFIX
+    let shapes: [(&str, &[&str]); 6] = [
+        ("packed_G", &[".mpmct1", ".mpmct1.bounds"]),
+        ("pack_G", &[".txt"]),
+        ("repair", &[".log"]),
+        ("anf_rep", &[".txt"]),
+        ("link_rep", &[".txt"]),
+        (
+            "rep",
+            &[
+                ".mpmct1",
+                ".bounds",
+                ".exposure.tsv",
+                ".allcuts.tsv",
+                ".wit.tsv",
+                ".cview.log",
+            ],
+        ),
+    ];
+    shapes.iter().any(|(prefix, suffixes)| {
+        name.strip_prefix(prefix).is_some_and(|rest| {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            digits > 0 && suffixes.contains(&&rest[digits..])
+        })
+    })
+}
+
+/// Removes every output of an earlier run from `out_dir`, whatever window
+/// size it used, so a reused directory never mixes runs.
+fn remove_stale_outputs(out_dir: &Path) -> Result<(), Stage4Error> {
+    let entries = fs::read_dir(out_dir).map_err(|e| Stage4Error::io(out_dir, e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| Stage4Error::io(out_dir, e))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_run_output(&name) {
+            continue;
+        }
+        let path = entry.path();
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Stage4Error::io(&path, e)),
         }
     }
     Ok(())
@@ -689,6 +721,7 @@ pub(super) fn cmd_mult_census(a: &Args) -> Result<(), Stage4Error> {
         return Err(Stage4Error::Usage("mult-census <A.mpmct1> <label>".into()));
     }
     let ca = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    check_census_width(&ca, &a.pos[0])?;
     if ca.gates.is_empty() {
         return Err(Stage4Error::Input("mult-census: no gates".into()));
     }
@@ -708,7 +741,9 @@ pub(super) fn cmd_census(a: &Args) -> Result<(), Stage4Error> {
         ));
     }
     let ca = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    check_census_width(&ca, &a.pos[0])?;
     let cp = read_oracle_mpmct(Path::new(&a.pos[1]))?;
+    check_census_width(&cp, &a.pos[1])?;
     let b = read_bounds(Path::new(&a.pos[2]))?;
     print!("{}", link_census(&ca, &cp, &b, &a.pos[3]).text);
     Ok(())

@@ -621,7 +621,7 @@ fn dangerous_run_destinations_are_rejected() {
 fn the_exact_default_manifest_text() {
     let config = resolve_for_test(&parse("source.wires = 64")).unwrap();
     let expected = concat!(
-        "tdp_command_recipe=10\npinned_recipe=val_chain-L8-20261007\nn=64\n",
+        "tdp_command_recipe=10\npinned_recipe=none\nn=64\n",
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "sandwich_variant=classic\npreprocessing_mode=embedded-masking\npreprocessing_preset=L8\n",
         "preprocessing_mask_pair_wires=2\npreprocessing_max_open_masks=3\n",
@@ -631,7 +631,8 @@ fn the_exact_default_manifest_text() {
         "preprocessing_chain=2\npreprocessing_chain_len=8\npreprocessing_quadratic_fire=1\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
-        "stage3_report_every=default(50000)\npieces=1\nfrozen_db_dir=unset\nfrozen_filter=auto(unset)\n",
+        "stage3_report_every=default(50000)\npieces=1\nfrozen_db_dir=unset\nfrozen_db_fingerprint=unset\n",
+        "frozen_filter=auto(unset)\n",
         "frozen_regular_value_convention=native\nallow_empty_store=false\nenv_policy=allowlist-v1\n",
         "cache_mb=lookup:2048,canon:256,xpoly:1024\ncanon_caps=unbounded\npacking_params=default\n",
         "packing_window_gates=512\npacking_interval_cap=512\npacking_monomial_budget=24576\n",
@@ -807,7 +808,10 @@ fn env_registry_covers_every_env_read() {
                     continue;
                 }
                 found += 1;
-                if crate::tdp::env_registry::classify(&name).is_none() {
+                // the allow-list (PATH: the driver resolves bash on it)
+                if crate::tdp::env_registry::classify(&name).is_none()
+                    && !crate::tdp::env_registry::ALLOW_ENV.contains(&name.as_str())
+                {
                     unclassified.insert(format!("{name} ({})", f.display()));
                 }
             }
@@ -890,7 +894,7 @@ fn run_target_and_store_trees_must_not_overlap() {
 
 #[test]
 fn pinned_recipe_and_resolved_filter_follow_the_run() {
-    let pinned = |c: &ResolvedConfig| {
+    let manifest_pinned = |c: &ResolvedConfig| {
         recipe_manifest(c, &[], 1)
             .lines()
             .find_map(|l| l.strip_prefix("pinned_recipe=").map(str::to_owned))
@@ -904,9 +908,31 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     };
     let store = temp_path("pinned-store");
     fs::create_dir_all(&store).unwrap();
+    fs::write(store.join("shard_00.frz"), "shard").unwrap();
+    fs::write(store.join("shard_00.frz.ok"), "0123\n").unwrap();
+    // this test store stands in for the validated one
+    let reference = store_fingerprint(&store).unwrap();
+    let pinned = |c: &ResolvedConfig| pinned_recipe_for_store(c, reference).to_owned();
     let body = format!("source.wires = 64\ndatabase.regular_dir = {store:?}\n");
     let l8 = resolve_body(&body).unwrap();
     assert_eq!(pinned(&l8), "val_chain-L8-20261007");
+    // ... but it is not the validated store: the manifest says so
+    assert_eq!(manifest_pinned(&l8), "none");
+    assert!(
+        recipe_manifest(&l8, &[], 1).contains(&format!("frozen_db_fingerprint={reference:032x}\n"))
+    );
+    // another store (a changed marker, an extra shard): not the reference
+    fs::write(store.join("shard_00.frz.ok"), "4567\n").unwrap();
+    assert_eq!(pinned(&l8), "none");
+    fs::write(store.join("shard_00.frz.ok"), "0123\n").unwrap();
+    fs::write(store.join("shard_01.frz"), "shard").unwrap();
+    assert_eq!(pinned(&l8), "none");
+    fs::remove_file(store.join("shard_01.frz")).unwrap();
+    assert_eq!(pinned(&l8), "val_chain-L8-20261007");
+    // no store at all: not the chain
+    let mut no_store = l8.clone();
+    no_store.frozen_db.path = None;
+    assert_eq!(pinned(&no_store), "none");
     assert_eq!(filter(&l8), "auto(1)");
     let a = resolve_body(&format!("{body}preprocessing.preset = \"A\"")).unwrap();
     assert_eq!(pinned(&a), "val_chain-A-20261007");
@@ -933,6 +959,13 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     fs::write(store.join("filters.bin"), "filter").unwrap();
     assert_eq!(filter(&l8), "auto(0)");
     assert_eq!(pinned(&l8), "none");
+    // ... and "on" runs the mixer FILTERED (FROZEN_FILTER=1 with filters.bin):
+    // also never validated, even against a reference that includes filters.bin
+    let on = resolve_body(&format!("{body}database.lookup_miss_filter = \"on\"")).unwrap();
+    assert_eq!(filter(&on), "on(1)");
+    assert_eq!(pinned(&on), "none");
+    let with_filter = store_fingerprint(&store).unwrap();
+    assert_eq!(pinned_recipe_for_store(&on, with_filter), "none");
     fs::remove_dir_all(store).unwrap();
 }
 
@@ -1429,5 +1462,41 @@ fn standalone_runs_are_not_adopted() {
         assert!(!target_dir.exists());
         assert!(!run_dir.join("tdp_command.conf").exists());
     }
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn bash_is_resolved_by_version_not_by_name() {
+    assert_eq!(parse_bash_version("5.2\n"), Some((5, 2)));
+    assert_eq!(parse_bash_version("3.2"), Some((3, 2)));
+    assert_eq!(parse_bash_version(".\n"), None);
+    assert_eq!(parse_bash_version(""), None);
+    assert!((3, 2) < MIN_BASH && (5, 0) < MIN_BASH && (5, 1) >= MIN_BASH && (6, 0) >= MIN_BASH);
+    // PATH order first (relative entries skipped), then the fixed locations once
+    let path = std::env::join_paths(["/x/bin", "rel/bin", "/bin"]).unwrap();
+    let c = bash_candidates(Some(&path));
+    assert_eq!(c[0], PathBuf::from("/x/bin/bash"));
+    assert_eq!(c[1], PathBuf::from("/bin/bash"));
+    assert!(!c.iter().any(|p| p.starts_with("rel")));
+    assert_eq!(
+        c.iter().filter(|p| **p == Path::new("/bin/bash")).count(),
+        1
+    );
+    assert!(c.contains(&PathBuf::from("/opt/homebrew/bin/bash")));
+    // the machine running the tests has a current bash (CI: ubuntu's 5.x)
+    let bash = resolve_bash().unwrap();
+    assert!(bash.version >= MIN_BASH);
+}
+
+#[test]
+fn stage4_meaning_needs_the_stage4_marker() {
+    let base = temp_path("stage4-marker");
+    fs::create_dir_all(&base).unwrap();
+    let marker = base.join("stage4.failed");
+    assert_eq!(stage4_failure_code(&marker), None);
+    fs::write(&marker, "exit=5\n").unwrap();
+    assert_eq!(stage4_failure_code(&marker), Some(5));
+    fs::write(&marker, "garbage\n").unwrap();
+    assert_eq!(stage4_failure_code(&marker), None);
     fs::remove_dir_all(base).unwrap();
 }

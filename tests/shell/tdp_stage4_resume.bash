@@ -60,7 +60,27 @@ for rc in 5 6 7; do
   grep -q "stage 4 FAILED: exit $rc ($m)" "$tmp/e$rc.log"
   no_complete "$tmp/e$rc.log"
   test ! -e "$R/packing.recipe"
+  # the marker the managed driver reads to attach a stage-4 meaning
+  [ "$(cat "$R/stage4.failed")" = "exit=$rc" ]
 done
+# an operator stop flag ends stage 3 below its dose: refused, never shipped,
+# and a resume re-runs stage 3 (the output is not under the canonical name)
+printf 'mixer_stop=stop flag\n' > "$R.mock"
+set +e; drive --run-rerun-from-stage 3 > "$tmp/s1.log" 2>&1; got=$?; set -e
+[ "$got" = 2 ] || { cat "$tmp/s1.log" >&2; exit 1; }
+grep -q 'FATAL: stage 3 ended by stop flag, below the recipe' "$tmp/s1.log"
+no_complete "$tmp/s1.log"
+test ! -e "$R/db_mixing.mpmct1"
+test -s "$R/db_mixing.stopped.mpmct1"
+grep -q '^stop_reason=stop flag$' "$R/stage3.settings"
+mixers=$(count circuit_mixer); packs=$(count tdp_packing run)
+rm -f "$R.mock"
+drive > "$tmp/s2.log" 2>&1
+grep -q 'PIPELINE COMPLETE (stages 1-4)' "$tmp/s2.log"
+[ "$(count circuit_mixer)" = $((mixers + 1)) ]
+[ "$(count tdp_packing run)" = $((packs + 1)) ]
+grep -q '^stop_reason=moves budget spent$' "$R/stage3.settings"
+test ! -e "$R/stage4.failed"
 # an allowed failure: marker status, NOT_RECOMMENDED, no PIPELINE COMPLETE, also on resume
 printf 'packing_status=floor_miss\n' > "$R.mock"
 drive --packing-allow-floor-miss > "$tmp/a1.log" 2>&1

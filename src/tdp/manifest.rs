@@ -201,13 +201,71 @@ pub(crate) fn resolved_frozen_filter(config: &ResolvedConfig) -> &'static str {
     }
 }
 
+/// [`store_fingerprint`] of the regular store the chosen runs used
+/// (`frozen_m1_m11`: probes.bin, tables.bin and 256 shards, each with its
+/// `.ok` checksum marker, no filters.bin).
+pub(crate) const VALIDATED_REGULAR_STORE: u128 = 0xfd19_8367_7e4d_5b74_267d_3802_c9c3_4642;
+
+/// An identity of a frozen store's contents that does not read its 298 GB of
+/// shards: the name and size of every regular, non-hidden file in the
+/// directory, and the text of each `*.ok` marker (the per-file checksum the
+/// store was built with), in name order. A copy with other shards, sizes or
+/// markers, or an added filters.bin, has another fingerprint. `None` when
+/// the directory cannot be read.
+pub(crate) fn store_fingerprint(store: &Path) -> Option<u128> {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    for entry in fs::read_dir(store).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().into_string().ok()?;
+        if name.starts_with('.') {
+            continue;
+        }
+        let meta = fs::metadata(entry.path()).ok()?;
+        if meta.is_file() {
+            entries.push((name, meta.len()));
+        }
+    }
+    entries.sort();
+    let mut hasher = Xxh3::new();
+    for (name, len) in entries {
+        hasher.update(format!("{name}\t{len}\n").as_bytes());
+        if name.ends_with(".ok") && len <= 4096 {
+            hasher.update(&fs::read(store.join(&name)).ok()?);
+            hasher.update(b"\n");
+        }
+    }
+    Some(hasher.digest128())
+}
+
+/// The manifest's `frozen_db_fingerprint` value.
+pub(crate) fn store_fingerprint_text(config: &ResolvedConfig) -> String {
+    match config.frozen_db.path.as_deref() {
+        None => "unset".to_owned(),
+        Some(store) => match store_fingerprint(store) {
+            Some(fp) => format!("{fp:032x}"),
+            None => "unreadable".to_owned(),
+        },
+    }
+}
+
 /// The validation recipe this run reproduces, if any: val_chain.sh CONFIG=L8
 /// or A as run for the chosen runs (vL64a/b, vL128a/b, vA64a, vA128a). Only
 /// a run whose every recipe setting is that chain's: embedded masking with
 /// preset L8 or A, the validated |C| for a generated source, schedule
-/// validated in one piece, FROZEN_FILTER=1 on a real store, no leakage
-/// repair, and default packing. Anything else records `none`.
+/// validated in one piece, no leakage repair, default packing, and stage 3
+/// on THE store those runs used ([`VALIDATED_REGULAR_STORE`]) unfiltered:
+/// FROZEN_FILTER=1 on a store without filters.bin, which is how val_chain.sh
+/// ran (a filtered run, `lookup_miss_filter = "on"` with filters.bin, was
+/// never validated; D11). Anything else records `none`.
 pub(crate) fn pinned_recipe(config: &ResolvedConfig) -> &'static str {
+    pinned_recipe_for_store(config, VALIDATED_REGULAR_STORE)
+}
+
+/// [`pinned_recipe`] against a given reference-store fingerprint (tests).
+pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) -> &'static str {
+    let reference_store = config.frozen_db.path.as_deref().is_some_and(|store| {
+        !store.join("filters.bin").exists() && store_fingerprint(store) == Some(reference)
+    });
     let matches_chain = config.preprocessing_mode == PreprocessingMode::EmbeddedMasking
         && config.mcd_rule == SourceGatesRule::Validated
         && config.source_path.is_none()
@@ -215,7 +273,8 @@ pub(crate) fn pinned_recipe(config: &ResolvedConfig) -> &'static str {
         && config.pieces.as_deref().unwrap_or("1") == "1"
         && config.min_block_size.is_none()
         && !config.allow_empty_store
-        && resolved_frozen_filter(config) != "0"
+        && reference_store
+        && resolved_frozen_filter(config) == "1"
         && !config.qc_enabled
         && config.packing.is_default();
     match (matches_chain, config.preset) {
@@ -302,6 +361,7 @@ pub(crate) fn recipe_manifest(
         kv("min_block_size", size);
     }
     kv("frozen_db_dir", &path_or_unset(&config.frozen_db.path));
+    kv("frozen_db_fingerprint", &store_fingerprint_text(config));
     kv(
         "frozen_filter",
         &format!(

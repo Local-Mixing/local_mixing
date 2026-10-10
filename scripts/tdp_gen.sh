@@ -27,6 +27,17 @@
 # Every stage writes its artifact + log into the run dir and is skipped when
 # the artifact already exists (rerun with --run-rerun-from-stage K). bash only:
 # do not port to zsh (word-splitting changes silently).
+#
+# bash >= 5.1 (checked first, in syntax bash 3.2 parses): associative arrays
+# and mapfile need 4.0, and 5.1 is the first bash that feeds a small
+# here-string through a pipe instead of a temporary file under TMPDIR, which
+# keeps the seed hand-over below off disk. macOS's /bin/bash is 3.2; the
+# managed driver (local_mixing_bin tdp_gen) finds a current bash itself.
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 5 ] ||
+   { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+  echo "FATAL: scripts/tdp_gen.sh needs bash >= 5.1, this is ${BASH_VERSION:-not bash} ($BASH); macOS: brew install bash, then run it with that bash" >&2
+  exit 2
+fi
 set -euo pipefail
 
 usage() {
@@ -653,9 +664,22 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$DB_MIXING" ]; then
       --no-local-verify --seed-file /dev/fd/3 \
       ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} 3<<< "$MIX_SEED" > "$RUN/stage3.log" 2>&1 ||
     { note "stage 3 FAILED; see $RUN/stage3.log"; exit 1; }
+  # Why the chain ended (circuit_mixer's "chain done in Ts: <reason> (...)").
+  # An operator stop flag ($RUN/stage3.stop) ends it "cleanly" with exit 0 but
+  # below the recipe's dose: that output is never handed to stage 4 under the
+  # canonical name, so neither this run nor a resume ships it.
+  STOP_REASON=$(sed -n 's/^\[circuit_mixer\] chain done in [0-9.]*s: \(.*\) ([0-9]* -> [0-9]* gates, .*$/\1/p' "$RUN/stage3.log" | tail -1)
   # The stage-3 settings resolved at run time (FROZEN_FILTER under auto).
-  printf 'stage3_settings=1\nfrozen_filter_mode=%s\nfrozen_filter=%s\np_db=%s\n' \
-    "$FILTER" "${FF:-unset}" "${DBFLAGS[1]}" > "$RUN/stage3.settings"
+  printf 'stage3_settings=1\nfrozen_filter_mode=%s\nfrozen_filter=%s\np_db=%s\nstop_reason=%s\n' \
+    "$FILTER" "${FF:-unset}" "${DBFLAGS[1]}" "${STOP_REASON:-unknown}" > "$RUN/stage3.settings"
+  case "$STOP_REASON" in
+    "moves budget spent"|"profile complete (size schedule finished)") ;;
+    "stop flag"|"")
+      mv -f "$DB_MIXING" "$RUN/db_mixing.stopped.mpmct1"
+      rm -f "$RUN/stage3.stop"
+      fatal "stage 3 ended by ${STOP_REASON:-an unrecognised stop (no chain-done line in $RUN/stage3.log)}, below the recipe's dose: kept as $RUN/db_mixing.stopped.mpmct1 (NOT a stage-3 artifact); this run has no deliverable; a resume re-runs stage 3 from scratch" ;;
+    *) note "WARNING: stage 3 ended by \"$STOP_REASON\", not by its move budget or profile; see $RUN/stage3.log" ;;
+  esac
   [ "$FORCE_FROM" -le 4 ] || FORCE_FROM=4
   note "stage 3 done: $(gates_of "$DB_MIXING") gates"
 else
@@ -694,7 +718,7 @@ if [ "$FORCE_FROM" -gt 4 ] && [ -s "$MARKER" ]; then
   fi
 fi
 if [ "$stage4_done" -eq 0 ]; then
-  rm -f "$MARKER"; rm -rf "$PACK_DIR"
+  rm -f "$MARKER" "$RUN/stage4.failed"; rm -rf "$PACK_DIR"
   THREADFLAGS=(); [ -z "$THREADS" ] || THREADFLAGS=(--threads "$THREADS")
   note "stage 4: tdp_packing run (window gates $PACK_WINDOW_GATES, split budget $PACK_SPLIT_BUDGET, caps $PACK_CAP_SEM${PACKFLAGS[*]:+; flags ${PACKFLAGS[*]}})"
   RECIPE_ENV=()
@@ -705,6 +729,9 @@ if [ "$stage4_done" -eq 0 ]; then
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
+    # the managed driver attaches the tdp_packing exit meaning only when this
+    # marker names its exit code (a 2 from gen, the mixer or bash is not stage 4's)
+    printf 'exit=%s\n' "$rc" > "$RUN/stage4.failed"
     wait_side
     note "stage 4 FAILED: exit $rc ($(stage4_exit_meaning "$rc")); see $RUN/stage4.log"
     exit "$rc"
