@@ -1917,3 +1917,39 @@ All 37 issues are accepted; none is rejected. Duplicates are grouped. Numbers ar
 | 35 | L8/A knobs stay environment reads inside library code; typed params optional | §11.4: typed parameters in P7 (required), covering all output-affecting stage-2 reads including `SLICE_GUARD_LEGACY`; `stage2_typed_params_byte_identical` |
 | 36 | unsetting inherited `EMBEDDED_MASKING_*` changes standalone semantics; nonlinear291 interaction | §11.1: decision: inherited values are a hard error, and the tests are updated (`tdp_flags.bash` cases listed); the preset is not applicable to nonlinear291 (explicit preset rejected, nothing exported) |
 | 37 | dropping cache sizes slows stage 3 with no output change; no stage-3 budget | D10b keeps the three cache sizes; their neutrality rests on identical stage-3 bytes against the reference runs (historic anchor vL64a/vL128a, n=64 reproductions; §12), not on `cache_neutrality`, which was never run; caps stay unset (output-affecting); §9 adds the stage-3 wall-time expectation |
+
+**End-to-end managed run, round 3, n=64 L8 (2026-10-09, binaries built from `09552766`; outputs `port_runs/e2e64_r3/`).** `tdp_gen` with the same minimal config as round 2: `source.wires = 64`, the run and build directories and `database.regular_dir` (`frozen_m1_m11`). Every other setting is the managed default. The dry run and manifest show preset L8, schedule `validated`, packing `default` (G = 512, split budget 65,536, cpython39 caps) and `pinned_recipe=val_chain-L8-20261007`. Seeds are fresh CSPRNG draws, kept in the private `run/SEEDS`. The zero-slice seed is in the private `checks/SEEDS.checks`. The runner's bash resolution picked `/opt/homebrew/bin/bash` 5.3, and the run started first time. The driver exited 0 with `status=ok`.
+
+- Stages 1+2: 782,261 gates (sandwich 2,832), with 110,119 chained brackets. Forward and reverse verification PASS (256 samples each). The span check is 0 at all 12,224 cuts.
+- Stage 3: `--moves 4067757` (= int(2·2·|G|·1.3)) with `FROZEN_FILTER=1` (auto). The chain stopped on the move budget. Output: 1,601,663 gates.
+- Stage 4:
+  - packing: 2,584 windows; 11,463 distinct values exposed at window boundaries;
+  - repair: cancelled 57,679 pairs, leaving 1,486,305 gates. The fix loop went from 65 to 64 visible (1 gate moved). The fallback added 0 splits, so there are 2,583 boundaries;
+  - result: 0 windows over budget; 2,584 ANF windows with 1,664,346 monomials (window max 61,854). Every check in the report is `ok`, including the zero slice with 4,096 samples.
+- Independent checks (`checks/`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` reports 1,000 born values and **64 visible**, all at t* = 1. That is the exact floor, with 0 non-output values visible. Its exposure, all-cuts and witness TSVs are identical to the run's.
+  - `verify_zero_slice C rep512.mpmct1 64 512` PASS. The same check on `packed_G512.mpmct1` also PASS.
+  - The oracle's `link_census.py` on the Rust `rep512` gives the run's `link_rep512.txt` byte for byte.
+  - The oracle's `anf_dump_eval.py` on the Rust `rep512` gives the Rust `deliverable.bin` byte for byte. `deliverable.tdp4` is a 48-byte header followed by that body.
+
+| n=64 L8 metric | e2e64_r3 | e2e64_r2 | STAGE2_LINKABILITY §5 range |
+|---|---|---|---|
+| exposed | 11,679 | 11,761 | 11.7k |
+| linkable (L2) | 5,361 | 5,305 | 5.27–5.37k |
+| sightings (M2) | 59,076 | 58,360 | 58.5–58.9k (r3 is 0.3 % above) |
+| linkable froth | 1,089 | 1,114 | 1,110–1,126 (r3 is 1.9 % below) |
+| anchors (100+) | 188 | 194 | 185–200 |
+| `deliverable.bin` | 32,789,118 B (32.8 MB) | 28.0 MB | 30.2–32.8 MB |
+| xz -9 | 3.13 MB | 2.91 MB | 3.05–3.10 MB (r3 is 0.8 % above) |
+| eval, ANF form (Python, 1,024 lanes) | 0.88 ms/input | 1.21 | 0.79–1.00 |
+
+Every metric is within 2 % of the §5 range. The deliverable size again varies more across seeds than the other metrics: 28.0 MB (r2), 28.9 MB (r1) and 32.8 MB (r3).
+
+| e2e64_r3 wall time (load average 5–9) | wall |
+|---|---|
+| build (incremental, including a wait on the shared build lock) | 155 s |
+| stages 1+2 (`gen_sandwich_gadget`) | ≈ 1 s (the span report then ran in the background, 57 s) |
+| stage 3 (`circuit_mixer`; chain 1,548.3 s, final float 0.8 s) | 1,550 s |
+| stage 4 (`tdp_packing run`: pack 13.4 / repair 3.4 / reports 1.5 / emit+checks 6.2 s) | 24 s |
+| driver total | 1,730 s (CPU 1,018 s) |
+| independent checks (`checks.sh`; oracle serializer 40 s) | 82 s |
