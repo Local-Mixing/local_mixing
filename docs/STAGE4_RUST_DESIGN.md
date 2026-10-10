@@ -2064,3 +2064,39 @@ Every metric is inside the §5 range except L2 (1.0 % below) and M2 (0.01 % belo
 | stage 4 (`tdp_packing run`: pack 40.3 / repair 23.7 / reports 4.2 / emit+checks 21.2 s) | 90 s |
 | driver total | 4,670 s (CPU 3,016 s; peak RSS 7.1 GB, the mixer) |
 | independent checks (`checks.sh`; oracle link census 17 s, oracle serializer 119 s) | ≈ 150 s |
+
+**End-to-end managed run, round 4, n=64 L8 (2026-10-10, binaries built from `a525f894` = review fixes round 3, clean tree; outputs `port_runs/e2e64_r4/`).** `tdp_gen` with the same minimal config as rounds 2 and 3: `source.wires = 64`, the run and build directories and `database.regular_dir` (`frozen_m1_m11`). Every other setting is the managed default. The dry run (`dryrun.out`) and manifest show preset L8, schedule `validated` (profile 2,2,2,2,2, moves int(2·2·|G|·1.3)), packing `default` (G = 512, 512/24576/3000, split budget 65,536, cpython39 caps), `pinned_recipe=val_chain-L8-20261007`, store fingerprint `fd1983677e4d5b74267d3802c9c34642`, `seed_source=random`. Before the run, `tests/shell/tdp_defaults.bash` with `LOCAL_MIXING_BIN` set passed (`tdp_defaults.out`): the Rust driver's gen argv, mixer argv, recipe environment, allow-list and stage-4 call are identical to the `val_chain.sh` transcripts for d64L8, d64A and d128. The only difference between the worktree `val_chain.sh` and the copy in the main checkout's `runs/ncdb_ab_20261001/waist/` is the retired `--p-comp 1.0 --p-any 0.1` (STAGE2_LINKABILITY §6). The stage-4 scripts (`window_pack3.py`, `repair.sh`, `order_repair.py`, `merge_bounds2.py`, `anf_split2.py`, `anf_dump_eval.py`, `link_census.py`, `verify_equiv.py`) are identical to that copy. Seeds are fresh CSPRNG draws in the private `run/SEEDS` (mode 0600). The zero-slice seed is in the private `checks/SEEDS.checks`. None of the four values occurs in any log, recipe, manifest or report. The run started first time under `caffeinate -ims`. The driver exited 0 with `status=ok`.
+
+- Stages 1+2: 777,752 gates (sandwich 2,832), with 109,347 chained brackets. Forward and reverse verification PASS (256 samples each). The span check is 0 at all 12,154 cuts.
+- Stage 3: `--moves 4044310` with `FROZEN_FILTER=1` (auto). The chain stopped on the move budget after 1,490.1 s. Output: 1,595,222 gates.
+- Stage 4:
+  - packing: 2,605 windows; 11,419 distinct values exposed at window boundaries;
+  - repair: cancelled 57,653 pairs (5 passes), leaving 1,479,916 gates. The C-view was already at the floor (64) after cancellation, so the fix loop moved nothing. The fallback added 2 + 0 splits, giving 2,606 boundaries;
+  - result: 0 windows over budget; 2,607 ANF windows with 1,535,097 monomials (window max 59,875). Every check in the report is `ok`: reorder and repair certificates, pack verify, equivalence, windows = window ANF, decode, eval, and the zero slice with 4,096 samples.
+- Independent checks (`checks.sh`):
+  - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` reports 1,000 born values and **64 visible** (6.4 %), all at t* = 1. That is the exact floor, with 0 non-output values visible. Its exposure, all-cuts and witness TSVs are identical to the run's.
+  - `verify_zero_slice C rep512.mpmct1 64 512` PASS (random seed, recorded). The same check on `packed_G512.mpmct1` also PASS.
+  - The oracle's `link_census.py` on the Rust `rep512` gives the run's `link_rep512.txt` byte for byte.
+  - The oracle's `anf_dump_eval.py` on the Rust `rep512` gives the Rust `deliverable.bin` byte for byte. `deliverable.tdp4` (29,270,616 B) is a 48-byte header followed by that body.
+
+| n=64 L8 metric | e2e64_r4 | e2e64_r3 | e2e64_r2 | STAGE2_LINKABILITY §5 range |
+|---|---|---|---|---|
+| exposed | 11,660 | 11,679 | 11,761 | 11.7k |
+| linkable (L2) | 5,450 | 5,361 | 5,305 | 5.27–5.37k (r4 is 1.5 % above) |
+| sightings (M2) | 59,101 | 59,076 | 58,360 | 58.5–58.9k (r4 is 0.3 % above) |
+| linkable froth | 1,137 | 1,089 | 1,114 | 1,110–1,126 (r4 is 1.0 % above) |
+| anchors (100+) | 184 | 188 | 194 | 185–200 (r4 is 0.5 % below) |
+| `deliverable.bin` | 29,270,568 B (29.3 MB) | 32.8 MB | 28.0 MB | 30.2–32.8 MB (r4 is 3.1 % below) |
+| xz -9 | 2.97 MB (2,973,164 B) | 3.13 MB | 2.91 MB | 3.05–3.10 MB (r4 is 2.5 % below) |
+| eval, ANF form (Python, 1,024 lanes) | 0.79 ms/input | 0.88 | 1.21 | 0.79–1.00 |
+
+The C-view, the equivalence and zero-slice checks, and the window budget are exact requirements, and all of them hold. The linkability metrics are within 1.5 % of the §5 range, inside the 1–2 % replicate spread that §5 reports. Again, only the deliverable size falls clearly outside the range. Across the managed n=64 runs it has been 28.9 (r1), 28.0 (r2), 32.8 (r3) and 29.3 MB (r4), so the three §5 replicates under-sample the seed variance of the ANF size. This is not a port difference: the oracle serializer reproduces the Rust body byte for byte.
+
+| e2e64_r4 wall time (load average 3–4) | wall |
+|---|---|
+| build (incremental) | 136 s |
+| stages 1+2 (`gen_sandwich_gadget`) | ≈ 1 s (the span report then ran in the background, 57 s) |
+| stage 3 (`circuit_mixer`; chain 1,490.1 s, final float 0.8 s) | 1,491 s |
+| stage 4 (`tdp_packing run`: pack 16.0 / repair 3.8 / reports 1.9 / emit+checks 10.6 s) | 33 s |
+| driver total | 1,661 s (CPU 907 s) |
+| independent checks (`checks.sh`; oracle serializer 50 s) | 88 s |
