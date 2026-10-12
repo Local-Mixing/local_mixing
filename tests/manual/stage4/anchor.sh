@@ -1,10 +1,11 @@
 #!/bin/bash
 # anchor.sh gen|mix|managed TAG... : historic anchor (docs/STAGE4_RUST_DESIGN.md §10.8).
 #   gen, mix  step A: the baseline binaries (492564f0) with the archived seeds.
-#   managed   step B: the MANAGED DRIVER (local_mixing_bin tdp_gen, config v2,
-#             nothing set but source.wires, the store and the archived seeds in a
-#             private calibration seed file) on this checkout; every artifact is
-#             cmp'd with the archive (db_mixing.mpmct1 vs s3.mpmct1, packing/*).
+#   managed   step B: the MANAGED DRIVER (local_mixing_bin tdp_gen, config v4,
+#             nothing set but source.wires, the store, the four-stage chain
+#             (run.skip_stages = [4, 5], delivery.anf_only) and the archived
+#             seeds in a private calibration seed file) on this checkout; every
+#             artifact is cmp'd with the archive (db_mixing.mpmct1 vs s3.mpmct1, packing/*).
 # Re-runs gen (all 8 tags) and the mixer (named tags) with the ARCHIVED seeds on the baseline
 # binaries built from 492564f0, under env -i plus the tag's CONFIG environment, and cmp's the
 # outputs with the archive.  Seeds are read from seed.txt inside this script and never printed.
@@ -67,16 +68,19 @@ managed)
       printf 'gen_seed=%s\nmix_seed=%s\n' "$g" "$m" > "$sf" ); chmod 600 "$sf"
     case $t in vA*) preset='preprocessing.preset = "A"' ;; *) preset="" ;; esac
     cat > "$o/config.toml" <<CFG
-config_version = 2
+config_version = 4
 [run]
 directory = "$o/run"
 build_directory = "$TGT"
+skip_stages = [4, 5]
 [source]
 wires = $n
 [database]
 regular_dir = "$STORE"
 [preprocessing]
 $preset
+[delivery]
+anf_only = true
 [calibration]
 enabled = true
 seed_file = "$sf"

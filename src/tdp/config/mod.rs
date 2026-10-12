@@ -292,54 +292,63 @@ impl PackingConfig {
     }
 }
 
-/// `[unpacking]`: `tdp_unpacking run` parameters (stage 7).
+/// `[delivery]`: the unpacking sub-step of stage 6 (`tdp_unpacking run
+/// --refine`, docs/DELIVERY_STAGE.md). The packing sub-step's parameters are
+/// `[packing]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UnpackingConfig {
-    /// Synthesis wall-clock limit per window, seconds (a normalized number).
+pub(crate) struct DeliveryConfig {
+    /// Stop the stage after the packer's deliverable: no resynthesis, no
+    /// lattice refinement, no `unpacked.mpmct1`.
+    pub(crate) anf_only: bool,
+    /// Synthesis wall-clock limit per window per round, seconds (a
+    /// normalized number).
     pub(crate) time_limit: String,
     pub(crate) restarts: u64,
     pub(crate) beam: u64,
-    /// A window that fails to synthesize is emitted verbatim (counted) when
-    /// true; fatal when false.
-    pub(crate) allow_fallback: bool,
+    /// Refinement rounds: a window that does not resynthesize is cut in two
+    /// and both halves are repacked and unpacked, up to this many rounds.
+    pub(crate) max_rounds: u64,
 }
 
-impl Default for UnpackingConfig {
+impl Default for DeliveryConfig {
     fn default() -> Self {
-        UnpackingConfig {
+        DeliveryConfig {
+            anf_only: false,
             time_limit: "30".into(),
             restarts: 16,
             beam: 6,
-            allow_fallback: true,
+            max_rounds: 16,
         }
     }
 }
 
-impl UnpackingConfig {
-    /// `(script flag, value, default)` for the numeric parameters.
+impl DeliveryConfig {
+    /// `(script flag, value, default)` for the numeric parameters
+    /// (`anf_only` is the switch `--delivery-anf-only`).
     pub(crate) fn flags(&self) -> Vec<(&'static str, String, String)> {
-        let d = UnpackingConfig::default();
+        let d = DeliveryConfig::default();
         vec![
             (
-                "--unpacking-time-limit",
+                "--delivery-time-limit",
                 self.time_limit.clone(),
                 d.time_limit,
             ),
             (
-                "--unpacking-restarts",
+                "--delivery-restarts",
                 self.restarts.to_string(),
                 d.restarts.to_string(),
             ),
+            ("--delivery-beam", self.beam.to_string(), d.beam.to_string()),
             (
-                "--unpacking-beam",
-                self.beam.to_string(),
-                d.beam.to_string(),
+                "--delivery-max-rounds",
+                self.max_rounds.to_string(),
+                d.max_rounds.to_string(),
             ),
         ]
     }
 
     pub(crate) fn is_default(&self) -> bool {
-        *self == UnpackingConfig::default()
+        *self == DeliveryConfig::default()
     }
 }
 
@@ -400,8 +409,9 @@ impl CrossingConfig {
 pub(crate) enum SeedPlan {
     /// Fresh OS CSPRNG draws (the default).
     Random,
-    /// From `[calibration] seed_file`: calibration only. The stage-4/5/7
-    /// seeds are optional in the file (drawn fresh when absent).
+    /// From `[calibration] seed_file`: calibration only. The stage-4/5/6
+    /// seeds (split, cross, unpack = the delivery seed) are optional in the
+    /// file (drawn fresh when absent).
     Explicit {
         gen_seed: u64,
         mix_seed: u64,
@@ -437,11 +447,11 @@ pub(crate) struct ResolvedConfig {
     pub(crate) schedule: Schedule,
     pub(crate) packing: PackingConfig,
     pub(crate) crossing: CrossingConfig,
-    pub(crate) unpacking: UnpackingConfig,
+    pub(crate) delivery: DeliveryConfig,
     pub(crate) threads: Option<String>,
     pub(crate) stop_after: Option<String>,
     pub(crate) force_from: Option<String>,
-    /// `run.skip_stages`: stages 2..7 not run (sorted, deduplicated).
+    /// `run.skip_stages`: stages 2..6 not run (sorted, deduplicated).
     pub(crate) skip_stages: Vec<u64>,
     pub(crate) allow_empty_store: bool,
     pub(crate) frozen_filter: FrozenFilter,
@@ -452,13 +462,15 @@ pub(crate) struct ResolvedConfig {
     pub(crate) piece_threads: Option<String>,
 }
 
-pub(crate) const LAST_STAGE: u64 = 7;
+/// Stage 6, delivery (packing, then unpacking with lattice refinement), is
+/// the last stage.
+pub(crate) const LAST_STAGE: u64 = 6;
 
 impl ResolvedConfig {
     pub(crate) fn stop_after_stage(&self) -> u64 {
         self.stop_after
             .as_deref()
-            .unwrap_or("7")
+            .unwrap_or("6")
             .parse()
             .expect("validated stop_after")
     }
@@ -468,7 +480,13 @@ impl ResolvedConfig {
         k <= self.stop_after_stage() && !self.skip_stages.contains(&k)
     }
 
-    /// The stages that run, as the driver prints them: "1-7", "1-3,6", ...
+    /// Whether the delivery stage runs its unpacking sub-step (stage 6 on
+    /// and not `delivery.anf_only`).
+    pub(crate) fn unpacking_on(&self) -> bool {
+        self.stage_on(6) && !self.delivery.anf_only
+    }
+
+    /// The stages that run, as the driver prints them: "1-6", "1-3,6", ...
     pub(crate) fn stages_text(&self) -> String {
         let stages: Vec<u64> = (1..=LAST_STAGE).filter(|&k| self.stage_on(k)).collect();
         let mut out = Vec::new();

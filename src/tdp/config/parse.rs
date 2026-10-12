@@ -321,28 +321,29 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "integer",
     ),
     (
-        "unpacking.time_limit",
-        "unpacking.time_limit",
-        "unpacking_time_limit",
+        "delivery.anf_only",
+        "delivery.anf_only",
+        "delivery_anf_only",
+        "bool",
+    ),
+    (
+        "delivery.time_limit",
+        "delivery.time_limit",
+        "delivery_time_limit",
         "number",
     ),
     (
-        "unpacking.restarts",
-        "unpacking.restarts",
-        "unpacking_restarts",
+        "delivery.restarts",
+        "delivery.restarts",
+        "delivery_restarts",
         "integer",
     ),
+    ("delivery.beam", "delivery.beam", "delivery_beam", "integer"),
     (
-        "unpacking.beam",
-        "unpacking.beam",
-        "unpacking_beam",
+        "delivery.max_rounds",
+        "delivery.max_rounds",
+        "delivery_max_rounds",
         "integer",
-    ),
-    (
-        "unpacking.allow_fallback",
-        "unpacking.allow_fallback",
-        "unpacking_allow_fallback",
-        "bool",
     ),
     (
         "calibration.enabled",
@@ -359,9 +360,14 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// The migration message for a config_version 1 file (§11.2).
-pub(crate) const CONFIG_V1_MIGRATION: &str = "config_version 1 is not supported by recipe v11: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.";
+pub(crate) const CONFIG_V1_MIGRATION: &str = "config_version 1 is not supported by recipe v12: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.";
 /// The migration message for a config_version 2 file (the four-stage driver).
-pub(crate) const CONFIG_V2_MIGRATION: &str = "config_version 2 is the four-stage recipe (v10); the pipeline now has seven stages (4 splitting, 5 crossing, 6 packing, 7 unpacking; all on by default, run.skip_stages turns stages off). Set config_version = 3; the four-stage chain is run.skip_stages = [4, 5, 7]. See docs/tdp_pipeline.md.";
+pub(crate) const CONFIG_V2_MIGRATION: &str = "config_version 2 is the four-stage recipe (v10); the pipeline now has six stages (4 splitting, 5 crossing, 6 delivery = packing then unpacking with lattice refinement; all on by default, run.skip_stages turns stages off). Set config_version = 4; the four-stage chain is run.skip_stages = [4, 5] with delivery.anf_only = true. See docs/tdp_pipeline.md.";
+/// The migration message for a config_version 3 file (the seven-stage driver:
+/// separate packing and unpacking stages).
+pub(crate) const CONFIG_V3_MIGRATION: &str = "config_version 3 is the seven-stage recipe (v11); stages 6 (packing) and 7 (unpacking) are now ONE stage 6, delivery (RC, 2026-10-12): tdp_packing run, then tdp_unpacking run --refine, which splits and repacks every window that does not resynthesize. Set config_version = 4; move [unpacking] time_limit/restarts/beam to [delivery] (plus max_rounds; allow_fallback is gone: a window that does not resynthesize is split, not emitted verbatim); run.skip_stages is 2..6 and the four-stage chain is run.skip_stages = [4, 5] with delivery.anf_only = true. See docs/tdp_pipeline.md.";
+/// The message for a `[unpacking]` table (config_version 3's).
+pub(crate) const UNPACKING_SECTION_MOVED: &str = "[unpacking] moved to [delivery] (config_version 4: stages 6 and 7 are one delivery stage): unpacking.time_limit/restarts/beam are delivery.time_limit/restarts/beam, delivery.max_rounds bounds the lattice refinement, and unpacking.allow_fallback is gone (a window that does not resynthesize is split and repacked). See docs/tdp_pipeline.md.";
 
 pub(crate) fn canonical_config_key(key: &str) -> &str {
     TOML_FIELDS
@@ -376,15 +382,19 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
         .get("config_version")
         .and_then(toml_edit::Item::as_integer)
     {
-        Some(3) => {}
+        Some(4) => {}
+        Some(3) => return Err(CONFIG_V3_MIGRATION.into()),
         Some(2) => return Err(CONFIG_V2_MIGRATION.into()),
         Some(1) => return Err(CONFIG_V1_MIGRATION.into()),
-        _ => return Err("config_version must be the integer 3".into()),
+        _ => return Err("config_version must be the integer 4".into()),
     }
     let mut raw = RawConfig::default();
     for (section, item) in doc.iter() {
         if section == "config_version" {
             continue;
+        }
+        if section == "unpacking" {
+            return Err(UNPACKING_SECTION_MOVED.into());
         }
         let table = item
             .as_table()
@@ -449,7 +459,7 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                 "calibration",
                 "packing",
                 "crossing",
-                "unpacking",
+                "delivery",
             ]
             .contains(&section)
         {

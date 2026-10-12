@@ -19,18 +19,17 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
             .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
     };
     // scripts/tdp_gen.sh skips stage 3 only for an output its completion
-    // marker vouches for (stage3.recipe, or for an older run stage 4's
-    // packing.recipe); it checks the keyed tags, this predicts from presence.
-    let existing_db_mixing =
-        nonempty("db_mixing.mpmct1") && (nonempty("stage3.recipe") || nonempty("packing.recipe"));
+    // marker vouches for (stage3.recipe, or for an older run the delivery
+    // stage's delivery.recipe / the former packing.recipe); it checks the
+    // keyed tags, this predicts from presence.
+    let existing_db_mixing = nonempty("db_mixing.mpmct1")
+        && (nonempty("stage3.recipe") || nonempty("delivery.recipe") || nonempty("packing.recipe"));
     let existing_gadget = nonempty("tdp.mpmct1");
     let stage_three_will_run =
         config.stage_on(3) && (force_from <= 3 || !existing_gadget || !existing_db_mixing);
-    if stage_three_will_run {
-        if let Some(path) = &config.frozen_db.path {
-            validate_frozen_store(path, "database.regular_dir")?;
-            validate_requested_filter(path, "database.regular_dir", config.frozen_filter)?;
-        }
+    if stage_three_will_run && let Some(path) = &config.frozen_db.path {
+        validate_frozen_store(path, "database.regular_dir")?;
+        validate_requested_filter(path, "database.regular_dir", config.frozen_filter)?;
     }
     if stage_three_will_run && config.allow_empty_store && config.frozen_db.path.is_some() {
         return Err(

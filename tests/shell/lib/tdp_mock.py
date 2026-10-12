@@ -12,7 +12,10 @@ resolved argv (`--seed-file P` as `--seed V`, as val_chain.sh passes it),
 `argv` the raw one (what ps would show). Optional behaviour is read from
 `<run dir>.mock` (key=value lines): gen_seed_override=K makes the gen banner
 report a different seed; packing_exit=K makes `tdp_packing run` exit K;
-packing_status=S writes that status.
+packing_status=S writes that status; unpacking_exit=K / unpacking_status=S
+likewise for `tdp_unpacking run --refine` (the unpacking sub-step of the
+delivery stage: it writes the refined deliverable.tdp4, bounds.final,
+unpacked.mpmct1, windows.tsv, rounds.tsv and unpacking.report).
 """
 import json
 import os
@@ -126,6 +129,10 @@ elif name == "tdp_unpacking":
     assert args[0] == "run", args
     for flag in ("--deliverable", "--packed", "--bounds", "--source-c"):
         assert Path(args[args.index(flag) + 1]).is_file(), (flag, args)
+    # the driver runs the refinement loop (docs/DELIVERY_STAGE.md) with an
+    # explicit round bound; the verbatim fallback switch is gone with it
+    assert "--refine" in args and "--max-rounds" in args and "--no-fallback" not in args, args
+    rounds = int(args[args.index("--max-rounds") + 1])
     out = Path(args[args.index("--out-dir") + 1])
     code = int(opts.get("unpacking_exit", "0"))
     if code:
@@ -133,7 +140,14 @@ elif name == "tdp_unpacking":
         sys.exit(code)
     out.mkdir(mode=0o700)
     status = opts.get("unpacking_status", "ok")
+    (out / "deliverable.tdp4").write_bytes(b"LMTDPANF" + bytes(40) + b"refined")
+    (out / "bounds.final").write_text("1\n")
     (out / "unpacked.mpmct1").write_text("mpmct1 16 1\n0 0 0\n")
-    (out / "unpacking.report").write_text(f"unpacking_report=1\nstatus={status}\n")
+    (out / "windows.tsv").write_text("idx\tlo\thi\tround\n0\t0\t1\t0\n")
+    (out / "rounds.tsv").write_text("round\tpending\tconverged\tfailed\tsplit\n0\t1\t1\t0\t0\n")
+    (out / "unpacking.report").write_text(
+        f"unpacking_report=2\nstatus={status}\nrounds=1\nwindows_initial=1\nwindows_final=1\n"
+        f"splits=0\nunclean_cuts=0\nverbatim={'1' if status == 'verbatim_used' else '0'}\n"
+        f"param.max_rounds={rounds}\n")
 elif name == "hmap_affine":
     print("[span] mock")

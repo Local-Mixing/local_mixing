@@ -139,20 +139,17 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         bash.version.1,
         bash.path.display()
     );
-    // A failed stage 6 or 7 leaves a marker (scripts/tdp_gen.sh), so the
-    // binary's exit-code meaning is attached only to that stage's failure.
-    let packing_failed = config.run_dir.join("packing.failed");
-    let unpacking_failed = config.run_dir.join("unpacking.failed");
-    for marker in [&packing_failed, &unpacking_failed] {
-        match fs::remove_file(marker) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(TdpError::io(format!(
-                    "cannot remove {}: {error}",
-                    marker.display()
-                )));
-            }
+    // A failed stage 6 leaves a marker naming the sub-step (scripts/tdp_gen.sh),
+    // so a binary's exit-code meaning is attached only to that failure.
+    let delivery_failed = config.run_dir.join("delivery.failed");
+    match fs::remove_file(&delivery_failed) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(TdpError::io(format!(
+                "cannot remove {}: {error}",
+                delivery_failed.display()
+            )));
         }
     }
     let mut child = ProcessCommand::new(&bash.path);
@@ -167,29 +164,46 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     if !status.success() {
         let code = status.code().unwrap_or(1);
         let mut error = TdpError::child("TDP_GEN pipeline", status);
-        if stage_failure_code(&packing_failed) == Some(code) {
-            let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
-            error.message = format!("{} (stage 6 tdp_packing: {meaning})", error.message);
-        } else if stage_failure_code(&unpacking_failed) == Some(code) {
-            let meaning = unpacking_exit_meaning(code);
-            error.message = format!("{} (stage 7 tdp_unpacking: {meaning})", error.message);
+        match stage_failure(&delivery_failed) {
+            Some((failed, DeliveryStep::Packing)) if failed == code => {
+                let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
+                error.message = format!(
+                    "{} (stage 6 delivery, tdp_packing: {meaning})",
+                    error.message
+                );
+            }
+            Some((failed, DeliveryStep::Unpacking)) if failed == code => {
+                let meaning = unpacking_exit_meaning(code);
+                error.message = format!(
+                    "{} (stage 6 delivery, tdp_unpacking --refine: {meaning})",
+                    error.message
+                );
+            }
+            _ => {}
         }
         return Err(error);
     }
     let stages = config.stages_text();
-    let pack = config.run_dir.join("packing");
-    let not_recommended = config.stage_on(6) && pack.join("NOT_RECOMMENDED").exists();
-    let last = if config.stage_on(7) {
-        Some(config.run_dir.join("unpacking").join("unpacked.mpmct1"))
+    // The stage's final output and the NOT_RECOMMENDED marker next to it:
+    // the packer's deliverable under anf_only, else the refined deliverable
+    // and the resynthesized circuit in unpacking/.
+    let last_dir = config.run_dir.join(if config.unpacking_on() {
+        "unpacking"
+    } else {
+        "packing"
+    });
+    let not_recommended = config.stage_on(6) && last_dir.join("NOT_RECOMMENDED").exists();
+    let last = if config.unpacking_on() {
+        Some(last_dir.join("unpacked.mpmct1"))
     } else if config.stage_on(6) {
-        Some(pack.join("deliverable.tdp4"))
+        Some(last_dir.join("deliverable.tdp4"))
     } else {
         None
     };
     if let Some(last) = last {
         if not_recommended {
             eprintln!(
-                "[tdp_gen] stages {stages} finished with an ALLOWED FAILURE: {} is NOT a recommended deliverable (see packing/packing.report)",
+                "[tdp_gen] stages {stages} finished with an ALLOWED FAILURE: {} is NOT a recommended deliverable (see packing/packing.report and unpacking/unpacking.report)",
                 last.display()
             );
         } else {
@@ -199,18 +213,18 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     Ok(())
 }
 
-/// `tdp_unpacking` exit codes (stage 7; docs/STAGE7_UNPACKING.md), as
-/// scripts/tdp_gen.sh reports them.
+/// `tdp_unpacking` exit codes (the unpacking sub-step of stage 6;
+/// docs/STAGE7_UNPACKING.md), as scripts/tdp_gen.sh reports them: the
+/// binary's own table.
 pub(crate) fn unpacking_exit_meaning(code: i32) -> &'static str {
-    match code {
-        2 => "usage or parameter error",
-        3 => "input error",
-        4 => "verification failure",
-        7 => "I/O error writing outputs",
-        8 => "internal invariant violated",
-        101 => "panic",
-        _ => "unknown exit code",
-    }
+    crate::stages::unpacking::types::Stage7Error::meaning(code)
+}
+
+/// Which sub-step of the delivery stage failed (`step=` in `delivery.failed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeliveryStep {
+    Packing,
+    Unpacking,
 }
 
 /// The oldest bash scripts/tdp_gen.sh runs under. Associative arrays and
@@ -296,18 +310,29 @@ pub(crate) fn resolve_bash() -> Result<Bash, TdpError> {
     )))
 }
 
-/// The exit code a failed stage 6 or 7 recorded in `$RUN/packing.failed` or
-/// `$RUN/unpacking.failed` (`exit=<code>`), if that file exists and is well formed.
-pub(crate) fn stage_failure_code(marker: &Path) -> Option<i32> {
+/// The exit code and sub-step a failed stage 6 recorded in
+/// `$RUN/delivery.failed` (`exit=<code>` and `step=packing|unpacking`), if
+/// that file exists and is well formed.
+pub(crate) fn stage_failure(marker: &Path) -> Option<(i32, DeliveryStep)> {
     let meta = fs::metadata(marker).ok()?;
     if !meta.is_file() || meta.len() > 64 {
         return None;
     }
-    fs::read_to_string(marker)
-        .ok()?
+    let text = fs::read_to_string(marker).ok()?;
+    let code = text
         .lines()
         .find_map(|line| line.strip_prefix("exit="))
-        .and_then(|code| code.trim().parse().ok())
+        .and_then(|code| code.trim().parse().ok())?;
+    let step = match text
+        .lines()
+        .find_map(|line| line.strip_prefix("step="))
+        .map(str::trim)
+    {
+        Some("packing") => DeliveryStep::Packing,
+        Some("unpacking") => DeliveryStep::Unpacking,
+        _ => return None,
+    };
+    Some((code, step))
 }
 
 /// `cargo build` arguments for the report binary (after `cargo`).
@@ -342,7 +367,9 @@ fn os_seed() -> Result<u64, TdpError> {
 }
 
 /// The five run seeds (§8.2): gen (stages 1+2), mix (3), split (4), cross (5,
-/// used only when stage 5 starts from a circuit file) and unpack (7).
+/// used only when stage 5 starts from a circuit file) and unpack (6: the
+/// delivery seed, read by `tdp_unpacking run --refine`; the name in SEEDS
+/// is unchanged so format-3 files resume).
 #[derive(Clone, Copy)]
 pub(crate) struct RunSeeds {
     pub(crate) gen_seed: u64,
@@ -671,7 +698,7 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         args.push(OsString::from(flag));
         args.push(OsString::from(value));
     };
-    for (flag, value, default) in config.unpacking.flags() {
+    for (flag, value, default) in config.delivery.flags() {
         if value != default {
             push(flag, value);
         }
@@ -720,8 +747,8 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     if config.packing.allow_over_budget {
         args.push(OsString::from("--packing-allow-over-budget"));
     }
-    if !config.unpacking.allow_fallback {
-        args.push(OsString::from("--unpacking-no-fallback"));
+    if config.delivery.anf_only {
+        args.push(OsString::from("--delivery-anf-only"));
     }
     args
 }
@@ -850,14 +877,21 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             .join(" ")
     );
     println!(
-        "[tdp_gen] unpacking (stage 7): time_limit={} restarts={} beam={} allow_fallback={}",
-        config.unpacking.time_limit,
-        config.unpacking.restarts,
-        config.unpacking.beam,
-        config.unpacking.allow_fallback
+        "[tdp_gen] delivery (stage 6): {}",
+        if config.delivery.anf_only {
+            "anf_only=true (the packer's deliverable; no resynthesis)".to_owned()
+        } else {
+            format!(
+                "unpacking with lattice refinement: time_limit={} restarts={} beam={} max_rounds={}",
+                config.delivery.time_limit,
+                config.delivery.restarts,
+                config.delivery.beam,
+                config.delivery.max_rounds
+            )
+        }
     );
     println!(
-        "[tdp_gen] packing (stage 6): {}",
+        "[tdp_gen] packing (stage 6, first sub-step): {}",
         if config.packing.is_default() {
             "default (G=512, split budget 65536, cpython39 caps)".to_owned()
         } else {
@@ -898,7 +932,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     }
     println!(
         "[tdp_gen] lifecycle: stop_after_stage={} rerun_from_stage={} build_binaries={}",
-        config.stop_after.as_deref().unwrap_or("7"),
+        config.stop_after.as_deref().unwrap_or("6"),
         config.force_from.as_deref().unwrap_or("none"),
         config.build_release
     );

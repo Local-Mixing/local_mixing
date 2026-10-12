@@ -1,11 +1,13 @@
 # The Four-Stage TDP Pipeline
 
-> **2026-10-11:** the pipeline now has seven stages: the split stage and the
-> crossing walk are back as stages 4 and 5, packing is **stage 6** and a new
-> unpacking stage 7 resynthesizes the deliverable (`docs/tdp_pipeline.md`,
-> `docs/STAGE7_UNPACKING.md`). This document describes stages 1, 2, 3 and the
-> packing stage under its former number 4; the four-stage chain it validates
-> is `run.skip_stages = [4, 5, 7]` of the current driver.
+> **2026-10-11 / 2026-10-12:** the pipeline now has six stages: the split
+> stage and the crossing walk are back as stages 4 and 5, and packing is the
+> first sub-step of **stage 6** (delivery), whose second sub-step
+> resynthesizes the deliverable with lattice refinement
+> (`docs/tdp_pipeline.md`, `docs/DELIVERY_STAGE.md`, `docs/STAGE7_UNPACKING.md`).
+> This document describes stages 1, 2, 3 and the packing stage under its
+> former number 4; the four-stage chain it validates is `run.skip_stages =
+> [4, 5]` with `delivery.anf_only = true` of the current driver.
 
 **Status (2026-10-09).** Written on branch `ran/stage2-windowed-delivery`; committed on `ran/cleanup-four-stage`; stage 4 ported on `ran/stage4-rust`. Line numbers in tracked files refer to commit `ea2e516f` (before the cleanup that removed the historic code; stage-3 line numbers have since shifted). Line numbers in stage-4 scripts refer to the untracked run tree `runs/ncdb_ab_20261001/` (see "Conventions").
 

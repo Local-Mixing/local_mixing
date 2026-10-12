@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Fast plumbing smoke test of the seven-stage driver: stage-3 piece flags,
+# Fast plumbing smoke test of the six-stage driver: stage-3 piece flags,
 # stop/rerun points, the stage-3 schedule, the stage calls (the four-stage
-# chain under --run-skip-stages 4,5,7, and the full seven-stage chain). Mock
-# binaries (tests/shell/lib/tdp_mock.py) avoid mixing or release builds.
+# chain under --run-skip-stages 4,5 --delivery-anf-only, and the full
+# six-stage chain). Mock binaries (tests/shell/lib/tdp_mock.py) avoid mixing
+# or release builds.
 set -euo pipefail
 if [[ ${1:-} != --isolated-environment ]]; then
   exec env -i PATH="$PATH" HOME="${HOME:-/tmp}" bash "$0" --isolated-environment
@@ -38,8 +39,8 @@ reject --parallel-pieces 2 --parallel-threads 999999999999999999999999999999
 reject --parallel-target-piece-gates 2 --parallel-pieces 1
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 reject --parallel-threads 2
-# stop and rerun points are 2..7
-for stage in 0 1 8; do
+# stop and rerun points are 2..6
+for stage in 0 1 7 8; do
   reject --run-stop-after-stage "$stage"
   reject --run-rerun-from-stage "$stage"
 done
@@ -58,8 +59,8 @@ run_case() {
   bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$tmp/$mode" "$@" >"$tmp/$mode.log" 2>&1 ||
     { cat "$tmp/$mode.log" >&2; exit 1; }
 }
-# the four-stage chain (stages 4, 5 and 7 skipped) ...
-FOUR=(--run-skip-stages 4,5,7)
+# the four-stage chain (stages 4 and 5 skipped, stage 6 ending after the packer's deliverable) ...
+FOUR=(--run-skip-stages 4,5 --delivery-anf-only)
 run_case auto "${FOUR[@]}" --parallel-target-piece-gates 0002 --parallel-threads 3
 run_case auto_default "${FOUR[@]}" --parallel-target-piece-gates 2
 run_case fixed "${FOUR[@]}" --parallel-pieces 0004 --parallel-threads 0003
@@ -70,10 +71,10 @@ run_case stop3 --run-stop-after-stage 3
 # the stage-5 move budget: round(factor * target) by default, factor 2
 run_case budget --crossing-move-budget-factor 1.5 --run-stop-after-stage 5
 run_case budget_default --run-stop-after-stage 5
-# ... and the full seven-stage chain, with every stage-5/7 knob set
-run_case seven --crossing-target-size-factor 2.5 --crossing-width-penalty-base 4 --crossing-width-penalty-threshold 2 \
-  --crossing-size-tolerance-divisor 20 --crossing-move-attempts 1234 --unpacking-time-limit 12.5 --unpacking-restarts 3 \
-  --unpacking-beam 2 --unpacking-no-fallback --threads 2 --packing-window-gates 256
+# ... and the full six-stage chain, with every stage-5/6 knob set
+run_case six --crossing-target-size-factor 2.5 --crossing-width-penalty-base 4 --crossing-width-penalty-threshold 2 \
+  --crossing-size-tolerance-divisor 20 --crossing-move-attempts 1234 --delivery-time-limit 12.5 --delivery-restarts 3 \
+  --delivery-beam 2 --delivery-max-rounds 5 --threads 2 --packing-window-gates 256
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -100,7 +101,9 @@ for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical', 'sto
     if stage4:
         assert 'PIPELINE COMPLETE (stages 1-3,6)' in log, log
         assert (root / mode / 'packing' / 'deliverable.tdp4').is_file()
-        assert (root / mode / 'packing.recipe').is_file()
+        assert (root / mode / 'delivery.recipe').is_file()
+        assert not (root / mode / 'unpacking').exists(), mode  # anf_only: no unpacking sub-step
+        assert not any(c['name'] == 'tdp_unpacking' for c in calls), names
         r = runs[0]['args']
         assert r[:2] == ['run', '--stage2'] and '--out-dir' in r, r
         assert not any(a.startswith(('--window', '--split', '--allow')) for a in r), r  # defaults: no PACKFLAGS
@@ -120,8 +123,8 @@ for mode, want in (('budget', 7 + 6), ('budget_default', 7 + 8)):
     c = [json.loads(l) for l in (root / f'{mode}.calls').read_text().splitlines()]
     s5 = next(x['args'] for x in c if x['name'] == 'circuit_mixer' and '--target-size' in x['args'])
     assert s5[s5.index('--target-size') + 1] == '4' and s5[s5.index('--moves') + 1] == str(want), (mode, s5)
-# the seven-stage chain: stage order, inputs chained, every knob forwarded
-calls = [json.loads(l) for l in (root / 'seven.calls').read_text().splitlines()]
+# the six-stage chain: stage order, inputs chained, every knob forwarded
+calls = [json.loads(l) for l in (root / 'six.calls').read_text().splitlines()]
 names = [c['name'] for c in calls if not (c['name'] == 'tdp_packing' and c['args'][0] != 'run')]
 assert names == ['gen_sandwich_gadget', 'circuit_mixer', 'circuit_mixer', 'circuit_mixer', 'tdp_packing', 'tdp_unpacking'], names
 base = lambda a: [x.rsplit('/', 1)[-1] for x in a]
@@ -140,24 +143,32 @@ pack = base(next(c['args'] for c in calls if c['name'] == 'tdp_packing' and c['a
 assert pack[pack.index('--stage2') + 1] == 'tdp.mpmct1' and pack[pack.index('--stage3') + 1] == 'crossing.mpmct1', pack
 assert pack[pack.index('--threads') + 1] == '2' and pack[pack.index('--window-gates') + 1] == '256', pack
 un = base(next(c['args'] for c in calls if c['name'] == 'tdp_unpacking'))
-# stage 7 reads the repaired circuit stage 6 named by its window size
+# the unpacking sub-step reads the repaired circuit the packer named by its window size
 assert un[:2] == ['run', '--deliverable'] and un[un.index('--packed') + 1] == 'rep256.mpmct1', un
-assert un[un.index('--bounds') + 1] == 'rep256.bounds', un
+assert un[un.index('--bounds') + 1] == 'rep256.bounds' and un[un.index('--out-dir') + 1] == 'unpacking', un
+# the refinement loop and its explicit round bound (right after the seed, which
+# the mock records as --seed V), then the synthesizer knobs
+assert un[un.index('--seed') + 2:un.index('--seed') + 5] == ['--refine', '--max-rounds', '5'], un
 assert un[un.index('--time-limit') + 1] == '12.5' and un[un.index('--restarts') + 1] == '3', un
-assert un[un.index('--beam') + 1] == '2' and '--no-fallback' in un and un[un.index('--threads') + 1] == '2', un
-log = (root / 'seven' / 'tdp_gen.log').read_text()
-assert 'PIPELINE COMPLETE (stages 1-7)' in log, log
-for f in ('split.mpmct1', 'split.state', 'crossing.mpmct1', 'stage4.recipe', 'stage5.recipe', 'packing.recipe', 'unpacking.recipe', 'unpacking/unpacked.mpmct1'):
-    assert (root / 'seven' / f).is_file(), f
+assert un[un.index('--beam') + 1] == '2' and '--no-fallback' not in un and un[un.index('--threads') + 1] == '2', un
+log = (root / 'six' / 'tdp_gen.log').read_text()
+assert 'PIPELINE COMPLETE (stages 1-6)' in log, log
+for f in ('split.mpmct1', 'split.state', 'crossing.mpmct1', 'stage4.recipe', 'stage5.recipe', 'delivery.recipe', 'stage6.log',
+          'packing/deliverable.tdp4', 'unpacking/deliverable.tdp4', 'unpacking/bounds.final', 'unpacking/unpacked.mpmct1',
+          'unpacking/rounds.tsv'):
+    assert (root / 'six' / f).is_file(), f
+# one stage log: the packer's output, a separator, the unpacking sub-step's
+assert '---- unpacking: tdp_unpacking run --refine --max-rounds 5' in (root / 'six' / 'stage6.log').read_text()
 PY
 # Continuation must recognize every saved artifact and avoid another call.
 rm "$tmp/canonical.calls"
 run_case canonical "${FOUR[@]}" --parallel-target-piece-gates 2 --parallel-threads 3 --db-mixing-schedule custom --db-mixing-target-size-factor 2 --db-mixing-hold-work-units 27
 test ! -e "$tmp/canonical.calls"
 grep -q 'matches its completion marker, skipping' "$tmp/canonical.log"
-# ... while dropping the skip list resumes the same run with stages 4-7 added
+# ... while dropping the skip list (and anf_only) resumes the same run with
+# stages 4-5 added and stage 6 re-run in full (its recipe changed)
 run_case canonical --parallel-target-piece-gates 2 --parallel-threads 3 --db-mixing-schedule custom --db-mixing-target-size-factor 2 --db-mixing-hold-work-units 27
 grep -q 'stage 3: .* matches its completion marker, skipping' "$tmp/canonical.log"
-grep -q 'PIPELINE COMPLETE (stages 1-7)' "$tmp/canonical.log"
+grep -q 'PIPELINE COMPLETE (stages 1-6)' "$tmp/canonical.log"
 python3 -I -c "import json,sys; names=[json.loads(l)['name'] for l in open(sys.argv[1])]; assert names == ['circuit_mixer', 'circuit_mixer', 'tdp_packing', 'tdp_unpacking'], names" "$tmp/canonical.calls"
 echo 'TDP block-size shell smoke tests passed'

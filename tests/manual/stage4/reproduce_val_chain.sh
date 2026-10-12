@@ -1,8 +1,8 @@
 #!/bin/bash
 # reproduce_val_chain.sh N [L8|A] [MC] : the reproduction test (required
 # acceptance, docs/STAGE4_RUST_DESIGN.md §10.7). One run of the MANAGED DRIVER
-# (local_mixing_bin tdp_gen, config v3 with nothing but source.wires, the store,
-# run.skip_stages = [4, 5, 7] (the oracle chain's four stages),
+# (local_mixing_bin tdp_gen, config v4 with nothing but source.wires, the store,
+# run.skip_stages = [4, 5] + delivery.anf_only (the oracle chain's four stages),
 # and a calibration seed file; preset A only for CONFIG=A) and one run of the
 # Python/bash reference chain scripts/windowed_delivery/waist/val_chain.sh in
 # a path-rewritten sandbox, with the SAME fresh seeds, on the SAME stage
@@ -77,12 +77,12 @@ MAN=$WORK/managed; mkdir -p "$MAN"
 size=""; case $N in 64|128) [ "$MC" = "$( [ "$N" = 64 ] && echo 1000 || echo 3000)" ] || size="gates = $MC" ;; *) size="gates = $MC" ;; esac
 preset=""; [ "$CFG" = A ] && preset='preset = "A"'
 cat > "$MAN/config.toml" <<CFG
-config_version = 3
+config_version = 4
 [run]
 directory = "$MAN/run"
 build_directory = "$WORK/managed_target"
 build_binaries = false
-skip_stages = [4, 5, 7]
+skip_stages = [4, 5]
 [source]
 wires = $N
 $size
@@ -90,6 +90,8 @@ $size
 regular_dir = "$FROZEN_DB_DIR"
 [preprocessing]
 $preset
+[delivery]
+anf_only = true
 [calibration]
 enabled = true
 seed_file = "$SF"

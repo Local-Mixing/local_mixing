@@ -350,7 +350,7 @@ where
     // Optional stages (every stage after the first): run.skip_stages.
     let stop_after_stage: u64 = stop_after
         .as_deref()
-        .unwrap_or("7")
+        .unwrap_or("6")
         .parse()
         .expect("validated");
     let mut skip_stages: Vec<u64> = Vec::new();
@@ -364,7 +364,7 @@ where
                     config_error(
                         raw,
                         "skip_stages",
-                        "must list stages in 2..7 (stage 1 always runs)",
+                        "must list stages in 2..6 (stage 1 always runs; stages 6 and 7 of config_version 3 are one delivery stage 6)",
                     )
                 })?;
             if !skip_stages.contains(&stage) {
@@ -374,18 +374,11 @@ where
         skip_stages.sort_unstable();
     }
     let stage_on = |k: u64| k <= stop_after_stage && !skip_stages.contains(&k);
-    if stage_on(7) && !stage_on(6) {
-        return Err(config_error(
-            raw,
-            "skip_stages",
-            "stage 7 (unpacking) needs stage 6 (packing): keep stage 6 or skip stage 7 too",
-        ));
-    }
     if stage_on(6) && n > 256 {
         return Err(config_error(
             raw,
             "n",
-            "stage 6 (packing) supports source.wires up to 256; stop before stage 6 or skip it for larger n",
+            "stage 6 (delivery) supports source.wires up to 256; stop before stage 6 or skip it for larger n",
         ));
     }
     // Refuse up front what stage 6 would refuse only after stages 1-5 ran.
@@ -397,7 +390,7 @@ where
             raw,
             "preprocessing_mode",
             &format!(
-                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 6 (packing) supports at most {STAGE4_MAX_STATE_WIRES} state wires; stop before stage 6, skip it, or use embedded-masking"
+                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 6 (delivery) supports at most {STAGE4_MAX_STATE_WIRES} state wires; stop before stage 6, skip it, or use embedded-masking"
             ),
         ));
     }
@@ -432,23 +425,26 @@ where
             "an absolute move budget is exclusive with `crossing.move_budget_factor`",
         ));
     }
-    // [unpacking] (stage 7)
-    let du = UnpackingConfig::default();
-    let unpacking = UnpackingConfig {
+    // [delivery] (the unpacking sub-step of stage 6)
+    let dd = DeliveryConfig::default();
+    let delivery = DeliveryConfig {
+        anf_only: parse_bool(raw, "delivery_anf_only", dd.anf_only)?,
         time_limit: parse_optional_f64(
             raw,
-            "unpacking_time_limit",
+            "delivery_time_limit",
             |value| value > 0.0 && value <= 86_400.0,
             "must be in (0, 86400]",
         )?
-        .unwrap_or(du.time_limit),
-        restarts: parse_optional_u64(raw, "unpacking_restarts", 1, 1000)?
+        .unwrap_or(dd.time_limit),
+        restarts: parse_optional_u64(raw, "delivery_restarts", 1, 1000)?
             .map(|v| v.parse().expect("validated"))
-            .unwrap_or(du.restarts),
-        beam: parse_optional_u64(raw, "unpacking_beam", 1, 1000)?
+            .unwrap_or(dd.restarts),
+        beam: parse_optional_u64(raw, "delivery_beam", 1, 1000)?
             .map(|v| v.parse().expect("validated"))
-            .unwrap_or(du.beam),
-        allow_fallback: parse_bool(raw, "unpacking_allow_fallback", du.allow_fallback)?,
+            .unwrap_or(dd.beam),
+        max_rounds: parse_optional_u64(raw, "delivery_max_rounds", 1, 1000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(dd.max_rounds),
     };
     // [packing]
     let d = PackingConfig::default();
@@ -551,7 +547,7 @@ where
         schedule,
         packing,
         crossing,
-        unpacking,
+        delivery,
         threads,
         stop_after,
         force_from,
@@ -587,9 +583,7 @@ pub(crate) fn parse_usize(
     Ok(parsed)
 }
 
-/// A pipeline stage number: 2, 3 or 4. The old stages 5 (crossing walk) and
-/// 6 (fcompress) are historic and get a pointer to the archive.
-/// A pipeline stage number 2..7 (stage 1 is never a stop or rerun point on
+/// A pipeline stage number 2..6 (stage 1 is never a stop or rerun point on
 /// its own: stages 1 and 2 run in one process).
 fn parse_optional_stage(raw: &RawConfig, key: &str) -> Result<Option<String>, String> {
     parse_optional_u64(raw, key, 2, LAST_STAGE)
@@ -704,7 +698,8 @@ pub(crate) fn canonicalize_if_present(path: PathBuf) -> Result<PathBuf, String> 
 /// `mix_seed=<u63>`. A one-integer file (format 1) is rejected with the
 /// migration message. Values are never echoed in errors.
 /// The seeds an explicit seed file supplies: gen and mix are required; the
-/// stage-4/5/7 seeds are optional (the driver draws them when absent).
+/// stage-4/5/6 seeds (`split_seed`, `cross_seed`, `unpack_seed` = the
+/// delivery seed) are optional (the driver draws them when absent).
 #[derive(Clone, Copy)]
 pub(crate) struct ExplicitSeeds {
     pub(crate) gen_seed: u64,
@@ -747,7 +742,7 @@ pub(crate) fn read_seed_file(path: &Path) -> Result<ExplicitSeeds, String> {
 pub(crate) fn parse_seed_text(contents: &str) -> Result<ExplicitSeeds, String> {
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
     if lines.len() == 1 && lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
-        return Err("seed file format 1 holds one seed; recipe v11 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
+        return Err("seed file format 1 holds one seed; recipe v12 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
     }
     const LINES: &str = "only gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=";
     let mut gen_seed = None;

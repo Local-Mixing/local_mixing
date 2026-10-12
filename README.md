@@ -2,20 +2,24 @@
 
 We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
-compute. TDP is the current end-to-end pipeline. It has seven stages: it
+compute. TDP is the current end-to-end pipeline. It has six stages: it
 constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
 (2), mixes with the frozen database (3), splits the remaining complemented
-gates (4), runs the crossing walk (5), packs the result into a windowed ANF
-deliverable (6), and unpacks it again by resynthesizing every window from its
-ANF into one canonically ordered circuit (7). Every stage after the first is
-optional. The `tdp_gen` driver runs all seven by default and ends with
-`unpacking/unpacked.mpmct1`; the defaults of stages 1-3 and 6 reproduce the
-chosen validation runs (`docs/STAGE4_RUST_DESIGN.md`; `run.skip_stages = [4,
-5, 7]` is that four-stage chain). Stage 6 is the Rust binary `tdp_packing`;
-the Python prototypes under [`scripts/windowed_delivery/`](scripts/windowed_delivery/)
-are its oracle. Stage 7 is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
+gates (4), runs the crossing walk (5), and delivers the result (6): packs it
+into a windowed ANF deliverable, then unpacks it again by resynthesizing
+every window from its ANF, splitting and repacking any window that does not
+resynthesize, into a refined deliverable and one canonically ordered circuit
+(`docs/DELIVERY_STAGE.md`). Every stage after the first is optional. The
+`tdp_gen` driver runs all six by default and ends with
+`unpacking/deliverable.tdp4` + `unpacking/unpacked.mpmct1`; the defaults of
+stages 1-3 and the packer reproduce the chosen validation runs
+(`docs/STAGE4_RUST_DESIGN.md`; `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true` is that four-stage chain). The packer is the Rust
+binary `tdp_packing`; the Python prototypes under
+[`scripts/windowed_delivery/`](scripts/windowed_delivery/) are its oracle.
+The unpacking sub-step is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
 [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the stages; the
-full reference for stages 1-3 and 6 is
+full reference for stages 1-3 and the packer is
 [TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md). (The curated
 database and the old `fcompress` stage are historic: branch
 `ran/archive/curated-and-postmix`; see
@@ -122,7 +126,7 @@ stages 5-6 are rejected); stages 1 and 2 execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
-New runs record recipe v10 in `tdp_command.conf`, including the resolved
+New runs record recipe v12 in `tdp_command.conf`, including the resolved
 recipe and driver/executable fingerprints (never a seed or a hash of $C$). Managed continuation reuses the exact
 recorded stage binaries and skips rebuilding them. Preserve their build
 directory; use a fresh run directory after changing recipe settings or stage

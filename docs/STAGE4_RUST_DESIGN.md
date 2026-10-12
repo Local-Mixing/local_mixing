@@ -2,7 +2,7 @@
 
 Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; results in §12), branch `ran/stage4-rust` (based on `492564f0`). Owner: RC.
 
-> **2026-10-11:** packing is now **stage 6** of a seven-stage pipeline (4 splitting, 5 crossing walk, 7 unpacking; `docs/tdp_pipeline.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`) are now config v3, recipe v11, SEEDS format 3 (five seeds) and `packing.failed`, and the chain it reproduces is `run.skip_stages = [4, 5, 7]`.
+> **2026-10-11 / 2026-10-12:** packing is now the first sub-step of **stage 6** (delivery) of a six-stage pipeline (4 splitting, 5 crossing walk, 6 delivery = packing then unpacking with lattice refinement; `docs/tdp_pipeline.md`, `docs/DELIVERY_STAGE.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`, `packing.recipe`) are now config v4, recipe v12, SEEDS format 3 (five seeds), `delivery.failed` (with `step=packing`) and `delivery.recipe`, and the chain it reproduces is `run.skip_stages = [4, 5]` with `delivery.anf_only = true`.
 
 This document does two things:
 

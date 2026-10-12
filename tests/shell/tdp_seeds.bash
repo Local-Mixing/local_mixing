@@ -44,8 +44,8 @@ gen=${L[1]#gen_seed=}; mix=${L[2]#mix_seed=}; split=${L[3]#split_seed=}; cross=$
 unpack=${L[5]#unpack_seed=}; key=${L[6]#run_key=}
 for v in "$gen" "$mix" "$split" "$cross" "$unpack" "$key"; do
   for f in "$tmp/r1.stdout" "$tmp/r1/tdp_gen.log" "$tmp/r1/stage12.recipe" "$tmp/r1/stage3.recipe" \
-           "$tmp/r1/stage4.recipe" "$tmp/r1/stage5.recipe" "$tmp/r1/packing.recipe" "$tmp/r1/unpacking.recipe" \
-           "$tmp/r1/stage12.log" "$tmp/r1/stage3.log" "$tmp/r1/stage4.log" "$tmp/r1/stage5.log" "$tmp/r1/stage7.log" \
+           "$tmp/r1/stage4.recipe" "$tmp/r1/stage5.recipe" "$tmp/r1/delivery.recipe" \
+           "$tmp/r1/stage12.log" "$tmp/r1/stage3.log" "$tmp/r1/stage4.log" "$tmp/r1/stage5.log" "$tmp/r1/stage6.log" \
            "$tmp/r1/stage3.settings"; do
     if grep -qF -- "$v" "$f"; then echo "a seed value reached $f" >&2; exit 1; fi
   done
@@ -97,7 +97,8 @@ PY
 drive "$tmp/r2" > /dev/null 2>&1
 cmp -s <(sed -n 2,6p "$tmp/r1/SEEDS") <(sed -n 2,6p "$tmp/r2/SEEDS") && { echo "two runs drew the same seeds" >&2; exit 1; }
 # 2. explicit seed file (calibration) and its validation: gen and mix are
-# required, the stage-4/5/7 seeds optional (drawn fresh when absent)
+# required, the stage-4/5/6 seeds (split, cross, unpack = the delivery seed)
+# optional (drawn fresh when absent)
 sf=$tmp/seeds; printf 'gen_seed=11\nmix_seed=1013\n' > "$sf"; chmod 600 "$sf"
 drive "$tmp/e1" --seed-file "$sf" > "$tmp/e1.out" 2>&1
 grep -q '^seed_source=explicit$' "$tmp/e1/SEEDS"
@@ -119,7 +120,7 @@ grep -q '"--seed", "2525"' "$tmp/e5.calls"
 grep -q '^split_seed=2323$' "$tmp/e5/SEEDS"
 # legacy and malformed inputs
 printf '42\n' > "$tmp/v1"; chmod 600 "$tmp/v1"
-expect_fail 'seed file format 1 holds one seed; recipe v11 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
+expect_fail 'seed file format 1 holds one seed; recipe v12 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x2" -s 42
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x3" --calibration-seed 42
 chmod 644 "$sf"; expect_fail 'chmod 600' "$tmp/x4" --seed-file "$sf"; chmod 600 "$sf"
