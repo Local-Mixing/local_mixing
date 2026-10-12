@@ -434,9 +434,11 @@ pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError>
         .map_err(|error| TdpError::io(format!("cannot write {}: {error}", path.display())))
 }
 
-/// On resume, SEEDS must exist, parse (format 3; format 2 from the four-stage
-/// driver is accepted and upgraded in place by scripts/tdp_gen.sh), be
-/// private, and agree with an explicit seed file (compared here, never printed).
+/// On resume, SEEDS must exist, parse, be private, and agree with an explicit
+/// seed file (compared here, never printed). Format 3 is the current one; a
+/// format-2 file (the four-stage driver's) is parsed too for completeness,
+/// although a managed resume never meets one (recipe v10 manifests are
+/// refused before this check; scripts/tdp_gen.sh upgrades them standalone).
 pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> {
     let path = config.run_dir.join("SEEDS");
     let text = fs::read_to_string(&path).map_err(|error| {

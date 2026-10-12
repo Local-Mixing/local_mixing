@@ -83,6 +83,8 @@ fi
 reject 'run-skip-stages' --run-skip-stages 1
 reject 'run-skip-stages' --run-skip-stages 8
 reject 'run-skip-stages' --run-skip-stages 4,,5
+reject 'run-skip-stages' --run-skip-stages 4,5,
+reject 'run-skip-stages' --run-skip-stages ,4
 reject 'run-skip-stages' --run-skip-stages ''
 if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$tmp/rejected" --run-skip-stages 6 >"$tmp/error" 2>&1; then
   echo "unexpected success: --run-skip-stages 6 with stage 7 on" >&2; exit 1

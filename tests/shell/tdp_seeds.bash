@@ -160,6 +160,13 @@ mapfile -t U < "$tmp/u1/SEEDS"
 [ "${U[6]}" = "run_key=$K" ]
 [ "${U[7]}" = seed_source=explicit ]
 grep -q '"11", "11", "11"' "$tmp/u1.calls"
+# ... and an explicit seed file naming the new seeds is adopted by the upgrade (no conflict)
+mk u2 "seeds_format=2\ngen_seed=11\nmix_seed=1013\nrun_key=$K\nseed_source=explicit\n"
+sfu=$tmp/seedsu; printf 'gen_seed=11\nmix_seed=1013\nsplit_seed=55\n' > "$sfu"; chmod 600 "$sfu"
+drive "$tmp/u2" --seed-file "$sfu" > "$tmp/u2.out" 2>&1
+grep -q '^split_seed=55$' "$tmp/u2/SEEDS"
+grep -q '"--seed", "55"' "$tmp/u2.calls"
+drive "$tmp/u2" --seed-file "$sfu" > /dev/null 2>&1
 # a v9 run directory (one-line SEED) is refused
 mkdir -p "$tmp/v9"; echo 42 > "$tmp/v9/SEED"
 expect_fail 'recipe v9' "$tmp/v9"

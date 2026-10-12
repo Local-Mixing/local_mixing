@@ -311,6 +311,7 @@ STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 7)
 # ---- optional stages (every stage after the first) ----
 SKIP=","
 if [ -n "$SKIP_LIST" ]; then
+  [[ $SKIP_LIST =~ ^[0-9]+(,[0-9]+)*$ ]] || fatal "--run-skip-stages must be a comma-separated list of stages in 2..7"
   IFS=, read -r -a skip_items <<< "$SKIP_LIST"
   for item in "${skip_items[@]}"; do
     item=$(bounded_uint --run-skip-stages "$item" 2 7) || exit 2
@@ -539,7 +540,8 @@ parse_seeds() { # FILE -> sets GEN_SEED MIX_SEED SPLIT_SEED CROSS_SEED UNPACK_SE
       [[ ${lines[3]} =~ ^run_key=([0-9a-f]{64})$ ]] && RUN_KEY_HEX=${BASH_REMATCH[1]} &&
       [[ ${lines[4]} =~ ^seed_source=(random|explicit)$ ]] && SEED_SOURCE=${BASH_REMATCH[1]}; } ||
       fatal "$f is malformed (format 2: seeds_format=2, gen_seed=, mix_seed=, run_key=<64 hex>, seed_source=)"
-    SPLIT_SEED=$(random_seed); CROSS_SEED=$(random_seed); UNPACK_SEED=$(random_seed); upgraded=1
+    # the three new seeds: the explicit seed file's when it names them, else fresh draws
+    SPLIT_SEED=${EXPL_SPLIT:-$(random_seed)}; CROSS_SEED=${EXPL_CROSS:-$(random_seed)}; UNPACK_SEED=${EXPL_UNPACK:-$(random_seed)}; upgraded=1
   else
     { [ "${#lines[@]}" -eq 8 ] && [ "${lines[0]}" = seeds_format=3 ] &&
       [[ ${lines[1]} =~ ^gen_seed=([0-9]+)$ ]] && GEN_SEED=${BASH_REMATCH[1]} &&
@@ -562,10 +564,11 @@ parse_seeds() { # FILE -> sets GEN_SEED MIX_SEED SPLIT_SEED CROSS_SEED UNPACK_SE
     SEEDS_UPGRADED=1
   fi
 }
+EXPL_GEN=""; EXPL_MIX=""; EXPL_SPLIT=""; EXPL_CROSS=""; EXPL_UNPACK=""
 read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX EXPL_SPLIT EXPL_CROSS EXPL_UNPACK (the last three may stay empty: drawn fresh)
   local f=$1 lines l mode name
   [ -f "$f" ] || fatal "--seed-file $f is not a regular file"
-  [ "$(wc -c < "$f")" -le 512 ] || fatal "--seed-file $f is too large (maximum 512 bytes)"
+  [ "$(wc -c < "$f")" -le 256 ] || fatal "--seed-file $f is too large (maximum 256 bytes)"
   mode=$(python3 -I -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$f")
   [ $((8#$mode & 8#077)) -eq 0 ] || fatal "--seed-file $f must not be accessible by group/other (chmod 600)"
   mapfile -t lines < "$f"
@@ -973,7 +976,9 @@ PY
   if [ "$SPLIT_RAN" = 1 ] && [ -s "$SPLIT_STATE" ]; then
     # --moves is ABSOLUTE on a resume: the split stage's counter plus the budget.
     X_SOURCE="resume split.state"
-    X_MOVES=$(( $(awk '$1=="moves"{print $2; exit}' "$SPLIT_STATE") + X_BUDGET ))
+    state_moves=$(awk '$1=="moves"{print $2; exit}' "$SPLIT_STATE")
+    [[ $state_moves =~ ^[0-9]+$ ]] || fatal "$SPLIT_STATE has no moves counter (truncated state); rerun with --run-rerun-from-stage 4"
+    X_MOVES=$(( state_moves + X_BUDGET ))
     X_INPUT=(--resume "$SPLIT_STATE"); X_SEED=()
   else
     [ "$SPLIT_RAN" = 0 ] || fatal "stage 4 ran but $SPLIT_STATE is missing; rerun with --run-rerun-from-stage 4"
@@ -986,7 +991,7 @@ PY
     echo "circuit_mixer_sha256=$(sha_of "$BIN/circuit_mixer")"
     echo "stage5_args=${X_ARGS[*]} --moves $X_MOVES"
     echo "stage5_source=$X_SOURCE"
-    [ "$SPLIT_RAN" = 1 ] || mac --seed cross
+    if [ "$SPLIT_RAN" = 1 ]; then mac split_state="$SPLIT_STATE"; else mac --seed cross; fi
     mac stage5_input="$CUR"
   }
   stage5_done=0
@@ -1079,6 +1084,8 @@ stop_here 6
 
 # ---- stage 7: tdp_unpacking run (resynthesis from the delivered ANF, canonical order) ----
 UNPACK_DIR=$RUN/unpacking; UMARKER=$RUN/unpacking.recipe
+# the repaired circuit stage 6 wrote, named by its window size (rep<G>.*): the verbatim fallback of stage 7
+PACKED=$PACK_DIR/rep$PACK_WINDOW_GATES.mpmct1; PACKED_BOUNDS=$PACK_DIR/rep$PACK_WINDOW_GATES.bounds
 stage7_exit_meaning() {
   case "$1" in
     2) echo "usage or parameter error" ;; 3) echo "input error" ;;
@@ -1087,12 +1094,15 @@ stage7_exit_meaning() {
   esac
 }
 if stage_on 7; then
+  for f in "$PACK_DIR/deliverable.tdp4" "$PACKED" "$PACKED_BOUNDS"; do
+    [ -s "$f" ] || fatal "stage 7 needs $f from stage 6; rerun with --run-rerun-from-stage 6"
+  done
   expected_umarker() {
     echo "unpacking_recipe=1"
     echo "tdp_unpacking_sha256=$(sha_of "$BIN/tdp_unpacking")"
     echo "params=$(IFS=' '; echo "${UNPACKFLAGS[*]:-default}")"
     mac --seed unpack
-    mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4" packed="$PACK_DIR/rep512.mpmct1" bounds="$PACK_DIR/rep512.bounds"
+    mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4" packed="$PACKED" bounds="$PACKED_BOUNDS"
   }
   stage7_done=0
   if [ "$FORCE_FROM" -gt 7 ] && marker_ok "$UMARKER" "$(expected_umarker)" "$UNPACK_DIR/unpacked.mpmct1" unpacked; then
@@ -1108,7 +1118,7 @@ if stage_on 7; then
     RECIPE_ENV=()
     set +e
     stage_exec "$BIN/tdp_unpacking" run --deliverable "$PACK_DIR/deliverable.tdp4" \
-        --packed "$PACK_DIR/rep512.mpmct1" --bounds "$PACK_DIR/rep512.bounds" \
+        --packed "$PACKED" --bounds "$PACKED_BOUNDS" \
         --source-c "$GADGET.source_c.g57" --n "$N" --out-dir "$UNPACK_DIR" --seed-file /dev/fd/3 \
         ${UNPACKFLAGS[@]+"${UNPACKFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} 3<<< "$UNPACK_SEED" \
         > "$RUN/stage7.log" 2>&1
@@ -1130,7 +1140,7 @@ else
   note "stage 7: SKIPPED"
 fi
 wait_side
-if [ -e "$PACK_DIR/NOT_RECOMMENDED" ] 2>/dev/null; then
+if stage_on 6 && [ -e "$PACK_DIR/NOT_RECOMMENDED" ]; then
   note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (stages $(ran_text); status=$(sed -n 's/^status=//p' "$MARKER")): $CUR is NOT a recommended deliverable"
 else
   note "PIPELINE COMPLETE (stages $(ran_text)): $CUR"

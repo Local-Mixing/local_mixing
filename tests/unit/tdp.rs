@@ -1157,6 +1157,21 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     );
     let l8 = resolve_body(&body).unwrap();
     assert_eq!(pinned(&l8), "val_chain-L8-20261007");
+    // the pin follows the recipe, not the lifecycle stop point: a stop before
+    // stage 4 does not pin a seven-stage recipe, and a stop at 3 keeps the
+    // four-stage pin (so raising the stop point later resumes the same manifest)
+    let seven_stop3 = resolve_body(&format!(
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.stop_after_stage = 3\n"
+    ))
+    .unwrap();
+    assert_eq!(pinned(&seven_stop3), "none");
+    let four_stop3 = resolve_body(&format!("{body}run.stop_after_stage = 3\n")).unwrap();
+    assert_eq!(pinned(&four_stop3), "val_chain-L8-20261007");
+    assert_eq!(
+        recipe_manifest(&four_stop3, &[], 1),
+        recipe_manifest(&l8, &[], 1),
+        "lifecycle settings must not change the manifest"
+    );
     // ... but it is not the validated store: the manifest says so
     assert_eq!(manifest_pinned(&l8), "none");
     assert!(

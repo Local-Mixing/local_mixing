@@ -119,8 +119,9 @@ elif name == "tdp_packing":
         (out / "deliverable.bin").write_bytes(b"body")
         (out / "deliverable.tdp4").write_bytes(b"LMTDPANF" + bytes(40) + b"body")
         (out / "packing.report").write_text(f"packing_report=2\nstatus={status}\n")
-        (out / "rep512.mpmct1").write_text("mpmct1 16 2\n0 0 0\n0 0 0\n")
-        (out / "rep512.bounds").write_text("1\n")
+        g = args[args.index("--window-gates") + 1] if "--window-gates" in args else "512"
+        (out / f"rep{g}.mpmct1").write_text("mpmct1 16 2\n0 0 0\n0 0 0\n")
+        (out / f"rep{g}.bounds").write_text("1\n")
 elif name == "tdp_unpacking":
     assert args[0] == "run", args
     for flag in ("--deliverable", "--packed", "--bounds", "--source-c"):

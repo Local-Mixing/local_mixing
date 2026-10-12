@@ -282,9 +282,9 @@ pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) 
         && resolved_frozen_filter(config) == "1"
         && !config.qc_enabled
         && config.packing.is_default()
-        && !config.stage_on(4)
-        && !config.stage_on(5)
-        && !config.stage_on(7);
+        // the recipe's stages, not the lifecycle stop point: a stop before
+        // stage 4 must not pin a run whose recipe includes stages 4-7
+        && [4, 5, 7].iter().all(|k| config.skip_stages.contains(k));
     match (matches_chain, config.preset) {
         (true, Preset::L8) => "val_chain-L8-20261007",
         (true, Preset::A) => "val_chain-A-20261007",

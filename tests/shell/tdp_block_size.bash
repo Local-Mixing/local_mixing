@@ -70,7 +70,7 @@ run_case stop3 --run-stop-after-stage 3
 # ... and the full seven-stage chain, with every stage-5/7 knob set
 run_case seven --crossing-target-size-factor 2.5 --crossing-width-penalty-base 4 --crossing-width-penalty-threshold 2 \
   --crossing-size-tolerance-divisor 20 --crossing-move-attempts 1234 --unpacking-time-limit 12.5 --unpacking-restarts 3 \
-  --unpacking-beam 2 --unpacking-no-fallback --threads 2
+  --unpacking-beam 2 --unpacking-no-fallback --threads 2 --packing-window-gates 256
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -130,9 +130,11 @@ assert s5[s5.index('--moves') + 1] == str(7 + 1234), s5        # the state's cou
 assert s5[s5.index('--output') + 1] == 'crossing.mpmct1', s5
 pack = base(next(c['args'] for c in calls if c['name'] == 'tdp_packing' and c['args'][0] == 'run'))
 assert pack[pack.index('--stage2') + 1] == 'tdp.mpmct1' and pack[pack.index('--stage3') + 1] == 'crossing.mpmct1', pack
-assert pack[pack.index('--threads') + 1] == '2', pack
+assert pack[pack.index('--threads') + 1] == '2' and pack[pack.index('--window-gates') + 1] == '256', pack
 un = base(next(c['args'] for c in calls if c['name'] == 'tdp_unpacking'))
-assert un[:2] == ['run', '--deliverable'] and un[un.index('--packed') + 1] == 'rep512.mpmct1', un
+# stage 7 reads the repaired circuit stage 6 named by its window size
+assert un[:2] == ['run', '--deliverable'] and un[un.index('--packed') + 1] == 'rep256.mpmct1', un
+assert un[un.index('--bounds') + 1] == 'rep256.bounds', un
 assert un[un.index('--time-limit') + 1] == '12.5' and un[un.index('--restarts') + 1] == '3', un
 assert un[un.index('--beam') + 1] == '2' and '--no-fallback' in un and un[un.index('--threads') + 1] == '2', un
 log = (root / 'seven' / 'tdp_gen.log').read_text()
