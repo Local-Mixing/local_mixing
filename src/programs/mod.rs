@@ -3,6 +3,7 @@
 pub mod circuit_mixer;
 pub mod gen_sandwich_gadget;
 pub mod tdp_packing;
+pub mod tdp_unpacking;
 
 /// The largest seed file accepted (one decimal u64 plus whitespace).
 const MAX_SEED_FILE_BYTES: u64 = 64;
