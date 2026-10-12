@@ -56,6 +56,13 @@ pub enum WinStatus {
     Ok,
     /// The packed circuit's window, emitted verbatim (checked too).
     Fallback,
+    /// Synthesis or a check failed and the caller asked for failures to be
+    /// reported instead of handled (`report_failures`): no gates. Only the
+    /// refinement loop (`refine`) sees this status.
+    Failed,
+    /// The packed circuit's window, emitted verbatim by the refinement loop
+    /// (a 1-gate failure or a failure at `max_rounds`).
+    Verbatim,
 }
 
 impl WinStatus {
@@ -63,6 +70,8 @@ impl WinStatus {
         match self {
             WinStatus::Ok => "ok",
             WinStatus::Fallback => "fallback",
+            WinStatus::Failed => "failed",
+            WinStatus::Verbatim => "verbatim",
         }
     }
 }
@@ -135,11 +144,15 @@ fn check_window(
     Err("exact-overflow")
 }
 
+/// One window: synthesis, checks, peephole, then (on failure) the fallback,
+/// an error, or — with `report_failures` — a `WinStatus::Failed` result
+/// (no gates) for the caller to handle.
 fn process_window(
     d: &Deliverable,
     i: usize,
     packed: Option<&PackedWindows<'_>>,
     params: &UnpackParams,
+    report_failures: bool,
 ) -> Result<WindowResult, Stage7Error> {
     let t0 = Instant::now();
     let nw = d.state_wires as usize;
@@ -217,6 +230,11 @@ fn process_window(
             }
         }
     }
+    if res.status != WinStatus::Ok && report_failures {
+        res.status = WinStatus::Failed;
+        res.secs = t0.elapsed().as_secs_f64();
+        return Ok(res);
+    }
     if res.status != WinStatus::Ok {
         let Some(p) = packed.filter(|_| params.allow_fallback) else {
             return Err(Stage7Error::Verify(format!(
@@ -257,7 +275,30 @@ pub fn unpack_windows(
     params: &UnpackParams,
     progress: &(dyn Fn(usize, &WindowResult) + Sync),
 ) -> Result<Vec<WindowResult>, Stage7Error> {
+    let all: Vec<usize> = (0..d.window_count()).collect();
+    unpack_selected(d, packed, params, &all, false, progress)
+}
+
+/// Synthesize the windows `sel` of `d` (indices in `d`'s lattice, which key
+/// the tie-break PRNG and the verify seed; any order, no duplicates), in
+/// parallel. With `report_failures` a window that fails comes back as
+/// `WinStatus::Failed` instead of falling back or erroring. Results come
+/// back in the order of `sel`.
+pub fn unpack_selected(
+    d: &Deliverable,
+    packed: Option<&PackedWindows<'_>>,
+    params: &UnpackParams,
+    sel: &[usize],
+    report_failures: bool,
+    progress: &(dyn Fn(usize, &WindowResult) + Sync),
+) -> Result<Vec<WindowResult>, Stage7Error> {
     params.validate().map_err(Stage7Error::Usage)?;
+    if let Some(&i) = sel.iter().find(|&&i| i >= d.window_count()) {
+        return Err(Stage7Error::Usage(format!(
+            "window {i} selected, the deliverable has {} windows",
+            d.window_count()
+        )));
+    }
     let nw = d.state_wires as usize;
     if mono_words(nw).is_none() {
         return Err(Stage7Error::Usage(format!(
@@ -281,10 +322,10 @@ pub fn unpack_windows(
         }
     }
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<Result<WindowResult, Stage7Error>> = (0..d.window_count())
-        .into_par_iter()
-        .map(|i| {
-            let r = process_window(d, i, packed, params);
+    let results: Vec<Result<WindowResult, Stage7Error>> = sel
+        .par_iter()
+        .map(|&i| {
+            let r = process_window(d, i, packed, params, report_failures);
             if let Ok(r) = &r {
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 progress(n, r);
@@ -323,7 +364,11 @@ pub fn quantile(xs: &[f64], q: f64) -> f64 {
 pub struct UnpackSummary {
     pub windows: usize,
     pub synthesized: usize,
+    /// Windows emitted verbatim from the packed circuit (`Fallback` and
+    /// `Verbatim`).
     pub fallback: usize,
+    /// `WinStatus::Failed` windows (only under `report_failures`).
+    pub failed: usize,
     pub deadline_hits: usize,
     pub verify_fail: usize,
     pub exact_overflow: usize,
@@ -363,7 +408,8 @@ impl UnpackSummary {
                         s.exact_retried += 1;
                     }
                 }
-                WinStatus::Fallback => s.fallback += 1,
+                WinStatus::Fallback | WinStatus::Verbatim => s.fallback += 1,
+                WinStatus::Failed => s.failed += 1,
             }
             match r.synth_status {
                 "verify-fail" => s.verify_fail += 1,

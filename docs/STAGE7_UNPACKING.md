@@ -1,7 +1,15 @@
 # Stage 7 (unpacking): resynthesis from the delivered ANF windows
 
+> **Superseded by `docs/DELIVERY_STAGE.md` (2026-10-12).** Packing (stage 6) and
+> unpacking (stage 7) are one stage, *delivery*, with a refinement loop: a window
+> that does not resynthesize is cut in two and both halves are re-emitted and
+> unpacked again. The binary, its per-window algorithm, outputs and checks below
+> are unchanged and remain the loop's kernel; the loop itself is `tdp_unpacking
+> run --refine` (§10 here, `docs/DELIVERY_STAGE.md` §2 and §4).
+
 Status: implemented 2026-10-11, branch `ran/stage7-unpacking` (based on
-`ran/seven-stage` @ 0569792e). Owner: RC.
+`ran/seven-stage` @ 0569792e); `--refine`, `--windows` and `canon` added
+2026-10-12 (`ran/seven-stage`). Owner: RC.
 
 ## 1. Purpose
 
@@ -98,8 +106,12 @@ tdp_unpacking run --deliverable <deliverable.tdp4> --out-dir DIR
                   [--seed S=1 | --seed-file PATH] [--threads K]
                   [--time-limit 30] [--restarts 16] [--beam 6]
                   [--no-fallback] [--no-postopt] [--label tdp]
+                  [--windows i,j,LO:HI | --refine [--max-rounds 16]]
+tdp_unpacking canon <in.mpmct1> <out.mpmct1>
 tdp_unpacking selftest [--n 8] [--m 12] [--trials 40] [--seed 7] [--threads K]
 ```
+
+`--windows`, `--refine` and `canon`: §10.
 
 `--seed-file PATH` reads the decimal seed from a file (the driver passes
 `/dev/fd/3`, as for `circuit_mixer`), so the seed never appears on argv;
@@ -198,3 +210,83 @@ re-checks equivalence independently, exercises the no-fallback path, seed
 reproducibility (`--seed` vs `--seed-file`), thread independence and the exit
 codes on the crafted stage-4 fixtures. `cargo test --locked --lib --test
 tdp_unpacking`.
+
+## 10. `--refine`, `--windows`, `canon` (2026-10-12, the delivery loop)
+
+`src/stages/unpacking/refine.rs`; contract and measured basis in
+`docs/DELIVERY_STAGE.md`; Python reference `scripts/windowed_delivery/waist/deliver.py`
+(parity test `tests/manual/delivery_parity.sh`: byte-identical `bounds.final`,
+`deliverable.tdp4`, `unpacked.mpmct1` and every per-round file on n8_L8).
+
+### `run … --windows i,j,LO:HI`
+
+Synthesizes only the listed windows (0-based indices in the deliverable's lattice;
+`LO:HI` is half-open; any order, duplicates dropped). Per-window checks and the
+fallback are as in §2; the window index used for the tie-break PRNG and the verify
+seed is the index in the lattice, so a window's result does not depend on the
+selection. Output differences: `unpacked.mpmct1` is the plain concatenation of the
+selected windows in index order (no canonical order, no circuit-level check — they
+are meaningless on a subset); `windows.tsv` has rows only for the selected windows,
+`syn_offset` relative to that file; `unpacking.report` adds `windows_selected=<k>`
+and reports `check.equiv_concat`, `check.equiv_canonical`, `check.zero_slice` as
+`skipped`. The Python reference calls this once per round.
+
+### `canon <in.mpmct1> <out.mpmct1>`
+
+Reads a circuit (strict `mpmct1`), applies `canonicalization::gate_order::
+xgate_canonicalize`, checks the result equivalent to the input on 4096 random full
+states (4 × 1024, fixed seeds) and writes it (via `*.tmp`) with the input's header
+width. Exit 3 unreadable input, 4 the check failed.
+
+### `run … --refine [--max-rounds 16]` (needs `--packed/--bounds` and `--source-c/--n`)
+
+The loop of `docs/DELIVERY_STAGE.md` §2, in process:
+
+- round 0 synthesizes every window of the deliverable; round r > 0 only the halves
+  created in round r − 1, each with its index in the *current* lattice (so the PRNG
+  keys match the reference, which re-emits the deliverable and calls `--windows` on
+  the new lattice each round);
+- a window is *failed* when its synthesis status is not `converged` or a check fails
+  (`verify-fail`, `exact-overflow`); failed windows are not emitted verbatim inside
+  the loop: a window of ≥ 2 gates is split, a 1-gate window is emitted verbatim
+  (`verbatim`), and when `max_rounds` is reached (round r splits iff r + 1 ≤
+  `max_rounds`) the remaining failures are verbatim (`status=verbatim_used`);
+- cut choice: the packer's 32 split candidates `lo + (hi−lo)·i/33` minus the cuts the
+  C-view scan flags (one `CView::leaky` scan over the candidates of every failed
+  window of the round; the C-view is built once on C with the packer's defaults),
+  the candidate nearest the midpoint, smaller on a tie; none clean: the midpoint,
+  counted in `unclean_cuts`;
+- re-emission: the halves' blobs by the packer's `window_anf` emission (CPython 3.9
+  cap semantics); the next round's deliverable is the container with the blobs
+  spliced in order (window count, body bytes, CRCs recomputed). A half whose ANF
+  exceeds the packer's budget (65,536 monomials) counts in `over_budget`, is not
+  synthesized and is split again in the next round (the Python reference synthesizes
+  and delivers it; see `DELIVERY_STAGE.md` §4). A half above 2^20 monomials is a
+  fatal error (exit 4).
+
+Outputs (in `--out-dir`; stale ones of an earlier run removed first): per round
+`bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the inputs, re-encoded), then,
+via `*.tmp` after every check passed: `deliverable.tdp4` + `bounds.final` (the
+refined lattice), `unpacked.mpmct1` (every window's gates in final-lattice order,
+canonical order), `windows.tsv` (columns `idx lo hi round orig_gates syn_gates status
+synth_status seconds monomials changed_wires input_vars max_degree` first — a
+verbatim row has round −1, status `verbatim`, the reason as `synth_status`, zeros —
+then the §4 columns from `syn_offset` on), `rounds.tsv` (`round pending converged
+failed split seconds`), `unpacking.log`, `unpacking.report` (the §4 keys plus
+`refine=1 rounds windows_initial windows_final splits unclean_cuts over_budget
+verbatim param.max_rounds param.budget`, `status=ok|verbatim_used`).
+
+Checks (any failure exit 4, nothing renamed): per window exact + sampled (§5);
+`check.final_deliverable` = decode of the final container, every window blob-equal
+to `window_anf` of the packed gates and equal to them (`check_windows_anf`), equal
+to the packed circuit on 1024 random states (`check_deliverable`), zero slice
+against C (`check_zero_slice`), every final window within the budget (from the
+emission bookkeeping); `check.new_cuts` = every added cut was scanned clean or
+counted unclean (the per-cut C-view result does not depend on the lattice, so the
+packer's final scan of the old cuts plus the choice-time scan of the new ones is the
+final scan of the refined lattice); `check.equiv_concat`, `check.equiv_canonical`,
+`check.zero_slice` as in §5.
+
+`--force-fail-rounds N` is TEST ONLY: rounds 0..N synthesize nothing and fail every
+pending window (the integration test exercises the split, the re-emission and the
+next round on n8_L8 with it).

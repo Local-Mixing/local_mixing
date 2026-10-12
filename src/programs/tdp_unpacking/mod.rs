@@ -9,6 +9,7 @@
 //!                   [--source-c <C.g57> --n N] [--seed S=1 | --seed-file PATH]
 //!                   [--threads K] [--time-limit 30] [--restarts 16] [--beam 6]
 //!                   [--no-fallback] [--no-postopt] [--label tdp]
+//!                   [--windows i,j,LO:HI | --refine [--max-rounds 16]]
 //!     Resynthesizes every window of the deliverable from its ANF alone,
 //!     concatenates the windows, canonicalizes the gate order of the whole
 //!     circuit and writes `unpacked.mpmct1`, `windows.tsv`,
@@ -19,6 +20,24 @@
 //!     the deliverable (`status=fallback_used`); `--no-fallback` makes such a
 //!     window exit 4. With `--source-c/--n` the final circuit is also checked
 //!     on the zero slice against C.
+//!     `--windows` (0-based indices in the deliverable's lattice, and
+//!     half-open ranges LO:HI) synthesizes only those windows: the output is
+//!     their plain concatenation in index order, no canonical reorder and no
+//!     circuit-level check (`windows_selected=` in the report; the Python
+//!     delivery reference calls this per round).
+//!     `--refine` (needs --packed/--bounds and --source-c/--n) runs the
+//!     delivery loop of docs/DELIVERY_STAGE.md: a window that does not
+//!     resynthesize is cut in two at an exposure-aware cut, both halves are
+//!     re-emitted into the deliverable and unpacked in the next round, until
+//!     every window unpacks or `--max-rounds` is reached (the rest verbatim,
+//!     `status=verbatim_used`). Extra outputs: `deliverable.<r>.tdp4` and
+//!     `bounds.<r>` per round, the final `deliverable.tdp4` and
+//!     `bounds.final`, `rounds.tsv`. `--force-fail-rounds N` is TEST ONLY:
+//!     rounds 0..N synthesize nothing and fail every pending window.
+//! tdp_unpacking canon <in.mpmct1> <out.mpmct1>
+//!     Canonical gate order (`xgate_canonicalize`) of a circuit, checked
+//!     equivalent on 4096 random full states; the header keeps the input's
+//!     width.
 //! tdp_unpacking selftest [--n 8] [--m 12] [--trials 40] [--seed 7] [--threads K]
 //!     Random small circuits: compose -> deliverable -> synthesize -> verify
 //!     through the same pipeline (no fallback).
@@ -26,16 +45,24 @@
 use crate::circuit::formats::read_g57_file;
 use crate::circuit::xgate::XGate;
 use crate::stages::packing::oracle_io::{
-    read_bounds, read_oracle_mpmct, window_cuts, write_pack_mpmct,
+    OracleCircuit, read_bounds, read_oracle_mpmct, window_cuts, write_pack_mpmct,
 };
+use crate::stages::packing::repair::CView;
 use crate::stages::packing::serialize::{Deliverable, Format, decode, encode_body};
+use crate::stages::packing::verify::{
+    check_deliverable, check_windows_anf, check_zero_slice, verify_equiv,
+};
+use crate::stages::unpacking::refine::{
+    self, RefineInputs, RefineParams, container_blobs, parse_selection, refine_windows_tsv,
+    rounds_tsv,
+};
 use crate::stages::unpacking::run::{EXACT_BUDGETS, quantile, windows_tsv};
 use crate::stages::unpacking::synth::TAG_NAMES;
 use crate::stages::unpacking::types::MAX_STATE_WIRES;
 use crate::stages::unpacking::verify::{check_equiv, check_zero_slice_gates};
 use crate::stages::unpacking::{
     PackedWindows, Stage7Error, UnpackParams, UnpackSummary, WindowResult, concatenate,
-    unpack_windows,
+    unpack_selected, unpack_windows,
 };
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -63,7 +90,7 @@ pub fn run() {
 
 // ---------------------------------------------------------------- argv
 
-const SWITCHES: [&str; 4] = ["--no-fallback", "--no-postopt", "--help", "--stats"];
+const SWITCHES: [&str; 5] = ["--no-fallback", "--no-postopt", "--help", "--stats", "--refine"];
 
 struct Args {
     pos: Vec<String>,
@@ -191,6 +218,7 @@ fn dispatch(argv: &[String]) -> Result<(), Stage7Error> {
     let a = Args::parse(rest)?;
     match cmd.as_str() {
         "run" => cmd_run(&a),
+        "canon" => cmd_canon(&a),
         "selftest" => cmd_selftest(&a),
         other => Err(Stage7Error::Usage(format!("unknown command {other:?}"))),
     }
@@ -302,9 +330,38 @@ pub const OUTPUT_NAMES: [&str; 4] = [
     "unpacking.log",
 ];
 
-/// Removes every output of an earlier run from `out_dir` (and its *.tmp).
-fn remove_stale_outputs(out_dir: &Path) -> Result<(), Stage7Error> {
-    for name in OUTPUT_NAMES {
+/// The refinement loop's additional outputs (plus `deliverable.<r>.tdp4`
+/// and `bounds.<r>` per round).
+pub const REFINE_OUTPUT_NAMES: [&str; 3] = ["rounds.tsv", "deliverable.tdp4", "bounds.final"];
+
+/// `deliverable.<digits>.tdp4` or `bounds.<digits>` (with or without `.tmp`).
+fn is_round_file(name: &str) -> bool {
+    let name = name.strip_suffix(".tmp").unwrap_or(name);
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if let Some(r) = name.strip_prefix("deliverable.").and_then(|r| r.strip_suffix(".tdp4")) {
+        return digits(r);
+    }
+    name.strip_prefix("bounds.").is_some_and(digits)
+}
+
+/// Removes every output of an earlier run from `out_dir` (and its *.tmp);
+/// with `refine` also the loop's outputs and the per-round files.
+fn remove_stale_outputs(out_dir: &Path, refine: bool) -> Result<(), Stage7Error> {
+    let mut names: Vec<String> = OUTPUT_NAMES.iter().map(|s| s.to_string()).collect();
+    if refine {
+        names.extend(REFINE_OUTPUT_NAMES.iter().map(|s| s.to_string()));
+        let rd = fs::read_dir(out_dir).map_err(|e| Stage7Error::io(out_dir, e))?;
+        for e in rd {
+            let e = e.map_err(|e| Stage7Error::io(out_dir, e))?;
+            if let Some(n) = e.file_name().to_str()
+                && is_round_file(n)
+            {
+                let path = e.path();
+                fs::remove_file(&path).map_err(|e| Stage7Error::io(&path, e))?;
+            }
+        }
+    }
+    for name in names {
         for suffix in ["", ".tmp"] {
             let path = out_dir.join(format!("{name}{suffix}"));
             match fs::remove_file(&path) {
@@ -315,6 +372,21 @@ fn remove_stale_outputs(out_dir: &Path) -> Result<(), Stage7Error> {
         }
     }
     Ok(())
+}
+
+/// A plain file written via `*.tmp` and renamed at once (the per-round
+/// files of the loop, which are not part of the committed outputs).
+fn write_now(path: &Path, bytes: &[u8]) -> Result<(), Stage7Error> {
+    let (st, mut w) = Staged::create(path)?;
+    if let Err(e) = w.write_all(bytes) {
+        st.abandon();
+        return Err(Stage7Error::io(&st.tmp, e));
+    }
+    if let Err(e) = Staged::finish(w, &st.tmp) {
+        st.abandon();
+        return Err(e);
+    }
+    st.commit()
 }
 
 /// Writes every line to stdout and keeps a copy (the log file).
@@ -343,10 +415,34 @@ fn xxh3_file(path: &Path) -> Option<u128> {
 
 struct Checks {
     exact_windows: usize,
-    equiv_concat: usize,
-    equiv_canonical: usize,
+    /// `None` = skipped (a `--windows` subset).
+    equiv_concat: Option<usize>,
+    equiv_canonical: Option<usize>,
     zero_slice: Option<usize>,
+    /// `--refine` only: the final deliverable's checks and the new cuts.
+    final_deliverable: Option<String>,
+    new_cuts: Option<String>,
 }
+
+/// The `--refine` keys of the report.
+struct RefineKeys {
+    rounds: usize,
+    windows_initial: usize,
+    windows_final: usize,
+    splits: usize,
+    unclean_cuts: usize,
+    over_budget: usize,
+    verbatim: usize,
+    params: RefineParams,
+}
+
+/// The packer's check constants (`tdp_packing`), reused on the final
+/// deliverable of a refined run.
+const DE_EVAL_SEED: u64 = 1;
+const WINDOW_CHECK_SEED: u64 = 20_261_008;
+const EXHAUSTIVE_SUPPORT_MAX: usize = 16;
+const ZERO_SLICE_SAMPLES: usize = 4096;
+const ZERO_SLICE_SEED: u64 = 4096;
 
 #[allow(clippy::too_many_arguments)]
 fn unpacking_report(
@@ -361,12 +457,15 @@ fn unpacking_report(
     canonical_gates: usize,
     checks: &Checks,
     times: [f64; 4],
+    windows_selected: Option<usize>,
+    refine: Option<&RefineKeys>,
 ) -> String {
     let mut out = String::new();
     let mut kv = |k: &str, v: String| {
         let _ = writeln!(out, "{k}={v}");
     };
     let opt = |v: Option<usize>| v.map_or("unknown".to_string(), |x| x.to_string());
+    let okn = |v: Option<usize>| v.map_or("skipped".to_string(), |n| format!("ok({n})"));
     kv("unpacking_report", "1".into());
     kv("status", status.into());
     kv(
@@ -415,6 +514,9 @@ fn unpacking_report(
     );
     kv("param.threads", threads.to_string());
     kv("windows", s.windows.to_string());
+    if let Some(k) = windows_selected {
+        kv("windows_selected", k.to_string());
+    }
     kv("synthesized", s.synthesized.to_string());
     kv("fallback", s.fallback.to_string());
     kv("deadline_hits", s.deadline_hits.to_string());
@@ -430,6 +532,24 @@ fn unpacking_report(
         s.ratio()
             .map_or("unknown".to_string(), |r| format!("{r:.4}")),
     );
+    if let Some(r) = refine {
+        kv("refine", "1".into());
+        kv("rounds", r.rounds.to_string());
+        kv("windows_initial", r.windows_initial.to_string());
+        kv("windows_final", r.windows_final.to_string());
+        kv("splits", r.splits.to_string());
+        kv("unclean_cuts", r.unclean_cuts.to_string());
+        kv("over_budget", r.over_budget.to_string());
+        kv("verbatim", r.verbatim.to_string());
+        kv("param.max_rounds", r.params.max_rounds.to_string());
+        kv("param.budget", r.params.budget.to_string());
+        if r.params.force_fail_rounds > 0 {
+            kv(
+                "param.force_fail_rounds",
+                r.params.force_fail_rounds.to_string(),
+            );
+        }
+    }
     for (name, count) in TAG_NAMES.iter().zip(&s.tags) {
         kv(&format!("gates_by_move.{name}"), count.to_string());
     }
@@ -457,17 +577,15 @@ fn unpacking_report(
         "check.windows_sampled",
         format!("ok({})", checks.exact_windows),
     );
-    kv("check.equiv_concat", format!("ok({})", checks.equiv_concat));
-    kv(
-        "check.equiv_canonical",
-        format!("ok({})", checks.equiv_canonical),
-    );
-    kv(
-        "check.zero_slice",
-        checks
-            .zero_slice
-            .map_or("skipped".to_string(), |n| format!("ok({n})")),
-    );
+    if let Some(f) = &checks.final_deliverable {
+        kv("check.final_deliverable", f.clone());
+    }
+    if let Some(c) = &checks.new_cuts {
+        kv("check.new_cuts", c.clone());
+    }
+    kv("check.equiv_concat", okn(checks.equiv_concat));
+    kv("check.equiv_canonical", okn(checks.equiv_canonical));
+    kv("check.zero_slice", okn(checks.zero_slice));
     kv("time.load_s", format!("{:.1}", times[0]));
     kv("time.synth_s", format!("{:.1}", times[1]));
     kv("time.canonicalize_s", format!("{:.1}", times[2]));
@@ -475,7 +593,7 @@ fn unpacking_report(
     out
 }
 
-const RUN_OPTIONS: [&str; 15] = [
+const RUN_OPTIONS: [&str; 19] = [
     "deliverable",
     "out-dir",
     "packed",
@@ -491,13 +609,36 @@ const RUN_OPTIONS: [&str; 15] = [
     "no-fallback",
     "no-postopt",
     "label",
+    "windows",
+    "refine",
+    "max-rounds",
+    "force-fail-rounds",
 ];
+
+/// Everything `run` loads before synthesis.
+struct Inputs {
+    d: Deliverable,
+    /// The container bytes (the loop re-emits from its blobs).
+    bytes: Vec<u8>,
+    deliverable_xxh3: u128,
+    nw: usize,
+    packed: Option<(OracleCircuit, Vec<usize>)>,
+    n: Option<usize>,
+    source_c: Option<Vec<XGate>>,
+    params: UnpackParams,
+    seed_source: &'static str,
+    threads: usize,
+    label: String,
+    out_dir: PathBuf,
+    t0: Instant,
+    t_load: f64,
+}
 
 fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
     a.check_known(&RUN_OPTIONS)?;
     if !a.pos.is_empty() {
         return Err(Stage7Error::Usage(
-            "run --deliverable F --out-dir DIR [--packed P --bounds B] [--source-c C --n N] [...]"
+            "run --deliverable F --out-dir DIR [--packed P --bounds B] [--source-c C --n N] [--windows i,j | --refine] [...]"
                 .into(),
         ));
     }
@@ -518,6 +659,30 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
     if a.get("source-c").is_some() != a.get("n").is_some() {
         return Err(Stage7Error::Usage("--source-c and --n go together".into()));
     }
+    let refine_mode = a.flag("refine");
+    if refine_mode && a.get("windows").is_some() {
+        return Err(Stage7Error::Usage(
+            "--refine and --windows are mutually exclusive".into(),
+        ));
+    }
+    if !refine_mode && (a.get("max-rounds").is_some() || a.get("force-fail-rounds").is_some()) {
+        return Err(Stage7Error::Usage(
+            "--max-rounds and --force-fail-rounds need --refine".into(),
+        ));
+    }
+    if refine_mode && (a.get("packed").is_none() || a.get("source-c").is_none()) {
+        return Err(Stage7Error::Usage(
+            "--refine needs --packed/--bounds and --source-c/--n".into(),
+        ));
+    }
+    let rp = RefineParams {
+        max_rounds: a.usize_or("max-rounds", refine::DEFAULT_MAX_ROUNDS)?,
+        force_fail_rounds: a.usize_or("force-fail-rounds", 0)?,
+        ..Default::default()
+    };
+    if rp.max_rounds > 1000 {
+        return Err(Stage7Error::Usage("--max-rounds: at most 1000".into()));
+    }
     let t0 = Instant::now();
 
     // ---- inputs
@@ -526,14 +691,13 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
     let deliverable_xxh3 = xxhash_rust::xxh3::xxh3_128(&bytes);
     let d = decode(&bytes, Format::Container)
         .map_err(|e| Stage7Error::Input(format!("{dpath}: {e}")))?;
-    drop(bytes);
     let nw = d.state_wires as usize;
     if nw > MAX_STATE_WIRES {
         return Err(Stage7Error::Usage(format!(
             "{dpath}: {nw} state wires; stage 7 supports at most {MAX_STATE_WIRES}"
         )));
     }
-    let packed_circ = match a.get("packed") {
+    let packed = match a.get("packed") {
         Some(p) => {
             let c = read_oracle_mpmct(Path::new(p))?;
             let b = read_bounds(Path::new(a.req("bounds")?))?;
@@ -542,10 +706,6 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
         }
         None => None,
     };
-    let packed = packed_circ.as_ref().map(|(c, cuts)| PackedWindows {
-        gates: &c.gates,
-        cuts: cuts.clone(),
-    });
     let n = a.num("n")?.map(|v| v as usize);
     let source_c: Option<Vec<XGate>> = match (a.get("source-c"), n) {
         (Some(path), Some(n)) => {
@@ -567,19 +727,89 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
         }
         _ => None,
     };
+    let selection = a
+        .get("windows")
+        .map(|spec| parse_selection(spec, d.window_count()))
+        .transpose()?;
     private_dir(&out_dir)?;
-    remove_stale_outputs(&out_dir)?;
+    remove_stale_outputs(&out_dir, refine_mode)?;
     let t_load = t0.elapsed().as_secs_f64();
+    let inputs = Inputs {
+        d,
+        bytes,
+        deliverable_xxh3,
+        nw,
+        packed,
+        n,
+        source_c,
+        params,
+        seed_source,
+        threads,
+        label,
+        out_dir,
+        t0,
+        t_load,
+    };
+    if refine_mode {
+        run_refine(inputs, rp)
+    } else {
+        run_plain(inputs, selection)
+    }
+}
 
-    // ---- synthesis
+/// The progress line of a synthesized window.
+fn progress_line(done: usize, total: usize, r: &WindowResult) -> String {
+    format!(
+        "[{done}/{total}] window {} {} -> {} ({}, {}, {:.2}s) {}",
+        r.idx,
+        r.orig_gates().map_or("?".to_string(), |g| g.to_string()),
+        r.gates.len(),
+        r.status.name(),
+        r.synth_status,
+        r.secs,
+        r.note
+    )
+}
+
+/// The stage-7 run: every window (or the `--windows` subset), the
+/// concatenation, then (whole deliverable only) canonical order and the
+/// circuit-level checks.
+fn run_plain(inp: Inputs, selection: Option<Vec<usize>>) -> Result<(), Stage7Error> {
+    let Inputs {
+        d,
+        bytes,
+        deliverable_xxh3,
+        nw,
+        packed,
+        n,
+        source_c,
+        params,
+        seed_source,
+        threads,
+        label,
+        out_dir,
+        t0,
+        t_load,
+    } = inp;
+    drop(bytes);
+    let packed_w = packed.as_ref().map(|(c, cuts)| PackedWindows {
+        gates: &c.gates,
+        cuts: cuts.clone(),
+    });
     let log = Mutex::new(Tee { buf: Vec::new() });
     let say = |s: &str| log.lock().unwrap().line(s);
+    let sel: Vec<usize> = selection
+        .clone()
+        .unwrap_or_else(|| (0..d.window_count()).collect());
     say(&format!(
-        "{label}: {} windows, {nw} state wires, {} monomials; packed {}; seed ({seed_source}); threads {threads}; \
+        "{label}: {} windows{}, {nw} state wires, {} monomials; packed {}; seed ({seed_source}); threads {threads}; \
          time-limit {}s restarts {} beam {} postopt {} fallback {}",
         d.window_count(),
+        selection
+            .as_ref()
+            .map_or(String::new(), |s| format!(" ({} selected)", s.len())),
         d.monomials,
-        packed
+        packed_w
             .as_ref()
             .map_or("none".to_string(), |p| format!("{} gates", p.gates.len())),
         params.synth.time_limit,
@@ -588,78 +818,80 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
         params.postopt,
         params.allow_fallback,
     ));
-    let total = d.window_count();
+    let total = sel.len();
     let progress = |done: usize, r: &WindowResult| {
         if done.is_multiple_of(50)
             || done == total
             || r.status != crate::stages::unpacking::WinStatus::Ok
         {
-            say(&format!(
-                "[{done}/{total}] window {} {} -> {} ({}, {}, {:.2}s) {}",
-                r.idx,
-                r.orig_gates().map_or("?".to_string(), |g| g.to_string()),
-                r.gates.len(),
-                r.status.name(),
-                r.synth_status,
-                r.secs,
-                r.note
-            ));
+            say(&progress_line(done, total, r));
         }
     };
-    let results = unpack_windows(&d, packed.as_ref(), &params, &progress)?;
+    let results = unpack_selected(&d, packed_w.as_ref(), &params, &sel, false, &progress)?;
     let summary = UnpackSummary::of(&results);
     let t_synth = t0.elapsed().as_secs_f64() - t_load;
     let (concat, offsets) = concatenate(&results);
     let tsv = windows_tsv(&results, &offsets);
     drop(results);
 
-    // ---- canonical order + checks
+    // ---- canonical order + checks (the whole deliverable only)
     let t_c = Instant::now();
-    let equiv_concat = check_equiv(
-        &concat,
-        &d,
-        params.verify_seed,
-        params.equiv_batches,
-        "concatenation",
-    )?;
     let mut gates = concat;
-    crate::canonicalization::gate_order::xgate_canonicalize(&mut gates);
-    let t_canon = t_c.elapsed().as_secs_f64();
-    let t_v = Instant::now();
-    let equiv_canonical = check_equiv(
-        &gates,
-        &d,
-        params.verify_seed ^ 0xC0FFEE,
-        params.equiv_batches,
-        "canonical circuit",
-    )?;
-    let zero_slice = match (&source_c, n) {
-        (Some(c), Some(n)) => Some(check_zero_slice_gates(
-            c,
+    let (equiv_concat, equiv_canonical, zero_slice, t_canon, t_verify);
+    if selection.is_some() {
+        equiv_concat = None;
+        equiv_canonical = None;
+        zero_slice = None;
+        t_canon = 0.0;
+        t_verify = 0.0;
+    } else {
+        equiv_concat = Some(check_equiv(
             &gates,
-            n,
-            nw,
-            params.zero_slice_samples,
-            params.verify_seed ^ 0x5A5A,
-        )?),
-        _ => None,
-    };
-    let t_verify = t_v.elapsed().as_secs_f64();
+            &d,
+            params.verify_seed,
+            params.equiv_batches,
+            "concatenation",
+        )?);
+        crate::canonicalization::gate_order::xgate_canonicalize(&mut gates);
+        t_canon = t_c.elapsed().as_secs_f64();
+        let t_v = Instant::now();
+        equiv_canonical = Some(check_equiv(
+            &gates,
+            &d,
+            params.verify_seed ^ 0xC0FFEE,
+            params.equiv_batches,
+            "canonical circuit",
+        )?);
+        zero_slice = match (&source_c, n) {
+            (Some(c), Some(n)) => Some(check_zero_slice_gates(
+                c,
+                &gates,
+                n,
+                nw,
+                params.zero_slice_samples,
+                params.verify_seed ^ 0x5A5A,
+            )?),
+            _ => None,
+        };
+        t_verify = t_v.elapsed().as_secs_f64();
+    }
     let checks = Checks {
         exact_windows: summary.windows,
         equiv_concat,
         equiv_canonical,
         zero_slice,
+        final_deliverable: None,
+        new_cuts: None,
     };
     let status = if summary.fallback > 0 {
         "fallback_used"
     } else {
         "ok"
     };
+    let okn = |v: Option<usize>| v.map_or("skipped".to_string(), |s| format!("ok({s})"));
     say(&format!(
         "{label}: {} windows: {} synthesized, {} fallback, {} deadline hits; gates {} -> {} (ratio {}); \
-         canonicalized {} gates in {t_canon:.1}s; checks: windows exact+sampled ok, equiv concat ok({equiv_concat}), \
-         equiv canonical ok({equiv_canonical}), zero slice {}; status={status} ({:.1}s)",
+         {}; checks: windows exact+sampled ok, equiv concat {}, equiv canonical {}, zero slice {}; status={status} ({:.1}s)",
         summary.windows,
         summary.synthesized,
         summary.fallback,
@@ -669,8 +901,14 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
         summary
             .ratio()
             .map_or("?".to_string(), |r| format!("{r:.4}")),
-        gates.len(),
-        zero_slice.map_or("skipped".to_string(), |s| format!("ok({s})")),
+        if selection.is_some() {
+            "subset: plain concatenation, no canonical order".to_string()
+        } else {
+            format!("canonicalized {} gates in {t_canon:.1}s", gates.len())
+        },
+        okn(equiv_concat),
+        okn(equiv_canonical),
+        okn(zero_slice),
         t0.elapsed().as_secs_f64(),
     ));
     let report = unpacking_report(
@@ -685,6 +923,8 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
         gates.len(),
         &checks,
         [t_load, t_synth, t_canon, t_verify],
+        selection.as_ref().map(|s| s.len()),
+        None,
     );
     let log_bytes = std::mem::take(&mut log.lock().unwrap().buf);
     // the circuit first, the report (the completion record) last
@@ -706,6 +946,292 @@ fn cmd_run(a: &Args) -> Result<(), Stage7Error> {
             Box::new(|w| w.write_all(report.as_bytes())),
         ),
     ])?;
+    Ok(())
+}
+
+/// The delivery loop (docs/DELIVERY_STAGE.md §2) in process, then the
+/// assembly, canonical order and every check on the final lattice.
+fn run_refine(inp: Inputs, rp: RefineParams) -> Result<(), Stage7Error> {
+    let Inputs {
+        d,
+        bytes,
+        deliverable_xxh3,
+        nw,
+        packed,
+        n,
+        source_c,
+        params,
+        seed_source,
+        threads,
+        label,
+        out_dir,
+        t0,
+        t_load,
+    } = inp;
+    let (Some((circ, cuts0)), Some(c), Some(n)) = (packed, source_c, n) else {
+        return Err(Stage7Error::Internal("--refine inputs not loaded".into()));
+    };
+    if circ.computed_n > nw {
+        return Err(Stage7Error::Input(format!(
+            "the packed circuit uses {} wires, the deliverable's state has {nw}",
+            circ.computed_n
+        )));
+    }
+    let blobs = container_blobs(&bytes)?;
+    drop(bytes);
+    if blobs.len() != d.window_count() {
+        return Err(Stage7Error::Internal(format!(
+            "{} blobs, {} decoded windows",
+            blobs.len(),
+            d.window_count()
+        )));
+    }
+    let (source_wires, state_wires) = (d.source_wires, d.state_wires);
+    let (windows_initial, monomials_initial) = (d.window_count(), d.monomials);
+    drop(d);
+    let log = Mutex::new(Tee { buf: Vec::new() });
+    let say = |s: &str| log.lock().unwrap().line(s);
+    say(&format!(
+        "{label}: refine: {windows_initial} windows, {nw} state wires, {monomials_initial} monomials; packed {} gates; \
+         seed ({seed_source}); threads {threads}; time-limit {}s restarts {} beam {} postopt {}; max-rounds {} budget {}{}",
+        circ.gates.len(),
+        params.synth.time_limit,
+        params.synth.restarts,
+        params.synth.beam,
+        params.postopt,
+        rp.max_rounds,
+        rp.budget,
+        if rp.force_fail_rounds > 0 {
+            format!("; FORCED FAILURES in rounds 0..{} (test only)", rp.force_fail_rounds)
+        } else {
+            String::new()
+        },
+    ));
+    let t_cv = Instant::now();
+    let cv = CView::new(&c, n, &rp.cview);
+    say(&format!(
+        "{label}: C-view of C ({} gates, n={n}) built in {:.1}s",
+        c.len(),
+        t_cv.elapsed().as_secs_f64()
+    ));
+    let inputs = RefineInputs {
+        packed: &circ.gates,
+        source_wires,
+        state_wires,
+        cview: &cv,
+    };
+    let mut on_round = |r: usize, wins: &[(usize, usize)], bytes: &[u8]| {
+        write_now(
+            &out_dir.join(format!("bounds.{r}")),
+            refine::bounds_text(wins).as_bytes(),
+        )?;
+        write_now(&out_dir.join(format!("deliverable.{r}.tdp4")), bytes)
+    };
+    let progress = |round: usize, done: usize, total: usize, r: &WindowResult| {
+        if done.is_multiple_of(50)
+            || done == total
+            || r.status != crate::stages::unpacking::WinStatus::Ok
+        {
+            say(&format!("round {round} {}", progress_line(done, total, r)));
+        }
+    };
+    let t_s = Instant::now();
+    let out = refine::refine(blobs, &cuts0, &inputs, &params, &rp, &mut on_round, &progress, &say)?;
+    let t_synth = t_s.elapsed().as_secs_f64();
+
+    // ---- the final lattice: deliverable, assembly, canonical order
+    let final_bytes = out.container(source_wires, state_wires);
+    let d_final = decode(&final_bytes, Format::Container)?;
+    let bounds_final = out.bounds();
+    let bounds_i64: Vec<i64> = bounds_final.iter().map(|&b| b as i64).collect();
+    let results: Vec<WindowResult> = out.pieces.iter().map(|p| p.result.clone()).collect();
+    let summary = UnpackSummary::of(&results);
+    drop(results);
+    let (concat, offsets) = out.concatenate();
+    let tsv = refine_windows_tsv(&out.pieces, &offsets);
+    let rounds = rounds_tsv(&out.rounds);
+    let t_c = Instant::now();
+    let equiv_concat = check_equiv(
+        &concat,
+        &d_final,
+        params.verify_seed,
+        params.equiv_batches,
+        "concatenation",
+    )?;
+    let mut gates = concat;
+    crate::canonicalization::gate_order::xgate_canonicalize(&mut gates);
+    let t_canon = t_c.elapsed().as_secs_f64();
+
+    // ---- checks
+    let t_v = Instant::now();
+    let equiv_canonical = check_equiv(
+        &gates,
+        &d_final,
+        params.verify_seed ^ 0xC0FFEE,
+        params.equiv_batches,
+        "canonical circuit",
+    )?;
+    let zero_slice = check_zero_slice_gates(
+        &c,
+        &gates,
+        n,
+        nw,
+        params.zero_slice_samples,
+        params.verify_seed ^ 0x5A5A,
+    )?;
+    // the final deliverable is the packed circuit's on the refined lattice
+    let wc = check_windows_anf(
+        &circ.gates,
+        &bounds_i64,
+        &d_final,
+        EXHAUSTIVE_SUPPORT_MAX,
+        WINDOW_CHECK_SEED,
+    )?;
+    check_deliverable(&circ.gates, circ.computed_n, &d_final, DE_EVAL_SEED)?;
+    let zs_final = check_zero_slice(&c, &d_final, n, ZERO_SLICE_SAMPLES, ZERO_SLICE_SEED)?;
+    let over_final = out.over_budget_final();
+    if over_final > 0 {
+        return Err(Stage7Error::Verify(format!(
+            "{over_final} windows of the final lattice exceed the {}-monomial budget (the loop stopped at max_rounds {} on them)",
+            rp.budget, rp.max_rounds
+        )));
+    }
+    let unclean_new = out.new_cuts.iter().filter(|(_, clean)| !clean).count();
+    if unclean_new != out.unclean_cuts {
+        return Err(Stage7Error::Internal(format!(
+            "{unclean_new} unclean new cuts, {} counted",
+            out.unclean_cuts
+        )));
+    }
+    let t_verify = t_v.elapsed().as_secs_f64();
+    let checks = Checks {
+        exact_windows: summary.windows,
+        equiv_concat: Some(equiv_concat),
+        equiv_canonical: Some(equiv_canonical),
+        zero_slice: Some(zero_slice),
+        final_deliverable: Some(format!(
+            "ok(windows {} = window_anf: {} exhaustive {} sampled; eval 1024 states; zero slice {zs_final}; budget {})",
+            wc.windows, wc.exhaustive, wc.sampled, rp.budget
+        )),
+        new_cuts: Some(format!(
+            "ok({} new cuts, {} unclean)",
+            out.new_cuts.len(),
+            out.unclean_cuts
+        )),
+    };
+    let status = if out.verbatim > 0 { "verbatim_used" } else { "ok" };
+    say(&format!(
+        "{label}: refine: {} rounds, windows {} -> {}, splits {} (unclean {}), over budget {}, verbatim {}; \
+         gates {} -> {} (ratio {}); canonicalized {} gates in {t_canon:.1}s; checks: windows exact+sampled ok, \
+         final deliverable ok, equiv concat ok({equiv_concat}), equiv canonical ok({equiv_canonical}), \
+         zero slice ok({zero_slice}); status={status} ({:.1}s)",
+        out.rounds.len(),
+        out.windows_initial,
+        out.pieces.len(),
+        out.splits,
+        out.unclean_cuts,
+        out.over_budget,
+        out.verbatim,
+        circ.gates.len(),
+        summary.gates_out,
+        summary
+            .ratio()
+            .map_or("?".to_string(), |r| format!("{r:.4}")),
+        gates.len(),
+        t0.elapsed().as_secs_f64(),
+    ));
+    let keys = RefineKeys {
+        rounds: out.rounds.len(),
+        windows_initial: out.windows_initial,
+        windows_final: out.pieces.len(),
+        splits: out.splits,
+        unclean_cuts: out.unclean_cuts,
+        over_budget: out.over_budget,
+        verbatim: out.verbatim,
+        params: rp.clone(),
+    };
+    let report = unpacking_report(
+        status,
+        &d_final,
+        deliverable_xxh3,
+        Some(n),
+        &params,
+        seed_source,
+        threads,
+        &summary,
+        gates.len(),
+        &checks,
+        [t_load, t_synth, t_canon, t_verify],
+        None,
+        Some(&keys),
+    );
+    let log_bytes = std::mem::take(&mut log.lock().unwrap().buf);
+    let bounds_text = refine::bounds_text(&out.wins());
+    // the deliverable and the circuit first, the report (the completion record) last
+    write_all_staged(vec![
+        (
+            out_dir.join("deliverable.tdp4"),
+            Box::new(|w| w.write_all(&final_bytes)),
+        ),
+        (
+            out_dir.join("bounds.final"),
+            Box::new(|w| w.write_all(bounds_text.as_bytes())),
+        ),
+        (
+            out_dir.join("unpacked.mpmct1"),
+            Box::new(|w| write_pack_mpmct(w, nw, &gates)),
+        ),
+        (
+            out_dir.join("windows.tsv"),
+            Box::new(|w| w.write_all(tsv.as_bytes())),
+        ),
+        (
+            out_dir.join("rounds.tsv"),
+            Box::new(|w| w.write_all(rounds.as_bytes())),
+        ),
+        (
+            out_dir.join("unpacking.log"),
+            Box::new(|w| w.write_all(&log_bytes)),
+        ),
+        (
+            out_dir.join("unpacking.report"),
+            Box::new(|w| w.write_all(report.as_bytes())),
+        ),
+    ])?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- canon
+
+/// Seeds of the four 1024-state batches of `canon`'s equivalence check.
+const CANON_SEEDS: [u64; 4] = [20_261_012, 20_261_013, 20_261_014, 20_261_015];
+
+fn cmd_canon(a: &Args) -> Result<(), Stage7Error> {
+    a.check_known(&["threads"])?;
+    if a.pos.len() != 2 {
+        return Err(Stage7Error::Usage("canon <in.mpmct1> <out.mpmct1>".into()));
+    }
+    setup_threads(a)?;
+    let t0 = Instant::now();
+    let circ = read_oracle_mpmct(Path::new(&a.pos[0]))?;
+    let mut gates = circ.gates.clone();
+    crate::canonicalization::gate_order::xgate_canonicalize(&mut gates);
+    let t_canon = t0.elapsed().as_secs_f64();
+    for seed in CANON_SEEDS {
+        verify_equiv(&circ.gates, &gates, circ.computed_n, seed)?;
+    }
+    let out = PathBuf::from(&a.pos[1]);
+    write_all_staged(vec![(
+        out.clone(),
+        Box::new(|w| write_pack_mpmct(w, circ.header_n, &gates)),
+    )])?;
+    println!(
+        "canon: {} gates, header {} wires, canonicalized in {t_canon:.1}s; equivalent on {} random states; wrote {}",
+        gates.len(),
+        circ.header_n,
+        1024 * CANON_SEEDS.len(),
+        out.display()
+    );
     Ok(())
 }
 

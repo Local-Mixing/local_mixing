@@ -44,6 +44,9 @@ Loop, round r = 0, 1, …:
    C-view scan over the candidates, the candidate nearest the midpoint at which no interior C value
    is affine; if none is clean, the midpoint, and the window is counted in `refine.unclean_cuts`.
    A failed window of 1 gate is emitted verbatim (counted in `refine.verbatim`; expected 0).
+   A half whose ANF exceeds the 65,536-monomial budget is counted in `over_budget`; the Rust
+   treats it as failed without synthesis and splits it again in the next round, so that the
+   final check below holds (the Python reference synthesizes and delivers it: §4).
 5. Stop when no window is pending, or after `max_rounds` (default 16: a 1,024-gate window reaches
    1-gate pieces in 10 rounds); the remaining failed windows are emitted verbatim and counted.
 
@@ -55,7 +58,7 @@ Outputs (in the stage directory):
 | `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the stage-7 canonical order); header = state width |
 | `windows.tsv` | one row per window of the final lattice: `idx lo hi round orig_gates syn_gates status synth_status seconds monomials changed_wires input_vars max_degree` |
 | `rounds.tsv` | per round: pending, converged, failed, split, unclean cuts, seconds |
-| `delivery.report` | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `verbatim`, `gates_packed`, `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
+| `delivery.report` (Python) / `unpacking.report` (Rust: the stage-7 keys plus these) | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `over_budget`, `verbatim`, `gates_packed` (Rust: `gates_in`), `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
 
 With `anf_only` the stage stops after D_0 (= the packer's deliverable) and writes no circuit.
 
@@ -99,18 +102,55 @@ canon` or the Python fallback), (5) runs the checks. It is the oracle for the Ru
 
 ## 4. Rust
 
-- `tdp_unpacking run … --refine` performs the loop in-process (`src/stages/unpacking/refine.rs`):
-  pending set, exposure-aware cut choice (`packing::repair::split::split_candidates` + the C-view
-  scan of `packing::cview`), blob re-emission (`packing::serialize`), assembly, canonical order,
-  checks, outputs as in §2. `--windows i,j,…` restricts a plain run to a window subset (emits only
-  those windows; used by the Python reference). `--anf-only` is a driver-level flag.
+- `tdp_unpacking run … --refine [--max-rounds 16]` (needs `--packed/--bounds` and
+  `--source-c/--n`) performs the loop in-process (`src/stages/unpacking/refine.rs`; CLI and
+  outputs in detail: `docs/STAGE7_UNPACKING.md` §10): pending set, exposure-aware cut choice
+  (`packing::repair::split::split_candidates` + one `CView::leaky` scan per round over the
+  candidates of every failed window; the C-view built once on C with the packer's defaults), blob
+  re-emission (`packing::serialize::encode_window` of the packer's `window_anf` emission, spliced
+  into the container with window count, body bytes and CRCs recomputed), assembly, canonical
+  order, checks, outputs as in §2. Per round it writes `bounds.<r>` and `deliverable.<r>.tdp4`
+  (round 0 = the inputs), at the end `deliverable.tdp4`, `bounds.final`, `unpacked.mpmct1`,
+  `windows.tsv`, `rounds.tsv`, `unpacking.log` and `unpacking.report` (the stage-7 report with
+  `refine=1 rounds windows_initial windows_final splits unclean_cuts over_budget verbatim` and
+  `status=ok|verbatim_used`). A pending window is synthesized with its index in the current
+  lattice, so the tie-break PRNG and verify seeds equal the reference's, which calls `--windows`
+  on the re-emitted deliverable each round.
+- Checks as in §2, with two implementation notes. (1) The final deliverable is checked by
+  `decode` + `check_windows_anf` (every window blob-equal to `window_anf` of the packed gates and
+  equal to them) + `check_deliverable` + `check_zero_slice` (`check.final_deliverable`), and every
+  final window is within the budget by the emission bookkeeping; the C-view condition on the
+  refined lattice is `check.new_cuts`: every added cut was scanned clean at choice time or counted
+  in `unclean_cuts` — a per-cut C-view result does not depend on the lattice, so the packer's
+  final scan of the old cuts plus the choice-time scan of the new ones is exactly `check-final`'s
+  scan of the refined lattice, without a second full scan. (2) Over-budget halves: the Rust does
+  not synthesize a half above the budget; it is split again next round (§2 step 4). The Python
+  reference emits it with a budget-free `window_anf`, synthesizes it and delivers it if it
+  converges, which can leave a window above the budget in D_final (counted in `over_budget` but
+  not refused). Neither occurs on n8_L8 (the parity run has `over_budget=0` on both sides). A
+  half above 2^20 monomials cannot be emitted by the Rust composer and is a fatal error (exit 4).
+- `--windows i,j,LO:HI` restricts a plain run to a window subset (0-based lattice indices, `LO:HI`
+  half-open): only those windows are synthesized and emitted, as a plain concatenation in index
+  order with no canonical reorder and no circuit-level check (`windows_selected=` in the report);
+  the Python reference calls it per round. `tdp_unpacking canon IN OUT` applies
+  `xgate_canonicalize` to a circuit, checks it equivalent on 4096 random states and writes it with
+  the input's header width (the reference's final order). `--anf-only` is a driver-level flag.
 - Driver (`scripts/tdp_gen.sh`, `src/tdp`): stage 6 = delivery = `tdp_packing run` then
   `tdp_unpacking run --refine`; `[delivery] anf_only = true` ends the stage after packing. Stage
   numbering becomes 1 sandwich, 2 preprocessing, 3 DB mixing, 4 splitting, 5 crossing, 6 delivery;
   `run.skip_stages` accepts 2..6; config_version 4 (3 refused with a pointer), recipe v12, SEEDS
   format 3 unchanged (the unpack seed is the delivery seed). Markers: `delivery.recipe`,
   `delivery.failed`.
-- Tests: `tests/integration/tdp_unpacking.rs` gains the refine path on a fixture with a forced
-  failure (a `--time-limit 0` round forces every window to fail once, so the loop, the cut choice
-  and the re-emission are exercised on the n8_L8 fixture); the shell tests follow the renumbering;
-  the parity test diffs `deliver.py` and `tdp_unpacking --refine` outputs on the fixture.
+- Tests: `tests/integration/tdp_unpacking.rs` runs `--windows`, `canon` and the refine path on
+  the n8_L8 fixture, once with the test-only knob `--force-fail-rounds 1` (round 0 synthesizes
+  nothing and fails every window, so the loop, the cut choice, the re-emission and the final checks
+  are exercised: windows 73 → 146+) and once without it (against the plain run: identical circuit
+  when every window converges; otherwise the plain run's fallback windows are the loop's splits);
+  unit tests (`tests/unit/stages/unpacking/refine.rs`) cover the cut choice (clean, unclean, tie,
+  single scan), the blob splice (byte-equal to `encode_body` of the refined lattice) and the loop
+  on a tiny circuit. `tests/manual/delivery_parity.sh` runs `deliver.py` (`--synth tdp_unpacking`,
+  `--canon-bin tdp_unpacking`, `hmap_affine` for the scan) and `tdp_unpacking run --refine` on
+  n8_L8 with the same seed, time limit and restarts, and cmp's `bounds.final`, `deliverable.tdp4`,
+  `unpacked.mpmct1` and every per-round file: identical (2026-10-12, seed 3, restarts 2: window 1
+  stalls and is split, 73 → 74 windows, 34,825 → 10,913 gates on both sides). The shell tests
+  follow the renumbering (driver work).

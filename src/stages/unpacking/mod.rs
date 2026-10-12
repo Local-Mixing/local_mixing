@@ -11,18 +11,24 @@
 //! `canonicalization::gate_order::xgate_canonicalize`, so that the window
 //! boundaries vanish. A window that cannot be synthesized falls back to
 //! the packed circuit's gates (verbatim, after the same exact check) or is
-//! an error.
+//! an error — or, in the delivery stage's refinement loop (`refine`,
+//! docs/DELIVERY_STAGE.md), is cut in two, re-emitted and unpacked again.
 //!
 //! The production entry point is `tdp_unpacking run`
 //! (`src/programs/tdp_unpacking/mod.rs`).
 pub mod mono;
 pub mod postopt;
+pub mod refine;
 pub mod run;
 pub mod spec;
 pub mod synth;
 pub mod types;
 pub mod verify;
 
-pub use run::{PackedWindows, UnpackSummary, WinStatus, WindowResult, concatenate, unpack_windows};
+pub use refine::{RefineOutcome, RefineParams};
+pub use run::{
+    PackedWindows, UnpackSummary, WinStatus, WindowResult, concatenate, unpack_selected,
+    unpack_windows,
+};
 pub use synth::{SynthParams, SynthStatus};
 pub use types::{Stage7Error, UnpackParams};
