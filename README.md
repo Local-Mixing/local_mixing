@@ -2,17 +2,23 @@
 
 We use local mixing to obfuscate reversible circuits: replace small portions
 of a circuit with equivalent ones, while preserving the function we want to
-compute. TDP is the current end-to-end pipeline. It has four stages: it
+compute. TDP is the current end-to-end pipeline. It has seven stages: it
 constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
-(2), mixes with the frozen database (3), and packs the result into a windowed
-ANF deliverable (4). The `tdp_gen` driver runs all four stages and ends with
-`packing/deliverable.tdp4`; its defaults reproduce the chosen validation runs
-(`docs/STAGE4_RUST_DESIGN.md`). Stage 4 is the Rust binary `tdp_packing`; the
-Python prototypes under [`scripts/windowed_delivery/`](scripts/windowed_delivery/)
-are its oracle. The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to
-run all four stages; the full reference is
-[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md). (The curated database and the old split, crossing-walk and
-`fcompress` stages are historic: branch `ran/archive/curated-and-postmix`; see
+(2), mixes with the frozen database (3), splits the remaining complemented
+gates (4), runs the crossing walk (5), packs the result into a windowed ANF
+deliverable (6), and unpacks it again by resynthesizing every window from its
+ANF into one canonically ordered circuit (7). Every stage after the first is
+optional. The `tdp_gen` driver runs all seven by default and ends with
+`unpacking/unpacked.mpmct1`; the defaults of stages 1-3 and 6 reproduce the
+chosen validation runs (`docs/STAGE4_RUST_DESIGN.md`; `run.skip_stages = [4,
+5, 7]` is that four-stage chain). Stage 6 is the Rust binary `tdp_packing`;
+the Python prototypes under [`scripts/windowed_delivery/`](scripts/windowed_delivery/)
+are its oracle. Stage 7 is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
+[TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the stages; the
+full reference for stages 1-3 and 6 is
+[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md). (The curated
+database and the old `fcompress` stage are historic: branch
+`ran/archive/curated-and-postmix`; see
 [the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
 
 ## Setup

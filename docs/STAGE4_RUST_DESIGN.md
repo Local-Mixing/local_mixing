@@ -2,6 +2,8 @@
 
 Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; results in §12), branch `ran/stage4-rust` (based on `492564f0`). Owner: RC.
 
+> **2026-10-11:** packing is now **stage 6** of a seven-stage pipeline (4 splitting, 5 crossing walk, 7 unpacking; `docs/tdp_pipeline.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`) are now config v3, recipe v11, SEEDS format 3 (five seeds) and `packing.failed`, and the chain it reproduces is `run.skip_stages = [4, 5, 7]`.
+
 This document does two things:
 
 - It specifies how stage 4 of the TDP pipeline is ported to Rust.

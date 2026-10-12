@@ -1,6 +1,6 @@
 # The TDP Pipeline
 
-This is the operational manual for the four-stage TDP pipeline: how to run
+This is the operational manual for the seven-stage TDP pipeline: how to run
 each stage, what it writes, and where its code lives. We start with a
 reversible circuit $C$ on $n$ wires and end with a published circuit that
 computes $C$ on a public slice.
@@ -10,42 +10,60 @@ computes $C$ on a public slice.
 | 1. Sandwich | Classic sliced sandwich around $C$ on $2n$ wires | `gen_sandwich_gadget` (with stage 2) | `tdp.mpmct1.sandwich.mpmct1`, `tdp.mpmct1.source_c.g57` |
 | 2. Preprocessing | Embedded masking on $4n$ wires: masked fires, band, guards, persistent carrier migration (preset L8) | `gen_sandwich_gadget` | `tdp.mpmct1` |
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
-| 4. Packing | Windowed ANF delivery: commuting reorder into windows, repair, serialization | `tdp_packing run` | `packing/deliverable.tdp4` |
+| 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
+| 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
+| 6. Packing | Windowed ANF delivery: commuting reorder into windows, repair, serialization | `tdp_packing run` | `packing/deliverable.tdp4` |
+| 7. Unpacking | Every delivered window resynthesized from its ANF alone, concatenated, canonically reordered | `tdp_unpacking run` | `unpacking/unpacked.mpmct1` |
 
 ```text
-C → sliced sandwich → embedded masking → DB mixing → windowed ANF delivery → packing/deliverable.tdp4
-       stage 1            stage 2          stage 3          stage 4
+C → sliced sandwich → embedded masking → DB mixing → split → crossing walk → windowed ANF delivery → resynthesis
+       stage 1            stage 2          stage 3     stage 4    stage 5            stage 6             stage 7
+                                                                               packing/deliverable.tdp4  unpacking/unpacked.mpmct1
 ```
 
-The managed `tdp_gen` command drives all four stages. **Its defaults
-reproduce the chosen validation runs** (`val_chain.sh` CONFIG=L8, runs
-vL64a/b and vL128a/b): a managed run that sets only `source.wires` (64 or
-128) produces, from the same seeds, byte-identical stage-2, stage-3, packed,
-repaired and deliverable artifacts. This is checked on the archived runs
-themselves (the historic anchor) and by a reproduction test against the
-reference script; see
-[docs/STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2 and §12.
+**Every stage after the first is optional** (`run.skip_stages`,
+`--run-skip-stages`); the default runs all seven. Each stage reads the output
+of the last stage that ran: with stage 2 skipped the sandwich itself goes on,
+with stage 4 skipped the crossing walk starts from the previous circuit with
+its own seed, with stage 3 skipped the split runs on the stage-2 circuit, and
+so on. Stage 7 needs stage 6 (it unpacks the deliverable). The final artifact
+is the last stage's output; `PIPELINE COMPLETE (stages 1-7): …` names it.
 
-Stage 4 is the Rust port (`src/stages/packing/`, binary `tdp_packing`) of
+The managed `tdp_gen` command drives the stages. **The defaults of stages
+1-3 and 6 reproduce the chosen validation runs** (`val_chain.sh` CONFIG=L8,
+runs vL64a/b and vL128a/b): a managed run that sets only `source.wires` (64
+or 128) and `run.skip_stages = [4, 5, 7]` produces, from the same seeds,
+byte-identical stage-2, stage-3, packed, repaired and deliverable artifacts.
+This is checked on the archived runs themselves (the historic anchor) and by
+a reproduction test against the reference script; see
+[docs/STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2 and §12 (written when
+packing was stage 4; its stage numbers are the four-stage ones). Stages 4
+and 5 run with the flags of the archive-era driver (`ea2e516f`), revived
+2026-10-11; stage 7 is new.
+
+Stage 6 is the Rust port (`src/stages/packing/`, binary `tdp_packing`) of
 the Python prototypes in [scripts/windowed_delivery/](../scripts/windowed_delivery/),
 which stay as the canonical **oracle**: the port is bit-exact wherever the
 oracle is deterministic, and CI compares the two on random inputs on every
 push.
 
-The curated store and the former stages 4 (split), 5 (crossing walk) and
-6 (`fcompress`) are historic. They remain on branch
-`ran/archive/curated-and-postmix`; see
+The curated store and the former stage 6 (`fcompress`) are historic. They
+remain on branch `ran/archive/curated-and-postmix`; see
 [Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md) for what
-was retired, how to retrieve it, and why.
+was retired, how to retrieve it, and why (the split stage and the crossing
+walk listed there are back in the pipeline as stages 4 and 5).
 
 Further reading:
 
 - [TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md): the full
-  reference for the four stages (construction details, parameters, measured
-  behaviour, pass criteria, open issues).
-- [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md): the stage-4 port, the
+  reference for stages 1, 2, 3 and 6 (construction details, parameters,
+  measured behaviour, pass criteria, open issues; written when packing was
+  stage 4).
+- [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md): the packing port, the
   reference recipe the defaults reproduce, seeds and the environment policy,
   and the validation results.
+- [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md): stage 7, its synthesizer, its
+  checks and its measured results.
 - [STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md): the stage-2 redesign and
   the linkable-exposure metrics that the recommended configuration is chosen
   by.
@@ -108,14 +126,14 @@ stage binaries.
 Then [scripts/tdp_gen.sh](../scripts/tdp_gen.sh) runs the stages. This is the
 easiest file to read when we want to see the exact stage order, arguments, or
 output names. Stages 1 and 2 share one generator process,
-`gen_sandwich_gadget`; `circuit_mixer` runs stage 3; `tdp_packing run` runs
-stage 4. Each executable's `main.rs` and command implementation live
-together under `src/programs/`.
+`gen_sandwich_gadget`; `circuit_mixer` runs stages 3, 4 and 5; `tdp_packing
+run` runs stage 6; `tdp_unpacking run` runs stage 7. Each executable's
+`main.rs` and command implementation live together under `src/programs/`.
 
 ## Configuration reference
 
 Use [configs/tdp.toml](../configs/tdp.toml) as both the default recipe and the
-annotated template (config v2). Copy it to `configs/local.toml`, put your
+annotated template (config v3). Copy it to `configs/local.toml`, put your
 database paths and settings there, then run:
 
 ```bash
@@ -142,32 +160,37 @@ invalid combinations are rejected before starting a run.
 "L8"` or `"A"` every stage-2 knob field is an error, even when it equals the
 preset's value; under `db_mixing.schedule = "validated"` the schedule fields
 are errors. An old configuration therefore cannot silently produce a hybrid
-recipe. A `config_version = 1` file is rejected with a migration message.
+recipe. A `config_version = 1` or `2` file is rejected with a migration
+message (`2` was the four-stage schema: set `3`, and `run.skip_stages =
+[4, 5, 7]` for the four-stage chain).
 
 ### Schema and run management
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `config_version` | integer, required `2` | TOML schema identifier, separate from the saved recipe v10. `1` is rejected with a migration message. |
+| `config_version` | integer, required `3` | TOML schema identifier, separate from the saved recipe v11. `1` and `2` are rejected with migration messages. |
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
-| `run.build_binaries` | bool, `true` | Build `gen_sandwich_gadget`, `circuit_mixer` and `tdp_packing` for a fresh run. `false` requires them under the resolved build directory. |
+| `run.build_binaries` | bool, `true` | Build `gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing` and `tdp_unpacking` for a fresh run. `false` requires them under the resolved build directory. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory; stage binaries come from its host-target `release/` directory. |
-| `run.stop_after_stage` | integer, `4` | Last stage to reach: `2`, `3` or `4`. The historic stages 5-6 are rejected. |
-| `run.rerun_from_stage` | integer, unset | Recompute this stage and every later reached stage, `2`, `3` or `4`. Regenerating stage 2 or 3 always reruns the later stages. |
-| `run.threads` | integer, unset | Pin `RAYON_NUM_THREADS` for the stage binaries and `tdp_packing --threads`. Lifecycle only: stages 1-3 do not use the pool (only the piecewise mode, which has its own setting) and stage 4 is tested to be thread-count independent. |
+| `run.skip_stages` | integer array, `[]` | Stages not run, each in `2..7` (stage 1 always runs); `7` needs `6`. Recorded in the manifest (`skip_stages=`): it changes the output. `[4, 5, 7]` is the validated four-stage chain. |
+| `run.stop_after_stage` | integer, `7` | Last stage to reach, `2..7`. |
+| `run.rerun_from_stage` | integer, unset | Recompute this stage and every later reached stage, `2..7`. Regenerating a stage always reruns the later stages. |
+| `run.threads` | integer, unset | Pin `RAYON_NUM_THREADS` for the stage binaries and the `--threads` of `tdp_packing` and `tdp_unpacking`. Lifecycle only: stages 1-5 do not use the pool (only the piecewise mode, which has its own setting), stage 6 is tested to be thread-count independent, and stage 7's output depends on threads only through its per-window deadline (`deadline_hits` in `unpacking.report`). |
 | `run.adopt_unverified_run` | bool, `false` | Retired compatibility field. `true` is rejected. |
 
 Lifecycle options (stop/rerun stage, threads, build selection) do not change
-the recipe. Everything else is recorded in `tdp_command.conf`; changing it
-requires a fresh run. The manifest starts with `tdp_command_recipe=10`
-(recipe v9 runs are refused: resume them with the checkout that created
-them); `stage12.recipe` uses `tdp_stage12_recipe=7`.
+the recipe. Everything else, `run.skip_stages` included, is recorded in
+`tdp_command.conf`; changing it requires a fresh run. The manifest starts
+with `tdp_command_recipe=11` (recipe v10 runs, the four-stage driver's, and
+v9 runs are refused: resume them with the checkout that created them);
+`stage12.recipe` uses `tdp_stage12_recipe=7`.
 
 The manifest's `pinned_recipe` names the validated chain the run reproduces,
 `val_chain-L8-20261007` or `val_chain-A-20261007`, and is `none` for anything
 else. It requires every recipe setting of that chain (embedded masking with
 preset L8 or A, the validated |C| for a generated source, schedule
-`validated` in one piece, no leakage repair, default packing) **and** stage 3
+`validated` in one piece, no leakage repair, default packing, stages 4, 5
+and 7 off: `run.skip_stages = [4, 5, 7]`) **and** stage 3
 on the store the chosen runs used, unfiltered: `frozen_db_fingerprint`
 (the name and size of every file in the store plus the text of each `.ok`
 checksum marker, xxh3-128; the shards themselves are not read) must equal
@@ -229,7 +252,29 @@ dedicated test, but stage 3 reproduced the reference runs' bytes, made with
 the built-in 512 MB lookup cache; `docs/STAGE4_RUST_DESIGN.md` D10b); the canonicalization caps are unbounded, as in the
 reference runs.
 
-### Packing (stage 4)
+### Splitting and crossing (stages 4 and 5)
+
+Stage 4 has no settings: it runs the archive-era driver's flags to exhaustion
+(`--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100
+--split-canaries 256 --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12`,
+move ceiling = input gates + 1,000,000; the manifest records
+`stage4_split_args=archive(ea2e516f)`). Stage 5 resumes `split.state` when
+stage 4 ran (the walk continues the split stage's RNG and move counter) and
+otherwise starts from the previous circuit with its own `cross_seed`.
+
+| Setting | Type and default | What it changes and constraints |
+| --- | --- | --- |
+| `crossing.target_size_factor` | number, `2.0` | Stage-5 target relative to its input size, in `1..16`: `target = round(input_gates * factor)`. |
+| `crossing.width_penalty_base` | number, `3.0` | Base `B` of the wide-split acceptance penalty, in `1..1_000_000`. A relevant parent/control width `c` above threshold `d` is allowed with probability `B^(-(c-d))`; `B=1` disables this damping. |
+| `crossing.width_penalty_threshold` | integer, `1` | Width `d` below which this penalty does not apply, in `0..1_000_000_000`. A width bias, not a maximum legal gate width (`--k-max 12`). |
+| `crossing.size_tolerance_divisor` | integer, `25` | Size-controller temperature `max(64, round(target / divisor))`, in `1..1_000_000_000`. |
+| `crossing.move_attempts` | integer, `6 * target` | Move budget, in `1..10^12`. On a resume of `split.state` the driver adds the state's move counter, because the mixer's resumed `--moves` ceiling is absolute. |
+
+These are the calibrated defaults of the archive-era driver; their promotion
+status was never resolved (the crossing walk was retired on 2026-10-07 and
+revived on 2026-10-11 for the resynthesis studies: `docs/notes/stage45_revival_20261011.md`).
+
+### Packing (stage 6)
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
@@ -243,6 +288,18 @@ reference runs.
 | `packing.allow_floor_miss`, `packing.allow_over_budget` | bools, `false` | Ship despite a visible non-output row / an over-budget window: the run finishes with `status=floor_miss`/`over_budget`, `packing/NOT_RECOMMENDED`, and no `PIPELINE COMPLETE` line. `packing.report`'s `status` always names every violation found (`floor_miss+over_budget` when both occur, allowed or not); the exit code is the first one not allowed (5, then 6). |
 
 Any non-default value is recorded as `packing_params=custom`.
+
+### Unpacking (stage 7)
+
+| Setting | Type and default | What it changes and constraints |
+| --- | --- | --- |
+| `unpacking.time_limit` | number, `30` | Synthesis wall-clock limit per window, seconds, in `(0, 86400]`. A window that hits it keeps the best converged restart (`deadline_hits` in the report); its output then depends on timing. |
+| `unpacking.restarts` | integer, `16` | Synthesis restarts per window, `1..1000`. |
+| `unpacking.beam` | integer, `6` | Lookahead width of the search, `1..1000`. |
+| `unpacking.allow_fallback` | bool, `true` | A window that fails to synthesize (no restart converged, or the deadline hit before any did) is emitted as its packed gates verbatim and counted (`fallback` in the report, `status=fallback_used`); `false` makes it fatal (exit 4). |
+
+Any non-default value is recorded as `unpacking_params=custom`. The
+synthesizer sees only the window ANF; see [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md).
 
 ### Parallel stage 3
 
@@ -262,41 +319,53 @@ Any non-default value is recorded as `packing_params=custom`.
 
 ### Seeds and calibration
 
-Fresh runs draw `gen_seed` and `mix_seed` uniformly from `[0, 2^63 − 16]`
-with the OS CSPRNG, plus a 256-bit `run_key`, into the private
-`$RUN/SEEDS` (mode 0600), **before** anything else is written:
+Fresh runs draw five seeds uniformly from `[0, 2^63 − 16]` with the OS
+CSPRNG, plus a 256-bit `run_key`, into the private `$RUN/SEEDS` (mode 0600),
+**before** anything else is written:
 
 ```text
-seeds_format=2
+seeds_format=3
 gen_seed=<decimal>
 mix_seed=<decimal>
+split_seed=<decimal>
+cross_seed=<decimal>
+unpack_seed=<decimal>
 run_key=<64 hex>
 seed_source=random|explicit
 ```
 
 Gen receives `gen_seed` as all three of its seeds (C, gadgetization and
-sandwich), the mixer `mix_seed`, the same values val_chain.sh passes. Unlike
-val_chain.sh, **no seed is on any command line**: val_chain.sh puts them on
-gen's and the mixer's argv, where `ps` shows them to every local user while
-the process runs (the gen seed alone regenerates $C$ and the stage-2
-artifact). The driver hands them over on inherited file descriptors instead
-(gen `@/dev/fd/3 @/dev/fd/4 @/dev/fd/5`, the mixer `--seed-file /dev/fd/3`,
-each fed by a bash here-string, so nothing is written to disk), and the two
-binaries print `(file)` in their banners in place of the value. So no seed
-value appears in `ps`, on the Rust-to-bash command line, in `tdp_gen.log`,
-`stage12.log`, `stage3.log`, the manifest or stdout; the private `SEEDS` (and,
-for calibration, your seed file) is the only copy. No unkeyed hash of a seed,
-of $C$ or of a private circuit is written; resume markers use HMAC-SHA256
-keyed by `run_key`. (Running gen or the mixer by hand with a numeric seed, or
-val_chain.sh itself, still exposes it in `ps`.) The manifest
-records `seed_record=SEEDS`, `seed_source`, and `seed_bits=63` (a stopgap:
-$C$ is generated from at most 64 bits; use `source.path` for production
+sandwich), the stage-3 mixer `mix_seed`, the same values val_chain.sh passes;
+the split stage `split_seed`; the crossing walk `cross_seed` only when it
+starts from a circuit file (a resume of `split.state` continues that run's
+RNG); `tdp_unpacking` `unpack_seed`. Unlike val_chain.sh, **no seed is on any
+command line**: val_chain.sh puts them on gen's and the mixer's argv, where
+`ps` shows them to every local user while the process runs (the gen seed
+alone regenerates $C$ and the stage-2 artifact). The driver hands them over
+on inherited file descriptors instead (gen `@/dev/fd/3 @/dev/fd/4
+@/dev/fd/5`, the mixer and `tdp_unpacking` `--seed-file /dev/fd/3`, each fed
+by a bash here-string, so nothing is written to disk), and the binaries
+print `(file)` in their banners in place of the value. So no seed value
+appears in `ps`, on the Rust-to-bash command line, in `tdp_gen.log`, the
+stage logs, the manifest or stdout; the private `SEEDS` (and, for
+calibration, your seed file) is the only copy. No unkeyed hash of a seed, of
+$C$ or of a private circuit is written; resume markers use HMAC-SHA256 keyed
+by `run_key` (the stage-4/5/7 markers also carry a keyed tag of their seed).
+(Running gen or the mixer by hand with a numeric seed, or val_chain.sh
+itself, still exposes it in `ps`.) The manifest records `seed_record=SEEDS`,
+`seed_source`, `seeds_format=3` and `seed_bits=63` (a stopgap: $C$ is
+generated from at most 64 bits; use `source.path` for production
 deliverables until the 256-bit decision, design §13.1).
+
+A `SEEDS` file of format 2 (gen and mix only, written by the four-stage
+driver) is upgraded in place when such a run is resumed: the three new seeds
+are drawn fresh and the file is rewritten as format 3 (noted in
+`tdp_gen.log`).
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `calibration.enabled` | bool, `false` | Mark the run calibration-only and permit an explicit seed file. |
-| `calibration.seed_file` | string, unset | Format 2: a private file (no group/other permissions, at most 256 bytes) with the lines `gen_seed=<u63>` and `mix_seed=<u63>`. A one-integer (format 1) file is rejected with a migration message. On resume it must agree with `SEEDS`. |
+| `calibration.seed_file` | string, unset | A private file (no group/other permissions, at most 256 bytes) with the lines `gen_seed=<u63>` and `mix_seed=<u63>`, and optionally `split_seed=`, `cross_seed=`, `unpack_seed=` (drawn fresh when absent). A one-integer (format 1) file is rejected with a migration message. On resume every seed it names must agree with `SEEDS`. |
 
 ### Environment policy
 
@@ -327,13 +396,15 @@ The managed command reads configuration; the Bash driver takes flags (its
 
 | Recipe setting | `scripts/tdp_gen.sh` flag |
 | --- | --- |
-| `run.directory`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | `--run-directory DIR`, `--run-stop-after-stage K`, `--run-rerun-from-stage K`, `--threads T` |
+| `run.directory`, `run.skip_stages`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | `--run-directory DIR`, `--run-skip-stages 4,5,7`, `--run-stop-after-stage K`, `--run-rerun-from-stage K`, `--threads T` |
 | `source.wires`, `source.gates`, `source.gates_rule`, `source.path` | `--source-wires N`, `--source-gates M` (`-m`), `--source-gates-rule formula`, `--source-path P` |
 | `preprocessing.mode`, `preprocessing.preset` | `--preprocessing-mode M`, `--preprocessing-preset L8\|A\|custom` |
 | custom knobs | `--preprocessing-{mask-pair-wires,max-open-masks,min-open-masks,balanced-masks,shuffling-segments,shuffling-return-home,premask,seed-avoid-c1,chain,chain-len} V` |
 | `db_mixing.*` | `--db-mixing-schedule custom`, `--db-mixing-growth-work-units`, `--db-mixing-hold-work-units`, `--db-mixing-target-size-factor` |
 | `database.lookup_miss_filter` | `--database-lookup-miss-filter auto\|on\|off` |
+| `crossing.*` | `--crossing-target-size-factor R`, `--crossing-width-penalty-base B`, `--crossing-width-penalty-threshold C`, `--crossing-size-tolerance-divisor D`, `--crossing-move-attempts M` |
 | `packing.*` | `--packing-window-gates`, `--packing-interval-cap`, `--packing-monomial-budget`, `--packing-span-cap`, `--packing-split-budget`, `--packing-fix-iterations`, `--packing-fallback-iterations`, `--packing-anf-cap-semantics`, `--packing-allow-floor-miss`, `--packing-allow-over-budget` |
+| `unpacking.*` | `--unpacking-time-limit S`, `--unpacking-restarts R`, `--unpacking-beam B`, `--unpacking-no-fallback` |
 | `leakage_repair.*` | `--leakage-repair`, `--leakage-repair-seed S`, `--leakage-repair-reference P` |
 | `calibration.seed_file` | `--seed-file PATH` (seeds on argv, `-s`, are refused) |
 | `parallel.*` | `--parallel-pieces P`, `--parallel-target-piece-gates B`, `--parallel-threads T` |
@@ -437,11 +508,73 @@ for lookup and candidate selection.
 
 <a id="stage-4-packing"></a>
 
-## Stage 4: packing
+## Stage 4: splitting
+
+The database leaves many gates in the r57 shape `a ⊕= b ∨ ¬c`. The split
+stage rewrites each complemented firing condition into two disjoint plain
+conjunctions, `{a ⊕= b, a ⊕= ¬b ∧ ¬c}`, and with probability 0.8 wraps an
+absorbed pure-NOT twist on the gate's target wire between the one-control
+piece and a bracket found across the circuit, finishing each move with one
+crossing shot. It stops when the complemented-gate pool is exhausted or the
+bracket search hits its failure limit (`--split-stop`: the stage boundary ends
+the run). The driver runs
+
+```bash
+circuit_mixer --input db_mixing.mpmct1 --split --split-stop --p-join 0.8 --split-reach-k 2 \
+    --split-fail-limit 100 --split-canaries 256 --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 \
+    --k-max 12 --moves G+1000000 --seed-file /dev/fd/3 --report-every 1000000 \
+    --state-out split.state --output split.mpmct1
+```
+
+and writes `split.mpmct1`, `split.state` (the resume point of stage 5),
+`stage4.log` and the completion marker `stage4.recipe` (the arguments, the
+binary's hash, keyed tags of the input, the output and the split seed, the
+stop reason). A split ended by an operator stop flag (`$RUN/stage4.stop`) is
+kept as `split.stopped.mpmct1`, never handed on, and re-run on resume. At
+n=64 (L8 arm) the stage takes 1.60M gates to 3.03M in about 70 s; at n=128
+4.59M to 8.66M in 8.5 min. Read `split_twist_move` in
+[src/stages/post-processing/splitting.rs](../src/stages/post-processing/splitting.rs);
+the local rewrite identities live in
+[src/engine/moves/rules.rs](../src/engine/moves/rules.rs).
+
+## Stage 5: the crossing walk
+
+The walk shoots fragments to their first true collider and rewrites each
+collision by one of three exact case-split rules so the pieces cross; these
+moves introduce wider conjunctions than r57 gates (median 3 controls, up to
+12). A thermostat holds the size near `target = round(input_gates ×
+factor)` with two contraction channels: exact undo of isolated crossings
+from a journal, and a pairwise merge catalogue over same-target gates. The
+driver resumes the split state (the walk continues the split stage's RNG and
+move counter; `--moves` is absolute on a resume):
+
+```bash
+circuit_mixer --resume split.state --target-size TARGET --temp max(64,round(TARGET/25)) \
+    --split-base 3 --split-damp 1 --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 \
+    --moves state_moves+6*TARGET --report-every 500000 --output crossing.mpmct1
+```
+
+With stage 4 skipped it starts from the previous circuit (`--input …
+--seed-file /dev/fd/3`, the `cross_seed`) with `--moves 6*TARGET`. It writes
+`crossing.mpmct1`, `stage5.log` and `stage5.recipe` (which records the
+source: `resume split.state` or `input <file>`). No state file is written:
+nothing downstream resumes it. At n=64 the walk takes 3.03M gates to 5.49M
+in 46 min; at n=128 8.66M to 15.7M in 6.3 h; it slows several-fold under CPU
+contention. Read `cross_move_on`, `undo_move` and `merge_move` in
+[src/stages/post-processing/crossing.rs](../src/stages/post-processing/crossing.rs);
+the scheduler and acceptance logic are in
+[src/engine/mixer/scheduling.rs](../src/engine/mixer/scheduling.rs). Within
+the mixer the walk is slot 3 of `Mixer::run`, the default walk when `p_db <
+1`; stage 3 passes `--p-db 1.0`, so slot 3 never runs there and stage-3
+output is unchanged by its presence.
+
+## Stage 6: packing
 
 Packing turns the mixed circuit into the deliverable. The adversary is
 assumed to see the full wire state at every window boundary and the inputs,
-but not the gates inside a window. The packer reorders the stage-3 circuit
+but not the gates inside a window. The packer reorders its input (the last
+circuit produced: `crossing.mpmct1` by default, `db_mixing.mpmct1` under
+`run.skip_stages = [4, 5, 7]`)
 along commutations so that values are born and consumed inside one window,
 cuts the order into windows of at most G gates, and publishes each window as
 its sparse algebraic normal form (ANF). A commutation-aware repair then
@@ -454,9 +587,15 @@ serialized. The design and the measurements are in
 The driver runs
 
 ```bash
-tdp_packing run --stage2 tdp.mpmct1 --stage3 db_mixing.mpmct1 --source-c tdp.mpmct1.source_c.g57 \
+tdp_packing run --stage2 tdp.mpmct1 --stage3 crossing.mpmct1 --source-c tdp.mpmct1.source_c.g57 \
     --n N --out-dir packing [packing flags only when not at their defaults]
 ```
+
+(`--stage2` is the circuit whose values the windows hide: `tdp.mpmct1`, or
+the sandwich when stage 2 is skipped; `--stage3` is the previous stage's
+output.) On the stage-5 output the packer needs about 4× the windows and far
+longer (n=64: 2.2 h instead of 23 s; n=128: 7.7 h instead of 2 min;
+`docs/notes/stage45_revival_20261011.md`).
 
 which does, in one process, what val_chain.sh does after stage 3:
 
@@ -557,19 +696,47 @@ grade). It hard-codes the run tree (`/Users/rancanetti/code/local_mixing`,
 reproduction test's sandbox. Its CONFIG is `L8` (recommended) or `A`; the
 managed presets of the same names set exactly its environment.
 
+## Stage 7: unpacking
+
+Unpacking is what a recipient of the deliverable does to obtain a circuit
+again. Every delivered window is resynthesized from its ANF alone (the
+synthesizer, a port of `anf_synth`, never sees the packed gates), the window
+circuits are concatenated in window order, the whole circuit is put into the
+canonical commuting gate order (`xgate_canonicalize`: every gate pulled as
+early as commutation allows when that lowers the order, so no window
+boundary survives), and the result is written. The driver runs
+
+```bash
+tdp_unpacking run --deliverable packing/deliverable.tdp4 --packed packing/rep512.mpmct1 \
+    --bounds packing/rep512.bounds --source-c tdp.mpmct1.source_c.g57 --n N \
+    --out-dir unpacking --seed-file /dev/fd/3 [--time-limit S --restarts R --beam B --no-fallback] [--threads T]
+```
+
+and writes `unpacking/unpacked.mpmct1` (the state width in the header,
+canonical order), `unpacking/windows.tsv`, `unpacking/unpacking.report`
+(`status=ok|fallback_used`, counts, gate ratio, timing quantiles),
+`unpacking/unpacking.log`, `stage7.log` and `unpacking.recipe`. Before the
+output is committed every window is checked exactly (its synthesized gates
+compose to the delivered ANF) and by sampling, the whole circuit is checked
+against the deliverable's evaluator before and after reordering, and the
+zero slice is checked against $C$. The packed gates serve only as the
+verbatim fallback of a window that fails to synthesize (`--no-fallback`
+makes that fatal, exit 4). Measured on the n=64 L8 base arm (four-stage
+deliverable): 2,591 windows, none fell back, 1.49M gates in → 0.53M out,
+255 s on 8 threads, the reordering 2.6 s. See
+[STAGE7_UNPACKING.md](STAGE7_UNPACKING.md).
+
 ## Historic stages
 
-The former stages 4 (split every remaining complemented gate), 5 (the
-crossing walk: shoot fragments to collisions, rewrite them so they cross, and
-contract with undo/merge moves under a size thermostat) and 6 (`fcompress`)
-are historic, as is the curated store. Windowed packing replaced them. Their
-code and tests remain on branch `ran/archive/curated-and-postmix`; runs that
-reached them, or that record recipe v8, need that branch to continue. Within
-the mixer, the crossing walk was slot 3 of `Mixer::run`; stage 3 runs every
-non-twist round as a DB move (`--p-db 1.0`), so slot 3 never ran there and its
-removal left stage-3 output unchanged. The driver rejects the old stage
-numbers 4-6, the crossing flags and the `[crossing]` section with a pointer
-to the archive. See [CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md).
+The former stage 6 (`fcompress`: gather commutable same-target gates, reduce
+each group's ESOP, pack runs into generalized gates) is historic, as is the
+curated store. Their code and tests remain on branch
+`ran/archive/curated-and-postmix`; runs that record recipe v8 need that
+branch to continue. The split stage and the crossing walk, retired with them
+on 2026-10-07, were revived from that branch on 2026-10-11 as stages 4 and
+5 (mixer state format v6 = the pre-cleanup v3 layout; v3-v5 states of the
+four-stage interval are refused). See
+[CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md).
 
 ## The shared pieces
 
@@ -581,13 +748,16 @@ The mutable gate tape used by `circuit_mixer` is in
 I/O, and reporting live together in [src/engine/mixer/](../src/engine/mixer/).
 
 Use these current module paths directly. The old top-level `preprocessing`,
-`db_mixing` and `postprocessing` wrappers have been removed, as has the
-`stages/post-processing` module of the historic stages. Files named
+`db_mixing` and `postprocessing` wrappers have been removed. Files named
 `environment.rs` read settings of the stage-3 engine and the store; the
 managed driver sets or forbids each of them (see the environment policy).
-Stage 4 lives in [src/stages/packing/](../src/stages/packing/) (no
-environment reads) with its binary in
-[src/programs/tdp_packing/](../src/programs/tdp_packing/).
+Stages 4 and 5 live in
+[src/stages/post-processing/](../src/stages/post-processing/) as mixer modes
+(their slots, indices, journal and counters in `src/engine/mixer/`). Stage 6
+lives in [src/stages/packing/](../src/stages/packing/) (no environment reads)
+with its binary in [src/programs/tdp_packing/](../src/programs/tdp_packing/);
+stage 7 in [src/stages/unpacking/](../src/stages/unpacking/) with
+[src/programs/tdp_unpacking/](../src/programs/tdp_unpacking/).
 
 Stage 3 can run on contiguous pieces in parallel; the coordinator is
 [piecewise.rs](../src/engine/mixer/piecewise.rs). Correctness checks live in
