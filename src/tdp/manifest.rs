@@ -79,7 +79,7 @@ pub(crate) fn production_binary_fingerprints(
                 .map(|hash| (name, hash))
                 .map_err(|error| {
                     TdpError::io(format!(
-                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing all three binaries",
+                        "cannot fingerprint production binary {}: {error}; set run.build_binaries=true or select the target directory containing all four binaries",
                         path.display()
                     ))
                 })

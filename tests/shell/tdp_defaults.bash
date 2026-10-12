@@ -54,7 +54,7 @@ rewrite "$VC" "bash \$W/repair.sh" "\$W/repair.sh" 1
 rewrite "$VC" "python3 \$W/anf_dump_eval.py" "\$W/anf_dump_eval.py" 1
 # ---- the managed side's mocks ----
 BIN=$tmp/bin; mkdir -p "$BIN"
-for b in gen_sandwich_gadget circuit_mixer tdp_packing; do ln -s "$MOCK" "$BIN/$b"; done
+for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$MOCK" "$BIN/$b"; done
 
 seedfile() { # FILE GEN MIX
   printf 'gen_seed=%s\nmix_seed=%s\n' "$2" "$3" > "$1"; chmod 600 "$1"
@@ -202,7 +202,7 @@ PY
 if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
   host=$(rustc -vV | sed -n 's/^host: //p')
   RT=$tmp/rtarget/$host/release; mkdir -p "$RT"
-  for b in gen_sandwich_gadget circuit_mixer tdp_packing; do ln -s "$MOCK" "$RT/$b"; done
+  for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$MOCK" "$RT/$b"; done
   # the fake store has no tables: validate_frozen_store would refuse it, so give it the files
   : > "$STORE/tables.bin"; echo x > "$STORE/tables.bin"
   for i in $(seq 0 255); do printf 'x' > "$STORE/shard_$(printf %02x "$i").frz"; done
