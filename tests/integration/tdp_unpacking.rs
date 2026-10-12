@@ -355,7 +355,11 @@ fn windows_subset_is_a_plain_concatenation_of_the_selected_windows() {
     let plain = rows_of(&fs::read_to_string(n8_plain().join("windows.tsv")).unwrap());
     for (r, want) in rows.iter().zip([0usize, 2, 5]) {
         let q = &plain[want];
-        assert_eq!((&r[4], &r[9], &r[12]), (&q[4], &q[9], &q[12]), "window {want}");
+        assert_eq!(
+            (&r[4], &r[9], &r[12]),
+            (&q[4], &q[9], &q[12]),
+            "window {want}"
+        );
     }
     // usage errors
     let code = |extra: &[&str]| n8_run(&scratch().join("x"), extra).status.code();
@@ -395,9 +399,14 @@ fn canon_is_equivalent_idempotent_and_keeps_the_header() {
     local_mixing::canonicalization::gate_order::xgate_canonicalize(&mut again);
     assert_eq!(again, c.gates);
     // exit codes
-    assert_eq!(unpack(&["canon", p(&dir.join("c.mpmct1"))]).status.code(), Some(2));
     assert_eq!(
-        unpack(&["canon", p(&dir.join("missing")), p(&dir.join("y"))]).status.code(),
+        unpack(&["canon", p(&dir.join("c.mpmct1"))]).status.code(),
+        Some(2)
+    );
+    assert_eq!(
+        unpack(&["canon", p(&dir.join("missing")), p(&dir.join("y"))])
+            .status
+            .code(),
         Some(3)
     );
     let _ = fs::remove_dir_all(dir);
@@ -440,7 +449,10 @@ fn refine_with_forced_failures_splits_every_window_and_converges() {
         "bounds.1",
     ] {
         assert!(out.join(f).is_file(), "{f} missing");
-        assert!(!out.join(format!("{f}.tmp")).exists(), "{f}.tmp left behind");
+        assert!(
+            !out.join(format!("{f}.tmp")).exists(),
+            "{f}.tmp left behind"
+        );
     }
     let report = fs::read_to_string(out.join("unpacking.report")).unwrap();
     assert_eq!(kv(&report, "refine"), "1");
@@ -461,7 +473,10 @@ fn refine_with_forced_failures_splits_every_window_and_converges() {
     assert!(kv(&report, "check.final_deliverable").starts_with("ok("));
     assert_eq!(
         kv(&report, "check.new_cuts"),
-        format!("ok({splits} new cuts, {} unclean)", kv(&report, "unclean_cuts"))
+        format!(
+            "ok({splits} new cuts, {} unclean)",
+            kv(&report, "unclean_cuts")
+        )
     );
     assert_eq!(kv(&report, "check.equiv_canonical"), "ok(4096)");
     assert_eq!(kv(&report, "check.zero_slice"), "ok(4096)");
@@ -479,19 +494,33 @@ fn refine_with_forced_failures_splits_every_window_and_converges() {
         fs::read(out.join("deliverable.0.tdp4")).unwrap(),
         fs::read(pk.join("deliverable.tdp4")).unwrap()
     );
-    assert_eq!(bounds_of(&out.join("bounds.0")), bounds_of(&pk.join("rep512.bounds")));
+    assert_eq!(
+        bounds_of(&out.join("bounds.0")),
+        bounds_of(&pk.join("rep512.bounds"))
+    );
     assert_eq!(bounds_of(&out.join("bounds.1")).len(), 73 + 72);
     // the final deliverable: the refined lattice, decodable, zero slice ok
-    let d = decode(&fs::read(out.join("deliverable.tdp4")).unwrap(), Format::Container).unwrap();
+    let d = decode(
+        &fs::read(out.join("deliverable.tdp4")).unwrap(),
+        Format::Container,
+    )
+    .unwrap();
     assert_eq!(d.window_count(), final_n);
     assert_eq!(d.header.unwrap().window_count as usize, final_n);
     let bf = bounds_of(&out.join("bounds.final"));
     assert_eq!(bf.len(), final_n - 1);
-    assert!(bf.windows(2).all(|w| w[0] < w[1]), "bounds strictly ascending");
+    assert!(
+        bf.windows(2).all(|w| w[0] < w[1]),
+        "bounds strictly ascending"
+    );
     assert!(bf.iter().all(|&b| 0 < b && b < 34825));
     let c = read_g57_file(p(&fx("n8_L8/c.g57"))).unwrap();
     assert_eq!(check_zero_slice(&c, &d, 8, 1024, 11).unwrap(), 1024);
-    equivalent(&out.join("unpacked.mpmct1"), &out.join("deliverable.tdp4"), 2);
+    equivalent(
+        &out.join("unpacked.mpmct1"),
+        &out.join("deliverable.tdp4"),
+        2,
+    );
     // windows.tsv: the reference's columns first, one row per final window,
     // contiguous, every one synthesized in a round >= 1
     let tsv = fs::read_to_string(out.join("windows.tsv")).unwrap();
@@ -499,8 +528,20 @@ fn refine_with_forced_failures_splits_every_window_and_converges() {
     assert_eq!(
         &header[..14],
         &[
-            "idx", "lo", "hi", "round", "orig_gates", "syn_gates", "status", "synth_status",
-            "seconds", "monomials", "changed_wires", "input_vars", "max_degree", "syn_offset"
+            "idx",
+            "lo",
+            "hi",
+            "round",
+            "orig_gates",
+            "syn_gates",
+            "status",
+            "synth_status",
+            "seconds",
+            "monomials",
+            "changed_wires",
+            "input_vars",
+            "max_degree",
+            "syn_offset"
         ]
     );
     let rows = rows_of(&tsv);
@@ -514,7 +555,11 @@ fn refine_with_forced_failures_splits_every_window_and_converges() {
         assert_eq!(lo, prev_hi, "contiguous lattice");
         assert!(hi > lo);
         prev_hi = hi;
-        assert!(r[3].parse::<i64>().unwrap() >= 1, "round of row {i}: {}", r[3]);
+        assert!(
+            r[3].parse::<i64>().unwrap() >= 1,
+            "round of row {i}: {}",
+            r[3]
+        );
         assert_eq!(r[4], (hi - lo).to_string());
         assert_eq!(r[6], "ok");
         assert_eq!(r[7], "converged");
@@ -558,7 +603,11 @@ fn refine_without_the_knob_matches_the_plain_run_unless_a_window_failed() {
     assert_eq!(kv(&report, "verbatim"), "0");
     assert_eq!(kv(&report, "status"), "ok");
     assert!(!report.contains("param.force_fail_rounds"));
-    equivalent(&out.join("unpacked.mpmct1"), &out.join("deliverable.tdp4"), 2);
+    equivalent(
+        &out.join("unpacked.mpmct1"),
+        &out.join("deliverable.tdp4"),
+        2,
+    );
     // A window that hits the 3 s deadline of the unoptimized test build has a
     // timing-dependent outcome (it may converge in one run and time out in the
     // other, under the parallel tests' load), so the run-to-run comparison is
@@ -580,7 +629,10 @@ fn refine_without_the_knob_matches_the_plain_run_unless_a_window_failed() {
             fs::read(out.join("deliverable.tdp4")).unwrap(),
             fs::read(pk.join("deliverable.tdp4")).unwrap()
         );
-        assert_eq!(bounds_of(&out.join("bounds.final")), bounds_of(&pk.join("rep512.bounds")));
+        assert_eq!(
+            bounds_of(&out.join("bounds.final")),
+            bounds_of(&pk.join("rep512.bounds"))
+        );
     } else if timing_free {
         // the plain run emitted the failed windows verbatim; the loop split
         // them instead, so the lattice grew and the circuits differ
@@ -623,7 +675,10 @@ fn refine_without_the_knob_matches_the_plain_run_unless_a_window_failed() {
             compared += 1;
         }
     }
-    assert!(compared > 0, "no window converged within the deadline in both runs");
+    assert!(
+        compared > 0,
+        "no window converged within the deadline in both runs"
+    );
 }
 
 #[test]

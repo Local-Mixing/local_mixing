@@ -90,7 +90,13 @@ pub fn run() {
 
 // ---------------------------------------------------------------- argv
 
-const SWITCHES: [&str; 5] = ["--no-fallback", "--no-postopt", "--help", "--stats", "--refine"];
+const SWITCHES: [&str; 5] = [
+    "--no-fallback",
+    "--no-postopt",
+    "--help",
+    "--stats",
+    "--refine",
+];
 
 struct Args {
     pos: Vec<String>,
@@ -338,7 +344,10 @@ pub const REFINE_OUTPUT_NAMES: [&str; 3] = ["rounds.tsv", "deliverable.tdp4", "b
 fn is_round_file(name: &str) -> bool {
     let name = name.strip_suffix(".tmp").unwrap_or(name);
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if let Some(r) = name.strip_prefix("deliverable.").and_then(|r| r.strip_suffix(".tdp4")) {
+    if let Some(r) = name
+        .strip_prefix("deliverable.")
+        .and_then(|r| r.strip_suffix(".tdp4"))
+    {
         return digits(r);
     }
     name.strip_prefix("bounds.").is_some_and(digits)
@@ -1002,7 +1011,10 @@ fn run_refine(inp: Inputs, rp: RefineParams) -> Result<(), Stage7Error> {
         rp.max_rounds,
         rp.budget,
         if rp.force_fail_rounds > 0 {
-            format!("; FORCED FAILURES in rounds 0..{} (test only)", rp.force_fail_rounds)
+            format!(
+                "; FORCED FAILURES in rounds 0..{} (test only)",
+                rp.force_fail_rounds
+            )
         } else {
             String::new()
         },
@@ -1036,7 +1048,16 @@ fn run_refine(inp: Inputs, rp: RefineParams) -> Result<(), Stage7Error> {
         }
     };
     let t_s = Instant::now();
-    let out = refine::refine(blobs, &cuts0, &inputs, &params, &rp, &mut on_round, &progress, &say)?;
+    let out = refine::refine(
+        blobs,
+        &cuts0,
+        &inputs,
+        &params,
+        &rp,
+        &mut on_round,
+        &progress,
+        &say,
+    )?;
     let t_synth = t_s.elapsed().as_secs_f64();
 
     // ---- the final lattice: deliverable, assembly, canonical order
@@ -1119,7 +1140,11 @@ fn run_refine(inp: Inputs, rp: RefineParams) -> Result<(), Stage7Error> {
             out.unclean_cuts
         )),
     };
-    let status = if out.verbatim > 0 { "verbatim_used" } else { "ok" };
+    let status = if out.verbatim > 0 {
+        "verbatim_used"
+    } else {
+        "ok"
+    };
     say(&format!(
         "{label}: refine: {} rounds, windows {} -> {}, splits {} (unclean {}), over budget {}, verbatim {}; \
          gates {} -> {} (ratio {}); canonicalized {} gates in {t_canon:.1}s; checks: windows exact+sampled ok, \

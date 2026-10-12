@@ -44,9 +44,10 @@ Loop, round r = 0, 1, …:
    C-view scan over the candidates, the candidate nearest the midpoint at which no interior C value
    is affine; if none is clean, the midpoint, and the window is counted in `refine.unclean_cuts`.
    A failed window of 1 gate is emitted verbatim (counted in `refine.verbatim`; expected 0).
-   A half whose ANF exceeds the 65,536-monomial budget is counted in `over_budget`; the Rust
-   treats it as failed without synthesis and splits it again in the next round, so that the
-   final check below holds (the Python reference synthesizes and delivers it: §4).
+   A half whose ANF exceeds the 65,536-monomial budget (the packer's cap test) is counted in
+   `over_budget`, emitted into D_{r+1} (so the container stays complete) but not synthesized: it is
+   split again in the next round. A delivered window above the budget is a check failure.
+
 5. Stop when no window is pending, or after `max_rounds` (default 16: a 1,024-gate window reaches
    1-gate pieces in 10 rounds); the remaining failed windows are emitted verbatim and counted.
 
@@ -123,34 +124,4 @@ canon` or the Python fallback), (5) runs the checks. It is the oracle for the Ru
   refined lattice is `check.new_cuts`: every added cut was scanned clean at choice time or counted
   in `unclean_cuts` — a per-cut C-view result does not depend on the lattice, so the packer's
   final scan of the old cuts plus the choice-time scan of the new ones is exactly `check-final`'s
-  scan of the refined lattice, without a second full scan. (2) Over-budget halves: the Rust does
-  not synthesize a half above the budget; it is split again next round (§2 step 4). The Python
-  reference emits it with a budget-free `window_anf`, synthesizes it and delivers it if it
-  converges, which can leave a window above the budget in D_final (counted in `over_budget` but
-  not refused). Neither occurs on n8_L8 (the parity run has `over_budget=0` on both sides). A
-  half above 2^20 monomials cannot be emitted by the Rust composer and is a fatal error (exit 4).
-- `--windows i,j,LO:HI` restricts a plain run to a window subset (0-based lattice indices, `LO:HI`
-  half-open): only those windows are synthesized and emitted, as a plain concatenation in index
-  order with no canonical reorder and no circuit-level check (`windows_selected=` in the report);
-  the Python reference calls it per round. `tdp_unpacking canon IN OUT` applies
-  `xgate_canonicalize` to a circuit, checks it equivalent on 4096 random states and writes it with
-  the input's header width (the reference's final order). `--anf-only` is a driver-level flag.
-- Driver (`scripts/tdp_gen.sh`, `src/tdp`): stage 6 = delivery = `tdp_packing run` then
-  `tdp_unpacking run --refine`; `[delivery] anf_only = true` ends the stage after packing. Stage
-  numbering becomes 1 sandwich, 2 preprocessing, 3 DB mixing, 4 splitting, 5 crossing, 6 delivery;
-  `run.skip_stages` accepts 2..6; config_version 4 (3 refused with a pointer), recipe v12, SEEDS
-  format 3 unchanged (the unpack seed is the delivery seed). Markers: `delivery.recipe`,
-  `delivery.failed`.
-- Tests: `tests/integration/tdp_unpacking.rs` runs `--windows`, `canon` and the refine path on
-  the n8_L8 fixture, once with the test-only knob `--force-fail-rounds 1` (round 0 synthesizes
-  nothing and fails every window, so the loop, the cut choice, the re-emission and the final checks
-  are exercised: windows 73 → 146+) and once without it (against the plain run: identical circuit
-  when every window converges; otherwise the plain run's fallback windows are the loop's splits);
-  unit tests (`tests/unit/stages/unpacking/refine.rs`) cover the cut choice (clean, unclean, tie,
-  single scan), the blob splice (byte-equal to `encode_body` of the refined lattice) and the loop
-  on a tiny circuit. `tests/manual/delivery_parity.sh` runs `deliver.py` (`--synth tdp_unpacking`,
-  `--canon-bin tdp_unpacking`, `hmap_affine` for the scan) and `tdp_unpacking run --refine` on
-  n8_L8 with the same seed, time limit and restarts, and cmp's `bounds.final`, `deliverable.tdp4`,
-  `unpacked.mpmct1` and every per-round file: identical (2026-10-12, seed 3, restarts 2: window 1
-  stalls and is split, 73 → 74 windows, 34,825 → 10,913 gates on both sides). The shell tests
-  follow the renumbering (driver work).
+  scan of the refined lattice, without a second full scan. (2) Over-budget halves: both implementations emit the half, skip its synthesis and split it again next round; the Python reference checks `final_budget` on every new window of D_final, the Rust refuses at max_rounds. Neither case occurs on n8_L8 (`over_budget=0` on both sides). 

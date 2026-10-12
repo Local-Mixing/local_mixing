@@ -36,13 +36,13 @@ use super::types::{Stage7Error, UnpackParams};
 use crate::circuit::xgate::XGate;
 use crate::stages::packing::anf::{MulStats, window_anf};
 use crate::stages::packing::cview::{CutOracle, CviewParams};
+use crate::stages::packing::mono::{MonoWidthFn, with_mono_width};
 use crate::stages::packing::repair::CView;
 use crate::stages::packing::repair::split::{pick_candidate, split_candidates};
 use crate::stages::packing::serialize::{
     ContainerHeader, Deliverable, EMIT_BUDGET, Format, HEADER_BYTES, IO_LAYOUT_CLASSIC_ZERO_SLICE,
     crc32_ieee, decode, encode_window,
 };
-use crate::stages::packing::mono::{MonoWidthFn, with_mono_width};
 use crate::stages::packing::types::CapSemantics;
 use rustc_hash::FxHashSet;
 use std::fmt::Write as _;
@@ -125,7 +125,9 @@ pub fn split_body(body: &[u8]) -> Result<Vec<Vec<u8>>, Stage7Error> {
 /// `decode`).
 pub fn container_blobs(bytes: &[u8]) -> Result<Vec<Vec<u8>>, Stage7Error> {
     if bytes.len() < HEADER_BYTES as usize {
-        return Err(Stage7Error::Input("container shorter than its header".into()));
+        return Err(Stage7Error::Input(
+            "container shorter than its header".into(),
+        ));
     }
     split_body(&bytes[HEADER_BYTES as usize..])
 }
@@ -188,8 +190,7 @@ impl MonoWidthFn<Result<Emitted, Stage7Error>> for Emit<'_> {
         }
         for (budget, fits) in budgets {
             let mut st = MulStats::default();
-            if let Ok(anf) = window_anf::<W>(self.gates, budget, CapSemantics::CPython39, &mut st)
-            {
+            if let Ok(anf) = window_anf::<W>(self.gates, budget, CapSemantics::CPython39, &mut st) {
                 let blob = encode_window(&anf)?;
                 return Ok(Emitted {
                     blob,
@@ -386,8 +387,7 @@ struct Win {
 /// Called at the start of every round with the round number, the lattice
 /// and the round's deliverable (the reference writes `bounds.<r>` and
 /// `deliverable.<r>.tdp4`).
-pub type RoundHook<'a> =
-    dyn FnMut(usize, &[(usize, usize)], &[u8]) -> Result<(), Stage7Error> + 'a;
+pub type RoundHook<'a> = dyn FnMut(usize, &[(usize, usize)], &[u8]) -> Result<(), Stage7Error> + 'a;
 
 /// The loop. `blobs` are the deliverable's windows (D_0, `len = wins_0`,
 /// the lattice `[0] + bounds + [m]` of the packed circuit); `params.seed`
@@ -492,12 +492,7 @@ pub fn refine(
                 failed.push(i);
             }
         }
-        failed.extend(
-            pending
-                .iter()
-                .copied()
-                .filter(|&i| !sel.contains(&i)),
-        );
+        failed.extend(pending.iter().copied().filter(|&i| !sel.contains(&i)));
         failed.sort_unstable();
         let nfailed = failed.len();
         // ---- refine
@@ -510,7 +505,10 @@ pub fn refine(
                 .copied()
                 .filter(|&i| wins[i].hi - wins[i].lo >= 2)
                 .collect();
-            let sw: Vec<(usize, usize)> = splittable.iter().map(|&i| (wins[i].lo, wins[i].hi)).collect();
+            let sw: Vec<(usize, usize)> = splittable
+                .iter()
+                .map(|&i| (wins[i].lo, wins[i].hi))
+                .collect();
             let choice = choose_cuts(inp.cview, &mut oracle, &sw);
             let mut next: Vec<Win> = Vec::with_capacity(wins.len() + splittable.len());
             let mut it = splittable.iter().zip(choice);
@@ -583,7 +581,10 @@ pub fn refine(
             Slot::Converged(r, res) => (r, *res),
             Slot::Verbatim(reason) => {
                 out.verbatim += 1;
-                (-1, verbatim_result(i, w.lo, w.hi, &inp.packed[w.lo..w.hi], reason))
+                (
+                    -1,
+                    verbatim_result(i, w.lo, w.hi, &inp.packed[w.lo..w.hi], reason),
+                )
             }
             Slot::Pending | Slot::PreFailed => {
                 return Err(Stage7Error::Internal(format!(
@@ -606,7 +607,13 @@ pub fn refine(
 
 /// A verbatim window's row (the reference reports zeros for its ANF
 /// statistics and the reason as its synthesis status).
-fn verbatim_result(idx: usize, lo: usize, hi: usize, gates: &[XGate], reason: String) -> WindowResult {
+fn verbatim_result(
+    idx: usize,
+    lo: usize,
+    hi: usize,
+    gates: &[XGate],
+    reason: String,
+) -> WindowResult {
     WindowResult {
         idx,
         gates: gates.to_vec(),

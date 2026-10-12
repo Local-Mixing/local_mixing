@@ -327,6 +327,7 @@ def main():
     pieces = {}          # (lo, hi) -> (round, row, gate lines)   converged
     verbatim = {}        # (lo, hi) -> reason                      1-gate failures / max_rounds
     pending = list(range(len(wins)))
+    prefailed = set()    # pending windows whose ANF is over the budget: not synthesized, split again
     rounds = []; splits = 0; unclean = 0; over_budget = 0; rnd = 0
     while pending:
         rd = os.path.join(a.out, f"round_{rnd}")
@@ -334,9 +335,10 @@ def main():
         if rnd > 0:
             write_bounds(bpath); write_deliverable(dpath)
         ts = time.time()
-        rows, lines = run_synth(a, rd, dpath, bpath, pending)
-        failed = []
-        for i in pending:
+        to_synth = [i for i in pending if i not in prefailed]
+        rows, lines = run_synth(a, rd, dpath, bpath, to_synth) if to_synth else ({}, [])
+        failed = sorted(prefailed)
+        for i in to_synth:
             r = rows.get(i)
             if r is None:
                 raise SystemExit(f"input: synthesizer wrote no row for window {i} in round {rnd}")
@@ -354,21 +356,22 @@ def main():
         if failed and rnd + 1 <= a.max_rounds:
             splittable = [wins[i] for i in failed if wins[i][1] - wins[i][0] >= 2]
             choice = choose_cuts(a, splittable, outs, rd) if splittable else {}
-            new_wins = []; new_blobs = []; new_idx = {}
+            new_wins = []; new_blobs = []; new_idx = {}; new_prefailed = set()
             for i, (lo, hi) in enumerate(wins):
                 if i in failed and (lo, hi) in choice:
                     c, clean = choice[(lo, hi)]; splits += 1; unclean += 0 if clean else 1
                     for (x, y) in ((lo, c), (c, hi)):
-                        changed, tot = window_anf(cg, x, y, 1 << 30)
-                        if tot > a.budget:
-                            over_budget += 1
+                        changed, tot = window_anf(cg, x, y, a.budget)      # the packer's cap semantics
+                        if changed is None:                                 # over budget: emit, do not synthesize, split again
+                            over_budget += 1; new_prefailed.add(len(new_wins))
+                            changed, tot = window_anf(cg, x, y, 1 << 30)
                         new_idx[(x, y)] = len(new_wins); new_wins.append((x, y)); new_blobs.append(encode_blob(changed))
                 else:
                     if i in failed:
                         verbatim[(lo, hi)] = "1-gate window"
                     new_wins.append((lo, hi)); new_blobs.append(blobs[i])
             wins, blobs = new_wins, new_blobs
-            new_pending = sorted(new_idx.values())
+            new_pending = sorted(new_idx.values()); prefailed = new_prefailed
         elif failed:
             for i in failed:
                 verbatim[wins[i]] = f"max_rounds {a.max_rounds}"
@@ -378,7 +381,7 @@ def main():
 
     # ---- final lattice, deliverable, circuit
     write_bounds(os.path.join(a.out, "bounds.final")); write_deliverable(os.path.join(a.out, "deliverable.tdp4"))
-    out_lines = []; tsv = []; nb = []; off = 0; nverb = 0
+    out_lines = []; tsv = []; off = 0; nverb = 0
     for i, (lo, hi) in enumerate(wins):
         if (lo, hi) in pieces:
             r0, r, chunk = pieces[(lo, hi)]
@@ -386,8 +389,6 @@ def main():
         else:
             chunk = [gate_line(g) for g in gates[lo:hi]]; nverb += 1
             st = (-1, 'verbatim', verbatim.get((lo, hi), 'verbatim'), '0', '0', '0', '0', '0')
-        if off > 0:
-            nb.append(off)
         tsv.append(f"{i}\t{lo}\t{hi}\t{st[0]}\t{hi - lo}\t{len(chunk)}\t{st[1]}\t{st[2]}\t{st[3]}\t{st[4]}\t{st[5]}\t{st[6]}\t{st[7]}\n")
         out_lines.extend(chunk); off += len(chunk)
     concat = [tuple_of(l) for l in out_lines]
@@ -428,6 +429,7 @@ def main():
     xs = [rng.getrandbits(LANES) for _ in range(a.n)]
     z = xs + [0] * (nw - a.n); sim(canon, z); cz = sim_c(C, xs)
     checks['zero_slice'] = all(z[a.n + i] == cz[i] for i in range(a.n))
+    checks['final_budget'] = all(window_anf(cg, lo, hi, a.budget)[0] is not None for (lo, hi) in wins if (lo, hi) not in orig_wins)
     ok = all(checks.values())
     status = "ok" if ok and nverb == 0 else ("verbatim_used" if ok else "failed")
     with open(os.path.join(a.out, "windows.tsv"), "w") as f:

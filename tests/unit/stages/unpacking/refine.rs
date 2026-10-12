@@ -174,7 +174,10 @@ fn spliced_container_equals_encode_body_of_the_refined_lattice() {
     let spliced = container_bytes(&refs, 0, nw);
     let new_bounds: Vec<i64> = wins.iter().skip(1).map(|w| w.0 as i64).collect();
     let (_, want) = packed_container(&gates, &new_bounds, nw);
-    assert_eq!(spliced, want, "spliced container != encode_body of the refined lattice");
+    assert_eq!(
+        spliced, want,
+        "spliced container != encode_body of the refined lattice"
+    );
     assert_ne!(spliced, c0);
     // the header is recomputed: it decodes, with the new window count
     let d = decode(&spliced, Format::Container).unwrap();
@@ -198,7 +201,10 @@ fn tiny_params() -> UnpackParams {
 /// A C on 3 wires (n = 3) in an 8-wire state, a packed circuit of random
 /// gates in 5 windows of 4 gates.
 fn loop_fixture() -> (Vec<XGate>, Vec<XGate>, Vec<usize>, Vec<Vec<u8>>) {
-    let c = vec![g(0, false, &[(1, true), (2, false)]), g(2, true, &[(0, true)])];
+    let c = vec![
+        g(0, false, &[(1, true), (2, false)]),
+        g(2, true, &[(0, true)]),
+    ];
     let mut rng = Rng::new(77);
     let gates = random_gates(8, 20, &mut rng);
     let bounds = [4i64, 8, 12, 16];
@@ -210,7 +216,14 @@ fn loop_fixture() -> (Vec<XGate>, Vec<XGate>, Vec<usize>, Vec<Vec<u8>>) {
 #[test]
 fn forced_failure_round_splits_every_window_then_converges() {
     let (c, gates, cuts, blobs) = loop_fixture();
-    let cv = CView::new(&c, 3, &CviewParams { batches: 4, seed: 1 });
+    let cv = CView::new(
+        &c,
+        3,
+        &CviewParams {
+            batches: 4,
+            seed: 1,
+        },
+    );
     let inp = RefineInputs {
         packed: &gates,
         source_wires: 3,
@@ -254,14 +267,20 @@ fn forced_failure_round_splits_every_window_then_converges() {
     assert_eq!(out.verbatim, 0);
     assert_eq!(out.over_budget, 0);
     assert_eq!(out.new_cuts.len(), 5);
-    assert_eq!(rounds_seen.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(), vec![(0, 5), (1, 10)]);
+    assert_eq!(
+        rounds_seen.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(),
+        vec![(0, 5), (1, 10)]
+    );
     assert_eq!(lines.len(), 2);
     assert!(lines[0].starts_with("round 0: pending 5, converged 0, failed 5, split 5"));
     // the lattice: every piece inside its parent, the new cuts strictly inside
     for (k, p) in out.pieces.iter().enumerate() {
         assert_eq!(p.round, 1);
         assert_eq!(p.result.status, WinStatus::Ok);
-        assert_eq!(p.result.idx, k, "synthesized with its index in the round-1 lattice");
+        assert_eq!(
+            p.result.idx, k,
+            "synthesized with its index in the round-1 lattice"
+        );
         assert!(p.fits);
         let parent = (cuts[k / 2], cuts[k / 2 + 1]);
         assert!(parent.0 <= p.lo && p.hi <= parent.1);
@@ -285,7 +304,15 @@ fn forced_failure_round_splits_every_window_then_converges() {
     assert_eq!(tsv.lines().count(), 11);
     assert!(tsv.starts_with("idx\tlo\thi\tround\torig_gates\tsyn_gates\tstatus\tsynth_status\tseconds\tmonomials\tchanged_wires\tinput_vars\tmax_degree\tsyn_offset\t"));
     let row1: Vec<&str> = tsv.lines().nth(2).unwrap().split('\t').collect();
-    assert_eq!(&row1[..4], &["1", &cuts[0].max(out.pieces[1].lo).to_string(), &out.pieces[1].hi.to_string(), "1"]);
+    assert_eq!(
+        &row1[..4],
+        &[
+            "1",
+            &cuts[0].max(out.pieces[1].lo).to_string(),
+            &out.pieces[1].hi.to_string(),
+            "1"
+        ]
+    );
     assert_eq!(row1[6], "ok");
     assert_eq!(row1[7], "converged");
     let rt = rounds_tsv(&out.rounds);
@@ -295,7 +322,14 @@ fn forced_failure_round_splits_every_window_then_converges() {
 #[test]
 fn without_failures_one_round_and_the_lattice_is_unchanged() {
     let (c, gates, cuts, blobs) = loop_fixture();
-    let cv = CView::new(&c, 3, &CviewParams { batches: 4, seed: 1 });
+    let cv = CView::new(
+        &c,
+        3,
+        &CviewParams {
+            batches: 4,
+            seed: 1,
+        },
+    );
     let inp = RefineInputs {
         packed: &gates,
         source_wires: 3,
@@ -330,7 +364,14 @@ fn without_failures_one_round_and_the_lattice_is_unchanged() {
 #[test]
 fn max_rounds_zero_emits_forced_failures_verbatim() {
     let (c, gates, cuts, blobs) = loop_fixture();
-    let cv = CView::new(&c, 3, &CviewParams { batches: 4, seed: 1 });
+    let cv = CView::new(
+        &c,
+        3,
+        &CviewParams {
+            batches: 4,
+            seed: 1,
+        },
+    );
     let inp = RefineInputs {
         packed: &gates,
         source_wires: 3,
@@ -366,5 +407,8 @@ fn max_rounds_zero_emits_forced_failures_verbatim() {
     assert_eq!(concat, gates);
     let tsv = refine_windows_tsv(&out.pieces, &[0, 4, 8, 12, 16]);
     let row: Vec<&str> = tsv.lines().nth(1).unwrap().split('\t').collect();
-    assert_eq!(&row[3..9], &["-1", "4", "4", "verbatim", "max_rounds 0", "0.000"]);
+    assert_eq!(
+        &row[3..9],
+        &["-1", "4", "4", "verbatim", "max_rounds 0", "0.000"]
+    );
 }
