@@ -96,6 +96,10 @@ path = "src/main.rs"
 name = "tdp_packing"
 path = "src/programs/tdp_packing/main.rs"
 
+[[bin]]
+name = "tdp_unpacking"
+path = "src/programs/tdp_unpacking/main.rs"
+
 [[test]]
 name = "circuit_cli"
 path = "tests/integration/circuit_cli.rs"
@@ -112,6 +116,10 @@ path = "tests/integration/mixer_db_replacement.rs"
 [[test]]
 name = "tdp_packing"
 path = "tests/integration/tdp_packing.rs"
+
+[[test]]
+name = "tdp_unpacking"
+path = "tests/integration/tdp_unpacking.rs"
 
 [[test]]
 name = "stage2_typed_params"
