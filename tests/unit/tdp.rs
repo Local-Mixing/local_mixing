@@ -785,7 +785,7 @@ fn the_exact_default_manifest_text() {
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
         "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
         "crossing_target_size_factor=2\ncrossing_width_penalty_base=3\ncrossing_width_penalty_threshold=1\n",
-        "crossing_size_tolerance_divisor=25\ncrossing_move_budget_factor=2\ncrossing_move_attempts=factor*target\n",
+        "crossing_size_tolerance_divisor=25\ncrossing_move_budget_factor=3\ncrossing_move_attempts=factor*target\n",
         "pieces=1\nfrozen_db_dir=unset\nfrozen_db_fingerprint=unset\n",
         "frozen_filter=auto(unset)\n",
         "frozen_regular_value_convention=native\nallow_empty_store=false\nenv_policy=allowlist-v1\n",

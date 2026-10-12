@@ -68,7 +68,7 @@ run_case serial "${FOUR[@]}"
 run_case one "${FOUR[@]}" --parallel-pieces 1
 run_case canonical "${FOUR[@]}" --parallel-target-piece-gates 2 --parallel-threads 3 --db-mixing-schedule custom --db-mixing-target-size-factor 2 --db-mixing-hold-work-units 27
 run_case stop3 --run-stop-after-stage 3
-# the stage-5 move budget: round(factor * target) by default, factor 2
+# the stage-5 move budget: round(factor * target) by default, factor 3
 run_case budget --crossing-move-budget-factor 1.5 --run-stop-after-stage 5
 run_case budget_default --run-stop-after-stage 5
 # ... and the full six-stage chain, with every stage-5/6 knob set
@@ -118,8 +118,8 @@ for mode in ('auto', 'auto_default', 'fixed', 'serial', 'one', 'canonical', 'sto
         assert mixer[mixer.index('--parallel-threads') + 1] == '3', mixer
     if mode.startswith('auto') or mode == 'canonical':
         assert 'automatic pieces target_piece_gates=2' in log
-# the stage-5 budget: target = round(2 gates * 2) = 4; factor 1.5 -> 6 moves, default 2 -> 8; + the state's 7
-for mode, want in (('budget', 7 + 6), ('budget_default', 7 + 8)):
+# the stage-5 budget: target = round(2 gates * 2) = 4; factor 1.5 -> 6 moves, default 3 -> 12; + the state's 7
+for mode, want in (('budget', 7 + 6), ('budget_default', 7 + 12)):
     c = [json.loads(l) for l in (root / f'{mode}.calls').read_text().splitlines()]
     s5 = next(x['args'] for x in c if x['name'] == 'circuit_mixer' and '--target-size' in x['args'])
     assert s5[s5.index('--target-size') + 1] == '4' and s5[s5.index('--moves') + 1] == str(want), (mode, s5)

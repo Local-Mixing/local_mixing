@@ -68,7 +68,7 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 #                           # allowed with probability base^-(c - threshold); 1 = off
 # width_penalty_threshold = 1  # integer >= 0
 # size_tolerance_divisor = 25  # integer >= 1: temperature = max(64, round(target / divisor))
-# move_budget_factor = 2.0  # number in (0, 1000]: move budget = round(factor * target) [2]
+# move_budget_factor = 3.0  # number in (0, 1000]: move budget = round(factor * target) [3]
 # move_attempts = 6000000  # integer >= 1: an absolute budget instead of the factor (exclusive)
 # Either budget is added to the resumed split counter (the mixer's resumed --moves is absolute).
 # Stage 4 (splitting) has no settings: it runs the archive-era flags to exhaustion.

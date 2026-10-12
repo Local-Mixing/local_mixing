@@ -373,7 +373,7 @@ impl CrossingConfig {
         ("width_penalty_base", "3"),
         ("width_penalty_threshold", "1"),
         ("size_tolerance_divisor", "25"),
-        ("move_budget_factor", "2"),
+        ("move_budget_factor", "3"),
         ("move_attempts", "factor*target"),
     ];
 

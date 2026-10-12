@@ -14,7 +14,7 @@
 #   4    circuit_mixer --split --split-stop: every complemented g57 gate split
 #        into plain conjunctions, joined to distant brackets (archive flags)
 #   5    circuit_mixer crossing walk (resumes split.state when stage 4 ran):
-#        target = round(G * factor), temperature target/divisor, 2*target moves
+#        target = round(G * factor), temperature target/divisor, 3*target moves
 #   6    delivery (RC, 2026-10-12: the former stages 6 packing and 7 unpacking
 #        as ONE stage): tdp_packing run (pack G=512, repair, ANF serialization
 #        with budget 65536) -> packing/deliverable.tdp4; then tdp_unpacking
@@ -112,7 +112,7 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --crossing-width-penalty-base B   wide-split acceptance penalty base B >= 1     [3]
   --crossing-width-penalty-threshold C  width below which the penalty is off     [1]
   --crossing-size-tolerance-divisor D   temperature = max(64, round(target / D)) [25]
-  --crossing-move-budget-factor F   move budget = round(F * target), F in (0, 1000]     [2]
+  --crossing-move-budget-factor F   move budget = round(F * target), F in (0, 1000]     [3]
   --crossing-move-attempts M        absolute move budget instead of the factor (exclusive)
                                     (either is added to the resumed split counter)
   --delivery-anf-only               stage 6 ends after the packer's deliverable
@@ -184,7 +184,7 @@ PREPROCESSING_MODE=embedded-masking; PRESET=""
 declare -A KNOB=()
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
 STOP_AFTER=6; FORCE_FROM=99; SKIP_LIST=""
-XR=2; XB=3; XC=1; XTDIV=25; XMF=2; XMOVES=""
+XR=2; XB=3; XC=1; XTDIV=25; XMF=3; XMOVES=""
 DELIV_ANF_ONLY=0
 DELIV_TIME_LIMIT=30; DELIV_RESTARTS=16; DELIV_BEAM=6; DELIV_MAX_ROUNDS=16
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""

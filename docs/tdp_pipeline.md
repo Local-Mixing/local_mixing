@@ -289,7 +289,7 @@ otherwise starts from the previous circuit with its own `cross_seed`.
 | `crossing.width_penalty_base` | number, `3.0` | Base `B` of the wide-split acceptance penalty, in `1..1_000_000`. A relevant parent/control width `c` above threshold `d` is allowed with probability `B^(-(c-d))`; `B=1` disables this damping. |
 | `crossing.width_penalty_threshold` | integer, `1` | Width `d` below which this penalty does not apply, in `0..1_000_000_000`. A width bias, not a maximum legal gate width (`--k-max 12`). |
 | `crossing.size_tolerance_divisor` | integer, `25` | Size-controller temperature `max(64, round(target / divisor))`, in `1..1_000_000_000`. |
-| `crossing.move_budget_factor` | number, `2.0` | Move budget `round(factor * target)`, factor in `(0, 1000]`. The walk reaches its target in about `2 * target` moves; the archive-era driver ran `6 * target` (RC, 2026-10-11: the default is 2). |
+| `crossing.move_budget_factor` | number, `3.0` | Move budget `round(factor * target)`, factor in `(0, 1000]`. The walk reaches its target in about `2 * target` moves; the archive-era driver ran `6 * target`; RC set the default to 2 on 2026-10-11 and to 3 on 2026-10-12. |
 | `crossing.move_attempts` | integer, unset | An absolute move budget instead of the factor (the two are exclusive), in `1..10^12`. |
 
 Either budget is added to the split stage's move counter on a resume of
@@ -583,11 +583,11 @@ move counter; `--moves` is absolute on a resume):
 ```bash
 circuit_mixer --resume split.state --target-size TARGET --temp max(64,round(TARGET/25)) \
     --split-base 3 --split-damp 1 --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 \
-    --moves state_moves+2*TARGET --report-every 500000 --output crossing.mpmct1
+    --moves state_moves+3*TARGET --report-every 500000 --output crossing.mpmct1
 ```
 
 With stage 4 skipped it starts from the previous circuit (`--input …
---seed-file /dev/fd/3`, the `cross_seed`) with `--moves 2*TARGET`. It writes
+--seed-file /dev/fd/3`, the `cross_seed`) with `--moves 3*TARGET`. It writes
 `crossing.mpmct1`, `stage5.log` and `stage5.recipe` (which records the
 source: `resume split.state` or `input <file>`). No state file is written:
 nothing downstream resumes it. At n=64 the walk takes 3.03M gates to 5.49M
