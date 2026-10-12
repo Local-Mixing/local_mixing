@@ -1,22 +1,34 @@
 #!/bin/bash
-# TDP generation: the end-to-end four-stage pipeline. Manual: docs/tdp_pipeline.md;
-# design and the reference recipe: docs/STAGE4_RUST_DESIGN.md.
+# TDP generation: the end-to-end seven-stage pipeline. Manual: docs/tdp_pipeline.md;
+# design and the reference recipe of stages 1-3 and 6: docs/STAGE4_RUST_DESIGN.md.
 #
-# Stages:
+# Stages (every stage after the first is optional: --run-skip-stages; the
+# default runs all seven):
 #   1+2  gen_sandwich_gadget: sliced sandwich S of a source C, then embedded
-#        masking (preset L8 by default; A = no bounded chains) or nonlinear291
+#        masking (preset L8 by default; A = no bounded chains) or nonlinear291.
+#        Skipping stage 2 hands the sandwich itself (tdp.mpmct1.sandwich.mpmct1)
+#        to the next stage.
 #   3    circuit_mixer db_mixing: --tdp --db-mixing, schedule `validated`
 #        (--profile 2,2,2,2,2, --moves int(G*2*2*1.3)), regular frozen store
-#   4    tdp_packing run: windowed ANF delivery (pack G=512, repair, ANF
+#   4    circuit_mixer --split --split-stop: every complemented g57 gate split
+#        into plain conjunctions, joined to distant brackets (archive flags)
+#   5    circuit_mixer crossing walk (resumes split.state when stage 4 ran):
+#        target = round(G * factor), temperature target/divisor, 6*target moves
+#   6    tdp_packing run: windowed ANF delivery (pack G=512, repair, ANF
 #        serialization with budget 65536) -> packing/deliverable.tdp4
+#   7    tdp_unpacking run: every delivered window resynthesized from its ANF
+#        alone, concatenated, canonically reordered -> unpacking/unpacked.mpmct1
 #
-# DEFAULTS reproduce scripts/windowed_delivery/waist/val_chain.sh CONFIG=L8 as
-# run for the chosen validation runs vL64a/b, vL128a/b: same gen argv and
-# stage-2 environment, same mixer argv and environment (serial), the same
-# stage 4 (bit-exact port of the Python oracle). Seeds are fresh CSPRNG draws
-# kept in the private $RUN/SEEDS; explicit seeds (--seed-file) are for
-# calibration and reproduction only. Unlike val_chain.sh, the seeds reach gen
-# and the mixer on inherited descriptors (@/dev/fd/N, --seed-file /dev/fd/3),
+# DEFAULTS of stages 1-3 and 6 reproduce scripts/windowed_delivery/waist/
+# val_chain.sh CONFIG=L8 as run for the chosen validation runs vL64a/b,
+# vL128a/b: same gen argv and stage-2 environment, same mixer argv and
+# environment (serial), the same stage 6 (bit-exact port of the Python
+# oracle); `--run-skip-stages 4,5,7` is that four-stage chain exactly. Stages
+# 4 and 5 run with the flags of the archive-era driver (ea2e516f). Seeds are
+# fresh CSPRNG draws kept in the private $RUN/SEEDS (format 3: gen, mix,
+# split, cross and unpack seeds); explicit seeds (--seed-file) are for
+# calibration and reproduction only. Unlike val_chain.sh, the seeds reach the
+# stage binaries on inherited descriptors (@/dev/fd/N, --seed-file /dev/fd/3),
 # never on argv where ps shows them; their banners print "(file)".
 #
 # Environment discipline: every stage binary starts from an EMPTY environment
@@ -89,8 +101,19 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --packing-allow-floor-miss        ship despite a visible non-output row (NOT recommended)
   --packing-allow-over-budget       ship despite an over-budget window (NOT recommended)
   --threads T              pin RAYON_NUM_THREADS and tdp_packing --threads
-  --run-stop-after-stage K   stop after stage K (2, 3 or 4)                [4]
-  --run-rerun-from-stage K   rebuild from stage K (2, 3 or 4)          [unset]
+  --crossing-target-size-factor R   stage-5 target = round(G * R), R in [1, 16]  [2]
+  --crossing-width-penalty-base B   wide-split acceptance penalty base B >= 1     [3]
+  --crossing-width-penalty-threshold C  width below which the penalty is off     [1]
+  --crossing-size-tolerance-divisor D   temperature = max(64, round(target / D)) [25]
+  --crossing-move-attempts M        move budget (added to the resumed counter) [6*target]
+  --unpacking-time-limit S          synthesis wall limit per window, seconds   [30]
+  --unpacking-restarts R            synthesis restarts per window              [16]
+  --unpacking-beam B                synthesis lookahead width                   [6]
+  --unpacking-no-fallback           a window that fails to synthesize is fatal
+                                    (default: its packed gates are emitted verbatim, counted)
+  --run-skip-stages LIST   comma-separated stages to skip (2..7; 7 needs 6)  [none]
+  --run-stop-after-stage K   stop after stage K (2..7)                      [7]
+  --run-rerun-from-stage K   rebuild from stage K (2..7)                [unset]
   --parallel-pieces P      stage-3 piecewise-parallel mixing [1 = serial; 1..64]
                            (changes the stage-3 bytes; not the validated recipe)
   --parallel-target-piece-gates B   automatic piece sizing (2..1000000000)
@@ -98,7 +121,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
 env (inputs only; every other output-affecting variable is refused):
   FROZEN_DB_DIR       the regular frozen store (required for stage 3)
   TDP_GEN_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
-  TDP_BIN_DIR         directory with gen_sandwich_gadget, circuit_mixer, tdp_packing
+  TDP_BIN_DIR         directory with gen_sandwich_gadget, circuit_mixer, tdp_packing,
+                      tdp_unpacking
                       [default: repository target/release]
 EOF
   exit "${1:-1}"
@@ -148,7 +172,9 @@ N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""
 PREPROCESSING_MODE=embedded-masking; PRESET=""
 declare -A KNOB=()
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
-STOP_AFTER=4; FORCE_FROM=99
+STOP_AFTER=7; FORCE_FROM=99; SKIP_LIST=""
+XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
+UNPACK_TIME_LIMIT=30; UNPACK_RESTARTS=16; UNPACK_BEAM=6; UNPACK_NO_FALLBACK=0
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""
 FILTER=auto; QC=0; QC_SEED=20803; QC_REF=""; THREADS=""
 PACK_WINDOW_GATES=512; PACK_INTERVAL_CAP=512; PACK_MONOMIAL_BUDGET=24576; PACK_SPAN_CAP=3000
@@ -165,6 +191,12 @@ while [ $# -gt 0 ]; do
     --hold) set -- --db-mixing-hold-work-units "${@:2}" ;;
     --stop-after) set -- --run-stop-after-stage "${@:2}" ;;
     --force-from) set -- --run-rerun-from-stage "${@:2}" ;;
+    --skip-stages) set -- --run-skip-stages "${@:2}" ;;
+    --xr) set -- --crossing-target-size-factor "${@:2}" ;;
+    --xb) set -- --crossing-width-penalty-base "${@:2}" ;;
+    --xc) set -- --crossing-width-penalty-threshold "${@:2}" ;;
+    --xtdiv) set -- --crossing-size-tolerance-divisor "${@:2}" ;;
+    --xmoves) set -- --crossing-move-attempts "${@:2}" ;;
     --pieces) set -- --parallel-pieces "${@:2}" ;;
     --min-block-size) set -- --parallel-target-piece-gates "${@:2}" ;;
     --piece-threads) set -- --parallel-threads "${@:2}" ;;
@@ -172,8 +204,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -s|--calibration-seed)
       fatal "seeds on argv are no longer accepted (they appear in ps); use --seed-file (lines gen_seed= and mix_seed=)" ;;
-    --crossing-*|--xr|--xb|--xc|--xtdiv|--xmoves)
-      fatal "$1 configured the crossing walk (old stage 5), which is historic; see branch ran/archive/curated-and-postmix" ;;
   esac
   case "$1" in
     --*)
@@ -181,7 +211,7 @@ while [ $# -gt 0 ]; do
       SEEN[$1]=1 ;;
   esac
   case "$1" in
-    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget) ;;
+    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget|--unpacking-no-fallback) ;;
     --*)
       if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then fatal "$1 requires an argument"; fi ;;
   esac
@@ -216,7 +246,17 @@ while [ $# -gt 0 ]; do
     --packing-anf-cap-semantics) PACK_CAP_SEM=$2; shift 2 ;;
     --packing-allow-floor-miss) PACK_ALLOW_FLOOR=1; shift ;;
     --packing-allow-over-budget) PACK_ALLOW_BUDGET=1; shift ;;
+    --crossing-target-size-factor) XR=$2; shift 2 ;;
+    --crossing-width-penalty-base) XB=$2; shift 2 ;;
+    --crossing-width-penalty-threshold) XC=$2; shift 2 ;;
+    --crossing-size-tolerance-divisor) XTDIV=$2; shift 2 ;;
+    --crossing-move-attempts) XMOVES=$2; shift 2 ;;
+    --unpacking-time-limit) UNPACK_TIME_LIMIT=$2; shift 2 ;;
+    --unpacking-restarts) UNPACK_RESTARTS=$2; shift 2 ;;
+    --unpacking-beam) UNPACK_BEAM=$2; shift 2 ;;
+    --unpacking-no-fallback) UNPACK_NO_FALLBACK=1; shift ;;
     --threads) THREADS=$2; shift 2 ;;
+    --run-skip-stages) SKIP_LIST=$2; shift 2 ;;
     --run-stop-after-stage) STOP_AFTER=$2; shift 2 ;;
     --run-rerun-from-stage) FORCE_FROM=$2; shift 2 ;;
     --parallel-pieces) PIECES=$2; PIECES_SET=1; shift 2 ;;
@@ -266,13 +306,21 @@ case "$PREPROCESSING_MODE" in
   nonlinear291|embedded-masking) ;;
   *) fatal "--preprocessing-mode must be embedded-masking or nonlinear291" ;;
 esac
-for stage_arg in "$STOP_AFTER" "$FORCE_FROM"; do
-  case "$stage_arg" in
-    5|6) fatal "stage $stage_arg (old crossing/fcompress) is historic; use 2, 3 or 4 (see branch ran/archive/curated-and-postmix)" ;;
-  esac
-done
-STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 4)
-[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 4)
+STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 7)
+[ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 7)
+# ---- optional stages (every stage after the first) ----
+SKIP=","
+if [ -n "$SKIP_LIST" ]; then
+  IFS=, read -r -a skip_items <<< "$SKIP_LIST"
+  for item in "${skip_items[@]}"; do
+    item=$(bounded_uint --run-skip-stages "$item" 2 7) || exit 2
+    [[ $SKIP == *",$item,"* ]] || SKIP="$SKIP$item,"
+  done
+fi
+stage_on() { [ "$1" -le "$STOP_AFTER" ] && [[ $SKIP != *",$1,"* ]]; }
+if stage_on 7 && ! stage_on 6; then
+  fatal "stage 7 (unpacking) needs stage 6 (packing): keep stage 6 or skip stage 7 too"
+fi
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   [ "$PIECES_SET" -eq 0 ] || fatal "--parallel-target-piece-gates is mutually exclusive with --parallel-pieces (including 1)"
@@ -377,7 +425,25 @@ case "$SCHEDULE" in
   *) fatal "--db-mixing-schedule must be validated or custom" ;;
 esac
 
-# ---- stage-4 parameters ----
+# ---- stage-5 (crossing walk) parameters ----
+XR=$(bounded_number --crossing-target-size-factor "$XR" 1 16 0) || exit 2
+XB=$(bounded_number --crossing-width-penalty-base "$XB" 1 1000000 0) || exit 2
+XC=$(bounded_uint --crossing-width-penalty-threshold "$XC" 0 1000000000)
+XTDIV=$(bounded_uint --crossing-size-tolerance-divisor "$XTDIV" 1 1000000000)
+[ -z "$XMOVES" ] || XMOVES=$(bounded_uint --crossing-move-attempts "$XMOVES" 1 1000000000000)
+
+# ---- stage-7 (unpacking) parameters ----
+UNPACK_TIME_LIMIT=$(bounded_number --unpacking-time-limit "$UNPACK_TIME_LIMIT" 0 86400 1) || exit 2
+UNPACK_RESTARTS=$(bounded_uint --unpacking-restarts "$UNPACK_RESTARTS" 1 1000)
+UNPACK_BEAM=$(bounded_uint --unpacking-beam "$UNPACK_BEAM" 1 1000)
+UNPACKFLAGS=()
+uf() { [ "$2" = "$3" ] || UNPACKFLAGS+=("$1" "$2"); }
+uf --time-limit "$UNPACK_TIME_LIMIT" 30
+uf --restarts "$UNPACK_RESTARTS" 16
+uf --beam "$UNPACK_BEAM" 6
+[ "$UNPACK_NO_FALLBACK" = 0 ] || UNPACKFLAGS+=(--no-fallback)
+
+# ---- stage-6 (packing) parameters ----
 PACK_WINDOW_GATES=$(bounded_uint --packing-window-gates "$PACK_WINDOW_GATES" 1 1000000)
 PACK_INTERVAL_CAP=$(bounded_uint --packing-interval-cap "$PACK_INTERVAL_CAP" 1 1000000)
 # monomial and split budgets are resource bounds (memory grows with them):
@@ -388,7 +454,7 @@ PACK_SPLIT_BUDGET=$(bounded_uint --packing-split-budget "$PACK_SPLIT_BUDGET" 1 2
 PACK_FIX_ITERATIONS=$(bounded_uint --packing-fix-iterations "$PACK_FIX_ITERATIONS" 0 1000)
 PACK_FALLBACK_ITERATIONS=$(bounded_uint --packing-fallback-iterations "$PACK_FALLBACK_ITERATIONS" 0 1000)
 case "$PACK_CAP_SEM" in cpython39|canonical) ;; *) fatal "--packing-anf-cap-semantics must be cpython39 or canonical" ;; esac
-[ "$STOP_AFTER" -lt 4 ] || [ "$N" -le 256 ] || fatal "stage 4 supports source wires up to 256"
+! stage_on 6 || [ "$N" -le 256 ] || fatal "stage 6 (packing) supports source wires up to 256"
 PACKFLAGS=()
 pf() { [ "$2" = "$3" ] || PACKFLAGS+=("$1" "$2"); }
 pf --window-gates "$PACK_WINDOW_GATES" 512
@@ -425,11 +491,11 @@ l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
-if [ "$PREPROCESSING_MODE" = nonlinear291 ] && [ "$STOP_AFTER" -ge 4 ]; then
+if [ "$PREPROCESSING_MODE" = nonlinear291 ] && stage_on 6; then
   # nonlinear_tdp_wire_count(2n, 2|C|+2s+n): 12 per logical wire, 12 per gate, 29 shared
   NL_WIRES=$(( 12 * 2 * N + 12 * (2 * M_CD + 2 * S_SL + N) + 29 ))
   [ "$NL_WIRES" -le 1024 ] ||
-    fatal "nonlinear291 makes a $NL_WIRES-wire stage-2 circuit; stage 4 supports at most 1024 state wires; use --run-stop-after-stage 3 or --preprocessing-mode embedded-masking"
+    fatal "nonlinear291 makes a $NL_WIRES-wire stage-2 circuit; stage 6 (packing) supports at most 1024 state wires; stop before stage 6 or use --preprocessing-mode embedded-masking"
 fi
 
 # Renamed stage artifacts must not make an existing legacy run look fresh.
@@ -442,46 +508,88 @@ done
 
 BIN=${TDP_BIN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/target/release}
 need=(gen_sandwich_gadget circuit_mixer)
-[ "$STOP_AFTER" -lt 4 ] || need+=(tdp_packing)
+! stage_on 6 || need+=(tdp_packing)
+! stage_on 7 || need+=(tdp_unpacking)
 for b in "${need[@]}"; do
   [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first" >&2; exit 1; }
 done
 
-# ---- seeds (§8): $RUN/SEEDS, format 2, private ----
+# ---- seeds (§8): $RUN/SEEDS, format 3, private ----
+# Five seeds: gen (stages 1+2), mix (3), split (4), cross (5, only when stage 5
+# starts from a circuit file; a resume of split.state continues that RNG) and
+# unpack (7). A format-2 SEEDS (gen and mix only, written by the four-stage
+# driver) is upgraded in place on resume: the three new seeds are drawn fresh.
 U63=9223372036854775792
-parse_seeds() { # FILE -> sets GEN_SEED MIX_SEED SEED_SOURCE; never prints values
-  local f=$1 lines
-  { [ -f "$f" ] && [ "$(wc -c < "$f")" -le 512 ]; } || fatal "$f is not a valid SEEDS file"
-  mapfile -t lines < "$f"
-  { [ "${#lines[@]}" -eq 5 ] && [ "${lines[0]}" = seeds_format=2 ] &&
-    [[ ${lines[1]} =~ ^gen_seed=([0-9]+)$ ]] && GEN_SEED=${BASH_REMATCH[1]} &&
-    [[ ${lines[2]} =~ ^mix_seed=([0-9]+)$ ]] && MIX_SEED=${BASH_REMATCH[1]} &&
-    [[ ${lines[3]} =~ ^run_key=[0-9a-f]{64}$ ]] &&
-    [[ ${lines[4]} =~ ^seed_source=(random|explicit)$ ]] && SEED_SOURCE=${BASH_REMATCH[1]}; } ||
-    fatal "$f is malformed (expected seeds_format=2, gen_seed=, mix_seed=, run_key=<64 hex>, seed_source=)"
-  GEN_SEED=$(bounded_uint gen_seed "$GEN_SEED" 0 "$U63" 2>/dev/null) || fatal "$f: gen_seed out of range"
-  MIX_SEED=$(bounded_uint mix_seed "$MIX_SEED" 0 "$U63" 2>/dev/null) || fatal "$f: mix_seed out of range"
+SEED_NAMES=(gen mix split cross unpack)
+random_seed() { python3 -I -c "import secrets; print(secrets.randbelow($U63 + 1))"; }
+write_seeds() { # FILE SOURCE -> writes GEN_SEED..UNPACK_SEED and RUN_KEY_HEX, mode 600, never printing values
+  ( umask 077; set -o noclobber
+    printf 'seeds_format=3\ngen_seed=%s\nmix_seed=%s\nsplit_seed=%s\ncross_seed=%s\nunpack_seed=%s\nrun_key=%s\nseed_source=%s\n' \
+      "$GEN_SEED" "$MIX_SEED" "$SPLIT_SEED" "$CROSS_SEED" "$UNPACK_SEED" "$RUN_KEY_HEX" "$2" > "$1.tmp" ) || return 1
+  mv -f "$1.tmp" "$1"
 }
-read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX
-  local f=$1 lines l mode
+parse_seeds() { # FILE -> sets GEN_SEED MIX_SEED SPLIT_SEED CROSS_SEED UNPACK_SEED RUN_KEY_HEX SEED_SOURCE; never prints values
+  local f=$1 lines upgraded=0
+  { [ -f "$f" ] && [ "$(wc -c < "$f")" -le 1024 ]; } || fatal "$f is not a valid SEEDS file"
+  mapfile -t lines < "$f"
+  if [ "${#lines[@]}" -eq 5 ] && [ "${lines[0]}" = seeds_format=2 ]; then
+    # format 2 (four-stage driver): gen, mix, run_key, source
+    { [[ ${lines[1]} =~ ^gen_seed=([0-9]+)$ ]] && GEN_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[2]} =~ ^mix_seed=([0-9]+)$ ]] && MIX_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[3]} =~ ^run_key=([0-9a-f]{64})$ ]] && RUN_KEY_HEX=${BASH_REMATCH[1]} &&
+      [[ ${lines[4]} =~ ^seed_source=(random|explicit)$ ]] && SEED_SOURCE=${BASH_REMATCH[1]}; } ||
+      fatal "$f is malformed (format 2: seeds_format=2, gen_seed=, mix_seed=, run_key=<64 hex>, seed_source=)"
+    SPLIT_SEED=$(random_seed); CROSS_SEED=$(random_seed); UNPACK_SEED=$(random_seed); upgraded=1
+  else
+    { [ "${#lines[@]}" -eq 8 ] && [ "${lines[0]}" = seeds_format=3 ] &&
+      [[ ${lines[1]} =~ ^gen_seed=([0-9]+)$ ]] && GEN_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[2]} =~ ^mix_seed=([0-9]+)$ ]] && MIX_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[3]} =~ ^split_seed=([0-9]+)$ ]] && SPLIT_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[4]} =~ ^cross_seed=([0-9]+)$ ]] && CROSS_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[5]} =~ ^unpack_seed=([0-9]+)$ ]] && UNPACK_SEED=${BASH_REMATCH[1]} &&
+      [[ ${lines[6]} =~ ^run_key=([0-9a-f]{64})$ ]] && RUN_KEY_HEX=${BASH_REMATCH[1]} &&
+      [[ ${lines[7]} =~ ^seed_source=(random|explicit)$ ]] && SEED_SOURCE=${BASH_REMATCH[1]}; } ||
+      fatal "$f is malformed (expected seeds_format=3, gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=, run_key=<64 hex>, seed_source=)"
+  fi
+  local name var t
+  for name in "${SEED_NAMES[@]}"; do
+    var=${name^^}_SEED
+    t=$(bounded_uint "${name}_seed" "${!var}" 0 "$U63" 2>/dev/null) || fatal "$f: ${name}_seed out of range"
+    printf -v "$var" '%s' "$t"
+  done
+  if [ "$upgraded" = 1 ]; then
+    write_seeds "$f" "$SEED_SOURCE" || fatal "cannot upgrade $f to seeds format 3"
+    SEEDS_UPGRADED=1
+  fi
+}
+read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX EXPL_SPLIT EXPL_CROSS EXPL_UNPACK (the last three may stay empty: drawn fresh)
+  local f=$1 lines l mode name
   [ -f "$f" ] || fatal "--seed-file $f is not a regular file"
-  [ "$(wc -c < "$f")" -le 256 ] || fatal "--seed-file $f is too large (maximum 256 bytes)"
+  [ "$(wc -c < "$f")" -le 512 ] || fatal "--seed-file $f is too large (maximum 512 bytes)"
   mode=$(python3 -I -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$f")
   [ $((8#$mode & 8#077)) -eq 0 ] || fatal "--seed-file $f must not be accessible by group/other (chmod 600)"
   mapfile -t lines < "$f"
   if [ "${#lines[@]}" -eq 1 ] && [[ ${lines[0]} =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
-    fatal "seed file format 1 holds one seed; recipe v10 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
+    fatal "seed file format 1 holds one seed; recipe v11 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
   fi
-  EXPL_GEN=""; EXPL_MIX=""
+  EXPL_GEN=""; EXPL_MIX=""; EXPL_SPLIT=""; EXPL_CROSS=""; EXPL_UNPACK=""
   for l in "${lines[@]}"; do
     if [[ $l =~ ^gen_seed=([0-9]+)$ ]] && [ -z "$EXPL_GEN" ]; then EXPL_GEN=${BASH_REMATCH[1]}
     elif [[ $l =~ ^mix_seed=([0-9]+)$ ]] && [ -z "$EXPL_MIX" ]; then EXPL_MIX=${BASH_REMATCH[1]}
-    elif [ -n "$l" ]; then fatal "--seed-file $f: unexpected line (only gen_seed= and mix_seed=)"
+    elif [[ $l =~ ^split_seed=([0-9]+)$ ]] && [ -z "$EXPL_SPLIT" ]; then EXPL_SPLIT=${BASH_REMATCH[1]}
+    elif [[ $l =~ ^cross_seed=([0-9]+)$ ]] && [ -z "$EXPL_CROSS" ]; then EXPL_CROSS=${BASH_REMATCH[1]}
+    elif [[ $l =~ ^unpack_seed=([0-9]+)$ ]] && [ -z "$EXPL_UNPACK" ]; then EXPL_UNPACK=${BASH_REMATCH[1]}
+    elif [ -n "$l" ]; then fatal "--seed-file $f: unexpected line (only gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=)"
     fi
   done
   { [ -n "$EXPL_GEN" ] && [ -n "$EXPL_MIX" ]; } || fatal "--seed-file $f needs both gen_seed= and mix_seed="
-  EXPL_GEN=$(bounded_uint gen_seed "$EXPL_GEN" 0 "$U63" 2>/dev/null) || fatal "--seed-file: gen_seed out of range 0..$U63"
-  EXPL_MIX=$(bounded_uint mix_seed "$EXPL_MIX" 0 "$U63" 2>/dev/null) || fatal "--seed-file: mix_seed out of range 0..$U63"
+  local v t
+  for name in GEN MIX SPLIT CROSS UNPACK; do
+    v=EXPL_$name
+    [ -n "${!v}" ] || continue
+    t=$(bounded_uint "${name,,}_seed" "${!v}" 0 "$U63" 2>/dev/null) || fatal "--seed-file: ${name,,}_seed out of range 0..$U63"
+    printf -v "$v" '%s' "$t"
+  done
 }
 [ -z "$SEED_FILE" ] || read_seed_file "$SEED_FILE"
 
@@ -493,25 +601,32 @@ STAGE12_RECIPE_FILE=$RUN/stage12.recipe
 LOGALL=$RUN/tdp_gen.log
 note() { echo "[tdp_gen] $*" | tee -a "$LOGALL"; }
 [ -s "$GADGET" ] || FORCE_FROM=2
+SEEDS_UPGRADED=0
 if [ -e "$SEEDS" ]; then
   parse_seeds "$SEEDS"
-  if [ -n "$SEED_FILE" ] && { [ "$EXPL_GEN" != "$GEN_SEED" ] || [ "$EXPL_MIX" != "$MIX_SEED" ]; }; then
-    fatal "--seed-file conflicts with the existing $SEEDS; use the original seeds or a fresh run directory"
+  if [ -n "$SEED_FILE" ]; then
+    conflict=0
+    [ "$EXPL_GEN" = "$GEN_SEED" ] || conflict=1
+    [ "$EXPL_MIX" = "$MIX_SEED" ] || conflict=1
+    [ -z "$EXPL_SPLIT" ] || [ "$EXPL_SPLIT" = "$SPLIT_SEED" ] || conflict=1
+    [ -z "$EXPL_CROSS" ] || [ "$EXPL_CROSS" = "$CROSS_SEED" ] || conflict=1
+    [ -z "$EXPL_UNPACK" ] || [ "$EXPL_UNPACK" = "$UNPACK_SEED" ] || conflict=1
+    [ "$conflict" = 0 ] || fatal "--seed-file conflicts with the existing $SEEDS; use the original seeds or a fresh run directory"
   fi
   SEED_SRC="RESUMED from $SEEDS ($SEED_SOURCE)"
+  [ "$SEEDS_UPGRADED" = 0 ] || SEED_SRC="$SEED_SRC, upgraded from format 2: split, cross and unpack seeds drawn fresh"
 else
   [ ! -s "$GADGET" ] || fatal "existing stage-2 artifact has no SEEDS; use a fresh run directory"
-  KEY=$(python3 -I -c 'import secrets; print(secrets.token_hex(32))')
+  RUN_KEY_HEX=$(python3 -I -c 'import secrets; print(secrets.token_hex(32))')
   if [ -n "$SEED_FILE" ]; then
     GEN_SEED=$EXPL_GEN; MIX_SEED=$EXPL_MIX; SEED_SOURCE=explicit
+    SPLIT_SEED=${EXPL_SPLIT:-$(random_seed)}; CROSS_SEED=${EXPL_CROSS:-$(random_seed)}; UNPACK_SEED=${EXPL_UNPACK:-$(random_seed)}
   else
-    read -r GEN_SEED MIX_SEED < <(python3 -I -c "import secrets; print(secrets.randbelow($U63 + 1), secrets.randbelow($U63 + 1))")
+    GEN_SEED=$(random_seed); MIX_SEED=$(random_seed); SPLIT_SEED=$(random_seed); CROSS_SEED=$(random_seed); UNPACK_SEED=$(random_seed)
     SEED_SOURCE=random
   fi
-  ( umask 077; set -o noclobber
-    printf 'seeds_format=2\ngen_seed=%s\nmix_seed=%s\nrun_key=%s\nseed_source=%s\n' \
-      "$GEN_SEED" "$MIX_SEED" "$KEY" "$SEED_SOURCE" > "$SEEDS" ) || fatal "cannot create $SEEDS"
-  unset KEY
+  write_seeds "$SEEDS" "$SEED_SOURCE" || fatal "cannot create $SEEDS"
+  unset RUN_KEY_HEX
   SEED_SRC="NEW ($SEED_SOURCE) in $SEEDS"
 fi
 [ "$SEED_SOURCE" = random ] || SEED_SRC="$SEED_SRC — EXPLICIT: calibration only, NOT a deliverable"
@@ -612,10 +727,59 @@ if [ ! -s "$RUN/stage2_span.txt" ]; then
   fi
 fi
 wait_side() { local p; for p in ${SIDE_PIDS[@]+"${SIDE_PIDS[@]}"}; do wait "$p" || true; done; SIDE_PIDS=(); }
-if [ "$STOP_AFTER" -le 2 ]; then wait_side; note "stopped after stage 2"; exit 0; fi
+# The circuit each stage reads: the output of the last stage that ran (stage 2
+# skipped: the sandwich S itself). STAGE2_INPUT is what stage 6 hides.
+CUR=$GADGET; STAGE2_INPUT=$GADGET
+if ! stage_on 2; then
+  CUR=$GADGET.sandwich.mpmct1; STAGE2_INPUT=$CUR
+  [ -s "$CUR" ] || fatal "stage 2 skipped but $CUR (the sandwich) is missing"
+  note "stage 2: SKIPPED (the sandwich $CUR goes on)"
+fi
+RAN="1"; ! stage_on 2 || RAN="1,2"
+ran_text() { # "1,2,3,6,7" -> "1-3,6-7"
+  python3 -I -c '
+import sys
+xs = [int(x) for x in sys.argv[1].split(",")]
+out, i = [], 0
+while i < len(xs):
+    j = i
+    while j + 1 < len(xs) and xs[j + 1] == xs[j] + 1:
+        j += 1
+    out.append(str(xs[i]) if i == j else f"{xs[i]}-{xs[j]}")
+    i = j + 1
+print(",".join(out))' "$RAN"
+}
+stop_here() { # K: stop after stage K when asked
+  if [ "$STOP_AFTER" -le "$1" ]; then
+    wait_side; note "PIPELINE STOPPED after stage $1 (stages $(ran_text)): $CUR"; exit 0
+  fi
+}
+stop_here 2
+
+# Stage completion markers for stages 3-5 and 7 (stage 6 keeps packing.recipe):
+# the recipe text, then the keyed tag of the output, then extra lines. A resume
+# skips the stage only when every line of the recipe text and the output's tag
+# still match, so an interrupted or partially written output, or a changed input,
+# parameter or binary, re-runs the stage.
+marker_ok() { # MARKER EXPECTED_TEXT ARTIFACT MACKEY
+  local marker=$1 expected=$2 artifact=$3 key=$4 nexp
+  [ -s "$marker" ] && [ -s "$artifact" ] || return 1
+  nexp=$(printf '%s\n' "$expected" | wc -l | tr -d ' ')
+  [ "$(head -n "$nexp" "$marker")" = "$expected" ] &&
+    [ "$(sed -n "$((nexp + 1))p" "$marker")" = "$(mac "$key=$artifact")" ]
+}
+write_marker() { # MARKER EXPECTED_TEXT ARTIFACT MACKEY EXTRA_LINES...
+  local marker=$1 expected=$2 artifact=$3 key=$4; shift 4
+  { printf '%s\n' "$expected"; mac "$key=$artifact"; [ $# -eq 0 ] || printf '%s\n' "$@"; } > "$marker.tmp"
+  mv "$marker.tmp" "$marker"
+}
+# The mixer's chain-done reason: "[circuit_mixer] chain done in Ts: <reason> (...)".
+stop_reason_of() { sed -n 's/^\[circuit_mixer\] chain done in [0-9.]*s: \(.*\) ([0-9]* -> [0-9]* gates, .*$/\1/p' "$1" | tail -1; }
+MIXER_CACHE_ENV=(FROZEN_REGULAR_VALUE_CONVENTION=native LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256 XPOLY_CANON_CACHE_MB=1024)
 
 # ---- stage 3: circuit_mixer db_mixing ----
-G_IN=$(gates_of "$GADGET")
+if stage_on 3; then
+G_IN=$(gates_of "$CUR")
 if [ "$SCHEDULE" = validated ]; then
   A_MOVES=$(python3 -I -c "import sys; G=int(sys.argv[1]); print(int(G*2*2*1.3))" "$G_IN")
 else
@@ -627,16 +791,14 @@ if [ "$QC" = 1 ]; then
   [ -z "$QC_REF" ] || QCFLAGS+=(--leakage-repair-reference "$QC_REF")
 fi
 # Stage-3 completion marker: written only after the mixer finished with an
-# accepted stop reason, keyed to the stage-2 input, the schedule and the output
-# bytes. A resume skips stage 3 only when all of them still match, so an
-# interrupted or partially written db_mixing.mpmct1 (kill, crash before the data
-# reached disk) is re-run here instead of failing stage 4 on every resume. The
-# store is deliberately not part of it: a resume after stage 3 needs no store.
+# accepted stop reason, keyed to the stage-3 input, the schedule and the output
+# bytes. The store is deliberately not part of it: a resume after stage 3 needs
+# no store.
 STAGE3_MARKER=$RUN/stage3.recipe
 expected_stage3_marker() {
   echo "tdp_stage3_recipe=1"
   echo "stage3_args=--profile $PROFILE --moves $A_MOVES${PIECEFLAGS[*]:+ ${PIECEFLAGS[*]}}${QCFLAGS[*]:+ ${QCFLAGS[*]}}"
-  mac stage2="$GADGET"
+  mac stage2="$CUR"
 }
 stage3_done=0
 if [ "$FORCE_FROM" -gt 3 ] && [ -s "$DB_MIXING" ]; then
@@ -648,17 +810,17 @@ if [ "$FORCE_FROM" -gt 3 ] && [ -s "$DB_MIXING" ]; then
       stage3_done=1
     fi
   fi
-  # A run from before this marker: adopt its output only when stage 4 already
+  # A run from before this marker: adopt its output only when stage 6 already
   # consumed exactly these bytes (packing.recipe's keyed tags of both inputs)
   # and stage3.settings records an accepted stop.
   if [ "$stage3_done" -eq 0 ] && [ ! -e "$STAGE3_MARKER" ] && [ -s "$RUN/packing.recipe" ] &&
      grep -Eqx 'stop_reason=(moves budget spent|profile complete \(size schedule finished\))' "$RUN/stage3.settings" 2>/dev/null &&
-     grep -qxF "$(mac stage2="$GADGET")" "$RUN/packing.recipe" &&
+     grep -qxF "$(mac stage2="$CUR")" "$RUN/packing.recipe" &&
      grep -qxF "$(mac stage3="$DB_MIXING")" "$RUN/packing.recipe"; then
     { expected_stage3_marker; mac db_mixing="$DB_MIXING"; sed -n 's/^stop_reason=/stop_reason=/p' "$RUN/stage3.settings"; echo "adopted=packing.recipe"; } > "$STAGE3_MARKER.tmp"
     mv "$STAGE3_MARKER.tmp" "$STAGE3_MARKER"
     stage3_done=1
-    note "stage 3: adopted $DB_MIXING (no stage-3 marker; stage 4's completion marker covers these exact bytes)"
+    note "stage 3: adopted $DB_MIXING (no stage-3 marker; stage 6's completion marker covers these exact bytes)"
   fi
   [ "$stage3_done" -eq 1 ] ||
     note "stage 3: $DB_MIXING has no matching completion marker ($STAGE3_MARKER missing or stale: an interrupted or partial output, or a changed stage-2 input or schedule); re-running stage 3"
@@ -668,8 +830,7 @@ if [ "$stage3_done" -eq 0 ]; then
     echo "FATAL: stage 3 needs FROZEN_DB_DIR (or TDP_GEN_ALLOW_EMPTY_STORE=1 for a plumbing test)" >&2; exit 1
   fi
   rm -f "$STAGE3_MARKER" "$DB_MIXING.tmp" "$RUN/stage3.settings"; FF=""
-  RECIPE_ENV=(FROZEN_REGULAR_VALUE_CONVENTION=native LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256
-              XPOLY_CANON_CACHE_MB=1024 MIXER_STOP_FLAG="$RUN/stage3.stop" MIXER_DUMP_FLAG="$RUN/stage3.dump")
+  RECIPE_ENV=("${MIXER_CACHE_ENV[@]}" MIXER_STOP_FLAG="$RUN/stage3.stop" MIXER_DUMP_FLAG="$RUN/stage3.dump")
   rm -f "$RUN/stage3.stop"
   DBFLAGS=(--p-db 1.0)
   FILTER_NOTE=""
@@ -703,17 +864,16 @@ if [ "$stage3_done" -eq 0 ]; then
   [ "$QC" != 1 ] || note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
   note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES (schedule $SCHEDULE, $PIECE_DESCRIPTION)$FILTER_NOTE"
   # val_chain.sh's argv, in its order (the seed as --seed-file /dev/fd/3, off argv); optional flags only when enabled.
-  stage_exec "$BIN/circuit_mixer" --input "$GADGET" --output "$DB_MIXING" --tdp --db-mixing \
+  stage_exec "$BIN/circuit_mixer" --input "$CUR" --output "$DB_MIXING" --tdp --db-mixing \
       --profile "$PROFILE" --moves "$A_MOVES" "${DBFLAGS[@]}" \
       --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
       --no-local-verify --seed-file /dev/fd/3 \
       ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} 3<<< "$MIX_SEED" > "$RUN/stage3.log" 2>&1 ||
     { note "stage 3 FAILED; see $RUN/stage3.log"; exit 1; }
-  # Why the chain ended (circuit_mixer's "chain done in Ts: <reason> (...)").
-  # An operator stop flag ($RUN/stage3.stop) ends it "cleanly" with exit 0 but
-  # below the recipe's dose: that output is never handed to stage 4 under the
-  # canonical name, so neither this run nor a resume ships it.
-  STOP_REASON=$(sed -n 's/^\[circuit_mixer\] chain done in [0-9.]*s: \(.*\) ([0-9]* -> [0-9]* gates, .*$/\1/p' "$RUN/stage3.log" | tail -1)
+  # Why the chain ended. An operator stop flag ($RUN/stage3.stop) ends it
+  # "cleanly" with exit 0 but below the recipe's dose: that output is never
+  # handed on under the canonical name, so neither this run nor a resume ships it.
+  STOP_REASON=$(stop_reason_of "$RUN/stage3.log")
   # The stage-3 settings resolved at run time (FROZEN_FILTER under auto).
   printf 'stage3_settings=1\nfrozen_filter_mode=%s\nfrozen_filter=%s\np_db=%s\nstop_reason=%s\n' \
     "$FILTER" "${FF:-unset}" "${DBFLAGS[1]}" "${STOP_REASON:-unknown}" > "$RUN/stage3.settings"
@@ -732,13 +892,128 @@ if [ "$stage3_done" -eq 0 ]; then
 else
   note "stage 3: $DB_MIXING matches its completion marker, skipping"
 fi
-if [ "$STOP_AFTER" -le 3 ]; then
-  wait_side; note "PIPELINE STOPPED after stage 3: $DB_MIXING"; exit 0
+CUR=$DB_MIXING; RAN="$RAN,3"
+else
+  note "stage 3: SKIPPED"
 fi
+stop_here 3
 
-# ---- stage 4: tdp_packing run (windowed ANF delivery) ----
+# A mixer stage (4 or 5) run by the driver: STAGE LOG OUTPUT ACCEPTED_REASON_REGEX ARGS...
+# Runs circuit_mixer under the stage-3 environment (no store: --p-db 0), reads
+# the chain-done reason, and refuses a stop-flag ending like stage 3 does.
+run_mixer_stage() {
+  local stage=$1 log=$2 output=$3 accepted=$4; shift 4
+  RECIPE_ENV=("${MIXER_CACHE_ENV[@]}" MIXER_STOP_FLAG="$RUN/stage$stage.stop" MIXER_DUMP_FLAG="$RUN/stage$stage.dump")
+  rm -f "$RUN/stage$stage.stop" "$output.tmp"
+  stage_exec "$BIN/circuit_mixer" "$@" > "$log" 2>&1 || { note "stage $stage FAILED; see $log"; exit 1; }
+  STOP_REASON=$(stop_reason_of "$log")
+  if [[ $STOP_REASON =~ ^($accepted)$ ]]; then
+    return 0
+  fi
+  case "$STOP_REASON" in
+    "stop flag"|"")
+      mv -f "$output" "${output%.mpmct1}.stopped.mpmct1"
+      fatal "stage $stage ended by ${STOP_REASON:-an unrecognised stop (no chain-done line in $log)}, below the recipe's dose: kept as ${output%.mpmct1}.stopped.mpmct1 (NOT a stage-$stage artifact); a resume re-runs stage $stage" ;;
+    *) note "WARNING: stage $stage ended by \"$STOP_REASON\"; see $log" ;;
+  esac
+}
+
+# ---- stage 4: circuit_mixer --split (the archive-era stage 4, verbatim flags) ----
+SPLIT=$RUN/split.mpmct1; SPLIT_STATE=$RUN/split.state; STAGE4_MARKER=$RUN/stage4.recipe
+SPLIT_RAN=0
+if stage_on 4; then
+  G_IN4=$(gates_of "$CUR"); B_MOVES=$((G_IN4 + 1000000))   # one move per split twist; comp count < G
+  SPLIT_ARGS=(--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256
+              --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12 --moves "$B_MOVES" --report-every 1000000)
+  expected_stage4_marker() {
+    echo "tdp_stage4_recipe=1"
+    echo "circuit_mixer_sha256=$(sha_of "$BIN/circuit_mixer")"
+    echo "stage4_args=${SPLIT_ARGS[*]}"
+    mac --seed split
+    mac stage4_input="$CUR"
+  }
+  stage4_done=0
+  if [ "$FORCE_FROM" -gt 4 ] && marker_ok "$STAGE4_MARKER" "$(expected_stage4_marker)" "$SPLIT" split; then
+    stage4_done=1
+    note "stage 4: $SPLIT matches its completion marker, skipping"
+  elif [ "$FORCE_FROM" -gt 4 ] && [ -s "$SPLIT" ]; then
+    note "stage 4: $SPLIT has no matching completion marker (interrupted output, or a changed input, parameter or binary); re-running stage 4"
+  fi
+  if [ "$stage4_done" -eq 0 ]; then
+    rm -f "$STAGE4_MARKER" "$SPLIT_STATE"
+    note "stage 4: circuit_mixer --split --split-stop (moves ceiling $B_MOVES) on $(basename "$CUR")"
+    run_mixer_stage 4 "$RUN/stage4.log" "$SPLIT" 'split stage complete \(stopped at the stage boundary\)|moves budget spent' \
+      --input "$CUR" "${SPLIT_ARGS[@]}" --seed-file /dev/fd/3 --state-out "$SPLIT_STATE" --output "$SPLIT" 3<<< "$SPLIT_SEED"
+    write_marker "$STAGE4_MARKER" "$(expected_stage4_marker)" "$SPLIT" split "stop_reason=$STOP_REASON"
+    [ "$FORCE_FROM" -le 5 ] || FORCE_FROM=5
+    note "stage 4 done: $(gates_of "$SPLIT") gates"
+  fi
+  CUR=$SPLIT; RAN="$RAN,4"; SPLIT_RAN=1
+else
+  note "stage 4: SKIPPED"
+fi
+stop_here 4
+
+# ---- stage 5: the crossing walk (archive-era stage 5; resumes split.state when stage 4 ran) ----
+CROSSING=$RUN/crossing.mpmct1; STAGE5_MARKER=$RUN/stage5.recipe
+if stage_on 5; then
+  G_IN5=$(gates_of "$CUR")
+  read -r X_TGT X_TEMP X_BUDGET <<< "$(python3 -I - "$G_IN5" "$XR" "$XTDIV" "${XMOVES:-0}" <<'PY'
+import sys
+g, xr, tdiv, xmoves = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+tgt = round(g * xr)
+temp = max(64, round(tgt / tdiv))
+# The walk reaches its target in about 2*target moves and the hold then erodes
+# the fragments; 6x covers arrival across the target factor with a mild hold.
+print(tgt, temp, xmoves if xmoves > 0 else 6 * tgt)
+PY
+)"
+  X_ARGS=(--target-size "$X_TGT" --temp "$X_TEMP" --split-base "$XB" --split-damp "$XC"
+          --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 --report-every 500000)
+  if [ "$SPLIT_RAN" = 1 ] && [ -s "$SPLIT_STATE" ]; then
+    # --moves is ABSOLUTE on a resume: the split stage's counter plus the budget.
+    X_SOURCE="resume split.state"
+    X_MOVES=$(( $(awk '$1=="moves"{print $2; exit}' "$SPLIT_STATE") + X_BUDGET ))
+    X_INPUT=(--resume "$SPLIT_STATE"); X_SEED=()
+  else
+    [ "$SPLIT_RAN" = 0 ] || fatal "stage 4 ran but $SPLIT_STATE is missing; rerun with --run-rerun-from-stage 4"
+    X_SOURCE="input $(basename "$CUR")"
+    X_MOVES=$X_BUDGET
+    X_INPUT=(--input "$CUR"); X_SEED=(--seed-file /dev/fd/3)
+  fi
+  expected_stage5_marker() {
+    echo "tdp_stage5_recipe=1"
+    echo "circuit_mixer_sha256=$(sha_of "$BIN/circuit_mixer")"
+    echo "stage5_args=${X_ARGS[*]} --moves $X_MOVES"
+    echo "stage5_source=$X_SOURCE"
+    [ "$SPLIT_RAN" = 1 ] || mac --seed cross
+    mac stage5_input="$CUR"
+  }
+  stage5_done=0
+  if [ "$FORCE_FROM" -gt 5 ] && marker_ok "$STAGE5_MARKER" "$(expected_stage5_marker)" "$CROSSING" crossing; then
+    stage5_done=1
+    note "stage 5: $CROSSING matches its completion marker, skipping"
+  elif [ "$FORCE_FROM" -gt 5 ] && [ -s "$CROSSING" ]; then
+    note "stage 5: $CROSSING has no matching completion marker (interrupted output, or a changed input, parameter or binary); re-running stage 5"
+  fi
+  if [ "$stage5_done" -eq 0 ]; then
+    rm -f "$STAGE5_MARKER"
+    note "stage 5: crossing walk ($X_SOURCE) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves=$X_MOVES"
+    run_mixer_stage 5 "$RUN/stage5.log" "$CROSSING" 'moves budget spent' \
+      "${X_INPUT[@]}" "${X_ARGS[@]}" --moves "$X_MOVES" ${X_SEED[@]+"${X_SEED[@]}"} --output "$CROSSING" 3<<< "$CROSS_SEED"
+    write_marker "$STAGE5_MARKER" "$(expected_stage5_marker)" "$CROSSING" crossing "stop_reason=$STOP_REASON"
+    [ "$FORCE_FROM" -le 6 ] || FORCE_FROM=6
+    note "stage 5 done: $(gates_of "$CROSSING") gates"
+  fi
+  CUR=$CROSSING; RAN="$RAN,5"
+else
+  note "stage 5: SKIPPED"
+fi
+stop_here 5
+
+# ---- stage 6: tdp_packing run (windowed ANF delivery) ----
 PACK_DIR=$RUN/packing; MARKER=$RUN/packing.recipe
-stage4_exit_meaning() {
+stage6_exit_meaning() {
   case "$1" in
     2) echo "usage or parameter error" ;; 3) echo "input error" ;;
     4) echo "verification failure" ;; 5) echo "exposure floor missed" ;;
@@ -746,53 +1021,117 @@ stage4_exit_meaning() {
     8) echo "internal invariant violated" ;; 101) echo "panic" ;; *) echo "unknown exit code" ;;
   esac
 }
+if stage_on 6; then
 expected_marker() {
   echo "packing_recipe=1"
   echo "tdp_packing_sha256=$(sha_of "$BIN/tdp_packing")"
   echo "params=$(IFS=' '; echo "${PACKFLAGS[*]:-default}")"
-  mac stage2="$GADGET" stage3="$DB_MIXING" source_c="$GADGET.source_c.g57"
+  mac stage2="$STAGE2_INPUT" stage3="$CUR" source_c="$GADGET.source_c.g57"
 }
-stage4_done=0
-if [ "$FORCE_FROM" -gt 4 ] && [ -s "$MARKER" ]; then
+stage6_done=0
+if [ "$FORCE_FROM" -gt 6 ] && [ -s "$MARKER" ]; then
   exp=$(expected_marker)
   nexp=$(printf '%s\n' "$exp" | wc -l | tr -d ' ')
   if [ "$(head -n "$nexp" "$MARKER")" = "$exp" ] && [ -s "$PACK_DIR/deliverable.tdp4" ] &&
      [ "$(sed -n "$((nexp + 1))p" "$MARKER")" = "$(mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4")" ]; then
-    stage4_done=1
-    note "stage 4: $PACK_DIR/deliverable.tdp4 matches its completion marker, skipping"
+    stage6_done=1
+    note "stage 6: $PACK_DIR/deliverable.tdp4 matches its completion marker, skipping"
   else
-    note "stage 4: completion marker does not match inputs/parameters/binary/deliverable; re-running stage 4"
+    note "stage 6: completion marker does not match inputs/parameters/binary/deliverable; re-running stage 6"
   fi
 fi
-if [ "$stage4_done" -eq 0 ]; then
-  rm -f "$MARKER" "$RUN/stage4.failed"; rm -rf "$PACK_DIR"
+if [ "$stage6_done" -eq 0 ]; then
+  rm -f "$MARKER" "$RUN/packing.failed"; rm -rf "$PACK_DIR"
   THREADFLAGS=(); [ -z "$THREADS" ] || THREADFLAGS=(--threads "$THREADS")
-  note "stage 4: tdp_packing run (window gates $PACK_WINDOW_GATES, split budget $PACK_SPLIT_BUDGET, caps $PACK_CAP_SEM${PACKFLAGS[*]:+; flags ${PACKFLAGS[*]}})"
+  note "stage 6: tdp_packing run on $(basename "$CUR") (window gates $PACK_WINDOW_GATES, split budget $PACK_SPLIT_BUDGET, caps $PACK_CAP_SEM${PACKFLAGS[*]:+; flags ${PACKFLAGS[*]}})"
   RECIPE_ENV=()
   set +e
-  stage_exec "$BIN/tdp_packing" run --stage2 "$GADGET" --stage3 "$DB_MIXING" --source-c "$GADGET.source_c.g57" \
+  stage_exec "$BIN/tdp_packing" run --stage2 "$STAGE2_INPUT" --stage3 "$CUR" --source-c "$GADGET.source_c.g57" \
       --n "$N" --out-dir "$PACK_DIR" ${PACKFLAGS[@]+"${PACKFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} \
-      > "$RUN/stage4.log" 2>&1
+      > "$RUN/stage6.log" 2>&1
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
     # the managed driver attaches the tdp_packing exit meaning only when this
-    # marker names its exit code (a 2 from gen, the mixer or bash is not stage 4's)
-    printf 'exit=%s\n' "$rc" > "$RUN/stage4.failed"
+    # marker names its exit code (a 2 from gen, the mixer or bash is not stage 6's)
+    printf 'exit=%s\n' "$rc" > "$RUN/packing.failed"
     wait_side
-    note "stage 4 FAILED: exit $rc ($(stage4_exit_meaning "$rc")); see $RUN/stage4.log"
+    note "stage 6 FAILED: exit $rc ($(stage6_exit_meaning "$rc")); see $RUN/stage6.log"
     exit "$rc"
   fi
   status=$(sed -n 's/^status=//p' "$PACK_DIR/packing.report")
   { expected_marker; mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4"; echo "status=$status"; } > "$MARKER.tmp"
   mv "$MARKER.tmp" "$MARKER"
+  [ "$FORCE_FROM" -le 7 ] || FORCE_FROM=7
 fi
-wait_side
 status=$(sed -n 's/^status=//p' "$MARKER")
 if [ "$status" = ok ]; then
   rm -f "$PACK_DIR/NOT_RECOMMENDED"
-  note "PIPELINE COMPLETE (stages 1-4): $PACK_DIR/deliverable.tdp4"
 else
   : > "$PACK_DIR/NOT_RECOMMENDED"
-  note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (status=$status): $PACK_DIR/deliverable.tdp4 is NOT a recommended deliverable"
+  note "stage 6 FINISHED WITH AN ALLOWED FAILURE (status=$status): $PACK_DIR/deliverable.tdp4 is NOT a recommended deliverable"
+fi
+CUR=$PACK_DIR/deliverable.tdp4; RAN="$RAN,6"
+else
+  note "stage 6: SKIPPED"
+fi
+stop_here 6
+
+# ---- stage 7: tdp_unpacking run (resynthesis from the delivered ANF, canonical order) ----
+UNPACK_DIR=$RUN/unpacking; UMARKER=$RUN/unpacking.recipe
+stage7_exit_meaning() {
+  case "$1" in
+    2) echo "usage or parameter error" ;; 3) echo "input error" ;;
+    4) echo "verification failure" ;; 7) echo "I/O error writing outputs" ;;
+    8) echo "internal invariant violated" ;; 101) echo "panic" ;; *) echo "unknown exit code" ;;
+  esac
+}
+if stage_on 7; then
+  expected_umarker() {
+    echo "unpacking_recipe=1"
+    echo "tdp_unpacking_sha256=$(sha_of "$BIN/tdp_unpacking")"
+    echo "params=$(IFS=' '; echo "${UNPACKFLAGS[*]:-default}")"
+    mac --seed unpack
+    mac deliverable_tdp4="$PACK_DIR/deliverable.tdp4" packed="$PACK_DIR/rep512.mpmct1" bounds="$PACK_DIR/rep512.bounds"
+  }
+  stage7_done=0
+  if [ "$FORCE_FROM" -gt 7 ] && marker_ok "$UMARKER" "$(expected_umarker)" "$UNPACK_DIR/unpacked.mpmct1" unpacked; then
+    stage7_done=1
+    note "stage 7: $UNPACK_DIR/unpacked.mpmct1 matches its completion marker, skipping"
+  elif [ "$FORCE_FROM" -gt 7 ] && [ -s "$UNPACK_DIR/unpacked.mpmct1" ]; then
+    note "stage 7: completion marker does not match inputs/parameters/binary/output; re-running stage 7"
+  fi
+  if [ "$stage7_done" -eq 0 ]; then
+    rm -f "$UMARKER" "$RUN/unpacking.failed"; rm -rf "$UNPACK_DIR"
+    THREADFLAGS=(); [ -z "$THREADS" ] || THREADFLAGS=(--threads "$THREADS")
+    note "stage 7: tdp_unpacking run (time limit $UNPACK_TIME_LIMIT s/window, restarts $UNPACK_RESTARTS, beam $UNPACK_BEAM${UNPACKFLAGS[*]:+; flags ${UNPACKFLAGS[*]}})"
+    RECIPE_ENV=()
+    set +e
+    stage_exec "$BIN/tdp_unpacking" run --deliverable "$PACK_DIR/deliverable.tdp4" \
+        --packed "$PACK_DIR/rep512.mpmct1" --bounds "$PACK_DIR/rep512.bounds" \
+        --source-c "$GADGET.source_c.g57" --n "$N" --out-dir "$UNPACK_DIR" --seed-file /dev/fd/3 \
+        ${UNPACKFLAGS[@]+"${UNPACKFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} 3<<< "$UNPACK_SEED" \
+        > "$RUN/stage7.log" 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+      printf 'exit=%s\n' "$rc" > "$RUN/unpacking.failed"
+      wait_side
+      note "stage 7 FAILED: exit $rc ($(stage7_exit_meaning "$rc")); see $RUN/stage7.log"
+      exit "$rc"
+    fi
+    ustatus=$(sed -n 's/^status=//p' "$UNPACK_DIR/unpacking.report")
+    write_marker "$UMARKER" "$(expected_umarker)" "$UNPACK_DIR/unpacked.mpmct1" unpacked "status=$ustatus"
+  fi
+  ustatus=$(sed -n 's/^status=//p' "$UMARKER")
+  [ "$ustatus" = ok ] || note "stage 7 status=$ustatus (see $UNPACK_DIR/unpacking.report)"
+  CUR=$UNPACK_DIR/unpacked.mpmct1; RAN="$RAN,7"
+else
+  note "stage 7: SKIPPED"
+fi
+wait_side
+if [ -e "$PACK_DIR/NOT_RECOMMENDED" ] 2>/dev/null; then
+  note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (stages $(ran_text); status=$(sed -n 's/^status=//p' "$MARKER")): $CUR is NOT a recommended deliverable"
+else
+  note "PIPELINE COMPLETE (stages $(ran_text)): $CUR"
 fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Recording mock of the TDP stage binaries (gen_sandwich_gadget,
-circuit_mixer, tdp_packing, hmap_affine), selected by argv[0]'s name.
+circuit_mixer, tdp_packing, tdp_unpacking, hmap_affine), selected by argv[0]'s name.
 
 The driver launches stage binaries under `env -i`, so the mock cannot rely on
 an inherited variable: it appends one JSON line {name, args, env} to
@@ -33,7 +33,7 @@ args = []
 i = 0
 while i < len(argv):
     a = argv[i]
-    if name == "circuit_mixer" and a == "--seed-file":
+    if name in ("circuit_mixer", "tdp_unpacking") and a == "--seed-file":
         args += ["--seed", read_seed(argv[i + 1])]
         private.add("--seed")
         i += 2
@@ -55,6 +55,8 @@ def run_dir():
         if args[0] == "run":
             return Path(args[args.index("--out-dir") + 1]).parent
         return Path(args[1]).parent
+    if name == "tdp_unpacking":
+        return Path(args[args.index("--out-dir") + 1]).parent
     if name == "hmap_affine":
         return Path(args[args.index("--g") + 1]).parent
     raise SystemExit(f"mock: unknown binary {name}")
@@ -85,8 +87,21 @@ if name == "gen_sandwich_gadget":
     Path(out + ".source_c.g57").write_text("c\n")
 elif name == "circuit_mixer":
     out = args[args.index("--output") + 1]
+    if "--resume" in args:
+        # a resumed run (stage 5 after stage 4) reads no --input: the state must exist
+        state = Path(args[args.index("--resume") + 1])
+        assert state.is_file() and state.read_text().startswith("circuit-mixer-state"), state
+    else:
+        assert Path(args[args.index("--input") + 1]).is_file(), args
     Path(out).write_text("mpmct1 16 2\n0 0 0\n0 0 0\n")
-    reason = opts.get("mixer_stop", "moves budget spent")
+    if "--state-out" in args:
+        Path(args[args.index("--state-out") + 1]).write_text("circuit-mixer-state 6\nmoves 7\n")
+    if "--split" in args:
+        reason = opts.get("split_stop", "split stage complete (stopped at the stage boundary)")
+    elif "--target-size" in args:
+        reason = opts.get("cross_stop", "moves budget spent")
+    else:
+        reason = opts.get("mixer_stop", "moves budget spent")
     print(f"[circuit_mixer] chain done in 0.0s: {reason} (1 -> 2 gates, 0 -> 0 g57 fossils)")
 elif name == "tdp_packing":
     if args[0] == "mult-census":
@@ -104,5 +119,20 @@ elif name == "tdp_packing":
         (out / "deliverable.bin").write_bytes(b"body")
         (out / "deliverable.tdp4").write_bytes(b"LMTDPANF" + bytes(40) + b"body")
         (out / "packing.report").write_text(f"packing_report=2\nstatus={status}\n")
+        (out / "rep512.mpmct1").write_text("mpmct1 16 2\n0 0 0\n0 0 0\n")
+        (out / "rep512.bounds").write_text("1\n")
+elif name == "tdp_unpacking":
+    assert args[0] == "run", args
+    for flag in ("--deliverable", "--packed", "--bounds", "--source-c"):
+        assert Path(args[args.index(flag) + 1]).is_file(), (flag, args)
+    out = Path(args[args.index("--out-dir") + 1])
+    code = int(opts.get("unpacking_exit", "0"))
+    if code:
+        print(f"mock tdp_unpacking exit {code}", file=sys.stderr)
+        sys.exit(code)
+    out.mkdir(mode=0o700)
+    status = opts.get("unpacking_status", "ok")
+    (out / "unpacked.mpmct1").write_text("mpmct1 16 1\n0 0 0\n")
+    (out / "unpacking.report").write_text(f"unpacking_report=1\nstatus={status}\n")
 elif name == "hmap_affine":
     print("[span] mock")

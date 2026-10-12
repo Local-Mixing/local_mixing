@@ -2,10 +2,14 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 10;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 11;
 /// The managed binaries, fingerprinted in the manifest and built for fresh runs.
-pub(crate) const PRODUCTION_BINARIES: [&str; 3] =
-    ["gen_sandwich_gadget", "circuit_mixer", "tdp_packing"];
+pub(crate) const PRODUCTION_BINARIES: [&str; 4] = [
+    "gen_sandwich_gadget",
+    "circuit_mixer",
+    "tdp_packing",
+    "tdp_unpacking",
+];
 /// The report-only binary behind val_chain.sh's stage-2 span check
 /// (`hmap_affine --exposure ... SPAN_INTERSECT`, $RUN/stage2_span.*). Built
 /// for fresh runs (it needs the `security-tools` feature) and fingerprinted
@@ -252,7 +256,8 @@ pub(crate) fn store_fingerprint_text(config: &ResolvedConfig) -> String {
 /// or A as run for the chosen runs (vL64a/b, vL128a/b, vA64a, vA128a). Only
 /// a run whose every recipe setting is that chain's: embedded masking with
 /// preset L8 or A, the validated |C| for a generated source, schedule
-/// validated in one piece, no leakage repair, default packing, and stage 3
+/// validated in one piece, no leakage repair, default packing, stages 4, 5
+/// and 7 off (the chain had four stages), and stage 3
 /// on THE store those runs used ([`VALIDATED_REGULAR_STORE`]) unfiltered:
 /// FROZEN_FILTER=1 on a store without filters.bin, which is how val_chain.sh
 /// ran (a filtered run, `lookup_miss_filter = "on"` with filters.bin, was
@@ -276,7 +281,10 @@ pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) 
         && reference_store
         && resolved_frozen_filter(config) == "1"
         && !config.qc_enabled
-        && config.packing.is_default();
+        && config.packing.is_default()
+        && !config.stage_on(4)
+        && !config.stage_on(5)
+        && !config.stage_on(7);
     match (matches_chain, config.preset) {
         (true, Preset::L8) => "val_chain-L8-20261007",
         (true, Preset::A) => "val_chain-A-20261007",
@@ -349,6 +357,12 @@ pub(crate) fn recipe_manifest(
     }
     kv("stage3_verify_every", "default(10000)");
     kv("stage3_report_every", "default(50000)");
+    // Which stages the recipe runs (lifecycle stop/rerun points are not here).
+    kv("skip_stages", &config.skip_stages_text());
+    kv("stage4_split_args", "archive(ea2e516f)");
+    for (key, _, value) in config.crossing.fields() {
+        kv(&format!("crossing_{key}"), &value);
+    }
     kv(
         "pieces",
         if config.min_block_size.is_some() {
@@ -404,6 +418,15 @@ pub(crate) fn recipe_manifest(
         "packing_allow_over_budget",
         &p.allow_over_budget.to_string(),
     );
+    let u = &config.unpacking;
+    kv(
+        "unpacking_params",
+        if u.is_default() { "default" } else { "custom" },
+    );
+    kv("unpacking_time_limit", &u.time_limit);
+    kv("unpacking_restarts", &u.restarts.to_string());
+    kv("unpacking_beam", &u.beam.to_string());
+    kv("unpacking_allow_fallback", &u.allow_fallback.to_string());
     kv("seed_record", "SEEDS");
     kv(
         "seed_source",
@@ -413,6 +436,7 @@ pub(crate) fn recipe_manifest(
         },
     );
     kv("seed_bits", "63");
+    kv("seeds_format", "3");
     kv("calibration_only", &config.calibration_only.to_string());
     kv("qc_enabled", &config.qc_enabled.to_string());
     kv("qc_seed", &config.qc_seed.to_string());
@@ -444,12 +468,15 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=10") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=11") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=10") => Err(TdpError::config(
+            "recipe v10 run (the four-stage driver): resume with the checkout that created it (recipe v11 added stages 4, 5 and 7 and the five-seed SEEDS format); the original run is unchanged",
+        )),
         Some("tdp_command_recipe=9") => Err(TdpError::config(
             "recipe v9 run: resume with the checkout that created it (recipe v10 changed the defaults to the chosen L8 runs and added stage 4); the original run is unchanged",
         )),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v10 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v11 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

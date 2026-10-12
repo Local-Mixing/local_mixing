@@ -1,7 +1,8 @@
 #!/bin/bash
 # reproduce_val_chain.sh N [L8|A] [MC] : the reproduction test (required
 # acceptance, docs/STAGE4_RUST_DESIGN.md §10.7). One run of the MANAGED DRIVER
-# (local_mixing_bin tdp_gen, config v2 with nothing but source.wires, the store
+# (local_mixing_bin tdp_gen, config v3 with nothing but source.wires, the store,
+# run.skip_stages = [4, 5, 7] (the oracle chain's four stages),
 # and a calibration seed file; preset A only for CONFIG=A) and one run of the
 # Python/bash reference chain scripts/windowed_delivery/waist/val_chain.sh in
 # a path-rewritten sandbox, with the SAME fresh seeds, on the SAME stage
@@ -76,11 +77,12 @@ MAN=$WORK/managed; mkdir -p "$MAN"
 size=""; case $N in 64|128) [ "$MC" = "$( [ "$N" = 64 ] && echo 1000 || echo 3000)" ] || size="gates = $MC" ;; *) size="gates = $MC" ;; esac
 preset=""; [ "$CFG" = A ] && preset='preset = "A"'
 cat > "$MAN/config.toml" <<CFG
-config_version = 2
+config_version = 3
 [run]
 directory = "$MAN/run"
 build_directory = "$WORK/managed_target"
 build_binaries = false
+skip_stages = [4, 5, 7]
 [source]
 wires = $N
 $size
@@ -156,7 +158,7 @@ if [ "$mrc" = 0 ]; then
   "$ORACLE_PY" -I "$HERE/container_header.py" "$REF/deliverable.bin" "$WORK/want.tdp4" "$N" $((4 * N)) &&
     same "container: deliverable.tdp4 = container_header.py(oracle body)" "$WORK/want.tdp4" "$P/deliverable.tdp4"
   grep -q '^status=ok$' "$P/packing.report" && row "packing.report status" ok || { row "packing.report status" "not ok"; fail=1; }
-  grep -q 'PIPELINE COMPLETE (stages 1-4)' "$RUN/tdp_gen.log" && row "driver log" "PIPELINE COMPLETE" || { row "driver log" "no PIPELINE COMPLETE"; fail=1; }
+  grep -q 'PIPELINE COMPLETE (stages 1-3,6)' "$RUN/tdp_gen.log" && row "driver log" "PIPELINE COMPLETE" || { row "driver log" "no PIPELINE COMPLETE"; fail=1; }
 elif [ "$mrc" = 5 ] || [ "$mrc" = 6 ]; then
   # §10.7 step 5: the oracle shipped what the identity/budget test refuses.
   allow=$([ "$mrc" = 5 ] && echo --allow-floor-miss || echo --allow-over-budget)

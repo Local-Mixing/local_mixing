@@ -8,7 +8,6 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
             config.run_dir.display()
         ));
     }
-    let stop_after = config.stop_after_stage();
     let force_from = config
         .force_from
         .as_deref()
@@ -26,7 +25,7 @@ pub(crate) fn validate_external_paths(config: &ResolvedConfig) -> Result<(), Str
         nonempty("db_mixing.mpmct1") && (nonempty("stage3.recipe") || nonempty("packing.recipe"));
     let existing_gadget = nonempty("tdp.mpmct1");
     let stage_three_will_run =
-        stop_after >= 3 && (force_from <= 3 || !existing_gadget || !existing_db_mixing);
+        config.stage_on(3) && (force_from <= 3 || !existing_gadget || !existing_db_mixing);
     if stage_three_will_run {
         if let Some(path) = &config.frozen_db.path {
             validate_frozen_store(path, "database.regular_dir")?;

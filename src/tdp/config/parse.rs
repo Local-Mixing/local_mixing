@@ -58,6 +58,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "integer",
     ),
     (
+        "run.skip_stages",
+        "run.skip_stages",
+        "skip_stages",
+        "integer_list",
+    ),
+    (
         "run.adopt_unverified_run",
         "run.adopt_existing_run",
         "adopt_existing_run",
@@ -279,6 +285,55 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "string",
     ),
     (
+        "crossing.target_size_factor",
+        "crossing.target_factor",
+        "xr",
+        "number",
+    ),
+    (
+        "crossing.width_penalty_base",
+        "crossing.width_base",
+        "xb",
+        "number",
+    ),
+    (
+        "crossing.width_penalty_threshold",
+        "crossing.width_threshold",
+        "xc",
+        "integer",
+    ),
+    (
+        "crossing.size_tolerance_divisor",
+        "crossing.temperature_divisor",
+        "xtdiv",
+        "integer",
+    ),
+    (
+        "crossing.move_attempts",
+        "crossing.moves",
+        "xmoves",
+        "integer",
+    ),
+    (
+        "unpacking.time_limit",
+        "unpacking.time_limit",
+        "unpacking_time_limit",
+        "number",
+    ),
+    (
+        "unpacking.restarts",
+        "unpacking.restarts",
+        "unpacking_restarts",
+        "integer",
+    ),
+    ("unpacking.beam", "unpacking.beam", "unpacking_beam", "integer"),
+    (
+        "unpacking.allow_fallback",
+        "unpacking.allow_fallback",
+        "unpacking_allow_fallback",
+        "bool",
+    ),
+    (
         "calibration.enabled",
         "calibration.enabled",
         "calibration_only",
@@ -293,7 +348,9 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// The migration message for a config_version 1 file (§11.2).
-pub(crate) const CONFIG_V1_MIGRATION: &str = "config_version 1 is not supported by recipe v10: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.";
+pub(crate) const CONFIG_V1_MIGRATION: &str = "config_version 1 is not supported by recipe v11: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.";
+/// The migration message for a config_version 2 file (the four-stage driver).
+pub(crate) const CONFIG_V2_MIGRATION: &str = "config_version 2 is the four-stage recipe (v10); the pipeline now has seven stages (4 splitting, 5 crossing, 6 packing, 7 unpacking; all on by default, run.skip_stages turns stages off). Set config_version = 3; the four-stage chain is run.skip_stages = [4, 5, 7]. See docs/tdp_pipeline.md.";
 
 pub(crate) fn canonical_config_key(key: &str) -> &str {
     TOML_FIELDS
@@ -308,20 +365,15 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
         .get("config_version")
         .and_then(toml_edit::Item::as_integer)
     {
-        Some(2) => {}
+        Some(3) => {}
+        Some(2) => return Err(CONFIG_V2_MIGRATION.into()),
         Some(1) => return Err(CONFIG_V1_MIGRATION.into()),
-        _ => return Err("config_version must be the integer 2".into()),
+        _ => return Err("config_version must be the integer 3".into()),
     }
     let mut raw = RawConfig::default();
     for (section, item) in doc.iter() {
         if section == "config_version" {
             continue;
-        }
-        if section == "crossing" {
-            return Err(
-                "the [crossing] section configured the crossing walk (old stage 5), which is historic; remove it (see branch ran/archive/curated-and-postmix)"
-                    .into(),
-            );
         }
         let table = item
             .as_table()
@@ -345,6 +397,14 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                     .as_float()
                     .map(|v| v.to_string())
                     .or_else(|| item.as_integer().map(|v| v.to_string())),
+                // A TOML array of integers, carried as "a,b,c" (empty = unset).
+                "integer_list" => item.as_array().and_then(|array| {
+                    array
+                        .iter()
+                        .map(|v| v.as_integer().map(|v| v.to_string()))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|v| v.join(","))
+                }),
                 _ => unreachable!(),
             }
             .ok_or_else(|| format!("{dotted} must be a TOML {kind}"))?;
@@ -377,6 +437,8 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                 "leakage_repair",
                 "calibration",
                 "packing",
+                "crossing",
+                "unpacking",
             ]
             .contains(&section)
         {

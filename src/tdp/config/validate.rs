@@ -54,8 +54,14 @@ where
     }
     let seeds = match &calibration_seed_file {
         Some(path) => {
-            let (gen_seed, mix_seed) = read_seed_file(path)?;
-            SeedPlan::Explicit { gen_seed, mix_seed }
+            let s = read_seed_file(path)?;
+            SeedPlan::Explicit {
+                gen_seed: s.gen_seed,
+                mix_seed: s.mix_seed,
+                split_seed: s.split_seed,
+                cross_seed: s.cross_seed,
+                unpack_seed: s.unpack_seed,
+            }
         }
         None => SeedPlan::Random,
     };
@@ -341,26 +347,92 @@ where
     };
     let stop_after = parse_optional_stage(raw, "stop_after")?;
     let force_from = parse_optional_stage(raw, "force_from")?;
-    if stop_after.as_deref().unwrap_or("4") == "4" && n > 256 {
+    // Optional stages (every stage after the first): run.skip_stages.
+    let stop_after_stage: u64 = stop_after.as_deref().unwrap_or("7").parse().expect("validated");
+    let mut skip_stages: Vec<u64> = Vec::new();
+    if let Some(list) = raw.value("skip_stages") {
+        for item in list.split(',') {
+            let stage: u64 = item
+                .parse()
+                .ok()
+                .filter(|k| (2..=LAST_STAGE).contains(k))
+                .ok_or_else(|| {
+                    config_error(
+                        raw,
+                        "skip_stages",
+                        "must list stages in 2..7 (stage 1 always runs)",
+                    )
+                })?;
+            if !skip_stages.contains(&stage) {
+                skip_stages.push(stage);
+            }
+        }
+        skip_stages.sort_unstable();
+    }
+    let stage_on = |k: u64| k <= stop_after_stage && !skip_stages.contains(&k);
+    if stage_on(7) && !stage_on(6) {
+        return Err(config_error(
+            raw,
+            "skip_stages",
+            "stage 7 (unpacking) needs stage 6 (packing): keep stage 6 or skip stage 7 too",
+        ));
+    }
+    if stage_on(6) && n > 256 {
         return Err(config_error(
             raw,
             "n",
-            "stage 4 (packing) supports source.wires up to 256; set run.stop_after_stage = 3 for larger n",
+            "stage 6 (packing) supports source.wires up to 256; stop before stage 6 or skip it for larger n",
         ));
     }
-    // Refuse up front what stage 4 would refuse only after stages 1-3 ran.
+    // Refuse up front what stage 6 would refuse only after stages 1-5 ran.
     if let Some(state_wires) = nonlinear_state_wires
-        && stop_after.as_deref().unwrap_or("4") == "4"
+        && stage_on(6)
         && state_wires > STAGE4_MAX_STATE_WIRES
     {
         return Err(config_error(
             raw,
             "preprocessing_mode",
             &format!(
-                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 4 (packing) supports at most {STAGE4_MAX_STATE_WIRES} state wires; set run.stop_after_stage = 3, or use embedded-masking"
+                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 6 (packing) supports at most {STAGE4_MAX_STATE_WIRES} state wires; stop before stage 6, skip it, or use embedded-masking"
             ),
         ));
     }
+    // [crossing] (stage 5), the archive-era driver's ranges
+    let crossing = CrossingConfig {
+        xr: parse_optional_f64(
+            raw,
+            "xr",
+            |value| (1.0..=16.0).contains(&value),
+            "must be in 1..=16",
+        )?,
+        xb: parse_optional_f64(
+            raw,
+            "xb",
+            |value| (1.0..=1_000_000.0).contains(&value),
+            "must be in 1..=1000000",
+        )?,
+        xc: parse_optional_u64(raw, "xc", 0, 1_000_000_000)?,
+        xtdiv: parse_optional_u64(raw, "xtdiv", 1, 1_000_000_000)?,
+        xmoves: parse_optional_u64(raw, "xmoves", 1, 1_000_000_000_000)?,
+    };
+    // [unpacking] (stage 7)
+    let du = UnpackingConfig::default();
+    let unpacking = UnpackingConfig {
+        time_limit: parse_optional_f64(
+            raw,
+            "unpacking_time_limit",
+            |value| value > 0.0 && value <= 86_400.0,
+            "must be in (0, 86400]",
+        )?
+        .unwrap_or(du.time_limit),
+        restarts: parse_optional_u64(raw, "unpacking_restarts", 1, 1000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(du.restarts),
+        beam: parse_optional_u64(raw, "unpacking_beam", 1, 1000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(du.beam),
+        allow_fallback: parse_bool(raw, "unpacking_allow_fallback", du.allow_fallback)?,
+    };
     // [packing]
     let d = PackingConfig::default();
     let packing_u64 = |key: &str, default: u64, max: u64| -> Result<u64, String> {
@@ -461,9 +533,12 @@ where
         mcd_rule,
         schedule,
         packing,
+        crossing,
+        unpacking,
         threads,
         stop_after,
         force_from,
+        skip_stages,
         allow_empty_store,
         frozen_filter,
         pieces,
@@ -497,19 +572,10 @@ pub(crate) fn parse_usize(
 
 /// A pipeline stage number: 2, 3 or 4. The old stages 5 (crossing walk) and
 /// 6 (fcompress) are historic and get a pointer to the archive.
+/// A pipeline stage number 2..7 (stage 1 is never a stop or rerun point on
+/// its own: stages 1 and 2 run in one process).
 fn parse_optional_stage(raw: &RawConfig, key: &str) -> Result<Option<String>, String> {
-    let stage = parse_optional_u64(raw, key, 2, 6)?;
-    if stage
-        .as_deref()
-        .is_some_and(|stage| stage == "5" || stage == "6")
-    {
-        return Err(config_error(
-            raw,
-            key,
-            "stages 5-6 (crossing walk, fcompress) are historic; use 2, 3 or 4 (see branch ran/archive/curated-and-postmix)",
-        ));
-    }
-    Ok(stage)
+    parse_optional_u64(raw, key, 2, LAST_STAGE)
 }
 
 pub(crate) fn parse_optional_u64(
@@ -620,7 +686,18 @@ pub(crate) fn canonicalize_if_present(path: PathBuf) -> Result<PathBuf, String> 
 /// at most 256 bytes) with exactly the lines `gen_seed=<u63>` and
 /// `mix_seed=<u63>`. A one-integer file (format 1) is rejected with the
 /// migration message. Values are never echoed in errors.
-pub(crate) fn read_seed_file(path: &Path) -> Result<(u64, u64), String> {
+/// The seeds an explicit seed file supplies: gen and mix are required; the
+/// stage-4/5/7 seeds are optional (the driver draws them when absent).
+#[derive(Clone, Copy)]
+pub(crate) struct ExplicitSeeds {
+    pub(crate) gen_seed: u64,
+    pub(crate) mix_seed: u64,
+    pub(crate) split_seed: Option<u64>,
+    pub(crate) cross_seed: Option<u64>,
+    pub(crate) unpack_seed: Option<u64>,
+}
+
+pub(crate) fn read_seed_file(path: &Path) -> Result<ExplicitSeeds, String> {
     let metadata = fs::metadata(path)
         .map_err(|error| format!("seed_file {} cannot be read: {error}", path.display()))?;
     if !metadata.is_file() {
@@ -650,21 +727,28 @@ pub(crate) fn read_seed_file(path: &Path) -> Result<(u64, u64), String> {
     parse_seed_text(&contents).map_err(|e| format!("seed_file {}: {e}", path.display()))
 }
 
-pub(crate) fn parse_seed_text(contents: &str) -> Result<(u64, u64), String> {
+pub(crate) fn parse_seed_text(contents: &str) -> Result<ExplicitSeeds, String> {
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
     if lines.len() == 1 && lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
-        return Err("seed file format 1 holds one seed; recipe v10 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
+        return Err("seed file format 1 holds one seed; recipe v11 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
     }
+    const LINES: &str = "only gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=";
     let mut gen_seed = None;
     let mut mix_seed = None;
+    let mut split_seed = None;
+    let mut cross_seed = None;
+    let mut unpack_seed = None;
     for line in lines {
         let (key, value) = line
             .split_once('=')
-            .ok_or("unexpected line (only gen_seed= and mix_seed=)")?;
+            .ok_or_else(|| format!("unexpected line ({LINES})"))?;
         let slot = match key {
             "gen_seed" => &mut gen_seed,
             "mix_seed" => &mut mix_seed,
-            _ => return Err("unexpected line (only gen_seed= and mix_seed=)".into()),
+            "split_seed" => &mut split_seed,
+            "cross_seed" => &mut cross_seed,
+            "unpack_seed" => &mut unpack_seed,
+            _ => return Err(format!("unexpected line ({LINES})")),
         };
         if slot.is_some() {
             return Err(format!("duplicate {key}"));
@@ -680,7 +764,13 @@ pub(crate) fn parse_seed_text(contents: &str) -> Result<(u64, u64), String> {
         *slot = Some(parsed);
     }
     match (gen_seed, mix_seed) {
-        (Some(g), Some(m)) => Ok((g, m)),
+        (Some(gen_seed), Some(mix_seed)) => Ok(ExplicitSeeds {
+            gen_seed,
+            mix_seed,
+            split_seed,
+            cross_seed,
+            unpack_seed,
+        }),
         _ => Err("needs both gen_seed= and mix_seed=".into()),
     }
 }

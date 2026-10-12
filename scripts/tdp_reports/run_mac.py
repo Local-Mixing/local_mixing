@@ -1,7 +1,8 @@
 """Keyed integrity tags for a TDP run (docs/STAGE4_RUST_DESIGN.md §2.3, §8).
 
 usage: python3 -I run_mac.py SEEDS NAME=PATH ...      -> "mac.NAME=<hex>" per argument
-       python3 -I run_mac.py SEEDS --seeds            -> "seeds_mac=<hex>"
+       python3 -I run_mac.py SEEDS --seeds            -> "seeds_mac=<hex>" (gen and mix seeds)
+       python3 -I run_mac.py SEEDS --seed NAME        -> "seed_mac.NAME=<hex>" (one stage seed)
 
 HMAC-SHA256 keyed by the run's private 256-bit run_key (read from the private
 SEEDS file, never from argv). No unkeyed hash of C, of a circuit or of a seed
@@ -32,6 +33,13 @@ def main():
     if sys.argv[2] == "--seeds":
         msg = "gen_seed=%s\nmix_seed=%s\n" % (keys["gen_seed"], keys["mix_seed"])
         print("seeds_mac=" + hmac.new(key, msg.encode(), hashlib.sha256).hexdigest())
+        return
+    if sys.argv[2] == "--seed":
+        name = sys.argv[3]
+        if name not in ("gen", "mix", "split", "cross", "unpack") or name + "_seed" not in keys:
+            sys.exit("run_mac: unknown seed " + name)
+        msg = "%s_seed=%s\n" % (name, keys[name + "_seed"])
+        print("seed_mac.%s=%s" % (name, hmac.new(key, msg.encode(), hashlib.sha256).hexdigest()))
         return
     for arg in sys.argv[2:]:
         name, _, path = arg.partition("=")

@@ -12,8 +12,9 @@
 #       driver variable identical, and no forbidden variable set;
 #   (d) the managed binaries' environment is exactly allow-list + recipe + driver;
 #   (e) the oracle's stage-4 calls are window_pack3.py ... 512 512 24576 3000,
-#       repair.sh TAG 512 N and anf_dump_eval.py; the managed stage 4 is
-#       `tdp_packing run` with every parameter at its default.
+#       repair.sh TAG 512 N and anf_dump_eval.py; the managed stage 6 is
+#       `tdp_packing run` with every parameter at its default (the managed
+#       driver runs with --run-skip-stages 4,5,7: the oracle chain's stages).
 # Plus: G with 4*G*1.3 having a fractional part >= .5 (int, not round), the
 # n=64/128 default sizes, n=32 without size (fatal), and one case per
 # forbidden variable exported in the caller (fatal, naming it).
@@ -70,9 +71,10 @@ run_pair() { # LABEL N MC CFG GATES GEN MIX [managed size flags...]
   local sf=$tmp/$label.seeds; seedfile "$sf" "$gs" "$ms"
   mkdir -p "$tmp/m"; printf 'gen_gates=%s\n' "$gates" > "$tmp/m/$label.mock"
   local preset=(); [ "$cfg" = A ] && preset=(--preprocessing-preset A)
+  # --run-skip-stages 4,5,7: the oracle chain has four stages
   env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" FROZEN_DB_DIR="$STORE" \
     bash "$root/scripts/tdp_gen.sh" --source-wires "$n" --run-directory "$tmp/m/$label" \
-      --seed-file "$sf" ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
+      --seed-file "$sf" --run-skip-stages 4,5,7 ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
     { cat "$tmp/$label.m.log" >&2; exit 1; }
 }
 python_compare() { # LABEL N MANAGED_CALLS
@@ -193,10 +195,10 @@ want = ["--input", "tdp.mpmct1", "--output", "db_mixing.mpmct1", "--tdp", "--db-
         "--seed", "67890"]
 assert c == want, c
 PY
-# the Rust driver (when built): same transcript from a v2 TOML holding only
-# n, the store and the seeds (preset A only for d64A), for every documented
-# default path: L8 and A at n=64, the n=128 validated size, against the same
-# oracle transcripts as the bash driver
+# the Rust driver (when built): same transcript from a v3 TOML holding only
+# n, the store, the seeds and run.skip_stages = [4, 5, 7] (preset A only for
+# d64A), for every documented default path: L8 and A at n=64, the n=128
+# validated size, against the same oracle transcripts as the bash driver
 if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
   host=$(rustc -vV | sed -n 's/^host: //p')
   RT=$tmp/rtarget/$host/release; mkdir -p "$RT"
@@ -210,11 +212,12 @@ if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
     printf 'gen_gates=%s\n' "$gates" > "$run.mock"
     local preset=""; [ "$cfg" = A ] && preset='preset = "A"'
     cat > "$run.toml" <<TOML
-config_version = 2
+config_version = 3
 [run]
 directory = "$run"
 build_directory = "$tmp/rtarget"
 build_binaries = false
+skip_stages = [4, 5, 7]
 [source]
 wires = $n
 [database]

@@ -66,7 +66,7 @@ jobs:
           bash tests/shell/tdp_block_size.bash
           LOCAL_MIXING_BIN="$PWD/target/debug/local_mixing_bin" bash tests/shell/tdp_defaults.bash
           bash tests/shell/tdp_seeds.bash
-          bash tests/shell/tdp_stage4_resume.bash
+          bash tests/shell/tdp_stage_resume.bash
           TDP_STAGE_BIN="$PWD/target/debug" bash tests/shell/tdp_stage12_parity.bash
           bash tests/shell/tdp_reproduce_small.bash
 

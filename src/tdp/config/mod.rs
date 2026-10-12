@@ -292,13 +292,98 @@ impl PackingConfig {
     }
 }
 
+/// `[unpacking]`: `tdp_unpacking run` parameters (stage 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnpackingConfig {
+    /// Synthesis wall-clock limit per window, seconds (a normalized number).
+    pub(crate) time_limit: String,
+    pub(crate) restarts: u64,
+    pub(crate) beam: u64,
+    /// A window that fails to synthesize is emitted verbatim (counted) when
+    /// true; fatal when false.
+    pub(crate) allow_fallback: bool,
+}
+
+impl Default for UnpackingConfig {
+    fn default() -> Self {
+        UnpackingConfig {
+            time_limit: "30".into(),
+            restarts: 16,
+            beam: 6,
+            allow_fallback: true,
+        }
+    }
+}
+
+impl UnpackingConfig {
+    /// `(script flag, value, default)` for the numeric parameters.
+    pub(crate) fn flags(&self) -> Vec<(&'static str, String, String)> {
+        let d = UnpackingConfig::default();
+        vec![
+            ("--unpacking-time-limit", self.time_limit.clone(), d.time_limit),
+            (
+                "--unpacking-restarts",
+                self.restarts.to_string(),
+                d.restarts.to_string(),
+            ),
+            ("--unpacking-beam", self.beam.to_string(), d.beam.to_string()),
+        ]
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == UnpackingConfig::default()
+    }
+}
+
+/// The stage-5 crossing walk's controls (`[crossing]`), each `None` = the
+/// archive-era driver default (target factor 2, penalty base 3, threshold 1,
+/// tolerance divisor 25, 6 * target move attempts).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CrossingConfig {
+    pub(crate) xr: Option<String>,
+    pub(crate) xb: Option<String>,
+    pub(crate) xc: Option<String>,
+    pub(crate) xtdiv: Option<String>,
+    pub(crate) xmoves: Option<String>,
+}
+
+impl CrossingConfig {
+    pub(crate) const DEFAULTS: [(&'static str, &'static str); 5] = [
+        ("target_size_factor", "2"),
+        ("width_penalty_base", "3"),
+        ("width_penalty_threshold", "1"),
+        ("size_tolerance_divisor", "25"),
+        ("move_attempts", "6*target"),
+    ];
+
+    /// `(manifest key, script flag, value)`; the value is the default when unset.
+    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String); 5] {
+        let v = |o: &Option<String>, d: &str| o.clone().unwrap_or_else(|| d.to_owned());
+        let d = Self::DEFAULTS;
+        [
+            (d[0].0, "--crossing-target-size-factor", v(&self.xr, d[0].1)),
+            (d[1].0, "--crossing-width-penalty-base", v(&self.xb, d[1].1)),
+            (d[2].0, "--crossing-width-penalty-threshold", v(&self.xc, d[2].1)),
+            (d[3].0, "--crossing-size-tolerance-divisor", v(&self.xtdiv, d[3].1)),
+            (d[4].0, "--crossing-move-attempts", v(&self.xmoves, d[4].1)),
+        ]
+    }
+}
+
 /// Where the run's seeds come from (§8.2). Deliberately not `Debug`.
 #[derive(Clone)]
 pub(crate) enum SeedPlan {
     /// Fresh OS CSPRNG draws (the default).
     Random,
-    /// From `[calibration] seed_file` (format 2): calibration only.
-    Explicit { gen_seed: u64, mix_seed: u64 },
+    /// From `[calibration] seed_file`: calibration only. The stage-4/5/7
+    /// seeds are optional in the file (drawn fresh when absent).
+    Explicit {
+        gen_seed: u64,
+        mix_seed: u64,
+        split_seed: Option<u64>,
+        cross_seed: Option<u64>,
+        unpack_seed: Option<u64>,
+    },
 }
 
 /// Deliberately does not derive `Debug`: `seeds` may hold explicit seeds.
@@ -326,9 +411,13 @@ pub(crate) struct ResolvedConfig {
     pub(crate) mcd_rule: SourceGatesRule,
     pub(crate) schedule: Schedule,
     pub(crate) packing: PackingConfig,
+    pub(crate) crossing: CrossingConfig,
+    pub(crate) unpacking: UnpackingConfig,
     pub(crate) threads: Option<String>,
     pub(crate) stop_after: Option<String>,
     pub(crate) force_from: Option<String>,
+    /// `run.skip_stages`: stages 2..7 not run (sorted, deduplicated).
+    pub(crate) skip_stages: Vec<u64>,
     pub(crate) allow_empty_store: bool,
     pub(crate) frozen_filter: FrozenFilter,
     // Stage-3 piecewise-parallel rounds. `pieces`
@@ -338,12 +427,51 @@ pub(crate) struct ResolvedConfig {
     pub(crate) piece_threads: Option<String>,
 }
 
+pub(crate) const LAST_STAGE: u64 = 7;
+
 impl ResolvedConfig {
     pub(crate) fn stop_after_stage(&self) -> u64 {
         self.stop_after
             .as_deref()
-            .unwrap_or("4")
+            .unwrap_or("7")
             .parse()
             .expect("validated stop_after")
+    }
+
+    /// Whether stage `k` runs: not past the stop point and not skipped.
+    pub(crate) fn stage_on(&self, k: u64) -> bool {
+        k <= self.stop_after_stage() && !self.skip_stages.contains(&k)
+    }
+
+    /// The stages that run, as the driver prints them: "1-7", "1-3,6", ...
+    pub(crate) fn stages_text(&self) -> String {
+        let stages: Vec<u64> = (1..=LAST_STAGE).filter(|&k| self.stage_on(k)).collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < stages.len() {
+            let mut j = i;
+            while j + 1 < stages.len() && stages[j + 1] == stages[j] + 1 {
+                j += 1;
+            }
+            out.push(if i == j {
+                stages[i].to_string()
+            } else {
+                format!("{}-{}", stages[i], stages[j])
+            });
+            i = j + 1;
+        }
+        out.join(",")
+    }
+
+    pub(crate) fn skip_stages_text(&self) -> String {
+        if self.skip_stages.is_empty() {
+            "none".to_owned()
+        } else {
+            self.skip_stages
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        }
     }
 }

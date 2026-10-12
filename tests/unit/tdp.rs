@@ -12,7 +12,7 @@ fn temp_path(label: &str) -> PathBuf {
 }
 
 fn parse(body: &str) -> RawConfig {
-    parse_config(&format!("config_version = 2\n{body}")).unwrap()
+    parse_config(&format!("config_version = 3\n{body}")).unwrap()
 }
 
 fn resolve_for_test(raw: &RawConfig) -> Result<ResolvedConfig, String> {
@@ -25,7 +25,7 @@ fn resolve_for_test(raw: &RawConfig) -> Result<ResolvedConfig, String> {
 }
 
 fn resolve_body(body: &str) -> Result<ResolvedConfig, String> {
-    parse_config(&format!("config_version = 2\n{body}")).and_then(|raw| resolve_for_test(&raw))
+    parse_config(&format!("config_version = 3\n{body}")).and_then(|raw| resolve_for_test(&raw))
 }
 
 fn strings(args: &[OsString]) -> Vec<String> {
@@ -79,8 +79,11 @@ fn omitted_values_resolve_to_the_chosen_l8_runs() {
         (resolved.mcd, resolved.mcd_rule),
         (3000, SourceGatesRule::Validated)
     );
-    assert_eq!(resolved.stop_after_stage(), 4);
+    assert_eq!(resolved.stop_after_stage(), 7);
+    assert!(resolved.skip_stages.is_empty());
+    assert_eq!(resolved.stages_text(), "1-7");
     assert!(resolved.packing.is_default());
+    assert!(resolved.unpacking.is_default());
     assert!(matches!(resolved.seeds, SeedPlan::Random));
     let args = strings(&script_args(&resolved));
     assert!(
@@ -306,6 +309,16 @@ fn environment_store_paths_are_resolved_and_document_paths_win() {
     );
 }
 
+fn seeds(gen_seed: u64, mix: u64) -> RunSeeds {
+    RunSeeds {
+        gen_seed,
+        mix,
+        split: 3,
+        cross: 4,
+        unpack: 5,
+    }
+}
+
 #[test]
 fn resume_after_db_mixing_does_not_require_the_stage_three_store() {
     let run_dir = temp_path("resume");
@@ -314,7 +327,7 @@ fn resume_after_db_mixing_does_not_require_the_stage_three_store() {
     fs::write(run_dir.join("tdp.mpmct1"), "nonempty").unwrap();
     private_file(
         &run_dir.join("SEEDS"),
-        &seeds_text(1, 2, &[7u8; 32], "explicit"),
+        &seeds_text(seeds(1, 2), &[7u8; 32], "explicit"),
     );
     let raw = parse(&format!("run.directory = {:?}", run_dir));
     let resolved = resolve_for_test(&raw).unwrap();
@@ -352,14 +365,24 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "db_mixing.schedule = \"custom\"\ndb_mixing.growth_work_units = 3\ndb_mixing.hold_work_units = 27\ndb_mixing.target_size_factor = 1",
         "db_mixing.schedule = \"custom\"\ndb_mixing.growth_work_units = 3\ndb_mixing.hold_work_units = -1\ndb_mixing.target_size_factor = 2",
         "db_mixing.schedule = \"invented\"",
-        "run.stop_after_stage = 6",
-        "run.rerun_from_stage = 6",
-        "run.stop_after_stage = 5",
-        "run.rerun_from_stage = 5",
-        "run.stop_after_stage = 7",
+        "run.stop_after_stage = 8",
+        "run.rerun_from_stage = 8",
         "run.stop_after_stage = 1",
-        "crossing.size_tolerance_divisor = 25",
-        "[crossing]",
+        "run.rerun_from_stage = 1",
+        "run.skip_stages = [1]",
+        "run.skip_stages = [8]",
+        "run.skip_stages = [6]",
+        "run.skip_stages = [\"4\"]",
+        "run.skip_stages = 4",
+        "crossing.size_tolerance_divisor = 0",
+        "crossing.target_size_factor = 0.5",
+        "crossing.target_size_factor = 17",
+        "crossing.width_penalty_base = 0",
+        "crossing.move_attempts = 0",
+        "unpacking.time_limit = 0",
+        "unpacking.restarts = 0",
+        "unpacking.beam = 0",
+        "unpacking.allow_fallback = \"no\"",
         "preprocessing.mode = \"invented\"",
         "preprocessing.preset = \"L9\"",
         "run.build_binaries = \"yes\"",
@@ -377,15 +400,25 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
     ] {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
-    for body in ["run.stop_after_stage = 5", "[crossing]\nmove_attempts = 1"] {
-        let error = resolve_body(body).err().unwrap();
-        assert!(error.contains("historic"), "{error}");
-        assert!(error.contains("ran/archive/curated-and-postmix"), "{error}");
+    let error = resolve_body("run.skip_stages = [6]").err().unwrap();
+    assert!(error.contains("stage 7 (unpacking) needs stage 6"), "{error}");
+    // every stage 2..7 is a valid stop and rerun point; larger n is allowed
+    // when stage 6 (packing) does not run
+    for k in 2..=7 {
+        resolve_body(&format!("run.stop_after_stage = {k}\nrun.rerun_from_stage = {k}")).unwrap();
     }
-    // stage 4 is a valid stop and rerun point; larger n is allowed when the
-    // run stops before packing
-    resolve_body("run.stop_after_stage = 4\nrun.rerun_from_stage = 4").unwrap();
     resolve_body("source.wires = 512\nsource.gates = 10\nrun.stop_after_stage = 3").unwrap();
+    resolve_body("source.wires = 512\nsource.gates = 10\nrun.skip_stages = [6, 7]").unwrap();
+    assert!(resolve_body("source.wires = 512\nsource.gates = 10\nrun.skip_stages = [7]").is_err());
+    // skip lists: deduplicated, sorted; 7 may be skipped alone; 6 and 7 together
+    let c = resolve_body("run.skip_stages = [5, 4, 5]").unwrap();
+    assert_eq!(c.skip_stages, vec![4, 5]);
+    assert_eq!((c.stages_text(), c.skip_stages_text()), ("1-3,6-7".to_owned(), "4,5".to_owned()));
+    let four_stage = resolve_body("run.skip_stages = [4, 5, 7]").unwrap();
+    assert_eq!(four_stage.stages_text(), "1-3,6");
+    assert_eq!(resolve_body("run.skip_stages = [2, 3]").unwrap().stages_text(), "1,4-7");
+    assert_eq!(resolve_body("run.stop_after_stage = 3").unwrap().stages_text(), "1-3");
+    assert_eq!(resolve_body("run.skip_stages = []").unwrap().skip_stages_text(), "none");
 }
 
 #[test]
@@ -406,7 +439,10 @@ fn explicit_seed_file_requires_calibration_and_never_reaches_argv() {
         resolved.seeds,
         SeedPlan::Explicit {
             gen_seed: 123456789,
-            mix_seed: 987654321
+            mix_seed: 987654321,
+            split_seed: None,
+            cross_seed: None,
+            unpack_seed: None,
         }
     ));
     let mut invocation = vec![OsString::from("bash"), OsString::from("script")];
@@ -423,7 +459,7 @@ fn explicit_seed_file_requires_calibration_and_never_reaches_argv() {
 fn seed_file_format_1_and_malformed_files_are_rejected() {
     let path = temp_path("seed-v1");
     private_file(&path, "123456\n");
-    let error = read_seed_file(&path).unwrap_err();
+    let error = read_seed_file(&path).err().unwrap();
     assert!(error.contains("format 1 holds one seed"), "{error}");
     assert!(error.contains("gen_seed= and mix_seed="), "{error}");
     for text in [
@@ -438,12 +474,23 @@ fn seed_file_format_1_and_malformed_files_are_rejected() {
         assert!(read_seed_file(&path).is_err(), "accepted {text:?}");
     }
     private_file(&path, "gen_seed=9223372036854775792\nmix_seed=0\n");
-    assert_eq!(read_seed_file(&path).unwrap(), (MAX_SEED, 0));
+    let s = read_seed_file(&path).unwrap();
+    assert_eq!((s.gen_seed, s.mix_seed), (MAX_SEED, 0));
+    assert!(s.split_seed.is_none() && s.cross_seed.is_none() && s.unpack_seed.is_none());
+    // the stage-4/5/7 seeds are optional and may come in any order
+    private_file(&path, "unpack_seed=5\ngen_seed=1\nsplit_seed=3\nmix_seed=2\n");
+    let s = read_seed_file(&path).unwrap();
+    assert_eq!(
+        (s.gen_seed, s.mix_seed, s.split_seed, s.cross_seed, s.unpack_seed),
+        (1, 2, Some(3), None, Some(5))
+    );
+    private_file(&path, "gen_seed=1\nmix_seed=2\ncross_seed=x\n");
+    assert!(read_seed_file(&path).is_err());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(read_seed_file(&path).unwrap_err().contains("chmod 600"));
+        assert!(read_seed_file(&path).err().unwrap().contains("chmod 600"));
     }
     fs::remove_file(path).unwrap();
 }
@@ -485,8 +532,9 @@ fn checked_in_toml_recipe_is_the_l8_default() {
     assert_eq!(config.preset, Preset::L8);
     assert_eq!(config.schedule, Schedule::Validated);
     assert_eq!((config.n, config.mcd), (128, 3000));
-    assert_eq!(config.recipe_version, 10);
-    assert_eq!(config.stop_after_stage(), 4);
+    assert_eq!(config.recipe_version, 11);
+    assert_eq!(config.stop_after_stage(), 7);
+    assert_eq!(config.stages_text(), "1-7");
     let bare = resolve_for_test(&parse("")).unwrap();
     assert_eq!(
         recipe_manifest(&config, &[], 1),
@@ -498,17 +546,21 @@ fn checked_in_toml_recipe_is_the_l8_default() {
 fn v1_config_rejected_with_migration() {
     let error = parse_config("config_version = 1\n").unwrap_err();
     assert!(
-        error.contains("config_version 1 is not supported by recipe v10"),
+        error.contains("config_version 1 is not supported by recipe v11"),
         "{error}"
     );
     assert!(error.contains("preprocessing.preset"), "{error}");
-    assert!(parse_config("config_version = 3\n").is_err());
+    // the four-stage template: a pointer to the seven-stage schema
+    let error = parse_config("config_version = 2\n").unwrap_err();
+    assert!(error.contains("config_version = 3"), "{error}");
+    assert!(error.contains("skip_stages = [4, 5, 7]"), "{error}");
+    assert!(parse_config("config_version = 4\n").is_err());
 }
 
 #[test]
 fn old_template_with_preset_l8_rejected() {
     // The v1 template's explicit knobs, with config_version bumped to 2.
-    let old = "config_version = 2\n[preprocessing]\nmode = \"embedded-masking\"\nmask_pair_wires = 2\nmax_open_masks = 3\nmin_open_masks = 2\nbalanced_masks = true\nshuffling_segments = 0\nshuffling_return_home = true\n[db_mixing]\ntarget_size_factor = 2.0\nhold_work_units = 27.0\n";
+    let old = "config_version = 3\n[preprocessing]\nmode = \"embedded-masking\"\nmask_pair_wires = 2\nmax_open_masks = 3\nmin_open_masks = 2\nbalanced_masks = true\nshuffling_segments = 0\nshuffling_return_home = true\n[db_mixing]\ntarget_size_factor = 2.0\nhold_work_units = 27.0\n";
     let error = resolve_for_test(&parse_config(old).unwrap()).err().unwrap();
     assert!(error.contains("is set by preset L8"), "{error}");
 }
@@ -655,7 +707,7 @@ fn dangerous_run_destinations_are_rejected() {
 fn the_exact_default_manifest_text() {
     let config = resolve_for_test(&parse("source.wires = 64")).unwrap();
     let expected = concat!(
-        "tdp_command_recipe=10\npinned_recipe=none\nn=64\n",
+        "tdp_command_recipe=11\npinned_recipe=none\nn=64\n",
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "sandwich_variant=classic\npreprocessing_mode=embedded-masking\npreprocessing_preset=L8\n",
         "preprocessing_mask_pair_wires=2\npreprocessing_max_open_masks=3\n",
@@ -665,21 +717,27 @@ fn the_exact_default_manifest_text() {
         "preprocessing_chain=2\npreprocessing_chain_len=8\npreprocessing_quadratic_fire=1\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
-        "stage3_report_every=default(50000)\npieces=1\nfrozen_db_dir=unset\nfrozen_db_fingerprint=unset\n",
+        "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
+        "crossing_target_size_factor=2\ncrossing_width_penalty_base=3\ncrossing_width_penalty_threshold=1\n",
+        "crossing_size_tolerance_divisor=25\ncrossing_move_attempts=6*target\n",
+        "pieces=1\nfrozen_db_dir=unset\nfrozen_db_fingerprint=unset\n",
         "frozen_filter=auto(unset)\n",
         "frozen_regular_value_convention=native\nallow_empty_store=false\nenv_policy=allowlist-v1\n",
         "cache_mb=lookup:2048,canon:256,xpoly:1024\ncanon_caps=unbounded\npacking_params=default\n",
         "packing_window_gates=512\npacking_interval_cap=512\npacking_monomial_budget=24576\n",
         "packing_span_cap=3000\npacking_split_budget=65536\npacking_fix_iterations=4\n",
         "packing_fallback_iterations=4\npacking_anf_cap_semantics=cpython39\n",
-        "packing_allow_floor_miss=false\npacking_allow_over_budget=false\nseed_record=SEEDS\n",
-        "seed_source=random\nseed_bits=63\ncalibration_only=false\nqc_enabled=false\nqc_seed=20803\n",
+        "packing_allow_floor_miss=false\npacking_allow_over_budget=false\n",
+        "unpacking_params=default\nunpacking_time_limit=30\nunpacking_restarts=16\nunpacking_beam=6\n",
+        "unpacking_allow_fallback=true\nseed_record=SEEDS\n",
+        "seed_source=random\nseed_bits=63\nseeds_format=3\ncalibration_only=false\nqc_enabled=false\nqc_seed=20803\n",
         "qc_reference=unset\nbinary_tdp_packing_xxh3=00000000000000000000000000000003\n",
         "stage2_span_report=skipped\nscript_tdp_gen_xxh3=00000000000000000000000000000001\n",
     );
     assert_eq!(recipe_manifest(&config, &[("tdp_packing", 3)], 1), expected);
-    // no hard-coded "hold" text: every value is resolved (D18)
-    assert!(!expected.contains("hold"));
+    // no hard-coded "hold" text: every value is resolved (D18); "threshold"
+    // is crossing_width_penalty_threshold, a resolved value
+    assert!(!expected.replace("threshold", "").contains("hold"));
 }
 
 /// Both drivers pass a packing flag only when it differs from
@@ -1007,7 +1065,7 @@ fn exit_code_tables_agree() {
     let script =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
             .unwrap();
-    let start = script.find("stage4_exit_meaning() {").unwrap();
+    let start = script.find("stage6_exit_meaning() {").unwrap();
     let body = &script[start..start + script[start..].find("\n}").unwrap()];
     for (code, meaning) in EXIT_CODES.iter().filter(|(c, _)| *c != 0) {
         assert!(
@@ -1052,7 +1110,11 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     // this test store stands in for the validated one
     let reference = store_fingerprint(&store).unwrap();
     let pinned = |c: &ResolvedConfig| pinned_recipe_for_store(c, reference).to_owned();
-    let body = format!("source.wires = 64\ndatabase.regular_dir = {store:?}\n");
+    let seven = resolve_body(&format!("source.wires = 64\ndatabase.regular_dir = {store:?}\n")).unwrap();
+    assert_eq!(pinned(&seven), "none", "a seven-stage run is not the validated four-stage chain");
+    let body = format!(
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5, 7]\n"
+    );
     let l8 = resolve_body(&body).unwrap();
     assert_eq!(pinned(&l8), "val_chain-L8-20261007");
     // ... but it is not the validated store: the manifest says so
@@ -1130,7 +1192,7 @@ fn dry_run_creates_no_run_or_target_directory() {
     fs::write(
         &config_path,
         format!(
-            "config_version = 2\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\ndatabase.regular_dir = {store_dir:?}\nrun.stop_after_stage = 2"
+            "config_version = 3\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\ndatabase.regular_dir = {store_dir:?}\nrun.stop_after_stage = 2"
         ),
     )
     .unwrap();
@@ -1161,7 +1223,7 @@ fn v9_runs_are_rejected_without_changing_saved_artifacts() {
     fs::write(
         &config_path,
         format!(
-            "config_version = 2\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
+            "config_version = 3\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
         ),
     )
     .unwrap();
@@ -1193,20 +1255,23 @@ fn v9_manifest_rejected_with_message() {
         "{error:?}"
     );
     fs::write(&path, "tdp_command_recipe=10\n").unwrap();
-    assert_eq!(read_recipe_version(&path).unwrap(), 10);
+    let error = read_recipe_version(&path).unwrap_err();
+    assert!(error.message.contains("recipe v10 run (the four-stage driver)"), "{error:?}");
+    fs::write(&path, "tdp_command_recipe=11\n").unwrap();
+    assert_eq!(read_recipe_version(&path).unwrap(), 11);
     fs::remove_file(path).unwrap();
 }
 
 #[test]
 fn toml_rejects_unknown_keys_duplicates_and_wrong_types() {
     for input in [
-        "config_version = 3",
-        "config_version = 2\n[typo]",
-        "config_version = 2\n[preprocessing]\nmode = \"embedded-masking\"\nmisspelled = 1",
-        "config_version = 2\n[source]\nwires = \"128\"",
-        "config_version = 2\n[run]\nbuild_binaries = \"true\"",
-        "config_version = 2\n[source]\nwires = 4\nwires = 5",
-        "config_version = 2\n[packing]\nwindow_gate = 512",
+        "config_version = 4",
+        "config_version = 3\n[typo]",
+        "config_version = 3\n[preprocessing]\nmode = \"embedded-masking\"\nmisspelled = 1",
+        "config_version = 3\n[source]\nwires = \"128\"",
+        "config_version = 3\n[run]\nbuild_binaries = \"true\"",
+        "config_version = 3\n[source]\nwires = 4\nwires = 5",
+        "config_version = 3\n[packing]\nwindow_gate = 512",
     ] {
         assert!(parse_config(input).is_err(), "accepted {input}");
     }
@@ -1241,7 +1306,7 @@ fn managed_v10_dry_run_preserves_manifest_and_rejects_changed_binary() {
         fs::write(binary_dir.join(name), format!("original {name}\n")).unwrap();
     }
     let recipe = format!(
-        "config_version = 2\nsource.wires = 8\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
+        "config_version = 3\nsource.wires = 8\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
     );
     let config_path = base.join("original.toml");
     fs::write(&config_path, &recipe).unwrap();
@@ -1256,7 +1321,7 @@ fn managed_v10_dry_run_preserves_manifest_and_rejects_changed_binary() {
     fs::write(&manifest_path, &original_manifest).unwrap();
     private_file(
         &run_dir.join("SEEDS"),
-        &seeds_text(1, 2, &[3u8; 32], "random"),
+        &seeds_text(seeds(1, 2), &[3u8; 32], "random"),
     );
     let matches = command()
         .try_get_matches_from([
@@ -1293,7 +1358,7 @@ fn unsupported_modes_are_rejected_before_artifacts_or_builds() {
     let config_path = base.join("recipe");
     for mode in ["unknown-mode", "embedded_masking", "EMBEDDED-MASKING"] {
         let recipe = format!(
-            "config_version = 2\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\npreprocessing.mode = {mode:?}"
+            "config_version = 3\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\npreprocessing.mode = {mode:?}"
         );
         fs::write(&config_path, recipe).unwrap();
         let matches = command()
@@ -1320,7 +1385,7 @@ fn unsupported_modes_are_rejected_before_artifacts_or_builds() {
 #[test]
 fn non_toml_input_is_rejected() {
     for input in [
-        "```toml\nconfig_version = 2\n```",
+        "```toml\nconfig_version = 3\n```",
         r#"{"config_version": 2}"#,
     ] {
         assert!(parse_config(input).is_err(), "accepted {input}");
@@ -1355,7 +1420,7 @@ fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchang
         let target_dir = base.join("target");
         fs::create_dir_all(&run_dir).unwrap();
         let recipe = format!(
-            "config_version = 2\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
+            "config_version = 3\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
         );
         let config_path = base.join("recipe.toml");
         fs::write(&config_path, recipe).unwrap();
@@ -1398,13 +1463,14 @@ fn supported_toml_aliases_normalize_and_reject_duplicates() {
             "bool" => "true",
             "integer" => "4",
             "number" => "2.5",
+            "integer_list" => "[4, 5]",
             _ => unreachable!(),
         };
         let canonical_raw =
-            parse_config(&format!("config_version = 2\n{canonical} = {value}")).unwrap();
+            parse_config(&format!("config_version = 3\n{canonical} = {value}")).unwrap();
         let (section, key) = alias.split_once('.').unwrap();
         let alias_raw =
-            parse_config(&format!("config_version = 2\n[{section}]\n{key} = {value}")).unwrap();
+            parse_config(&format!("config_version = 3\n[{section}]\n{key} = {value}")).unwrap();
         assert_eq!(canonical_raw.entries.len(), 1);
         assert_eq!(
             canonical_raw.value(flat),
@@ -1413,7 +1479,7 @@ fn supported_toml_aliases_normalize_and_reject_duplicates() {
         );
         if canonical != alias {
             let error = parse_config(&format!(
-                "config_version = 2\n{alias} = {value}\n{canonical} = {value}"
+                "config_version = 3\n{alias} = {value}\n{canonical} = {value}"
             ))
             .unwrap_err();
             assert!(error.contains("duplicate TDP setting"), "{error}");
@@ -1504,7 +1570,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         let target_dir = base.join("target");
         mock_binaries(&target_dir);
         let recipe = format!(
-            "config_version = 2\nsource.wires = 4\nsource.gates = 1\npreprocessing.mode = {mode:?}\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.build_binaries = false\nrun.stop_after_stage = 2\n"
+            "config_version = 3\nsource.wires = 4\nsource.gates = 1\npreprocessing.mode = {mode:?}\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.build_binaries = false\nrun.stop_after_stage = 2\n"
         );
         let config_path = base.join("recipe.toml");
         fs::write(&config_path, recipe).unwrap();
@@ -1518,7 +1584,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         run_inner(&matches).unwrap();
         let manifest_path = run_dir.join("tdp_command.conf");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
-        assert!(manifest.starts_with("tdp_command_recipe=10\n"));
+        assert!(manifest.starts_with("tdp_command_recipe=11\n"));
         assert!(manifest.contains(&format!("preprocessing_mode={mode}\n")));
         let seeds_path = run_dir.join("SEEDS");
         let seeds = fs::read_to_string(&seeds_path).unwrap();
@@ -1535,11 +1601,15 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
             .filter_map(|l| {
                 l.strip_prefix("gen_seed=")
                     .or_else(|| l.strip_prefix("mix_seed="))
+                    .or_else(|| l.strip_prefix("split_seed="))
+                    .or_else(|| l.strip_prefix("cross_seed="))
+                    .or_else(|| l.strip_prefix("unpack_seed="))
                     .or_else(|| l.strip_prefix("run_key="))
             })
             .map(String::from)
             .collect();
-        assert_eq!(values.len(), 3);
+        assert_eq!(values.len(), 6);
+        assert!(seeds.starts_with("seeds_format=3\n"));
         for file in ["tdp_command.conf", "tdp_gen.log", "stage12.recipe"] {
             let text = fs::read_to_string(run_dir.join(file)).unwrap();
             for v in &values {
@@ -1577,7 +1647,7 @@ fn standalone_runs_are_not_adopted() {
     fs::create_dir_all(&run_dir).unwrap();
     private_file(
         &run_dir.join("SEEDS"),
-        &seeds_text(1, 2, &[9u8; 32], "random"),
+        &seeds_text(seeds(1, 2), &[9u8; 32], "random"),
     );
     fs::write(run_dir.join("tdp.mpmct1"), "saved gadget\n").unwrap();
     let target_dir = base.join("target");
@@ -1585,7 +1655,7 @@ fn standalone_runs_are_not_adopted() {
     fs::write(
         &config_path,
         format!(
-            "config_version = 2\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
+            "config_version = 3\nsource.wires = 4\nsource.gates = 1\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.stop_after_stage = 2\n"
         ),
     )
     .unwrap();
@@ -1630,14 +1700,16 @@ fn bash_is_resolved_by_version_not_by_name() {
 }
 
 #[test]
-fn stage4_meaning_needs_the_stage4_marker() {
-    let base = temp_path("stage4-marker");
+fn stage_meaning_needs_the_failure_marker() {
+    let base = temp_path("stage-marker");
     fs::create_dir_all(&base).unwrap();
-    let marker = base.join("stage4.failed");
-    assert_eq!(stage4_failure_code(&marker), None);
+    let marker = base.join("packing.failed");
+    assert_eq!(stage_failure_code(&marker), None);
     fs::write(&marker, "exit=5\n").unwrap();
-    assert_eq!(stage4_failure_code(&marker), Some(5));
+    assert_eq!(stage_failure_code(&marker), Some(5));
     fs::write(&marker, "garbage\n").unwrap();
-    assert_eq!(stage4_failure_code(&marker), None);
+    assert_eq!(stage_failure_code(&marker), None);
+    assert_eq!(unpacking_exit_meaning(4), "verification failure");
+    assert_eq!(unpacking_exit_meaning(5), "unknown exit code");
     fs::remove_dir_all(base).unwrap();
 }

@@ -65,15 +65,38 @@ reject 'source-wires' --source-wires 4096
 # packing budgets are resource bounds (MAX_MONOMIAL_BUDGET = 2^18)
 reject 'packing-monomial-budget' --packing-monomial-budget 262145
 reject 'packing-split-budget' --packing-split-budget 262145
-# nonlinear291 wider than stage 4's 1024 state wires is refused before stage 1
-# (reject() stops after stage 2, so this case runs with the default stop)
+# nonlinear291 wider than stage 6's 1024 state wires is refused before stage 1
+# (reject() stops after stage 2, so this case runs with the default stop);
+# skipping stage 6 (and 7) lifts the limit
 if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
      --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
-  echo "unexpected success: nonlinear291 n=16 with stage 4" >&2; exit 1
+  echo "unexpected success: nonlinear291 n=16 with stage 6" >&2; exit 1
 fi
 test ! -e "$tmp/nl-wide"
-grep -q 'FATAL: nonlinear291 makes a 3677-wire stage-2 circuit; stage 4 supports at most 1024' "$tmp/error" ||
+grep -q 'FATAL: nonlinear291 makes a 3677-wire stage-2 circuit; stage 6 (packing) supports at most 1024' "$tmp/error" ||
   { cat "$tmp/error" >&2; exit 1; }
+if ! bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
+     --run-directory "$tmp/nl-wide" --run-skip-stages 6,7 --run-stop-after-stage 2 >"$tmp/error" 2>&1; then
+  cat "$tmp/error" >&2; exit 1
+fi
+# the optional-stage surface
+reject 'run-skip-stages' --run-skip-stages 1
+reject 'run-skip-stages' --run-skip-stages 8
+reject 'run-skip-stages' --run-skip-stages 4,,5
+reject 'run-skip-stages' --run-skip-stages ''
+if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$tmp/rejected" --run-skip-stages 6 >"$tmp/error" 2>&1; then
+  echo "unexpected success: --run-skip-stages 6 with stage 7 on" >&2; exit 1
+fi
+test ! -e "$tmp/rejected"
+grep -q 'FATAL: stage 7 (unpacking) needs stage 6 (packing)' "$tmp/error" || { cat "$tmp/error" >&2; exit 1; }
+reject 'crossing-target-size-factor' --crossing-target-size-factor 0.5
+reject 'crossing-target-size-factor' --crossing-target-size-factor 17
+reject 'crossing-width-penalty-base' --crossing-width-penalty-base 0
+reject 'crossing-size-tolerance-divisor' --crossing-size-tolerance-divisor 0
+reject 'crossing-move-attempts' --crossing-move-attempts 0
+reject 'unpacking-time-limit' --unpacking-time-limit 0
+reject 'unpacking-restarts' --unpacking-restarts 0
+reject 'unpacking-beam' --unpacking-beam abc
 # inherited stage-2 variables are refused, even with explicit flags (§11.5)
 EMBEDDED_MASKING_K=1 reject 'EMBEDDED_MASKING_K is not honoured'
 EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=false reject \

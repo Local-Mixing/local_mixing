@@ -139,17 +139,20 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
         bash.version.1,
         bash.path.display()
     );
-    // A failed stage 4 leaves this marker (scripts/tdp_gen.sh), so a
-    // tdp_packing exit-code meaning is attached only to a stage-4 failure.
-    let stage4_failed = config.run_dir.join("stage4.failed");
-    match fs::remove_file(&stage4_failed) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(TdpError::io(format!(
-                "cannot remove {}: {error}",
-                stage4_failed.display()
-            )));
+    // A failed stage 6 or 7 leaves a marker (scripts/tdp_gen.sh), so the
+    // binary's exit-code meaning is attached only to that stage's failure.
+    let packing_failed = config.run_dir.join("packing.failed");
+    let unpacking_failed = config.run_dir.join("unpacking.failed");
+    for marker in [&packing_failed, &unpacking_failed] {
+        match fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(TdpError::io(format!(
+                    "cannot remove {}: {error}",
+                    marker.display()
+                )));
+            }
         }
     }
     let mut child = ProcessCommand::new(&bash.path);
@@ -164,27 +167,50 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
     if !status.success() {
         let code = status.code().unwrap_or(1);
         let mut error = TdpError::child("TDP_GEN pipeline", status);
-        if stage4_failure_code(&stage4_failed) == Some(code) {
+        if stage_failure_code(&packing_failed) == Some(code) {
             let meaning = crate::stages::packing::types::Stage4Error::meaning(code);
-            error.message = format!("{} (stage 4 tdp_packing: {meaning})", error.message);
+            error.message = format!("{} (stage 6 tdp_packing: {meaning})", error.message);
+        } else if stage_failure_code(&unpacking_failed) == Some(code) {
+            let meaning = unpacking_exit_meaning(code);
+            error.message = format!("{} (stage 7 tdp_unpacking: {meaning})", error.message);
         }
         return Err(error);
     }
-    if config.stop_after_stage() == 4 {
-        let pack = config.run_dir.join("packing");
-        if pack.join("NOT_RECOMMENDED").exists() {
+    let stages = config.stages_text();
+    let pack = config.run_dir.join("packing");
+    let not_recommended = config.stage_on(6) && pack.join("NOT_RECOMMENDED").exists();
+    let last = if config.stage_on(7) {
+        Some(config.run_dir.join("unpacking").join("unpacked.mpmct1"))
+    } else if config.stage_on(6) {
+        Some(pack.join("deliverable.tdp4"))
+    } else {
+        None
+    };
+    if let Some(last) = last {
+        if not_recommended {
             eprintln!(
-                "[tdp_gen] stages 1-4 finished with an ALLOWED FAILURE: {} is NOT a recommended deliverable (see packing/packing.report)",
-                pack.join("deliverable.tdp4").display()
+                "[tdp_gen] stages {stages} finished with an ALLOWED FAILURE: {} is NOT a recommended deliverable (see packing/packing.report)",
+                last.display()
             );
         } else {
-            println!(
-                "[tdp_gen] stages 1-4 complete: {}",
-                pack.join("deliverable.tdp4").display()
-            );
+            println!("[tdp_gen] stages {stages} complete: {}", last.display());
         }
     }
     Ok(())
+}
+
+/// `tdp_unpacking` exit codes (stage 7; docs/STAGE7_UNPACKING.md), as
+/// scripts/tdp_gen.sh reports them.
+pub(crate) fn unpacking_exit_meaning(code: i32) -> &'static str {
+    match code {
+        2 => "usage or parameter error",
+        3 => "input error",
+        4 => "verification failure",
+        7 => "I/O error writing outputs",
+        8 => "internal invariant violated",
+        101 => "panic",
+        _ => "unknown exit code",
+    }
 }
 
 /// The oldest bash scripts/tdp_gen.sh runs under. Associative arrays and
@@ -270,9 +296,9 @@ pub(crate) fn resolve_bash() -> Result<Bash, TdpError> {
     )))
 }
 
-/// The exit code a failed stage 4 recorded in `$RUN/stage4.failed`
-/// (`exit=<code>`), if that file exists and is well formed.
-pub(crate) fn stage4_failure_code(marker: &Path) -> Option<i32> {
+/// The exit code a failed stage 6 or 7 recorded in `$RUN/packing.failed` or
+/// `$RUN/unpacking.failed` (`exit=<code>`), if that file exists and is well formed.
+pub(crate) fn stage_failure_code(marker: &Path) -> Option<i32> {
     let meta = fs::metadata(marker).ok()?;
     if !meta.is_file() || meta.len() > 64 {
         return None;
@@ -315,11 +341,23 @@ fn os_seed() -> Result<u64, TdpError> {
     }
 }
 
-/// The SEEDS text (format 2, §8.2).
-pub(crate) fn seeds_text(gen_seed: u64, mix_seed: u64, run_key: &[u8; 32], source: &str) -> String {
+/// The five run seeds (§8.2): gen (stages 1+2), mix (3), split (4), cross (5,
+/// used only when stage 5 starts from a circuit file) and unpack (7).
+#[derive(Clone, Copy)]
+pub(crate) struct RunSeeds {
+    pub(crate) gen_seed: u64,
+    pub(crate) mix: u64,
+    pub(crate) split: u64,
+    pub(crate) cross: u64,
+    pub(crate) unpack: u64,
+}
+
+/// The SEEDS text (format 3, §8.2).
+pub(crate) fn seeds_text(seeds: RunSeeds, run_key: &[u8; 32], source: &str) -> String {
     let key: String = run_key.iter().map(|b| format!("{b:02x}")).collect();
     format!(
-        "seeds_format=2\ngen_seed={gen_seed}\nmix_seed={mix_seed}\nrun_key={key}\nseed_source={source}\n"
+        "seeds_format=3\ngen_seed={}\nmix_seed={}\nsplit_seed={}\ncross_seed={}\nunpack_seed={}\nrun_key={key}\nseed_source={source}\n",
+        seeds.gen_seed, seeds.mix, seeds.split, seeds.cross, seeds.unpack
     )
 }
 
@@ -340,9 +378,42 @@ pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError>
         ))
     })?;
     let path = config.run_dir.join("SEEDS");
-    let (gen_seed, mix_seed, source) = match config.seeds {
-        SeedPlan::Random => (os_seed()?, os_seed()?, "random"),
-        SeedPlan::Explicit { gen_seed, mix_seed } => (gen_seed, mix_seed, "explicit"),
+    let (seeds, source) = match config.seeds {
+        SeedPlan::Random => (
+            RunSeeds {
+                gen_seed: os_seed()?,
+                mix: os_seed()?,
+                split: os_seed()?,
+                cross: os_seed()?,
+                unpack: os_seed()?,
+            },
+            "random",
+        ),
+        SeedPlan::Explicit {
+            gen_seed,
+            mix_seed,
+            split_seed,
+            cross_seed,
+            unpack_seed,
+        } => (
+            RunSeeds {
+                gen_seed,
+                mix: mix_seed,
+                split: match split_seed {
+                    Some(s) => s,
+                    None => os_seed()?,
+                },
+                cross: match cross_seed {
+                    Some(s) => s,
+                    None => os_seed()?,
+                },
+                unpack: match unpack_seed {
+                    Some(s) => s,
+                    None => os_seed()?,
+                },
+            },
+            "explicit",
+        ),
     };
     let mut key = [0u8; 32];
     rand::rngs::OsRng
@@ -358,13 +429,14 @@ pub(crate) fn create_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError>
     let mut file = options
         .open(&path)
         .map_err(|error| TdpError::io(format!("cannot create {}: {error}", path.display())))?;
-    file.write_all(seeds_text(gen_seed, mix_seed, &key, source).as_bytes())
+    file.write_all(seeds_text(seeds, &key, source).as_bytes())
         .and_then(|_| file.sync_all())
         .map_err(|error| TdpError::io(format!("cannot write {}: {error}", path.display())))
 }
 
-/// On resume, SEEDS must exist, parse, be private, and agree with an
-/// explicit seed file (compared here, never printed).
+/// On resume, SEEDS must exist, parse (format 3; format 2 from the four-stage
+/// driver is accepted and upgraded in place by scripts/tdp_gen.sh), be
+/// private, and agree with an explicit seed file (compared here, never printed).
 pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> {
     let path = config.run_dir.join("SEEDS");
     let text = fs::read_to_string(&path).map_err(|error| {
@@ -380,19 +452,24 @@ pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> 
             .and_then(|l| l.strip_prefix(key))
             .filter(|v| !v.is_empty())
     };
+    let seed_at = |i: usize, key: &str| -> Option<u64> {
+        field(i, key)?.parse().ok().filter(|v| *v <= MAX_SEED)
+    };
+    // (gen, mix, [split, cross, unpack]): the last three are absent in format 2.
     let parsed = (|| {
-        if lines.len() != 5 || lines[0] != "seeds_format=2" {
-            return None;
+        let (names, key_at): (&[&str], usize) = match (lines.len(), lines.first().copied()) {
+            (8, Some("seeds_format=3")) => (
+                &["gen_seed=", "mix_seed=", "split_seed=", "cross_seed=", "unpack_seed="],
+                6,
+            ),
+            (5, Some("seeds_format=2")) => (&["gen_seed=", "mix_seed="], 3),
+            _ => return None,
+        };
+        let mut seeds = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            seeds.push(seed_at(i + 1, name)?);
         }
-        let g: u64 = field(1, "gen_seed=")?
-            .parse()
-            .ok()
-            .filter(|v| *v <= MAX_SEED)?;
-        let m: u64 = field(2, "mix_seed=")?
-            .parse()
-            .ok()
-            .filter(|v| *v <= MAX_SEED)?;
-        let k = field(3, "run_key=")?;
+        let k = field(key_at, "run_key=")?;
         if k.len() != 64
             || !k
                 .bytes()
@@ -400,11 +477,11 @@ pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> 
         {
             return None;
         }
-        matches!(field(4, "seed_source="), Some("random" | "explicit")).then_some((g, m))
+        matches!(field(key_at + 1, "seed_source="), Some("random" | "explicit")).then_some(seeds)
     })();
-    let (g, m) = parsed.ok_or_else(|| {
+    let seeds = parsed.ok_or_else(|| {
         TdpError::config(format!(
-            "{} is malformed (seeds_format=2 expected)",
+            "{} is malformed (seeds_format=3 expected)",
             path.display()
         ))
     })?;
@@ -421,13 +498,31 @@ pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> 
             )));
         }
     }
-    if let SeedPlan::Explicit { gen_seed, mix_seed } = config.seeds
-        && (gen_seed, mix_seed) != (g, m)
+    if let SeedPlan::Explicit {
+        gen_seed,
+        mix_seed,
+        split_seed,
+        cross_seed,
+        unpack_seed,
+    } = config.seeds
     {
-        return Err(TdpError::config(format!(
-            "calibration.seed_file conflicts with the existing {}; use the original seeds or a fresh run.directory",
-            path.display()
-        )));
+        let want = [
+            Some(gen_seed),
+            Some(mix_seed),
+            split_seed,
+            cross_seed,
+            unpack_seed,
+        ];
+        let conflict = want
+            .iter()
+            .zip(seeds.iter())
+            .any(|(w, have)| w.is_some_and(|w| w != *have));
+        if conflict {
+            return Err(TdpError::config(format!(
+                "calibration.seed_file conflicts with the existing {}; use the original seeds or a fresh run.directory",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -481,6 +576,12 @@ pub(crate) fn canonical_script_flag(flag: &str) -> &str {
         "--hold" => "--db-mixing-hold-work-units",
         "--stop-after" => "--run-stop-after-stage",
         "--force-from" => "--run-rerun-from-stage",
+        "--skip-stages" => "--run-skip-stages",
+        "--xr" => "--crossing-target-size-factor",
+        "--xb" => "--crossing-width-penalty-base",
+        "--xc" => "--crossing-width-penalty-threshold",
+        "--xtdiv" => "--crossing-size-tolerance-divisor",
+        "--xmoves" => "--crossing-move-attempts",
         "--pieces" => "--parallel-pieces",
         "--min-block-size" => "--parallel-target-piece-gates",
         "--piece-threads" => "--parallel-threads",
@@ -546,6 +647,24 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
             push(flag, value);
         }
     }
+    let c = &config.crossing;
+    push_optional_arg(&mut args, "--xr", c.xr.as_deref());
+    push_optional_arg(&mut args, "--xb", c.xb.as_deref());
+    push_optional_arg(&mut args, "--xc", c.xc.as_deref());
+    push_optional_arg(&mut args, "--xtdiv", c.xtdiv.as_deref());
+    push_optional_arg(&mut args, "--xmoves", c.xmoves.as_deref());
+    let mut push = |flag: &str, value: String| {
+        args.push(OsString::from(flag));
+        args.push(OsString::from(value));
+    };
+    for (flag, value, default) in config.unpacking.flags() {
+        if value != default {
+            push(flag, value);
+        }
+    }
+    if !config.skip_stages.is_empty() {
+        push("--skip-stages", config.skip_stages_text());
+    }
     if let Some(t) = &config.threads {
         push("--threads", t.clone());
     }
@@ -586,6 +705,9 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     }
     if config.packing.allow_over_budget {
         args.push(OsString::from("--packing-allow-over-budget"));
+    }
+    if !config.unpacking.allow_fallback {
+        args.push(OsString::from("--unpacking-no-fallback"));
     }
     args
 }
@@ -696,7 +818,32 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         ),
     }
     println!(
-        "[tdp_gen] packing (stage 4): {}",
+        "[tdp_gen] stages: {} (skipped: {})",
+        config.stages_text(),
+        config.skip_stages_text()
+    );
+    println!(
+        "[tdp_gen] splitting (stage 4): archive-era flags (--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256 --k-max 12)"
+    );
+    println!(
+        "[tdp_gen] crossing (stage 5): {}",
+        config
+            .crossing
+            .fields()
+            .iter()
+            .map(|(key, _, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    println!(
+        "[tdp_gen] unpacking (stage 7): time_limit={} restarts={} beam={} allow_fallback={}",
+        config.unpacking.time_limit,
+        config.unpacking.restarts,
+        config.unpacking.beam,
+        config.unpacking.allow_fallback
+    );
+    println!(
+        "[tdp_gen] packing (stage 6): {}",
         if config.packing.is_default() {
             "default (G=512, split budget 65536, cpython39 caps)".to_owned()
         } else {
@@ -737,7 +884,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     }
     println!(
         "[tdp_gen] lifecycle: stop_after_stage={} rerun_from_stage={} build_binaries={}",
-        config.stop_after.as_deref().unwrap_or("4"),
+        config.stop_after.as_deref().unwrap_or("7"),
         config.force_from.as_deref().unwrap_or("none"),
         config.build_release
     );
@@ -789,6 +936,8 @@ pub(crate) fn print_dry_run(
             OsString::from("circuit_mixer"),
             OsString::from("--bin"),
             OsString::from("tdp_packing"),
+            OsString::from("--bin"),
+            OsString::from("tdp_unpacking"),
         ];
         println!("[tdp_gen] would build: {}", render_command(&build));
         let mut report = vec![OsString::from("cargo")];
