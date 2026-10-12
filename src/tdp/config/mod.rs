@@ -320,13 +320,21 @@ impl UnpackingConfig {
     pub(crate) fn flags(&self) -> Vec<(&'static str, String, String)> {
         let d = UnpackingConfig::default();
         vec![
-            ("--unpacking-time-limit", self.time_limit.clone(), d.time_limit),
+            (
+                "--unpacking-time-limit",
+                self.time_limit.clone(),
+                d.time_limit,
+            ),
             (
                 "--unpacking-restarts",
                 self.restarts.to_string(),
                 d.restarts.to_string(),
             ),
-            ("--unpacking-beam", self.beam.to_string(), d.beam.to_string()),
+            (
+                "--unpacking-beam",
+                self.beam.to_string(),
+                d.beam.to_string(),
+            ),
         ]
     }
 
@@ -363,8 +371,16 @@ impl CrossingConfig {
         [
             (d[0].0, "--crossing-target-size-factor", v(&self.xr, d[0].1)),
             (d[1].0, "--crossing-width-penalty-base", v(&self.xb, d[1].1)),
-            (d[2].0, "--crossing-width-penalty-threshold", v(&self.xc, d[2].1)),
-            (d[3].0, "--crossing-size-tolerance-divisor", v(&self.xtdiv, d[3].1)),
+            (
+                d[2].0,
+                "--crossing-width-penalty-threshold",
+                v(&self.xc, d[2].1),
+            ),
+            (
+                d[3].0,
+                "--crossing-size-tolerance-divisor",
+                v(&self.xtdiv, d[3].1),
+            ),
             (d[4].0, "--crossing-move-attempts", v(&self.xmoves, d[4].1)),
         ]
     }

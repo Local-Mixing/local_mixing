@@ -326,7 +326,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "unpacking_restarts",
         "integer",
     ),
-    ("unpacking.beam", "unpacking.beam", "unpacking_beam", "integer"),
+    (
+        "unpacking.beam",
+        "unpacking.beam",
+        "unpacking_beam",
+        "integer",
+    ),
     (
         "unpacking.allow_fallback",
         "unpacking.allow_fallback",

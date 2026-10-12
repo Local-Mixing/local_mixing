@@ -348,7 +348,11 @@ where
     let stop_after = parse_optional_stage(raw, "stop_after")?;
     let force_from = parse_optional_stage(raw, "force_from")?;
     // Optional stages (every stage after the first): run.skip_stages.
-    let stop_after_stage: u64 = stop_after.as_deref().unwrap_or("7").parse().expect("validated");
+    let stop_after_stage: u64 = stop_after
+        .as_deref()
+        .unwrap_or("7")
+        .parse()
+        .expect("validated");
     let mut skip_stages: Vec<u64> = Vec::new();
     if let Some(list) = raw.value("skip_stages") {
         for item in list.split(',') {

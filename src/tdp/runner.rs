@@ -459,7 +459,13 @@ pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> 
     let parsed = (|| {
         let (names, key_at): (&[&str], usize) = match (lines.len(), lines.first().copied()) {
             (8, Some("seeds_format=3")) => (
-                &["gen_seed=", "mix_seed=", "split_seed=", "cross_seed=", "unpack_seed="],
+                &[
+                    "gen_seed=",
+                    "mix_seed=",
+                    "split_seed=",
+                    "cross_seed=",
+                    "unpack_seed=",
+                ],
                 6,
             ),
             (5, Some("seeds_format=2")) => (&["gen_seed=", "mix_seed="], 3),
@@ -477,7 +483,11 @@ pub(crate) fn check_seeds_file(config: &ResolvedConfig) -> Result<(), TdpError> 
         {
             return None;
         }
-        matches!(field(key_at + 1, "seed_source="), Some("random" | "explicit")).then_some(seeds)
+        matches!(
+            field(key_at + 1, "seed_source="),
+            Some("random" | "explicit")
+        )
+        .then_some(seeds)
     })();
     let seeds = parsed.ok_or_else(|| {
         TdpError::config(format!(

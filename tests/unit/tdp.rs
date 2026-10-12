@@ -401,11 +401,17 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
     let error = resolve_body("run.skip_stages = [6]").err().unwrap();
-    assert!(error.contains("stage 7 (unpacking) needs stage 6"), "{error}");
+    assert!(
+        error.contains("stage 7 (unpacking) needs stage 6"),
+        "{error}"
+    );
     // every stage 2..7 is a valid stop and rerun point; larger n is allowed
     // when stage 6 (packing) does not run
     for k in 2..=7 {
-        resolve_body(&format!("run.stop_after_stage = {k}\nrun.rerun_from_stage = {k}")).unwrap();
+        resolve_body(&format!(
+            "run.stop_after_stage = {k}\nrun.rerun_from_stage = {k}"
+        ))
+        .unwrap();
     }
     resolve_body("source.wires = 512\nsource.gates = 10\nrun.stop_after_stage = 3").unwrap();
     resolve_body("source.wires = 512\nsource.gates = 10\nrun.skip_stages = [6, 7]").unwrap();
@@ -413,12 +419,30 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
     // skip lists: deduplicated, sorted; 7 may be skipped alone; 6 and 7 together
     let c = resolve_body("run.skip_stages = [5, 4, 5]").unwrap();
     assert_eq!(c.skip_stages, vec![4, 5]);
-    assert_eq!((c.stages_text(), c.skip_stages_text()), ("1-3,6-7".to_owned(), "4,5".to_owned()));
+    assert_eq!(
+        (c.stages_text(), c.skip_stages_text()),
+        ("1-3,6-7".to_owned(), "4,5".to_owned())
+    );
     let four_stage = resolve_body("run.skip_stages = [4, 5, 7]").unwrap();
     assert_eq!(four_stage.stages_text(), "1-3,6");
-    assert_eq!(resolve_body("run.skip_stages = [2, 3]").unwrap().stages_text(), "1,4-7");
-    assert_eq!(resolve_body("run.stop_after_stage = 3").unwrap().stages_text(), "1-3");
-    assert_eq!(resolve_body("run.skip_stages = []").unwrap().skip_stages_text(), "none");
+    assert_eq!(
+        resolve_body("run.skip_stages = [2, 3]")
+            .unwrap()
+            .stages_text(),
+        "1,4-7"
+    );
+    assert_eq!(
+        resolve_body("run.stop_after_stage = 3")
+            .unwrap()
+            .stages_text(),
+        "1-3"
+    );
+    assert_eq!(
+        resolve_body("run.skip_stages = []")
+            .unwrap()
+            .skip_stages_text(),
+        "none"
+    );
 }
 
 #[test]
@@ -478,10 +502,19 @@ fn seed_file_format_1_and_malformed_files_are_rejected() {
     assert_eq!((s.gen_seed, s.mix_seed), (MAX_SEED, 0));
     assert!(s.split_seed.is_none() && s.cross_seed.is_none() && s.unpack_seed.is_none());
     // the stage-4/5/7 seeds are optional and may come in any order
-    private_file(&path, "unpack_seed=5\ngen_seed=1\nsplit_seed=3\nmix_seed=2\n");
+    private_file(
+        &path,
+        "unpack_seed=5\ngen_seed=1\nsplit_seed=3\nmix_seed=2\n",
+    );
     let s = read_seed_file(&path).unwrap();
     assert_eq!(
-        (s.gen_seed, s.mix_seed, s.split_seed, s.cross_seed, s.unpack_seed),
+        (
+            s.gen_seed,
+            s.mix_seed,
+            s.split_seed,
+            s.cross_seed,
+            s.unpack_seed
+        ),
         (1, 2, Some(3), None, Some(5))
     );
     private_file(&path, "gen_seed=1\nmix_seed=2\ncross_seed=x\n");
@@ -1110,8 +1143,15 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     // this test store stands in for the validated one
     let reference = store_fingerprint(&store).unwrap();
     let pinned = |c: &ResolvedConfig| pinned_recipe_for_store(c, reference).to_owned();
-    let seven = resolve_body(&format!("source.wires = 64\ndatabase.regular_dir = {store:?}\n")).unwrap();
-    assert_eq!(pinned(&seven), "none", "a seven-stage run is not the validated four-stage chain");
+    let seven = resolve_body(&format!(
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        pinned(&seven),
+        "none",
+        "a seven-stage run is not the validated four-stage chain"
+    );
     let body = format!(
         "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5, 7]\n"
     );
@@ -1256,7 +1296,12 @@ fn v9_manifest_rejected_with_message() {
     );
     fs::write(&path, "tdp_command_recipe=10\n").unwrap();
     let error = read_recipe_version(&path).unwrap_err();
-    assert!(error.message.contains("recipe v10 run (the four-stage driver)"), "{error:?}");
+    assert!(
+        error
+            .message
+            .contains("recipe v10 run (the four-stage driver)"),
+        "{error:?}"
+    );
     fs::write(&path, "tdp_command_recipe=11\n").unwrap();
     assert_eq!(read_recipe_version(&path).unwrap(), 11);
     fs::remove_file(path).unwrap();
