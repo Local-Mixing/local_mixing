@@ -82,7 +82,7 @@ impl Mixer {
     }
 
     // Directional birth transport (replaces the uniform scatter): a fresh
-    // product advances floor(dir_q * slack) gates in its own direction, where
+    // piece advances floor(dir_q * slack) gates in its own direction, where
     // slack is how far it could float that way before its first collision.
     pub(super) fn advance_birth(&mut self, id: u32) {
         if !self.arena.is_linked(id) {

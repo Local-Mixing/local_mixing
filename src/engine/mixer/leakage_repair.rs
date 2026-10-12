@@ -4,7 +4,7 @@
 //! only validates and commits one plan while retaining the mixer's identity,
 //! provenance, random stream, and ordinary sampling statistics.
 
-use super::{DbMode, Dir, Mixer, XGate};
+use super::{DbMode, Dir, Mixer, NIL, XGate};
 use crate::stages::db_mixing::leakage_repair::blocks::ConvexBlock;
 use crate::stages::db_mixing::replacement::polys_equivalent;
 
@@ -149,6 +149,7 @@ impl Mixer {
         let advance = std::mem::replace(&mut self.params.db_advance, false);
         let verify = std::mem::replace(&mut self.params.db_verify, false);
         let band_round = std::mem::replace(&mut self.band_led_round, false);
+        let whole_circuit = block_ids.len() == self.arena.len();
         let applied = self.try_db_splice(
             block_ids,
             direction,
@@ -163,6 +164,18 @@ impl Mixer {
         self.params.db_verify = verify;
         self.band_led_round = band_round;
         assert!(applied, "a preverified quality splice must succeed");
+
+        // With no surviving old node, the standard death hook cannot move the
+        // last tap anchor to a neighbor. Re-anchor those monitors to live material.
+        if whole_circuit && !self.taps.is_empty() {
+            let anchor = self.arena.head();
+            debug_assert_ne!(anchor, NIL);
+            self.tap_at.clear();
+            for (index, tap) in self.taps.iter_mut().enumerate() {
+                tap.anchor = anchor;
+                self.tap_at.entry(anchor).or_default().push(index as u32);
+            }
+        }
         Ok(())
     }
 }

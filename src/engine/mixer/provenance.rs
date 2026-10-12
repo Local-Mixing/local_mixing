@@ -1,4 +1,4 @@
-//! Per-gate metadata, ancestry universes, sidecars and litter identity.
+//! Per-gate metadata, ancestry universes, sidecars and event/litter identity.
 use super::*;
 
 impl Mixer {
@@ -178,6 +178,7 @@ impl Mixer {
                 i + 1,
                 Meta {
                     origin: ORIGIN_SYNTH,
+                    event: 0,
                     dir: Dir::R,
                     dgen: GEN_FRESH,
                     litter: 0,
@@ -191,6 +192,7 @@ impl Mixer {
     pub(crate) fn meta_of(&self, id: u32) -> Meta {
         self.meta.get(id as usize).copied().unwrap_or(Meta {
             origin: ORIGIN_SYNTH,
+            event: 0,
             dir: Dir::R,
             dgen: GEN_FRESH,
             litter: 0,
@@ -201,7 +203,7 @@ impl Mixer {
     // Litter census of a window: (distinct litters, is-exactly-one-complete-
     // litter). "Complete" requires every gate to share one id AND the count to
     // still equal the size recorded when that litter was emitted — so a litter
-    // that has since been partly re-spelled reads as incomplete, making
+    // that has since been split or partly merged reads as incomplete, making
     // the test conservative under churn.
     //
     // Singleton litters are excluded by construction: input gates and
@@ -224,10 +226,12 @@ impl Mixer {
         (distinct.len(), full)
     }
 
+    // A new litter id. Unlike events these carry no tabu bookkeeping — a litter
+    // is pure provenance.
     /// OR litter `l`'s ancestor set into `out`. Singleton sets are NOT stored:
     /// input gate `i` is litter `i` by construction, so any id below `anc_m`
     /// with no map entry denotes `{id}`. Ids at or above it with no entry are
-    /// born-random material (twist brackets, bridge carriers) and contribute
+    /// born-random material (twist brackets, insert pairs) and contribute
     /// nothing. That keeps init O(1) instead of O(input^2).
     pub(super) fn anc_or_into(&self, l: u64, out: &mut [u64]) {
         if let Some(v) = self.anc.get(&l) {
@@ -750,7 +754,7 @@ impl Mixer {
 
     /// Drop ancestor sets for litters with no live gates. Without this the map
     /// grows with every splice for the whole run; with it, it is bounded by the
-    /// live litter count.
+    /// live litter count (plus the litters restorable journal entries hold).
     pub(super) fn anc_prune(&mut self) {
         if self.anc_words == 0 {
             return;
@@ -761,6 +765,21 @@ impl Mixer {
             live.insert(self.meta_of(cur).litter);
             cur = self.arena.neighbor(cur, Dir::R);
         }
+        // A restorable journal entry will put its parents' litters back, and
+        // since a cross relabels ALL of its outputs to the union litter, those
+        // pre-cross litters may have no live gate left. Dropping their sets
+        // would make an undo restore ancestry-less litters silently. Dead
+        // entries (any piece touched) can never be restored, so they hold
+        // nothing.
+        for e in self.journal.iter() {
+            if e.after
+                .iter()
+                .all(|&(id, st)| self.arena.is_linked(id) && self.arena.stamp(id) == st)
+            {
+                live.insert(e.litters[0]);
+                live.insert(e.litters[1]);
+            }
+        }
         self.anc.retain(|k, _| live.contains(k));
     }
 
@@ -768,6 +787,61 @@ impl Mixer {
         let l = self.next_litter;
         self.next_litter += 1;
         l
+    }
+
+    pub(crate) fn fresh_event(&mut self) -> u64 {
+        let e = self.next_event;
+        self.next_event += 1;
+        self.tabu.push_back((e, self.moves_done));
+        while let Some(&(_, mv)) = self.tabu.front() {
+            if mv + self.params.tabu_moves <= self.moves_done {
+                self.tabu.pop_front();
+            } else {
+                break;
+            }
+        }
+        e
+    }
+
+    pub(crate) fn is_tabu(&self, event: u64) -> bool {
+        // `tabu` is only push_back'd with strictly increasing events
+        // (fresh_event) and popped from the front, so it stays sorted by event:
+        // a binary search finds the only possible match.
+        event != 0
+            && self
+                .tabu
+                .binary_search_by_key(&event, |&(ev, _)| ev)
+                .is_ok_and(|i| self.tabu[i].1 + self.params.tabu_moves > self.moves_done)
+    }
+
+    /// Install per-gate litter ids (circuit order) from an external stage —
+    /// e.g. the SGDB substitution, where each replaced gate's block becomes
+    /// one litter. litter_size is recomputed per id; next_litter continues
+    /// above the max.
+    pub fn load_litters(&mut self, ids: &[u64]) {
+        let order = self.arena.ids_in_order();
+        assert_eq!(
+            order.len(),
+            ids.len(),
+            "litter sidecar length != gate count"
+        );
+        let mut sizes: std::collections::HashMap<u64, u16> = std::collections::HashMap::new();
+        for &l in ids {
+            *sizes.entry(l).or_insert(0) += 1;
+        }
+        for (&id, &l) in order.iter().zip(ids.iter()) {
+            let mut m = self.meta_of(id);
+            m.litter = l;
+            m.litter_size = sizes[&l];
+            self.set_meta(id, m);
+        }
+        self.next_litter = ids.iter().copied().max().unwrap_or(0) + 1;
+        println!(
+            "[circuit_mixer] litters loaded: {} gates, {} litters, largest {}",
+            ids.len(),
+            sizes.len(),
+            sizes.values().max().copied().unwrap_or(0)
+        );
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {

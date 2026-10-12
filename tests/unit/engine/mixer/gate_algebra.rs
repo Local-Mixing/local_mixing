@@ -47,6 +47,107 @@ fn mask_collides_matches_xgate_collides() {
     assert!(GateMask::of(&XGate::cnot(0, lim - 1)).is_some());
 }
 
+// Every merge the catalogue accepts is a verified identity with comp=0
+// output; the presplit-pair rejoin (complemented result) is rejected.
+#[test]
+fn merge_catalogue_sound_and_comp_guarded() {
+    let mut rng = StdRng::seed_from_u64(7);
+    let mut accepted = 0usize;
+    for _ in 0..20_000 {
+        let g = rand_gate(&mut rng, 6, 3, true);
+        let h = rand_gate(&mut rng, 6, 3, true);
+        if let Some(m) = merge_result(&g, &h) {
+            let out = m.gates();
+            assert!(
+                out.iter().all(|x| !x.comp),
+                "merge emitted comp: {g:?}+{h:?}"
+            );
+            assert!(
+                rules::verify_rewrite(&[g.clone(), h.clone()], &out),
+                "unsound merge: {g:?} + {h:?} -> {out:?}"
+            );
+            accepted += 1;
+        }
+    }
+    assert!(
+        accepted > 50,
+        "catalogue accepted too few pairs to be tested: {accepted}"
+    );
+
+    // The presplit pieces of a g57 (x and !x!y on the same target) XOR to
+    // the complemented parent: must be rejected.
+    let p0 = XGate::conj(0, [(1u16, true)]).unwrap();
+    let p1 = XGate::conj(0, [(1u16, false), (2u16, false)]).unwrap();
+    assert!(
+        merge_result(&p0, &p1).is_none(),
+        "presplit rejoin must be comp-guarded"
+    );
+
+    // Two g57s differing in one polarity fuse into a conjunction (fossil
+    // erosion), and a g57 plus its own monomial fuse into a NOT gate.
+    let g57a = XGate {
+        target: 0,
+        comp: true,
+        ctrls: p1.ctrls.clone(),
+    };
+    let mut g57b = g57a.clone();
+    g57b.ctrls[0].1 = true;
+    match merge_result(&g57a, &g57b) {
+        Some(Merge::DropLit(m)) => assert!(!m.comp && m.width() == 1),
+        other => panic!(
+            "comp-comp polarity pair should DropLit, got {:?}",
+            other.map(|m| m.gates())
+        ),
+    }
+    let mono = XGate {
+        target: 0,
+        comp: false,
+        ctrls: g57a.ctrls.clone(),
+    };
+    match merge_result(&g57a, &mono) {
+        Some(Merge::XFuse(m)) => assert!(!m.comp && m.width() == 0),
+        other => panic!(
+            "g57 + own monomial should XFuse, got {:?}",
+            other.map(|m| m.gates())
+        ),
+    }
+}
+
+// fresh-wire split and unsubsume each round-trip through the catalogue back
+// to the exact original gate.
+#[test]
+fn split_merge_roundtrips() {
+    let mut rng = StdRng::seed_from_u64(11);
+    for _ in 0..2_000 {
+        let g = rand_gate(&mut rng, 8, 3, false);
+        // fresh split on a wire the gate does not touch
+        let x = (0..8u16).find(|&w| w != g.target && !g.reads(w)).unwrap();
+        let a = XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, true)])).unwrap();
+        let b = XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, false)])).unwrap();
+        match merge_result(&a, &b) {
+            Some(Merge::DropLit(m)) => assert_eq!(m, g),
+            _ => panic!("fresh-split pieces must DropLit back to the parent"),
+        }
+        // unsubsume round-trip
+        if g.width() > 0 {
+            let (w, p) = g.ctrls[rng.random_range(0..g.ctrls.len())];
+            let without = XGate::conj(g.target, g.ctrls_without(w)).unwrap();
+            let flipped = XGate::conj(
+                g.target,
+                g.ctrls
+                    .iter()
+                    .map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) }),
+            )
+            .unwrap();
+            let _ = p;
+            match merge_result(&without, &flipped) {
+                Some(Merge::Subsume(m)) => assert_eq!(m, g),
+                _ => panic!("unsubsume pieces must Subsume back to the parent"),
+            }
+        }
+    }
+}
+
 // Soundness of the collision predicate: ANY pair it calls non-colliding —
 // no read of the other's target, or separated by an opposite shared
 // control literal — must actually commute. (The converse is not claimed:

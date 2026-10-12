@@ -1,4 +1,4 @@
-//! Executable boundary for the database-mixing program (TDP stage 3).
+//! Executable boundary for the database-mixing, splitting and crossing program.
 use clap::CommandFactory;
 
 fn main() {

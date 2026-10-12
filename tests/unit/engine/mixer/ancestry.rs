@@ -4,18 +4,20 @@
 // the INPUT circuit, so all three live in [0,1].
 #[test]
 fn sampled_ancestor_span_is_populated_and_bounded() {
-    let gates = random_g57_circuit(53, 16, 400);
+    let gates = random_mixed_circuit(53, 16, 400);
     let params = MixParams {
         k_max: 6,
         moves: 4_000,
+        target_size: 400,
+        temp: 20.0,
         anc_samples: 64,
         p_twist: 0.0,
         shuffle_rate: 0.0,
         report_every: u64::MAX,
         seed: 17,
-        ..db_walk_params()
+        ..MixParams::default()
     };
-    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+    let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
     mx.run();
     let line = mx.tracer_report();
     assert!(
@@ -52,7 +54,9 @@ fn g57_twist_consumption_inherits_ancestry() {
     let gates = random_mixed_circuit(31, 16, 300);
     let params = MixParams {
         k_max: 6,
-        moves: 5_000,
+        moves: 20_000,
+        target_size: 600,
+        temp: 20.0,
         p_twist: 0.3,
         twist_min_len: 4,
         twist_g57: true,
@@ -61,9 +65,9 @@ fn g57_twist_consumption_inherits_ancestry() {
         verify_every: 1_000,
         report_every: u64::MAX,
         seed: 9,
-        ..db_walk_params()
+        ..MixParams::default()
     };
-    let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+    let mut mx = Mixer::new(gates, 16, params);
     mx.run();
     assert!(mx.counters.tg_consumed > 0, "no consumption to test");
     let inherited = mx.arena.ids_in_order().iter().any(|&id| {
@@ -85,34 +89,34 @@ fn g57_twist_consumption_inherits_ancestry() {
 // independent samples that happen to be close.
 #[test]
 fn sampled_ancestry_calibrates_to_exact() {
-    let gates = random_g57_circuit(31, 16, 400);
+    let gates = random_mixed_circuit(31, 16, 400);
     let base = MixParams {
         k_max: 5,
         moves: 20_000,
-        p_twist: 0.005,
+        target_size: 600,
+        temp: 20.0,
+        p_twist: 0.05,
         verify_every: 5_000,
         report_every: u64::MAX,
         seed: 9,
-        ..db_walk_params()
+        ..MixParams::default()
     };
-    let mut ex = Mixer::new_with_db(
+    let mut ex = Mixer::new(
         gates.clone(),
         16,
         MixParams {
             ancestors: true,
             ..base.clone()
         },
-        g57_fixture_store(),
     );
     ex.run();
-    let mut sa = Mixer::new_with_db(
+    let mut sa = Mixer::new(
         gates.clone(),
         16,
         MixParams {
             anc_samples: 128,
             ..base.clone()
         },
-        g57_fixture_store(),
     );
     sa.run();
 
@@ -151,16 +155,18 @@ fn sampled_ancestry_calibrates_to_exact() {
 // work in BOTH ancestry modes.
 #[test]
 fn gen_anc_census_partitions_the_circuit() {
-    let gates = random_g57_circuit(23, 16, 400);
+    let gates = random_mixed_circuit(23, 16, 400);
     let base = MixParams {
         k_max: 5,
-        moves: 10_000,
-        p_twist: 0.01, // mint some GEN_FRESH bracket material
+        moves: 20_000,
+        target_size: 600,
+        temp: 20.0,
+        p_twist: 0.1, // mint some GEN_FRESH bracket material
         gen_target: 5,
         verify_every: 5_000,
         report_every: u64::MAX,
         seed: 4,
-        ..db_walk_params()
+        ..MixParams::default()
     };
     for (label, p) in [
         (
@@ -178,7 +184,7 @@ fn gen_anc_census_partitions_the_circuit() {
             },
         ),
     ] {
-        let mut mx = Mixer::new_with_db(gates.clone(), 16, p, g57_fixture_store());
+        let mut mx = Mixer::new(gates.clone(), 16, p);
         mx.run();
         let line = mx.gen_anc_report();
         assert!(
@@ -225,17 +231,19 @@ fn gen_anc_census_partitions_the_circuit() {
 #[test]
 fn sampled_ancestry_runs_past_the_exact_cap() {
     let n = 25_000;
-    let gates = random_g57_circuit(5, 24, n);
+    let gates = random_mixed_circuit(5, 24, n);
     let params = MixParams {
         k_max: 5,
         moves: 3_000,
+        target_size: n + 200,
+        temp: 50.0,
         anc_samples: 64,
         verify_every: 1_500,
         report_every: u64::MAX,
         seed: 3,
-        ..db_walk_params()
+        ..MixParams::default()
     };
-    let mut mx = Mixer::new_with_db(gates, 24, params, g57_fixture_store());
+    let mut mx = Mixer::new(gates, 24, params);
     mx.run();
     assert!(
         mx.anc_incidence() > 0.0,
@@ -254,23 +262,135 @@ fn sampled_ancestry_runs_past_the_exact_cap() {
     mx.global_check();
 }
 
+// Ancestry treats a cross as a DB splice over the window {g, h}: every
+// output of a crossing — the intact pivot included — carries the UNION of
+// both parents' ancestor sets. Verified through the journal, which
+// records the pre-cross litters: every piece of a live entry must read
+// exactly union(set(litters[0]), set(litters[1])).
+#[test]
+fn cross_outputs_carry_union_ancestry() {
+    let gates = random_mixed_circuit(43, 16, 200);
+    let n = gates.len();
+    let params = MixParams {
+        k_max: 6,
+        moves: 6_000,
+        target_size: 4 * n,
+        temp: 20.0,
+        ancestors: true,
+        report_every: u64::MAX,
+        seed: 5,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, params);
+    mx.run();
+    let mut checked = 0usize;
+    let mut expected = vec![0u64; mx.anc_words];
+    let mut got = vec![0u64; mx.anc_words];
+    for e in mx.journal.iter() {
+        let live = e
+            .after
+            .iter()
+            .all(|&(id, st)| mx.arena.is_linked(id) && mx.arena.stamp(id) == st);
+        if !live {
+            continue;
+        }
+        expected.iter_mut().for_each(|w| *w = 0);
+        mx.anc_or_into(e.litters[0], &mut expected);
+        mx.anc_or_into(e.litters[1], &mut expected);
+        for &(id, _) in &e.after {
+            got.iter_mut().for_each(|w| *w = 0);
+            mx.anc_or_into(mx.meta_of(id).litter, &mut got);
+            assert_eq!(
+                got, expected,
+                "a cross output (intact pivot included) must carry the parents' union"
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "the run must leave live journal entries to check"
+    );
+    mx.global_check();
+}
+
+// The pre-cross litters a live journal entry will restore must survive
+// anc_prune: the cross relabels EVERY output to the union litter, so the
+// parents' litters can go extinct among live gates, and pruning their
+// sets would make a later undo restore ancestry-less litters silently.
+#[test]
+fn anc_prune_keeps_litters_live_journal_entries_restore() {
+    let gates = random_mixed_circuit(47, 16, 200);
+    let n = gates.len();
+    let params = MixParams {
+        k_max: 6,
+        moves: 6_000,
+        target_size: 4 * n,
+        temp: 20.0,
+        ancestors: true,
+        report_every: u64::MAX,
+        seed: 6,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, params);
+    mx.run();
+    let live_entries: Vec<[u64; 2]> = mx
+        .journal
+        .iter()
+        .filter(|e| {
+            e.after
+                .iter()
+                .all(|&(id, st)| mx.arena.is_linked(id) && mx.arena.stamp(id) == st)
+        })
+        .map(|e| e.litters)
+        .collect();
+    assert!(
+        !live_entries.is_empty(),
+        "need live journal entries to make the test bite"
+    );
+    let resolve = |mx: &Mixer, l: u64| {
+        let mut bits = vec![0u64; mx.anc_words];
+        mx.anc_or_into(l, &mut bits);
+        bits
+    };
+    let before: Vec<[Vec<u64>; 2]> = live_entries
+        .iter()
+        .map(|ls| [resolve(&mx, ls[0]), resolve(&mx, ls[1])])
+        .collect();
+    mx.anc_prune();
+    for (ls, want) in live_entries.iter().zip(before.iter()) {
+        assert_eq!(
+            resolve(&mx, ls[0]),
+            want[0],
+            "prune dropped a restorable litter's set"
+        );
+        assert_eq!(
+            resolve(&mx, ls[1]),
+            want[1],
+            "prune dropped a restorable litter's set"
+        );
+    }
+}
+
 // Sidecar round trip in both universes: write -> read must reproduce the
 // per-gate resolved sets verbatim, and importing into a FRESH mixer over
 // the same circuit must resolve identically (the phase-boundary use).
 #[test]
 fn anc_sidecar_round_trips_exact_and_sampled() {
     for sampled in [false, true] {
-        let gates = random_g57_circuit(51, 16, 150);
+        let gates = random_mixed_circuit(51, 16, 150);
         let params = MixParams {
             k_max: 6,
             moves: 4_000,
+            target_size: 3 * gates.len(),
+            temp: 20.0,
             ancestors: !sampled,
             anc_samples: if sampled { 32 } else { 0 },
             report_every: u64::MAX,
             seed: 7,
-            ..db_walk_params()
+            ..MixParams::default()
         };
-        let mut mx = Mixer::new_with_db(gates, 16, params, g57_fixture_store());
+        let mut mx = Mixer::new(gates, 16, params);
         mx.run();
         let path = std::env::temp_dir().join(format!("circuit_mixer_anc_test_{sampled}.anc"));
         let path = path.to_str().unwrap().to_string();
@@ -306,11 +426,12 @@ fn anc_sidecar_round_trips_exact_and_sampled() {
         let params2 = MixParams {
             k_max: 6,
             moves: 2_000,
+            temp: 20.0,
             report_every: u64::MAX,
             seed: 8,
-            ..db_walk_params()
+            ..MixParams::default()
         };
-        let mut mx2 = Mixer::new_with_db(out_gates, 16, params2, g57_fixture_store());
+        let mut mx2 = Mixer::new(out_gates, 16, params2);
         let sc2 = Mixer::read_anc_sidecar(&path).expect("re-read sidecar");
         mx2.import_ancestry(sc2);
         assert_eq!(

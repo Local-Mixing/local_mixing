@@ -284,8 +284,8 @@ impl Arena {
     }
 
     // Rewrite a linked node's gate in place (position and links preserved).
-    // Bumps the stamp so anything holding (id, stamp) — e.g. the DB move's
-    // seed bookkeeping — sees the node as touched.
+    // Bumps the stamp so anything holding (id, stamp) — undo-journal entries —
+    // sees the node as touched.
     pub fn replace_gate(&mut self, id: u32, gate: XGate) {
         debug_assert!(self.linked[id as usize]);
         self.masks[id as usize] = GateMask::of(&gate).unwrap_or_else(|| {
@@ -293,6 +293,15 @@ impl Arena {
             GateMask::zero()
         });
         self.gates[id as usize] = gate;
+        self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
+    }
+
+    // Mark a linked node as touched without changing it: bumps the stamp so
+    // anything holding (id, stamp) — undo-journal entries — sees the node as
+    // modified. Used when state an undo would restore (the ancestry litter of
+    // a reused cross pivot) changes even though the gate itself does not.
+    pub fn touch(&mut self, id: u32) {
+        debug_assert!(self.linked[id as usize]);
         self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
     }
 

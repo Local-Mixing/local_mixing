@@ -32,12 +32,11 @@
 //!           trace/audit pipeline. The checked builder sidecar is validated
 //!           against the loaded files, and the mixer re-verifies after mixing.
 //!
-//! Mixing (`--mix MOVES`): after gadgetization, run the engine Mixer in-process
-//! on the stage-3 DB path (every round a DB re-spelling with the TDP MIX-mode
-//! window knobs, plus swap-family conjugation twists at moderate rate), then
-//! trace the MIXED circuit. Mixing needs the regular frozen store in
-//! FROZEN_DB_DIR. (The store-free crossing-walk churn this arm used before is
-//! historic: see branch ran/archive/curated-and-postmix.)
+//! Mixing (`--mix MOVES`): after gadgetization, run the engine Mixer (their
+//! local-mixing walk: crossings, unsubsume/copy splits, conjugation twists,
+//! thermostat at the input size) in-process, then trace the MIXED circuit.
+//! With mixing on, this is the same pipeline as gen_*_gadget -> circuit_mixer, with a
+//! generic gadgetization front-end.
 //!
 //! Input policy: source wires 0..n get fresh random bits per sample; the rest
 //! are zero (`--aux zero`, the hmap_affine convention) or random (`--aux random`).
@@ -96,7 +95,7 @@ struct Args {
     /// zero | random
     #[arg(long)]
     aux: String,
-    /// mixing moves (0 = mixing off); mixing needs FROZEN_DB_DIR
+    /// mixing moves (0 = mixing off)
     #[arg(long, default_value_t = 0)]
     mix: u64,
     /// seed for the mixing walk
@@ -346,16 +345,11 @@ fn main() {
         let params = MixParams {
             moves: args.mix,
             seed: args.mix_seed,
-            // Stage-3 DB path: every round not taken by a twist is a DB
-            // re-spelling (MIX mode at the TDP profile's MIX knobs), plus the
-            // swap-family conjugation twists (the SAMF state/progress-mixing
-            // mechanism) at moderate rate. Opens FROZEN_DB_DIR.
-            p_db: 1.0,
-            s_db: 6,
-            p_convex: 0.5,
-            p_mingen: 0.5,
-            mix_pay_random: true,
-            db_advance: true,
+            // churn profile: crossings + splits as per default, plus the
+            // conjugation twists (the SAMF state/progress-mixing mechanism)
+            // at moderate weight. Store-free (no FROZEN_DB_DIR needed).
+            w_twist_neg: 0.08,
+            w_twist_swap: 0.08,
             p_twist: 0.16,
             ..MixParams::default()
         };
@@ -371,6 +365,7 @@ fn main() {
             MixStop::DoseReached => "dose-reached",
             MixStop::CanaryFired => "canary",
             MixStop::ProfileDone => "profile-done",
+            MixStop::SplitDone => "split-done",
             MixStop::RoundDone => "round-done",
             MixStop::CircuitEmpty => "circuit-empty",
         };

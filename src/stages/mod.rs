@@ -1,7 +1,8 @@
-//! TDP stage ownership: sandwich, preprocessing, database mixing and packing
-//! (stage 4). Old post-processing stages 4 (split), 5 (crossing walk) and 6
-//! (fcompress) are historic: see branch ran/archive/curated-and-postmix.
+//! TDP stage ownership: sandwich, preprocessing, database mixing,
+//! post-processing (stage 4 split, stage 5 crossing walk) and packing (stage 6).
 pub mod db_mixing;
 pub mod packing;
+#[path = "post-processing/mod.rs"]
+pub mod post_processing;
 pub mod preprocessing;
 pub mod sandwich;

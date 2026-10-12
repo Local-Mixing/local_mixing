@@ -9,13 +9,20 @@ fn piece_cfg(pieces: usize, sequential: bool, threads: usize) -> PieceCfg {
     }
 }
 
-fn meta_snapshot(mx: &Mixer) -> Vec<(u32, bool, u32, u64, u16)> {
+fn meta_snapshot(mx: &Mixer) -> Vec<(u32, u64, bool, u32, u64, u16)> {
     mx.arena
         .ids_in_order()
         .iter()
         .map(|&id| {
             let m = mx.meta_of(id);
-            (m.origin, m.dir == Dir::R, m.dgen, m.litter, m.litter_size)
+            (
+                m.origin,
+                m.event,
+                m.dir == Dir::R,
+                m.dgen,
+                m.litter,
+                m.litter_size,
+            )
         })
         .collect()
 }

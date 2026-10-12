@@ -1,5 +1,5 @@
-//! Shared arena, provenance, and resumable state for database mixing (TDP
-//! stage 3). Child modules own state, scheduling, transformations and I/O;
+//! Shared arena, provenance, and resumable state for database mixing, splitting,
+//! and crossing. Child modules own state, scheduling, transformations and I/O;
 //! stage algorithms mutate this state through the existing narrow operations.
 use crate::canonicalization::xgate::XPolyBudget;
 use crate::circuit::xgate::{Lits, XGate};
@@ -13,10 +13,12 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 mod checkpoint;
 mod environment;
+mod indices;
 mod leakage_repair;
 mod params;
 mod piecewise;
@@ -41,9 +43,10 @@ pub use state::*;
 #[cfg(test)]
 use transformations::*;
 pub use transformations::{
-    HIDDEN_SWAP_IDENTITY, TG_ACCEPT_NET, TG_RETRIES, TG_SLIDE_CAP, TG_SLIDE_TRIES, TWIST_PATTERNS,
-    TwistPattern,
+    HIDDEN_SWAP_IDENTITY, Merge, TG_ACCEPT_NET, TG_RETRIES, TG_SLIDE_CAP, TG_SLIDE_TRIES,
+    TWIST_PATTERNS, TwistPattern, merge_result,
 };
+pub(crate) use transformations::{key_of, merge_key};
 
 #[cfg(test)]
 #[path = "../../../tests/unit/engine/mixer/mod.rs"]

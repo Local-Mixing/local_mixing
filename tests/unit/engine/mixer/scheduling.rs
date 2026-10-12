@@ -39,7 +39,10 @@ fn profile_controller_tracks_a_feasible_ramp() {
     let params = MixParams {
         k_max: 6,
         moves: 4_000_000,
+        temp: 20.0,
         p_db: 1.0,
+        p_comp: 1.0,
+        p_any: 0.1,
         s_db: 5,
         db_min_window: 0,
         p_convex: 0.5,
@@ -82,6 +85,161 @@ fn profile_controller_tracks_a_feasible_ramp() {
     mx.global_check();
 }
 
+// The chain holds size near the target, preserves the function (run() and
+// the end-of-run global check assert internally), does both kinds of moves,
+// and never increases the fossil count.
+#[test]
+fn mixer_holds_size_and_function() {
+    let gates = random_mixed_circuit(3, 16, 300);
+    let comp0 = gates.iter().filter(|g| g.comp).count();
+    let params = MixParams {
+        k_max: 5,
+        // Erosion is presplit-driven and presplits are crossings, so this
+        // needs enough rounds to exercise the crossing expansion channel.
+        moves: 40_000,
+        target_size: 300,
+        temp: 20.0,
+        // The global reshuffle dilutes every other menu slot by exactly
+        // shuffle_rate/|circuit|. At production size that is ~2e-5 and
+        // invisible; on this 300-gate circuit it is ~0.4% of rounds taken
+        // from the thermostat, which is enough to push the drift band.
+        // This test is the thermostat's contract, so hold the new slot
+        // out of it -- the move has its own test.
+        shuffle_rate: 0.0,
+        verify_every: 2_000,
+        report_every: u64::MAX,
+        seed: 5,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, params);
+    mx.run();
+    // The chain equilibrates at a content-dependent floor above the target
+    // (dead journal entries are permanently unmergeable by the pairwise
+    // catalogue); the contract is BOUNDED drift under heavy churn, not
+    // exact adherence. This run churns ~67 moves/gate.
+    let n = mx.arena.len();
+    assert!((200..=520).contains(&n), "size drifted from target: {n}");
+    assert!(mx.counters.merges() > 0, "no merges happened");
+    assert!(mx.counters.undos > 0, "no crossing undos happened");
+    assert!(mx.counters.expands() > 0, "no expansions happened");
+    assert!(mx.remaining_g57() <= comp0, "fossil count increased");
+    assert!(
+        mx.origin_displacement() > 0.01,
+        "no positional mixing at all"
+    );
+}
+
+// Crossing expansion must grow toward a higher thermostat target. Lowering
+// the target then makes contraction outweigh expansion and reduces the size.
+#[test]
+fn mixer_thermostat_grows_then_drains() {
+    let gates = random_mixed_circuit(9, 16, 200);
+    let grow = MixParams {
+        k_max: 5,
+        moves: 30_000,
+        target_size: 500,
+        temp: 20.0,
+        // Crossings supply growth, and the journal records their inverses.
+        w_cross: 1.0,
+        verify_every: 5_000,
+        report_every: u64::MAX,
+        seed: 1,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, grow);
+    mx.run();
+    let grown = mx.arena.len();
+    assert!(grown >= 400, "did not grow toward target: {grown}");
+
+    mx.params.target_size = 250;
+    // Allow enough moves for thermostat-driven contraction to overcome
+    // the crossing expansion channel.
+    mx.params.moves += 60_000;
+    mx.run();
+    let drained = mx.arena.len();
+    // Without a database, crossing ladders rely on live journal entries
+    // for contraction. This checks a size decrease; deeper contraction
+    // depends on the database compression channel, which is disabled here.
+    assert!(
+        drained < grown,
+        "drain did not contract: {grown} -> {drained}"
+    );
+    assert!(mx.counters.merges() > 0, "no merges during drain");
+}
+
+// On an all-g57 input the chain erodes fossils; erosion inherently costs
+// +1 gate per presplit and is irreversible by design, so size may grow up
+// to initial + fossil count (plus thermostat slack) while comp declines.
+#[test]
+fn mixer_erodes_fossils() {
+    let gates = random_g57_circuit(3, 16, 300);
+    let comp0 = gates.iter().filter(|g| g.comp).count();
+    let params = MixParams {
+        k_max: 5,
+        moves: 20_000,
+        target_size: 300,
+        temp: 20.0,
+        verify_every: 2_000,
+        report_every: u64::MAX,
+        seed: 5,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, params);
+    mx.run();
+    let comp_now = mx.remaining_g57();
+    assert!(
+        comp_now < comp0 / 2,
+        "erosion too slow: {comp0} -> {comp_now}"
+    );
+    let n = mx.arena.len();
+    assert!(n <= 300 + comp0 + 100, "grew past the erosion budget: {n}");
+}
+
+// The directional walk uses live undo, birth advance and failed-cross
+// retreat. Function must be preserved through every sub-step, crossings
+// must run, and size must stay within a loose runaway bound. Crossings
+// supply the expansion channel.
+#[test]
+fn directional_walk_preserves_function() {
+    let gates = random_mixed_circuit(31, 16, 300);
+    let params = MixParams {
+        k_max: 5,
+        moves: 20_000,
+        target_size: 400,
+        temp: 20.0,
+        w_cross: 1.0,
+        verify_every: 2_000,
+        report_every: u64::MAX,
+        seed: 7,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 16, params);
+    mx.run();
+    let crossings = mx.counters.cross_r1 + mx.counters.cross_r2 + mx.counters.cross_r3;
+    assert!(crossings > 50, "crossings barely ran: {crossings}");
+    assert!(
+        mx.counters.cross_r1 + mx.counters.cross_r2 + mx.counters.cross_r3 > 100,
+        "crossings barely ran"
+    );
+    assert!(mx.counters.scatters > 0, "no directional birth advances");
+    assert!(
+        mx.counters.fresh_splits == 0,
+        "fresh splits ran despite suspension"
+    );
+    let n = mx.arena.len();
+    assert!(
+        n < 4 * 400,
+        "size ran away under merge-only contraction: {n}"
+    );
+    mx.global_check();
+}
+
+// --twist-g57: brackets become adaptive all-g57 words solved online per
+// seam. Thousands of twists under local_verify (every seam splice checked
+// exhaustively against the reference 3-CNOT packet) plus periodic full
+// verification and a final global_check. The seams must also actually
+// absorb neighborhood material — a run where tg_consumed stays 0 means
+// the placer degenerated to bare words and the mechanism is dead.
 // The global re-randomisation move must MOVE gates and change NOTHING
 // else: same function, same size, same multiset of gates. It is scheduled
 // at 1/|circuit| per round, so the rate is pushed hard here to make it
@@ -93,8 +251,10 @@ fn global_shuffle_moves_gates_but_preserves_function_and_size() {
     let params = MixParams {
         k_max: 6,
         moves: 20_000,
-        // 300 * the size, so the per-round p is 1: a reshuffle every round
-        // (the size never changes). No DB move: the multiset must survive.
+        target_size: 300,
+        temp: 20.0,
+        // 300 * the size, so the per-round p is ~1: a reshuffle nearly
+        // every round.
         shuffle_rate: 300.0,
         p_twist: 0.0,
         p_db: 0.0,
@@ -220,4 +380,25 @@ fn db_walk_displaces_surviving_input_gates() {
     let disp = mx.origin_displacement();
     assert!(disp > 0.01, "no positional mixing at all: disp={disp}");
     mx.global_check();
+}
+
+#[test]
+fn tabu_age_semantics() {
+    let gates = random_g57_circuit(1, 8, 20);
+    let params = MixParams {
+        tabu_moves: 100,
+        ..MixParams::default()
+    };
+    let mut mx = Mixer::new(gates, 8, params);
+    let e1 = mx.fresh_event();
+    mx.moves_done = 50;
+    let e2 = mx.fresh_event();
+    assert!(mx.is_tabu(e1) && mx.is_tabu(e2));
+    assert!(!mx.is_tabu(0), "event 0 (no provenance) is never tabu");
+    mx.moves_done = 120; // e1 aged out (created at move 0), e2 still fresh
+    assert!(!mx.is_tabu(e1), "aged-out event must not be tabu");
+    assert!(mx.is_tabu(e2));
+    mx.moves_done = 200;
+    let _ = mx.fresh_event(); // push triggers eviction of expired entries
+    assert!(mx.tabu.len() <= 2, "expired tabu entries must be evicted");
 }

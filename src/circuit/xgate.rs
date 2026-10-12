@@ -250,6 +250,20 @@ impl XGate {
         self.apply_limbs(&mut state.0);
         state
     }
+
+    // Polarity of the literal on `w`, if the gate reads it (split/crossing rules).
+    pub fn lit_on(&self, w: u16) -> Option<bool> {
+        self.ctrls.iter().find(|&&(cw, _)| cw == w).map(|&(_, p)| p)
+    }
+
+    // The literals other than the one on `w` (split/crossing rules).
+    pub fn ctrls_without(&self, w: u16) -> Lits {
+        self.ctrls
+            .iter()
+            .copied()
+            .filter(|&(cw, _)| cw != w)
+            .collect()
+    }
 }
 
 /// Sort a control-literal list by `(wire, polarity)`.

@@ -150,11 +150,22 @@ impl Mixer {
         None
     }
 
-    /// May this gate sit inside the window currently being built? The width
-    /// cap applies.
+    /// True g57 shape: `comp = 1`, two controls, opposite polarity.
+    pub(super) fn gate_is_g57(&self, id: u32) -> bool {
+        let g = self.arena.gate(id);
+        g.comp && g.ctrls.len() == 2 && g.ctrls[0].1 != g.ctrls[1].1
+    }
+
+    /// May this gate sit inside the window currently being built? The width cap
+    /// always applies; a g57-only COMP attempt additionally excludes everything
+    /// that is not a g57, so the window cannot contain the intruder that
+    /// collapses the long-window match rate.
     pub(super) fn window_eligible(&self, id: u32) -> bool {
         let cap = self.params.w_window;
-        !(cap > 0 && self.width_of(id) >= cap)
+        if cap > 0 && self.width_of(id) >= cap {
+            return false;
+        }
+        !self.db_g57_only || self.gate_is_g57(id)
     }
 
     /// May this gate seed a window and count toward the dose? Stricter than
@@ -245,6 +256,17 @@ impl Mixer {
             }
         }
         None
+    }
+
+    // Generation of a split child (see MixParams::gen_split_inherit):
+    // ratchet semantics give parent + 1, inherit semantics keep the parent
+    // generation; MAXGEN stays MAXGEN either way (saturating).
+    pub(crate) fn child_gen(&self, parent: u32) -> u32 {
+        if self.params.gen_split_inherit {
+            parent
+        } else {
+            parent.saturating_add(1)
+        }
     }
 
     // Hard per-attempt bound on ctrl-cap evasion floats. Evading a wide gate

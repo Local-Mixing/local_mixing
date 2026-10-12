@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "circuit_mixer",
-    about = "Run database mixing (TDP stage 3) on a reversible circuit"
+    about = "Run database mixing, splitting, or crossing on a reversible circuit"
 )]
 pub struct Args {
     #[command(flatten)]
@@ -19,17 +19,75 @@ pub struct Args {
     /// Output file (mpmct1 format)
     #[arg(long)]
     pub(super) output: Option<String>,
+    /// Thermostat target gate count (default: input size)
+    #[arg(long)]
+    pub(super) target_size: Option<usize>,
+    /// Thermostat softness in gates (default: max(target/100, 64))
+    #[arg(long)]
+    pub(super) temp: Option<f64>,
     /// Total move attempts
     #[arg(long, default_value_t = 1_000_000)]
     pub(super) moves: u64,
-    /// Max controls per gate (K): caps bridge wake corrections
+    /// Max controls per gate (K)
     #[arg(long, default_value_t = 12)]
     pub(super) k_max: usize,
-    /// Directional transport fraction: fresh products that take the birth
-    /// advance (--db-advance, twist-g57 brackets) move floor(q * slack) in
-    /// their own direction
+    /// Width-damping offset D for expansion moves (fsplit convention)
+    #[arg(long, default_value_t = 2)]
+    pub(super) split_damp: usize,
+    /// Width-damper base B: a split of parent width c proceeds with
+    /// probability B^-(c - split_damp)
+    #[arg(long, default_value_t = 2.0)]
+    pub(super) split_base: f64,
+    /// Probability that a collision fragment inherits the shot gate's
+    /// direction (else it gets the opposite)
+    #[arg(long, default_value_t = 0.75)]
+    pub(super) dir_p: f64,
+    /// Directional transport fraction: fresh pieces advance floor(q * slack)
+    /// in their own direction at birth; a failed cross retreats the shot gate
+    /// floor((1-q) * way)
     #[arg(long, default_value_t = 0.85)]
     pub(super) dir_q: f64,
+    /// Max distance (gates) a merge partner may sit from the initiator
+    #[arg(long, default_value_t = 4096)]
+    pub(super) merge_reach: usize,
+    /// Undo journal capacity (recorded crossings eligible for reversal)
+    #[arg(long, default_value_t = 262_144)]
+    pub(super) journal_len: usize,
+    /// Fraction of contraction moves that try a journal undo first
+    #[arg(long, default_value_t = 0.5)]
+    pub(super) undo_frac: f64,
+    /// Refractory period in moves: a split event may not be undone or
+    /// sibling-merged until this many moves have passed
+    #[arg(long, default_value_t = 2_000)]
+    pub(super) tabu_moves: u64,
+    /// Expansion move weights
+    #[arg(long, default_value_t = 0.70)]
+    pub(super) w_cross: f64,
+    /// SUSPENDED by default (covered by the twists' case-splitting); set > 0
+    /// to re-enable
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) w_fresh: f64,
+    #[arg(long, default_value_t = 0.10)]
+    pub(super) w_unsub: f64,
+    #[arg(long, default_value_t = 0.05)]
+    pub(super) w_insert: f64,
+    /// Conjugation-twist weights (0 = off, trajectory-identical to the
+    /// pre-twist chain). One twist conjugates a whole window (log-uniform
+    /// length up to the circuit size) by a wire negation (+2 gates) or a wire
+    /// swap (+6 gates), so keep these SMALL relative to the other weights:
+    /// ~1e-4 gives a few thousand twists per 10M expansion moves.
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) w_twist_neg: f64,
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) w_twist_swap: f64,
+    /// Transvection twist: conjugate a window by x_a ^= x_b (one CNOT per
+    /// side, +2 gates). Affine and NOT a Hamming isometry — the rung that
+    /// breaks avalanche-style distance gauges neg/swap twists provably
+    /// preserve. Interior gates reading a case-split on b (count x2, width +1,
+    /// K-cap enforced); b is drawn from wires the window never writes, which
+    /// caps these windows at the mid scale (~n*ln n gates).
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) w_twist_cnot: f64,
     /// Probability each swapped wire is negated (swap family). 0.5 = default
     /// (swap 1/4, negate-one 1/2, negate-both 1/4); 0.0 = pure positive swaps
     /// (no polarity flips, but the 3-CNOT brackets are still inserted).
@@ -76,8 +134,8 @@ pub struct Args {
     /// schedule in effective-work (moves/gate) units — expand to R1*input by
     /// N0, hold to N1, compress toward R2*input by N2. The controller reads
     /// the live monitors and steers --p-mix; it is then the ONLY size
-    /// authority, so passing --size-hi/--size-lo alongside --profile is an
-    /// error. Empty = off.
+    /// authority, so passing any of --target-size/--size-hi/--size-lo
+    /// alongside --profile is an error. Empty = off.
     #[arg(long, default_value = "")]
     pub(super) profile: String,
     /// Profile controller: control cadence in effective-work units.
@@ -101,22 +159,78 @@ pub struct Args {
     /// gate takes the ballistic birth-advance unconditionally.
     #[arg(long, default_value_t = false)]
     pub(super) twist_g57: bool,
+    /// Probability a CONTRACTION tries COMP-DB (non-growing, uniform among the
+    /// shortest) before falling through to journal undo and the merge
+    /// catalogue. Requires FROZEN_DB_DIR.
+    #[arg(long, default_value_t = 1.0)]
+    pub(super) p_comp: f64,
+    /// Probability an EXPANSION is an ANY-DB move rather than a cross.
+    #[arg(long, default_value_t = 0.1)]
+    pub(super) p_any: f64,
     /// Slot-2 admission rule: mix | comp | any. MIX is free-if-possible else
     /// pay-the-minimum and is the db_mixing default; COMP refuses to grow and is
     /// the manual size brake; ANY takes any equivalent and accelerates growth.
     #[arg(long, default_value = "mix")]
     pub(super) db_mode: String,
-    /// DB move (slot 2): probability that a round not taken by a twist,
-    /// shuffle or bridge replaces a sampled window with a store equivalent
-    /// chosen by the live --db-mode. Stage 3 runs at 1.0; rounds no slot takes
-    /// are idle. 0 = off. Requires FROZEN_DB_DIR.
+    /// Size-agnostic DB move: probability that a whole round is spent replacing a
+    /// sampled window with a uniform random equivalent of ANY gate count (may
+    /// grow the circuit), instead of the normal contract/expand step. 0 = off.
     #[arg(long, default_value_t = 0.0)]
     pub(super) p_db: f64,
-    /// Fixed top-level twist rate (slot 1): each round is a conjugation twist
-    /// with this probability. Size machinery balances around the fixed rate.
-    /// Rough sizing: coverage per move ~= p-twist x mean-window-span / size.
+    /// Fixed top-level twist rate: each round is a conjugation twist with this
+    /// probability, independent of the contract/expand economy (whose round
+    /// supply collapses when the size controller holds at target). Twist type
+    /// follows the w-twist-* weights as ratios (neg/swap 50/50 when all 0);
+    /// with this set, the expansion mix no longer performs twists. Size
+    /// machinery balances around the fixed rate. Rough sizing: coverage per
+    /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     pub(super) p_twist: f64,
+    /// Arm the SPLIT STAGE: split twists — a g57
+    /// split plus an absorbed long-range pure-NOT twist plus one cross — are
+    /// the ONLY move until the stage exits (g57 exhaustion, or
+    /// --split-fail-limit consecutive bracket failures), then the round runs
+    /// under the rest of this command line as usual.
+    #[arg(long, default_value_t = false)]
+    pub(super) split: bool,
+    /// End the RUN at the split-stage boundary (trial mode) instead of
+    /// continuing into part 2.
+    #[arg(long, default_value_t = false)]
+    pub(super) split_stop: bool,
+    /// Probability a split carries the absorbed NOT twist + cross; the rest
+    /// end after the bare split.
+    #[arg(long, default_value_t = 0.8)]
+    pub(super) p_join: f64,
+    /// Consecutive bracket-search failures (step 4e) that end the stage.
+    #[arg(long, default_value_t = 100)]
+    pub(super) split_fail_limit: u32,
+    /// Wire canaries planted at split-stage start (0 = off): per-position flip
+    /// monitors, reported by ORIGINAL position at the stage boundary.
+    #[arg(long, default_value_t = 256)]
+    pub(super) split_canaries: usize,
+    /// Length bias of the bracket draw: k candidates sampled on the picked
+    /// g57's own side (its stored direction), farthest wins. 1 = uniform,
+    /// 2 ~ 2/3 of the available run, 3 ~ 3/4; larger = longer spans.
+    /// 0 = the ORIGINAL other-half-first cascade (A/B comparison arm).
+    #[arg(long, default_value_t = 2)]
+    pub(super) split_reach_k: usize,
+    /// Layer-1 dispatch weight for split twists inside the twist slot OUTSIDE
+    /// the split stage (the stage itself forces 1.0).
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) p_split_twist: f64,
+    /// Min-dgen cross-shot bias: probability a cross shot is drawn from the
+    /// pool of the K least-split lineages instead of uniformly (the uniform
+    /// draw is rich-get-richer; this points expansion at untouched
+    /// families). 0 = off, and off draws no RNG — trajectories identical.
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) p_mincross: f64,
+    /// Min-dgen pool size (a COUNT): must exceed the biased draws taken
+    /// between rebuilds or the coin silently degrades to uniform.
+    #[arg(long, default_value_t = 20_000)]
+    pub(super) cross_pool_k: usize,
+    /// Min-dgen pool rebuild cadence in moves (O(size) scan each).
+    #[arg(long, default_value_t = 10_000)]
+    pub(super) cross_rescan: u64,
     /// GLOBAL re-randomisation rate, in units of ONE whole-circuit reshuffle
     /// per this many circuit-sizes of rounds. The per-round probability is
     /// shuffle-rate / |circuit|, so e.g. 2.0 means "expect two full
@@ -211,13 +325,12 @@ pub struct Args {
     /// descent).
     #[arg(long, default_value_t = false)]
     pub(super) no_db_prefixes: bool,
-    /// Give DB splice products the ballistic birth-advance that twist-g57
-    /// brackets get: each product floats floor(dir_q * slack) along its own
-    /// direction. Without this a splice assigns directions nothing acts on, so
-    /// a DB-dominated schedule has no directional transport at all. (The
-    /// historic crossing walk transported material but widened gates, and
-    /// width is what kills DB matching.) Off by default (it changes
-    /// trajectories).
+    /// Give DB splice products the ballistic birth-advance that split pieces
+    /// get: each product floats floor(dir_q * slack) along its own direction.
+    /// Without this a splice assigns directions nothing acts on, so a
+    /// DB-dominated schedule has no directional transport at all. The other
+    /// source of transport -- crossings -- widens gates, and width is what
+    /// kills DB matching. Off by default (it changes trajectories).
     #[arg(long, default_value_t = false)]
     pub(super) db_advance: bool,
     /// Pair-geometry rate: probability a non-COMP
@@ -257,8 +370,8 @@ pub struct Args {
     /// is MIX-DB, else COMP-DB. Each round flips this coin, overriding --db-mode
     /// and reading the chosen mode's own knobs -- MIX uses --s-db / --p-convex /
     /// --p-mingen, COMP uses the *-comp overrides below. < 0 disables the
-    /// overlay (single --db-mode, as before). Pair with --p-db 1.0 for a pure
-    /// per-round MIX/COMP schedule.
+    /// overlay (single --db-mode, as before). The thermostat is unaffected, so
+    /// pair with --p-db 1.0 for a pure per-round MIX/COMP schedule.
     #[arg(long, default_value_t = -1.0)]
     pub(super) p_mix: f64,
     // The five knobs below are Option ON PURPOSE and carry no clap default.
@@ -323,6 +436,18 @@ pub struct Args {
     /// 20k input gates.
     #[arg(long, default_value_t = false)]
     pub(super) ancestors: bool,
+    /// Probability a COMP-DB attempt restricts itself to PURE g57 material and
+    /// starts its descent at --s-db-g57. Only g57-only windows survive length:
+    /// measured match rate is 100% to m=5 and 94% at 6, but ANY non-g57 gate in
+    /// a 6-gate window drops it to <=7%, so the long-window compression that
+    /// pays is unavailable except on pure windows.
+    #[arg(long, default_value_t = 0.0)]
+    pub(super) p_comp_g57: f64,
+    /// Upper clamp on the contraction probability. 0.98 leaves a 2% expansion
+    /// floor above target -- a structural growth source, but also what keeps
+    /// crossings (hence fossil erosion) running while the walk sits at target.
+    #[arg(long, default_value_t = 0.98)]
+    pub(super) contract_ceiling: f64,
     /// Size brake: growth to this size forces slot 2 into COMP. 0 = brake off.
     #[arg(long, default_value_t = 0)]
     pub(super) size_hi: usize,
@@ -337,14 +462,17 @@ pub struct Args {
     /// Trailing window (moves) for the productivity release.
     #[arg(long, default_value_t = 250_000)]
     pub(super) comp_release_window: u64,
+    /// Starting window length for a g57-only COMP attempt.
+    #[arg(long, default_value_t = 9)]
+    pub(super) s_db_g57: usize,
     /// Frozen store directory. Overrides FROZEN_DB_DIR, which is env-only and
     /// in no rc file -- detached runs that miss it abort instantly.
     #[arg(long)]
     pub(super) frozen_db_dir: Option<String>,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
-    /// gates 0; a DB splice stamps the window's median + 1; fresh bracket
-    /// material counts as done). DB seeds are drawn from
+    /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
+    /// fresh insert/bracket material counts as done). DB seeds are drawn from
     /// the below-target gates with probability --gen-bias, replacing the
     /// coupon-collector tail of uniform selection with direct work. 0 = off.
     #[arg(long, default_value_t = 0)]
@@ -389,6 +517,11 @@ pub struct Args {
     /// placing the twist uniformly at random. 0 = always random.
     #[arg(long, default_value_t = 0)]
     pub(super) twist_place_tries: usize,
+    /// Split-rule variant: children INHERIT the parent generation unchanged
+    /// (only DB replacements raise generations). Default off = ratchet
+    /// semantics (split children get parent + 1).
+    #[arg(long, default_value_t = false)]
+    pub(super) gen_split_inherit: bool,
     /// Median variant for the DB generation stamp: use the LOWER median
     /// (rounded down on even windows; on 2-gate windows this is the min).
     /// Default off = upper median (rounded up).
@@ -422,7 +555,7 @@ pub struct Args {
     pub(super) gen_snap_every: u32,
     /// Verified snapshot at every multiple of this many moves
     /// (<output>.mv<moves>.mpmct1 + .gens sidecar): the progress clock for
-    /// runs where the generation census is not meaningful. Use a
+    /// pure-split runs where the generation census is not meaningful. Use a
     /// multiple of --report-every. 0 = off.
     #[arg(long, default_value_t = 0)]
     pub(super) snap_every_moves: u64,
@@ -450,9 +583,9 @@ pub struct Args {
     #[arg(long, conflicts_with = "seed")]
     pub(super) seed_file: Option<String>,
     /// Write a resume file on every stop (and at each snapshot). Holds what the
-    /// circuit file cannot: per-gate direction/generation/litter, the ORIGINAL
-    /// circuit that global_check verifies against, and the condition state
-    /// (moves, twist coverage, canary ring, brake, pool).
+    /// circuit file cannot: per-gate direction/generation/litter/event, the undo
+    /// journal, the ORIGINAL circuit that global_check verifies against, and the
+    /// condition state (moves, twist coverage, canary ring, brake, pool).
     #[arg(long)]
     pub(super) state_out: Option<String>,
     /// Resume from a state file instead of --input. Parameters still come from
@@ -463,8 +596,8 @@ pub struct Args {
     /// Piecewise-parallel rounds: cut the circuit
     /// into this many contiguous pieces, mix them in parallel on one shared
     /// store, concatenate, shift the cuts by half a slice, repeat. 1 = the
-    /// serial run unless --parallel-target-piece-gates is selected. Stage 3
-    /// only (refused with --resume).
+    /// serial run unless --parallel-target-piece-gates is selected. Stages 3 and
+    /// 4 only (refused with --resume).
     #[arg(long = "parallel-pieces", alias = "pieces", default_value_t = 1)]
     pub(super) pieces: usize,
     /// Automatic piecewise rounds: nominal piece count is
@@ -497,6 +630,10 @@ pub struct Args {
         default_value_t = 0
     )]
     pub(super) piece_threads: usize,
+    /// --split in piecewise mode: rounds after which the stage is declared ended
+    /// even if g57s remain (reported, never dropped).
+    #[arg(long, default_value_t = 6)]
+    pub(super) split_rounds_max: usize,
     /// Let piece mixers print their own report lines (they are silent by
     /// default; the whole-circuit mixer reports once per round).
     #[arg(long, default_value_t = false)]
