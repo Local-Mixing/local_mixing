@@ -50,11 +50,18 @@ pub fn xgate_adjacent_id(gates: &[XGate]) -> bool {
     gates.windows(2).any(|w| w[0] == w[1])
 }
 
-/// Canonicalize gate order in place: an exact port of
-/// `CircuitSeq::canonicalize`'s loop with `XGate::collides` for commutation
-/// and `xgate_order` for the target ordering. Function-preserving by
+/// Canonicalize gate order in place: the insertion walk of
+/// `CircuitSeq::canonicalize` with `XGate::collides` for commutation and
+/// `xgate_order` for the target ordering. Function-preserving by
 /// construction (only commuting swaps are performed).
-pub fn xgate_canonicalize(gates: &mut Vec<XGate>) {
+///
+/// Gate `i` scans backwards to the first gate it collides with and moves to
+/// the earliest position in that commuting run where it lowers the order.
+/// The move is a rotation of `gates[pos..=i]` (the semantics of
+/// `remove(i)` + `insert(pos)` without the O(n) tail shift), so the cost
+/// is proportional to the scan length, never to the circuit size: a
+/// multi-million-gate stage-7 concatenation canonicalizes in seconds.
+pub fn xgate_canonicalize(gates: &mut [XGate]) {
     for i in 1..gates.len() {
         let mut to_swap: Option<usize> = None;
         let mut j = i;
@@ -67,8 +74,7 @@ pub fn xgate_canonicalize(gates: &mut Vec<XGate>) {
             }
         }
         if let Some(pos) = to_swap {
-            let g = gates.remove(i);
-            gates.insert(pos, g);
+            gates[pos..=i].rotate_right(1);
         }
     }
 }

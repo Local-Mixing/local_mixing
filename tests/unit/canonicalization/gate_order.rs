@@ -63,3 +63,46 @@ fn canonical_order_is_a_normal_form_over_commuting_respellings() {
         }
     }
 }
+
+/// The pre-2026-10-11 loop (`Vec::remove` + `Vec::insert`, O(n) per move),
+/// kept as the reference the rotation-based walk must reproduce exactly.
+fn xgate_canonicalize_reference(gates: &mut Vec<XGate>) {
+    for i in 1..gates.len() {
+        let mut to_swap: Option<usize> = None;
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            if XGate::collides(&gates[i], &gates[j]) {
+                break;
+            } else if xgate_order(&gates[j], &gates[i]) == Ordering::Greater {
+                to_swap = Some(j);
+            }
+        }
+        if let Some(pos) = to_swap {
+            let g = gates.remove(i);
+            gates.insert(pos, g);
+        }
+    }
+}
+
+#[test]
+fn rotation_walk_equals_the_remove_insert_reference() {
+    let mut rng = StdRng::seed_from_u64(0xca70);
+    for round in 0..300 {
+        let wires = rng.random_range(2..12u16);
+        let len = rng.random_range(0..60usize);
+        let gates: Vec<XGate> = (0..len).map(|_| random_gate(&mut rng, wires)).collect();
+        let mut fast = gates.clone();
+        xgate_canonicalize(&mut fast);
+        let mut slow = gates.clone();
+        xgate_canonicalize_reference(&mut slow);
+        assert_eq!(fast, slow, "round {round}: {gates:?}");
+    }
+    // a long circuit on few wires: many moves, long commuting runs
+    let gates: Vec<XGate> = (0..3000).map(|_| random_gate(&mut rng, 6)).collect();
+    let mut fast = gates.clone();
+    xgate_canonicalize(&mut fast);
+    let mut slow = gates;
+    xgate_canonicalize_reference(&mut slow);
+    assert_eq!(fast, slow);
+}
