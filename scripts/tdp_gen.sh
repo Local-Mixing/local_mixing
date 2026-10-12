@@ -13,7 +13,7 @@
 #   4    circuit_mixer --split --split-stop: every complemented g57 gate split
 #        into plain conjunctions, joined to distant brackets (archive flags)
 #   5    circuit_mixer crossing walk (resumes split.state when stage 4 ran):
-#        target = round(G * factor), temperature target/divisor, 6*target moves
+#        target = round(G * factor), temperature target/divisor, 2*target moves
 #   6    tdp_packing run: windowed ANF delivery (pack G=512, repair, ANF
 #        serialization with budget 65536) -> packing/deliverable.tdp4
 #   7    tdp_unpacking run: every delivered window resynthesized from its ANF
@@ -105,7 +105,9 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --crossing-width-penalty-base B   wide-split acceptance penalty base B >= 1     [3]
   --crossing-width-penalty-threshold C  width below which the penalty is off     [1]
   --crossing-size-tolerance-divisor D   temperature = max(64, round(target / D)) [25]
-  --crossing-move-attempts M        move budget (added to the resumed counter) [6*target]
+  --crossing-move-budget-factor F   move budget = round(F * target), F in (0, 1000]     [2]
+  --crossing-move-attempts M        absolute move budget instead of the factor (exclusive)
+                                    (either is added to the resumed split counter)
   --unpacking-time-limit S          synthesis wall limit per window, seconds   [30]
   --unpacking-restarts R            synthesis restarts per window              [16]
   --unpacking-beam B                synthesis lookahead width                   [6]
@@ -173,7 +175,7 @@ PREPROCESSING_MODE=embedded-masking; PRESET=""
 declare -A KNOB=()
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
 STOP_AFTER=7; FORCE_FROM=99; SKIP_LIST=""
-XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
+XR=2; XB=3; XC=1; XTDIV=25; XMF=2; XMOVES=""
 UNPACK_TIME_LIMIT=30; UNPACK_RESTARTS=16; UNPACK_BEAM=6; UNPACK_NO_FALLBACK=0
 PIECES=1; PIECES_SET=0; MIN_BLOCK_SIZE=""; PIECE_THREADS=""
 FILTER=auto; QC=0; QC_SEED=20803; QC_REF=""; THREADS=""
@@ -197,6 +199,7 @@ while [ $# -gt 0 ]; do
     --xc) set -- --crossing-width-penalty-threshold "${@:2}" ;;
     --xtdiv) set -- --crossing-size-tolerance-divisor "${@:2}" ;;
     --xmoves) set -- --crossing-move-attempts "${@:2}" ;;
+    --xmf) set -- --crossing-move-budget-factor "${@:2}" ;;
     --pieces) set -- --parallel-pieces "${@:2}" ;;
     --min-block-size) set -- --parallel-target-piece-gates "${@:2}" ;;
     --piece-threads) set -- --parallel-threads "${@:2}" ;;
@@ -251,6 +254,7 @@ while [ $# -gt 0 ]; do
     --crossing-width-penalty-threshold) XC=$2; shift 2 ;;
     --crossing-size-tolerance-divisor) XTDIV=$2; shift 2 ;;
     --crossing-move-attempts) XMOVES=$2; shift 2 ;;
+    --crossing-move-budget-factor) XMF=$2; shift 2 ;;
     --unpacking-time-limit) UNPACK_TIME_LIMIT=$2; shift 2 ;;
     --unpacking-restarts) UNPACK_RESTARTS=$2; shift 2 ;;
     --unpacking-beam) UNPACK_BEAM=$2; shift 2 ;;
@@ -431,7 +435,11 @@ XR=$(bounded_number --crossing-target-size-factor "$XR" 1 16 0) || exit 2
 XB=$(bounded_number --crossing-width-penalty-base "$XB" 1 1000000 0) || exit 2
 XC=$(bounded_uint --crossing-width-penalty-threshold "$XC" 0 1000000000)
 XTDIV=$(bounded_uint --crossing-size-tolerance-divisor "$XTDIV" 1 1000000000)
+XMF=$(bounded_number --crossing-move-budget-factor "$XMF" 0 1000 1) || exit 2
 [ -z "$XMOVES" ] || XMOVES=$(bounded_uint --crossing-move-attempts "$XMOVES" 1 1000000000000)
+if [ -n "$XMOVES" ] && [ "${SEEN[--crossing-move-budget-factor]+x}" = x ]; then
+  fatal "--crossing-move-attempts (an absolute budget) and --crossing-move-budget-factor are exclusive"
+fi
 
 # ---- stage-7 (unpacking) parameters ----
 UNPACK_TIME_LIMIT=$(bounded_number --unpacking-time-limit "$UNPACK_TIME_LIMIT" 0 86400 1) || exit 2
@@ -961,14 +969,15 @@ stop_here 4
 CROSSING=$RUN/crossing.mpmct1; STAGE5_MARKER=$RUN/stage5.recipe
 if stage_on 5; then
   G_IN5=$(gates_of "$CUR")
-  read -r X_TGT X_TEMP X_BUDGET <<< "$(python3 -I - "$G_IN5" "$XR" "$XTDIV" "${XMOVES:-0}" <<'PY'
+  read -r X_TGT X_TEMP X_BUDGET <<< "$(python3 -I - "$G_IN5" "$XR" "$XTDIV" "$XMF" "${XMOVES:-0}" <<'PY'
 import sys
-g, xr, tdiv, xmoves = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+g, xr, tdiv, xmf, xmoves = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5])
 tgt = round(g * xr)
 temp = max(64, round(tgt / tdiv))
-# The walk reaches its target in about 2*target moves and the hold then erodes
-# the fragments; 6x covers arrival across the target factor with a mild hold.
-print(tgt, temp, xmoves if xmoves > 0 else 6 * tgt)
+# The walk reaches its target in about 2*target moves (RC, 2026-10-11: the
+# default budget is 2*target; the archive-era driver's 6*target also held the
+# fragments under the thermostat for a while, eroding them).
+print(tgt, temp, xmoves if xmoves > 0 else max(1, round(xmf * tgt)))
 PY
 )"
   X_ARGS=(--target-size "$X_TGT" --temp "$X_TEMP" --split-base "$XB" --split-damp "$XC"
@@ -1003,7 +1012,7 @@ PY
   fi
   if [ "$stage5_done" -eq 0 ]; then
     rm -f "$STAGE5_MARKER"
-    note "stage 5: crossing walk ($X_SOURCE) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves=$X_MOVES"
+    note "stage 5: crossing walk ($X_SOURCE) target=$X_TGT temp=$X_TEMP b=$XB c=$XC budget=$X_BUDGET ($([ -n "$XMOVES" ] && echo absolute || echo "${XMF}*target")) moves=$X_MOVES"
     run_mixer_stage 5 "$RUN/stage5.log" "$CROSSING" 'moves budget spent' \
       "${X_INPUT[@]}" "${X_ARGS[@]}" --moves "$X_MOVES" ${X_SEED[@]+"${X_SEED[@]}"} --output "$CROSSING" 3<<< "$CROSS_SEED"
     write_marker "$STAGE5_MARKER" "$(expected_stage5_marker)" "$CROSSING" crossing "stop_reason=$STOP_REASON"

@@ -344,28 +344,32 @@ impl UnpackingConfig {
 }
 
 /// The stage-5 crossing walk's controls (`[crossing]`), each `None` = the
-/// archive-era driver default (target factor 2, penalty base 3, threshold 1,
-/// tolerance divisor 25, 6 * target move attempts).
+/// default (target factor 2, penalty base 3, threshold 1, tolerance divisor
+/// 25: the archive-era driver's; move budget 2 * target: RC 2026-10-11, the
+/// archive ran 6 * target). `xmoves` is an absolute budget overriding the
+/// factor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CrossingConfig {
     pub(crate) xr: Option<String>,
     pub(crate) xb: Option<String>,
     pub(crate) xc: Option<String>,
     pub(crate) xtdiv: Option<String>,
+    pub(crate) xmf: Option<String>,
     pub(crate) xmoves: Option<String>,
 }
 
 impl CrossingConfig {
-    pub(crate) const DEFAULTS: [(&'static str, &'static str); 5] = [
+    pub(crate) const DEFAULTS: [(&'static str, &'static str); 6] = [
         ("target_size_factor", "2"),
         ("width_penalty_base", "3"),
         ("width_penalty_threshold", "1"),
         ("size_tolerance_divisor", "25"),
-        ("move_attempts", "6*target"),
+        ("move_budget_factor", "2"),
+        ("move_attempts", "factor*target"),
     ];
 
     /// `(manifest key, script flag, value)`; the value is the default when unset.
-    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String); 5] {
+    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String); 6] {
         let v = |o: &Option<String>, d: &str| o.clone().unwrap_or_else(|| d.to_owned());
         let d = Self::DEFAULTS;
         [
@@ -381,7 +385,12 @@ impl CrossingConfig {
                 "--crossing-size-tolerance-divisor",
                 v(&self.xtdiv, d[3].1),
             ),
-            (d[4].0, "--crossing-move-attempts", v(&self.xmoves, d[4].1)),
+            (
+                d[4].0,
+                "--crossing-move-budget-factor",
+                v(&self.xmf, d[4].1),
+            ),
+            (d[5].0, "--crossing-move-attempts", v(&self.xmoves, d[5].1)),
         ]
     }
 }

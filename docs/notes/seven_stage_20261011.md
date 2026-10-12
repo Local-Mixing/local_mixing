@@ -26,7 +26,7 @@ Branch `ran/seven-stage` (worktree `~/code/lm_worktrees/port_wt`, stacked on `ra
 | 2 preprocessing | (same process) | `tdp.mpmct1` | yes: the sandwich goes on |
 | 3 DB mixing | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` | yes |
 | 4 splitting | `circuit_mixer --split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256 --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12 --moves G+1e6` | `split.mpmct1`, `split.state` | yes |
-| 5 crossing | `circuit_mixer --resume split.state --target-size round(2G) --temp max(64,target/25) --split-base 3 --split-damp 1 ... --moves state+6*target` (or `--input prev --seed-file` when 4 is skipped) | `crossing.mpmct1` | yes |
+| 5 crossing | `circuit_mixer --resume split.state --target-size round(2G) --temp max(64,target/25) --split-base 3 --split-damp 1 ... --moves state+round(F*target)`, F = `crossing.move_budget_factor` = 2 (RC 2026-10-11; the archive ran 6) (or `--input prev --seed-file` when 4 is skipped) | `crossing.mpmct1` | yes |
 | 6 packing | `tdp_packing run --stage2 tdp.mpmct1 --stage3 <last>` | `packing/deliverable.tdp4` (+ `rep<G>.*`) | yes |
 | 7 unpacking | `tdp_unpacking run --deliverable ... --packed rep<G>.mpmct1 --bounds ... --source-c C --n N` | `unpacking/unpacked.mpmct1` | yes (needs 6) |
 

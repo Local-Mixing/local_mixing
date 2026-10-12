@@ -11,7 +11,7 @@ computes $C$ on a public slice.
 | 2. Preprocessing | Embedded masking on $4n$ wires: masked fires, band, guards, persistent carrier migration (preset L8) | `gen_sandwich_gadget` | `tdp.mpmct1` |
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
 | 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
-| 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
+| 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input, budget 2× the target) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
 | 6. Packing | Windowed ANF delivery: commuting reorder into windows, repair, serialization | `tdp_packing run` | `packing/deliverable.tdp4` |
 | 7. Unpacking | Every delivered window resynthesized from its ANF alone, concatenated, canonically reordered | `tdp_unpacking run` | `unpacking/unpacked.mpmct1` |
 
@@ -268,11 +268,15 @@ otherwise starts from the previous circuit with its own `cross_seed`.
 | `crossing.width_penalty_base` | number, `3.0` | Base `B` of the wide-split acceptance penalty, in `1..1_000_000`. A relevant parent/control width `c` above threshold `d` is allowed with probability `B^(-(c-d))`; `B=1` disables this damping. |
 | `crossing.width_penalty_threshold` | integer, `1` | Width `d` below which this penalty does not apply, in `0..1_000_000_000`. A width bias, not a maximum legal gate width (`--k-max 12`). |
 | `crossing.size_tolerance_divisor` | integer, `25` | Size-controller temperature `max(64, round(target / divisor))`, in `1..1_000_000_000`. |
-| `crossing.move_attempts` | integer, `6 * target` | Move budget, in `1..10^12`. On a resume of `split.state` the driver adds the state's move counter, because the mixer's resumed `--moves` ceiling is absolute. |
+| `crossing.move_budget_factor` | number, `2.0` | Move budget `round(factor * target)`, factor in `(0, 1000]`. The walk reaches its target in about `2 * target` moves; the archive-era driver ran `6 * target` (RC, 2026-10-11: the default is 2). |
+| `crossing.move_attempts` | integer, unset | An absolute move budget instead of the factor (the two are exclusive), in `1..10^12`. |
 
-These are the calibrated defaults of the archive-era driver; their promotion
-status was never resolved (the crossing walk was retired on 2026-10-07 and
-revived on 2026-10-11 for the resynthesis studies: `docs/notes/stage45_revival_20261011.md`).
+Either budget is added to the split stage's move counter on a resume of
+`split.state`, because the mixer's resumed `--moves` ceiling is absolute.
+The target, penalty and temperature defaults are the archive-era driver's
+calibrated values; their promotion status was never resolved (the crossing
+walk was retired on 2026-10-07 and revived on 2026-10-11 for the resynthesis
+studies: `docs/notes/stage45_revival_20261011.md`).
 
 ### Packing (stage 6)
 
@@ -402,7 +406,7 @@ The managed command reads configuration; the Bash driver takes flags (its
 | custom knobs | `--preprocessing-{mask-pair-wires,max-open-masks,min-open-masks,balanced-masks,shuffling-segments,shuffling-return-home,premask,seed-avoid-c1,chain,chain-len} V` |
 | `db_mixing.*` | `--db-mixing-schedule custom`, `--db-mixing-growth-work-units`, `--db-mixing-hold-work-units`, `--db-mixing-target-size-factor` |
 | `database.lookup_miss_filter` | `--database-lookup-miss-filter auto\|on\|off` |
-| `crossing.*` | `--crossing-target-size-factor R`, `--crossing-width-penalty-base B`, `--crossing-width-penalty-threshold C`, `--crossing-size-tolerance-divisor D`, `--crossing-move-attempts M` |
+| `crossing.*` | `--crossing-target-size-factor R`, `--crossing-width-penalty-base B`, `--crossing-width-penalty-threshold C`, `--crossing-size-tolerance-divisor D`, `--crossing-move-budget-factor F`, `--crossing-move-attempts M` |
 | `packing.*` | `--packing-window-gates`, `--packing-interval-cap`, `--packing-monomial-budget`, `--packing-span-cap`, `--packing-split-budget`, `--packing-fix-iterations`, `--packing-fallback-iterations`, `--packing-anf-cap-semantics`, `--packing-allow-floor-miss`, `--packing-allow-over-budget` |
 | `unpacking.*` | `--unpacking-time-limit S`, `--unpacking-restarts R`, `--unpacking-beam B`, `--unpacking-no-fallback` |
 | `leakage_repair.*` | `--leakage-repair`, `--leakage-repair-seed S`, `--leakage-repair-reference P` |
@@ -551,11 +555,11 @@ move counter; `--moves` is absolute on a resume):
 ```bash
 circuit_mixer --resume split.state --target-size TARGET --temp max(64,round(TARGET/25)) \
     --split-base 3 --split-damp 1 --p-twist 0 --p-db 0 --p-comp 0 --p-any 0 --k-max 12 \
-    --moves state_moves+6*TARGET --report-every 500000 --output crossing.mpmct1
+    --moves state_moves+2*TARGET --report-every 500000 --output crossing.mpmct1
 ```
 
 With stage 4 skipped it starts from the previous circuit (`--input …
---seed-file /dev/fd/3`, the `cross_seed`) with `--moves 6*TARGET`. It writes
+--seed-file /dev/fd/3`, the `cross_seed`) with `--moves 2*TARGET`. It writes
 `crossing.mpmct1`, `stage5.log` and `stage5.recipe` (which records the
 source: `resume split.state` or `input <file>`). No state file is written:
 nothing downstream resumes it. At n=64 the walk takes 3.03M gates to 5.49M

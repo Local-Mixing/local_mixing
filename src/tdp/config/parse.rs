@@ -309,6 +309,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "integer",
     ),
     (
+        "crossing.move_budget_factor",
+        "crossing.move_factor",
+        "xmf",
+        "number",
+    ),
+    (
         "crossing.move_attempts",
         "crossing.moves",
         "xmoves",

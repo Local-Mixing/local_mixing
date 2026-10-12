@@ -417,8 +417,21 @@ where
         )?,
         xc: parse_optional_u64(raw, "xc", 0, 1_000_000_000)?,
         xtdiv: parse_optional_u64(raw, "xtdiv", 1, 1_000_000_000)?,
+        xmf: parse_optional_f64(
+            raw,
+            "xmf",
+            |value| value > 0.0 && value <= 1000.0,
+            "must be in (0, 1000]",
+        )?,
         xmoves: parse_optional_u64(raw, "xmoves", 1, 1_000_000_000_000)?,
     };
+    if crossing.xmf.is_some() && crossing.xmoves.is_some() {
+        return Err(config_error(
+            raw,
+            "xmoves",
+            "an absolute move budget is exclusive with `crossing.move_budget_factor`",
+        ));
+    }
     // [unpacking] (stage 7)
     let du = UnpackingConfig::default();
     let unpacking = UnpackingConfig {

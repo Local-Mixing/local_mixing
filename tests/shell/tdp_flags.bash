@@ -96,6 +96,9 @@ reject 'crossing-target-size-factor' --crossing-target-size-factor 17
 reject 'crossing-width-penalty-base' --crossing-width-penalty-base 0
 reject 'crossing-size-tolerance-divisor' --crossing-size-tolerance-divisor 0
 reject 'crossing-move-attempts' --crossing-move-attempts 0
+reject 'crossing-move-budget-factor' --crossing-move-budget-factor 0
+reject 'crossing-move-budget-factor' --crossing-move-budget-factor 1001
+reject 'exclusive' --crossing-move-budget-factor 2 --crossing-move-attempts 5
 reject 'unpacking-time-limit' --unpacking-time-limit 0
 reject 'unpacking-restarts' --unpacking-restarts 0
 reject 'unpacking-beam' --unpacking-beam abc

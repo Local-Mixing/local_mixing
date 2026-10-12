@@ -593,6 +593,7 @@ pub(crate) fn canonical_script_flag(flag: &str) -> &str {
         "--xb" => "--crossing-width-penalty-base",
         "--xc" => "--crossing-width-penalty-threshold",
         "--xtdiv" => "--crossing-size-tolerance-divisor",
+        "--xmf" => "--crossing-move-budget-factor",
         "--xmoves" => "--crossing-move-attempts",
         "--pieces" => "--parallel-pieces",
         "--min-block-size" => "--parallel-target-piece-gates",
@@ -664,6 +665,7 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     push_optional_arg(&mut args, "--xb", c.xb.as_deref());
     push_optional_arg(&mut args, "--xc", c.xc.as_deref());
     push_optional_arg(&mut args, "--xtdiv", c.xtdiv.as_deref());
+    push_optional_arg(&mut args, "--xmf", c.xmf.as_deref());
     push_optional_arg(&mut args, "--xmoves", c.xmoves.as_deref());
     let mut push = |flag: &str, value: String| {
         args.push(OsString::from(flag));
