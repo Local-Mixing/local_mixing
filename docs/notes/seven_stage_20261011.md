@@ -74,11 +74,25 @@ output (multi-control gates, denser ANF: p90 8.4 s/window, max 39 s, vs 1.2 s / 
 four-stage deliverable), and the gate ratio is 0.9 instead of 0.35. `status=fallback_used` is
 reported, not fatal, by default.
 
-## 4. The n=64 seven-stage run
+## 4. The n=64 seven-stage run (managed driver, `port_runs/seven_n64`, `threads = 8`, nice 10)
 
-Launched 2026-10-11 ~22:00 (`port_runs/seven_n64`, managed driver, `threads = 8`, nice 10);
-expected: stage 3 ~minutes, stage 4 ~1 min, stage 5 ~46 min, stage 6 ~2 h, stage 7 open.
-Results to be appended.
+Fresh run started 2026-10-11 22:26 after the stage-5 budget change (`crossing.move_budget_factor`
+= 2, RC's default; the archive ran 6); `PIPELINE COMPLETE (stages 1-7)` at 01:39, exit 0.
+
+| stage | gates | wall |
+|---|---|---|
+| 1+2 (L8, \|C\|=1000) | 775,332 (S: 2,832) | 1 min |
+| 3 DB mixing (4,031,726 moves) | 1,583,698 | 29 min |
+| 4 split | 2,987,961 | 1 min |
+| 5 crossing (target 5,975,922, temp 239,037, budget 11.95M = 2×target) | 5,380,721 | **7 min** (46 min at 6×target in the revival study) |
+| 6 packing | 10,150 windows → repair 5,153,273 gates / 10,365 bounds; floor 64/0; every check ok (reorder, pack, repair certificates, equiv, windows ANF 0/10,366 over budget, decode, eval, zero slice) | 88 min |
+| 7 unpacking | 10,366 windows: 10,209 synthesized, **157 verbatim fallbacks (1.5 %)**, 371 deadline hits; 5,153,273 → 4,766,644 gates (ratio 0.925); checks ok (exact + sampled per window, equiv before/after canonical order, zero slice); canonical reorder 13 s | 68 min (8.9 CPU-hours of synthesis) |
+
+Reading, same as at n=16: on the crossing output the resynthesis buys only 7.5 % (0.925) where the
+four-stage deliverable gave 0.354, with 1.5 % of windows emitted verbatim and 3.6 % hitting the
+30 s deadline (p90 6.9 s, max 200 s per window). The crossing walk with the 2×target budget stops
+at 0.90 of its target (5.38M vs 5.98M) instead of settling on it; the stage took a seventh of
+the time.
 
 ## 5. Tests
 
