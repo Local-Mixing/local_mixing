@@ -4669,7 +4669,11 @@ The pipeline is therefore 1 sliced sandwich, 2 preprocessing, 3 database
 mixing, 4 splitting, 5 crossing walk, 6 delivery. Every stage after the first
 is optional; `run.skip_stages = [4, 5]` with `delivery.anf_only = true` is
 the validated four-stage chain of the previous update. The curated store and
-`fcompress` remain archived. The current stage list, parameters and outputs
+`fcompress` remain archived: they were removed on the cleanup branch (stage-2 and stage-3
+outputs verified byte-identical before and after) and are preserved on
+`ran/archive/curated-and-postmix`; `docs/CURATED_AND_POSTMIX_ARCHIVE.md` is the inventory
+of what lives only there. This history document is the one place that records the
+retired components; the pipeline reference no longer describes them. The current stage list, parameters and outputs
 are in [the TDP pipeline guide](tdp_pipeline.md) and
 [the pipeline reference](TDP_PIPELINE_REFERENCE.md); as with the earlier
 updates, the measurements above describe the earlier pipelines, not this one.
