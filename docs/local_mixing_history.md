@@ -2,12 +2,35 @@
 
 # Local Mixing of Reversible Circuits: History
 
-*Status (October 12, 2026): this is a historical record. Its narrative, its
+*Status (October 12, 2026): this is the historical record of the project and
+the single entry point for everything historic. Its narrative, its
 measurements and the "complete method" it describes belong to the pipelines of
 their time, through the dated updates at the end (the latest:
-[six stages](#six-stage-update)); the current pipeline is described in
-[the TDP pipeline guide](tdp_pipeline.md) and
-[the pipeline reference](TDP_PIPELINE_REFERENCE.md).*
+[six stages](#six-stage-update)); the current pipeline, six stages on `main`,
+is described in [the TDP pipeline guide](tdp_pipeline.md) and
+[the pipeline reference](TDP_PIPELINE_REFERENCE.md), and the retired components
+are recorded here and in the two archive inventories linked below, not in the
+current-pipeline documents. In brief: the curated store, `fcompress` and the
+old post-mixing stages 4-6 (split, the crossing walk, `fcompress`) were retired
+on October 7-8, 2026 and preserved on the archive branch
+`ran/archive/curated-and-postmix`, inventoried in
+[CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md); the
+resulting four-stage chain was validated on October 8, 2026 (twelve end-to-end
+runs, the four earlier finals plus eight replicates, all at the exact C-view
+floor; the eight replicates re-repaired with the corrected order repair);
+split and the crossing walk were revived from the archive as stages 4 and 5 on
+October 11, 2026, and packing and unpacking became the delivery stage on
+October 12 (details: [the October 8 update](#four-stage-update) and
+[the October 12 update](#six-stage-update)). The code base before the
+reorganization of September 27, 2026 is inventoried in
+[DRIP_RESHUFFLE_ARCHIVE.md](DRIP_RESHUFFLE_ARCHIVE.md). On the input circuit:
+the source circuits in the narrative below are r57 circuits; in general C may
+use any reversible gate with up to two controls (NOT, CNOT, Toffoli with either
+control polarity), the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which
+expresses that class) through `source.path` or generates a random C, and what
+the pipeline mixes is a specific circuit structure built around C (the sliced
+sandwich on 2n wires, stage 1, then the embedded-masking construction on 4n
+wires, stage 2).*
 
 This is the research history of the project: its constructions, experiments,
 attacks, and the reasons the method changed. The narrative and measurements
@@ -141,8 +164,11 @@ every gate's polynomial. This will matter a great deal later, when we start
 caring about the algebraic degree of our circuits.
 
 We note that the restriction to r57 alone does not hold all
-the way through the complete construction. The source circuit is built from
-r57, but the later sandwich and gadgetization use a wider gate vocabulary.
+the way through the complete construction. The source circuits of these
+experiments are built from r57 (in general the input C may use any reversible
+gate with up to two controls, which the r57/g57 form expresses; see the status
+note above), but the later sandwich and gadgetization use a wider gate
+vocabulary.
 Later splitting deliberately fragments the remaining complemented gates into
 plain conjunctions. We describe that vocabulary when we introduce the circuit
 representation below. The early strategies use pure r57 unless stated otherwise.
@@ -4619,17 +4645,27 @@ times. That destroyed the freedom to reorder, which a different approach
 needed.
 
 That approach is windowed delivery. We reorder the mixed circuit along
-commutations, cut it into windows, and publish each window as its algebraic
-normal form, so that an observer sees wire values only at window boundaries.
+commutations, cut it into windows, and publish each window only as the
+algebraic normal form of the permutation it applies. An observer holds those
+ANFs and nothing else: it can derive the wire state at every window boundary,
+but not how the function was spelled inside a window.
 A single windowing pass hid 58 to 72 percent of the carried values, an order
 of magnitude more than the crossing walk, and windowing the raw mixed circuit
 did strictly better than windowing the crossed one. In parallel, the
 preprocessing was redesigned to limit what any boundary can expose:
 carriers migrate between wires, every data wire is masked before the
 computation starts, and the band seed avoids $C$'s first-layer control pairs.
-A repair pass after packing removes the remaining exposures, with the target
-that no interior value of $C$ is an affine function of a boundary state; in
-the validation runs only the outputs of $C$ remained visible.
+The packer's order repair, which runs in every packing run, removes the
+remaining exposures, with the target that no interior value of $C$ is an
+affine function of a boundary state. The four-stage chain was validated on
+October 8, 2026: twelve end-to-end runs (three seeds for each of two
+preprocessing configurations at $n=64$ and $n=128$, the four earlier finals
+plus eight replicates) passed the forward, reverse and zero-slice checks and
+reached the exact C-view floor, with only the outputs of $C$ visible. The
+validation found one bug in the prototype repair, after which the eight
+replicates were re-repaired with the corrected code. Those measured tables
+remain the reference numbers for stage-2 linkability in
+[the stage-2 linkability report](STAGE2_LINKABILITY.md).
 
 So the stages divide the work differently. Preprocessing decides which values
 ever exist in the clear; database mixing respells and dilutes; packing
@@ -4642,6 +4678,23 @@ shortly after this update (`tdp_packing`, `src/stages/packing/`;
 described in [the TDP pipeline guide](tdp_pipeline.md). As with the earlier
 update, the heatmaps, SAT timings and compression ratios above describe the
 earlier pipeline and its parameters, not this one.
+
+The managed driver of the time (`tdp_gen` with `scripts/tdp_gen.sh`) could
+not run this four-stage chain: a gap analysis made for the port listed eight
+differences (persistent migration refused, the new stage-2 knobs scrubbed from
+the environment, the validated mixing schedule inexpressible, inert database
+flags, the curated store still promoted, the historic post-mixing stages still
+on by default, no packing step, and seed handling that printed the seeds in the
+stage logs), and all of them were closed on October 9, 2026, when the driver
+was rebuilt around the Rust packer
+([STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2.2, D1-D18): the stage-2
+knobs became the L8 and A presets, the schedule became `validated`, the
+historic stages and the curated store were dropped, packing became
+`tdp_packing run`, and the seeds moved to the private `SEEDS` file, handed to
+the stage binaries on file descriptors. (The source tree had been reorganized
+in September 2026 into `src/stages/`, `src/engine/`, `src/programs/` and
+`src/tdp/`; the former top-level `preprocessing`, `db_mixing` and
+`postprocessing` wrapper modules went then.)
 
 <a id="six-stage-update"></a>
 
@@ -4665,16 +4718,35 @@ exposure-aware cut, repacked, and each half is unpacked again, recursively
 the refined deliverable and one canonically ordered circuit;
 `delivery.anf_only` stops it after the packer's deliverable.
 
+What ships is exactly the refined deliverable (`unpacking/deliverable.tdp4`):
+the refined lattice of windows and, for each window, the ANF of the
+permutation it applies. Nothing else ships: not $C$, not the sandwich or the
+masked circuit of stages 1-2, not the mixed, split or crossed circuits of
+stages 3-5, not the packer's gate order, not the resynthesized circuit. From
+the ANFs an adversary can derive the wire state at every window boundary on
+inputs of its choice, compose adjacent windows into wider ones, and
+resynthesize any window or merged window into a circuit of its own; it cannot
+see how the shipped function was spelled inside a window. The resynthesis
+studies that motivated the revival measured this adversary: merging and
+resynthesizing uniform 2,000-gate windows of the $n=64$ crossing output
+recovers 244 of 936 interior values of $C$ (241 with ten times the time
+budget), while the raw circuit exposes none at any cut, and stages 4 and 5 do
+not close the leak; the refinement's exposure-aware cuts are chosen so that no
+interior value of $C$ is affine at a new cut, each one re-scanned.
+
 The pipeline is therefore 1 sliced sandwich, 2 preprocessing, 3 database
 mixing, 4 splitting, 5 crossing walk, 6 delivery. Every stage after the first
 is optional; `run.skip_stages = [4, 5]` with `delivery.anf_only = true` is
 the validated four-stage chain of the previous update. The curated store and
-`fcompress` remain archived: they were removed on the cleanup branch (stage-2 and stage-3
-outputs verified byte-identical before and after) and are preserved on
-`ran/archive/curated-and-postmix`; `docs/CURATED_AND_POSTMIX_ARCHIVE.md` is the inventory
-of what lives only there. This history document is the one place that records the
-retired components; the pipeline reference no longer describes them. The current stage list, parameters and outputs
-are in [the TDP pipeline guide](tdp_pipeline.md) and
+`fcompress` remain archived: they were removed in the cleanup of October 7-8,
+2026 (stage-2 and stage-3 outputs verified byte-identical before and after)
+and are preserved on `ran/archive/curated-and-postmix`;
+[CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md) is the
+inventory of what lives only there. This history document is the one place
+that records the retired components; the current-pipeline documents no longer
+describe them. All of the above is on `main` as of October 12, 2026. The
+current stage list, parameters and outputs are in
+[the TDP pipeline guide](tdp_pipeline.md) and
 [the pipeline reference](TDP_PIPELINE_REFERENCE.md); as with the earlier
 updates, the measurements above describe the earlier pipelines, not this one.
 

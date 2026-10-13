@@ -1,8 +1,8 @@
 # Stage 4 (packing) in Rust: design
 
-Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; results in §12), branch `ran/stage4-rust` (based on `492564f0`; since 2026-10-11 stacked under `ran/seven-stage`, worktree `port_wt`). Owner: RC.
+Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; the port's parity and acceptance records are in §12); on `main` since 2026-10-12. The port was developed from the base commit `492564f0`. Owner: RC.
 
-> **2026-10-11 / 2026-10-12:** packing is now the first sub-step of **stage 6** (delivery) of a six-stage pipeline (4 splitting, 5 crossing walk, 6 delivery = packing then unpacking with lattice refinement; `docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`, `docs/DELIVERY_STAGE.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`, `packing.recipe`) are now config v4, recipe v12, SEEDS format 3 (five seeds), `delivery.failed` (with `step=packing`) and `delivery.recipe`, and the chain it reproduces is `run.skip_stages = [4, 5]` with `delivery.anf_only = true`. "The TDP doc" and `docs/TDP_FOUR_STAGE_PIPELINE.md` below mean `docs/TDP_PIPELINE_REFERENCE.md` (renamed on 2026-10-12 when it was extended to six stages; §1-§3 keep their numbers, its old §4.x is §6a.x, old §5 is §7, old §6 is §8), and `tdp_stage4_resume.bash` is `tests/shell/tdp_stage_resume.bash` (renamed 2026-10-11).
+> **2026-10-11 / 2026-10-12:** packing is now the first sub-step of **stage 6** (delivery) of a six-stage pipeline (4 splitting, 5 crossing walk, 6 delivery = packing then unpacking with lattice refinement; `docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`, `docs/DELIVERY_STAGE.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`, `packing.recipe`) are now config v4, recipe v12, SEEDS format 3 (five seeds), `delivery.failed` (with `step=packing`) and `delivery.recipe`, and the chain it reproduces is `run.skip_stages = [4, 5]` with `delivery.anf_only = true`. "The TDP doc" and `docs/TDP_FOUR_STAGE_PIPELINE.md` below mean `docs/TDP_PIPELINE_REFERENCE.md` (renamed on 2026-10-12 when it was extended to six stages; §1-§3 keep their numbers, its old §4.x is §6a.x, old §5 is §7, old §6 is §8), and `tdp_stage4_resume.bash` is `tests/shell/tdp_stage_resume.bash` (renamed 2026-10-11). In the six-stage pipeline the packer's container `packing/deliverable.tdp4` (§5.3, §6) is the stage's output only under `delivery.anf_only`; in a default run it is the input of the unpacking sub-step, and the shipped file is that sub-step's `unpacking/deliverable.tdp4`, the same container on the refined lattice. The adversary holds exactly the shipped file (the lattice of windows and, for each window, the ANF of the permutation it applies) and nothing else: not C, not the circuits of stages 1-5, not the packer's gate order (`rep<G>.mpmct1`), not the resynthesized circuit (`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief").
 
 This document does two things:
 
@@ -69,12 +69,12 @@ Verified against the script, `seed.txt` and the gen/s3 logs of all four L8 runs.
 | stage-2 environment | exactly `EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8`. Every other `EMBEDDED_MASKING_*` variable is unset, so gen uses its base `EmbeddedMaskingParams::managed_tdp(gadget_seed, n)` (K=2, max_open=3, min_open=2, balanced, quad_fire) | `val_chain.sh:13,15`; gen `mod.rs:240-260` |
 | gen seed | `secrets.randbelow(2**31)` | `val_chain.sh:11` |
 | mix seed | `secrets.randbelow(2**40)` | `val_chain.sh:12` |
-| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header, and `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`, which equal the CLI defaults and are inert at `p_db=1.0`. They were removed on this branch (the TDP doc, `docs/TDP_PIPELINE_REFERENCE.md`, formerly `TDP_FOUR_STAGE_PIPELINE.md`, §3.2), and the tracked `val_chain.sh` omits them | `val_chain.sh:17-23`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
+| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header, and `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`, which equal the CLI defaults and are inert at `p_db=1.0`. They were removed from the tracked `val_chain.sh` (`docs/TDP_PIPELINE_REFERENCE.md` §3.2), which omits them | `val_chain.sh:17-23`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
 | stage-3 environment | `FROZEN_DB_DIR=<regular store> FROZEN_FILTER=1`, and nothing else from the recipe: `CANON_*` caps unset (unbounded), cache sizes at their built-in defaults, `--verify-every` and `--report-every` at their CLI defaults (10 000 and 50 000). The local store has no `filters.bin`, so the filter was off. The interactive shell's other variables were inherited and are unknown; the historic anchor (§10.8) is what proves they were inert | s3.log `FROZEN_FILTER=1 but no filters.bin ... running unfiltered`; reports every 50 000 moves |
 | stage-3 mode | serial: no `--parallel-*` | `val_chain.sh` |
 | side reports | `mult_census.py tdp.mpmct1` → `mult_s2.txt`; `hmap_affine` SPAN on stage 2 (`SPAN_OUTPUTS_TRIVIAL=1`, `--g-step 64` at n=64 or `256` otherwise) → `span_s2.{tsv,txt}`. Both are report-only | `val_chain.sh:24-27` |
 | stage 4 | `window_pack3.py tdp s3 512 512 24576 3000 TAG-G512 packed_G512.mpmct1`, then `repair.sh TAG 512 N`, then `anf_dump_eval.py rep512.mpmct1 rep512.bounds deliverable.bin TAG` | `val_chain.sh:29-31` |
-| repair version | All eight replicates were re-repaired on Oct 8 with the canonical `order_repair.py` (breaker located before the completer moves) and re-serialized. The earlier repairs are in `rep512_v1/`, so TDP doc §4.7 (now `docs/TDP_PIPELINE_REFERENCE.md` §6a.7) was stale until its 2026-10-08/09 update. The parity targets are the current `rep512.*` and `deliverable.bin` (Appendix B), subject to the binary-provenance check of §10.5 step 0 | file times; `repair512.log` |
+| repair version | The parity targets are each replicate's current `rep512.*` and `deliverable.bin` (Appendix B): the repairs of 2026-10-08 made with the patched `order_repair.py` (the slide step locates the breaker before moving the completer), which is the version the port implements (§4.11); the earlier repairs are kept in `rep512_v1/`. Subject to the binary-provenance check of §10.5 step 0 | file times; `repair512.log` |
 | binaries | stage-1/2/3 artifacts are timestamped 2026-10-07 23:23 (gen) to 2026-10-08 01:01 (vL128a s3), three minutes after commit `e720d5c0` (23:20). The stage-2 fix `d9631d0e` (Oct 8 18:54) and the stage-3 cleanup commits `8070f5a0..b5608cd9` (Oct 8) came **after** the runs | file mtimes; `git log` |
 
 ### 2.2 Differences in today's managed driver that must change
@@ -202,7 +202,7 @@ src/stages/packing/
   repair/mod.rs   repair loop (repair.sh), RepairMode
   repair/seq.rs   gate/marker sequence: to_seq, from_seq, commute, slide
   repair/cancel.rs cancel_pass, run_cancel
-  repair/fix.rs   run_fix (canonical breaker handling)
+  repair/fix.rs   run_fix (the patched breaker handling of order_repair.py, §4.11)
   repair/merge.rs merge_bounds2
   repair/split.rs anf_split2 (candidate rule, recursion, fit predicate)
   serialize.rs    DE body encoder, container v1, CRC-32, flat-arena decoder, evaluator
@@ -758,7 +758,7 @@ tdp_packing census    <A> <P> <B> <label>                                       
 |---|---|
 | `tdp.mpmct1` | the stage-2 circuit |
 | `db_mixing.mpmct1` | the stage-3 circuit; `s3.mpmct1` in the reference |
-| `tdp.mpmct1.source_c.g57` | the source C, read only by repair and verify. It never reaches a shipped byte |
+| `tdp.mpmct1.source_c.g57` | the source C in its g57 file form (C itself may use any reversible gate with up to two controls; `docs/TDP_PIPELINE_REFERENCE.md`, Overview), read only by repair and verify. It never reaches a shipped byte |
 | `--n` | the source wires. It must equal the width of C, `4n` must be at most the state width, and n ≤ 256 |
 
 ### 5.3 Outputs, all in `--out-dir`
@@ -768,7 +768,7 @@ The directory is created with mode 0700, and every file is created under umask 0
 | file | content | ships? |
 |---|---|---|
 | `deliverable.bin` | the **raw DE body**, byte-identical to the reference's `deliverable.bin`. Existing readers (`decode_check.py`, `finalize*.sh`, `score_arm.sh`) keep working | no |
-| `deliverable.tdp4` | container v1 (§6): 48-byte header plus the same body | **yes, the shipped file** |
+| `deliverable.tdp4` | container v1 (§6): 48-byte header plus the same body | **only under `delivery.anf_only`** (the validated four-stage chain). In a default six-stage run it is the input of the unpacking sub-step, and the shipped file is `unpacking/deliverable.tdp4`, the same container on the refined lattice (`docs/DELIVERY_STAGE.md`) |
 | `packed_G{G}.mpmct1`, `packed_G{G}.mpmct1.bounds` | packer output, WP format | no |
 | `rep{G}.mpmct1`, `rep{G}.bounds` | repaired circuit and bounds, `order_repair` format | no |
 | `rep{G}.exposure.tsv`, `rep{G}.allcuts.tsv`, `rep{G}.wit.tsv`, `rep{G}.cview.log` | the last in-loop scan, exactly as the oracle leaves them; omitted with `--no-oracle-files` | no (C-keyed) |
@@ -795,7 +795,7 @@ A reused `--out-dir`: once the inputs have loaded, `run` removes every file of t
 
 Under `--allow-floor-miss` or `--allow-over-budget`, the corresponding failure exits **0** with the deliverable written and `status=floor_miss` or `over_budget` in `packing.report`. A caller must read `status`; the driver does (§11.1).
 
-Exits 5 and 6 are deliberate departures from the oracle on failure paths only. The oracle silently shipped vL128a v1 at 129 visible, and it keeps over-budget 1-2 gate windows silently. On every path where the oracle's output meets both tests, the bytes are unchanged.
+Exits 5 and 6 are deliberate departures from the oracle on failure paths only. The oracle silently emitted vL128a v1 at 129 visible, and it keeps over-budget 1-2 gate windows silently. On every path where the oracle's output meets both tests, the bytes are unchanged.
 
 ### 5.5 `packing.report`
 
@@ -878,7 +878,7 @@ The decoder (`serialize::decode`, `tdp_packing decode`) validates the following 
 | scheduler | WP:228-460 | **byte-exact `packed_G512.mpmct1` + `.bounds`** | ordered `committed`, stable sorts, quirks kept; sha256 against the 8 archived packs |
 | packer ANF caps | WP:135-150, 324-344 | bit-exact | `PySet` (`CPython39`); every compose abort reproduced (2 on vA64a, 6 on vL128b); large-table traces |
 | pack log text | WP prints | equal after path normalization; `:.1f` ties tolerated (D-c) | |
-| cancel / slide / fix | `order_repair.py` (canonical) | bit-exact | stale-blocker rule, greedy ascending, slide landing rules, gate-count cut, breaker survival, `to_seq` per fix iteration |
+| cancel / slide / fix | `order_repair.py` (the patched version) | bit-exact | stale-blocker rule, greedy ascending, slide landing rules, gate-count cut, breaker survival, `to_seq` per fix iteration |
 | C-view TSVs, visible counts | HA exposure | **byte-exact TSVs** | against the **pinned baseline** HA (§10.1), never the tree under test |
 | merge | `merge_bounds2.py` | bit-exact | outputs from C, asserted equal to the TSV rule |
 | split | `anf_split2.py` | bit-exact | `fits` on `PySet` (`CPython39`); per-cut leak memo; candidate, tie and recursion rules |
@@ -905,7 +905,7 @@ The default is **`CPython39`**. The defaults requirement and the reproduction te
 
   On paths where the oracle's result meets the identity and budget tests, there is no byte difference.
 - **D-c.** Log float formatting on exact `.x5` binary ties (log only).
-- **D-d.** The shipped file is `deliverable.tdp4`. `deliverable.bin` is the unchanged raw body.
+- **D-d.** The container is `deliverable.tdp4`; `deliverable.bin` is the unchanged raw body. (The shipped file of the six-stage pipeline is the unpacking sub-step's `unpacking/deliverable.tdp4`; the packer's container ships only under `delivery.anf_only`.)
 - **D-e.** The oracle's dead DE placeholder pass and its timings are not ported (DE:70-90).
 
 Revision 1's D-a (full-value keys) no longer exists (§4.7). Sorted iteration in place of CPython order is not allowed in default mode.
@@ -1010,7 +1010,7 @@ Targets on a 10-core Apple-silicon Mac (release build):
 - **Baseline `hmap_affine`:** built from `492564f0` with `--features security-tools` into `port_runs/baseline_target` (durable disk) via a detached `git worktree` at that commit. Its sha256 is recorded in `tests/fixtures/stage4/README.md`. The scripts take it as `HMAP_BASELINE=<path>` and verify the sha256 before use.
   - Every fixture regeneration (`regen.sh`), the reference side of `reproduce_val_chain.sh` and `tdp_reproduce_small.bash`, and the CI differential job (§10.6) use this binary. The CI job builds it from `492564f0` itself and caches it by commit.
   - `regen.sh` **refuses** to run with an HA binary whose sha256 differs from the recorded one, so fixture TSVs can never be produced by a binary that links the new library.
-- **Archive-era `hmap_affine`:** the main checkout's `target/release/hmap_affine` that produced the Oct 8 re-repairs. Today it has sha256 `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3` and mtime 2026-10-07 18:54:28. At P2 start it is **copied** (read-only use) to `port_runs/archive_hmap_affine` so a later rebuild of the main checkout cannot lose it.
+- **Archive-era `hmap_affine`:** the primary checkout's `target/release/hmap_affine` that produced the 2026-10-08 re-repairs. Today it has sha256 `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3` and mtime 2026-10-07 18:54:28. At P2 start it is **copied** (read-only use) to `port_runs/archive_hmap_affine` so a later rebuild of that checkout cannot lose it.
 - **Oracle interpreter:** a uv-managed CPython 3.9 (`uv python install 3.9.6`; `ORACLE_PY=$(uv python find 3.9.6)`), not `/usr/bin/python3`, which an OS or Command Line Tools update can replace.
   - Every script that runs the oracle first runs `tests/fixtures/stage4/pyset_selftest.py` under `$ORACLE_PY`, replaying the recorded traces (§10.2), and refuses to continue if any order differs.
   - The gate is the **self-test**, not `sys.version`. Any 3.9.x build whose set behaviour matches is acceptable, and `/usr/bin/python3` 3.9.6 remains usable when it passes.
@@ -1174,7 +1174,7 @@ Usage: `reproduce_val_chain.sh N [L8|A]`. MC defaults to the §2.4 table and is 
    | `span_s2.txt`, `mult_s2.txt` | `stage2_span.txt`, `stage2_mult.txt` (§11.1) |
 
    `pack_G512.txt` is compared line by line after normalization.
-5. **Exits 5 and 6.** The managed side may exit 5 or 6 where the oracle shipped (count floor met but identity failed, or an over-budget 1-2 gate window kept). Then:
+5. **Exits 5 and 6.** The managed side may exit 5 or 6 where the oracle emitted its deliverable (count floor met but identity failed, or an over-budget 1-2 gate window kept). Then:
    - every pre-decision artifact (packed, rep, bounds, last-scan TSVs) must be identical;
    - `tdp_packing check-final` on the **oracle's** rep must report the same violation;
    - the harness reruns stage 4 alone with the matching `--allow-*` flag, and `deliverable.bin` must equal the oracle's.
@@ -1249,7 +1249,7 @@ The CI workflow adds:
 - `--source-gates N` (alias `-m`) and `--source-gates-rule validated|formula`.
 - `--seed-file PATH`.
 - the ten `--packing-*` flags (`window-gates`, `interval-cap`, `monomial-budget`, `span-cap`, `split-budget`, `fix-iterations`, `fallback-iterations`, `anf-cap-semantics`, `allow-floor-miss`, `allow-over-budget`); the stage-5 `--crossing-*` and stage-6 `--delivery-*` flags and `--run-skip-stages` came later (`scripts/tdp_gen.sh --help`).
-- The stop/rerun/skip range is `2..6` (`--run-stop-after-stage`, `--run-rerun-from-stage`, `--run-skip-stages`); it was `2..4`, with a "historic" error for 5 and 6, until stages 4-6 were revived or added on 2026-10-11/12.
+- The stop/rerun/skip range is `2..6` (`--run-stop-after-stage`, `--run-rerun-from-stage`, `--run-skip-stages`); it was `2..4` in the four-stage driver of this revision.
 
 **Environment discipline** (§11.5).
 
@@ -1813,7 +1813,7 @@ At comparable load the Rust stage 4, its checks included, takes 0.095x the oracl
 **Acceptance round 3, vA128a (n=128, config A; 2026-10-09, binary built from `09552766` = review fixes round 2, clean tree; outputs `port_runs/vA128a_r3/`, sha256 of the three binaries in `binary.sha256`).** `tdp_packing run --stage2 tdp.mpmct1 --stage3 s3.mpmct1 --source-c tdp.mpmct1.source_c.g57 --n 128 --label vA128a` with **no packing flag**. The report records the recommended G=512 chain as the defaults (`window_gates=512 interval_cap=512 monomial_budget=24576 span_cap=3000 split_budget=65536 fix_iterations=4 fallback_iterations=4 anf_cap_semantics=cpython39`), which is `window_pack3.py 512 512 24576 3000` + `repair.sh` (budget 65536) + `anf_dump_eval.py` as `val_chain.sh` runs them. Exit 0, `status=ok`. Pack: 4,757,723 gates in 7,376 windows. Repair: 159,915 cancelled pairs, the floor reached at fix iteration 1, fallback 1 + 0 splits, 4,437,893 gates and 7,376 boundaries. Final scan: 128 visible / 0 non-output, 0 windows over budget. 7,377 ANF windows, 4,185,577 monomials. Every counter equals rounds 1 and 2, and `packing.report` equals round 2's except `binary_xxh3` and `time.*`.
 - Against the archived oracle, with no normalization, these files are byte-identical: `packed_G512.mpmct1`, `.bounds`, `pack_G512.txt`, `rep512.mpmct1`, `rep512.bounds`, `rep512.{exposure,allcuts,wit}.tsv`, `anf_rep512.txt`, `link_rep512.txt` and `deliverable.bin` (106,890,630 bytes). `rep512.cview.log` and `repair512.log` are identical after replacing the output directory.
 - Payload: `deliverable.tdp4` (106,890,678 bytes) is a 48-byte `LMTDPANF` v1 header + a body byte-identical to the archived pre-header `deliverable.bin`. It also equals `container_header.py` applied to the archived body, and `decode --format container --stats` accepts it (7,377 windows, 4,185,577 monomials, max support 489). There is no difference to explain.
-- A fresh sandboxed oracle rerun (`oracle_sb/`, `/usr/bin/python3` 3.9.6, baseline `hmap_affine`, the main checkout's oracle scripts with path rewrites only, identical after rewriting to round 2's sandbox) reproduced all eleven files byte for byte. They also equal the Rust files. Its `deliver.txt` differs from the archive only in timings and in the gz/xz size lines.
+- A fresh sandboxed oracle rerun (`oracle_sb/`, `/usr/bin/python3` 3.9.6, baseline `hmap_affine`, the primary checkout's oracle scripts with path rewrites only, identical after rewriting to round 2's sandbox) reproduced all eleven files byte for byte. They also equal the Rust files. Its `deliver.txt` differs from the archive only in timings and in the gz/xz size lines.
 - Independent checks on the Rust outputs (`checks/`):
   - `hmap_affine --exposure --c-step 1 --g-cuts rep512.bounds` (HEAD, `security-tools`) reports 3,000 born values and **128 visible** (4.3 %, all t*=1). This is the exact floor, and the TSVs are identical to the run's and the oracle's.
   - `verify_zero_slice C rep512.mpmct1 128 512 <random seed>` and the same check on `packed_G512.mpmct1` both PASS.
@@ -1894,13 +1894,15 @@ Revision 1's open items "source size" and "where the seed values live" are resol
 
 ## 14. Documentation to update (P9)
 
+The list as planned at P9 (2026-10-09). The reference has since been revised for the six-stage pipeline; the historic items below (the 2026-10-08 re-repair of the replicates, the anchor result, the HA provenance) stay in this document's §2.1 and §12 as the port's parity basis and belong, as history of the method, to `docs/local_mixing_history.md`, not to the reference's current sections.
+
 - `docs/TDP_PIPELINE_REFERENCE.md` (then `TDP_FOUR_STAGE_PIPELINE.md`; since 2026-10-12 its §4 is §6a, §5 is §7 and §6 is §8):
-  - §4.5 and line 171: one canonical `order_repair.py`;
-  - §4.7: all 8 replicates re-repaired, and the anchor result;
+  - §4.5 and line 171: one `order_repair.py`, the patched version;
+  - §4.7: the parity targets (the re-repaired replicates) and the anchor result;
   - §4.9 and §5.7: port status, linking here;
   - §6.9: HA provenance result;
   - §6.10 and §6.12: decisions taken;
-  - Appendix A: gaps closed by D1-D18.
+  - Appendix A: gaps closed by D1-D18 (the appendix has since been removed from the reference; its summary is in `docs/local_mixing_history.md`, October 8, 2026).
 - `docs/tdp_pipeline.md`:
   - quick start for stages 1-4;
   - config v2 (presets, schedule, size table, seeds format 2, `[packing]`);
@@ -1957,9 +1959,9 @@ Hashes of the source C, `tdp.mpmct1` and `s3.mpmct1` are intentionally not liste
 | vL128a | `e987ce0407b5160ff0359f08d4480ead39c63625b2c97b1235d6728afdb8131f` | `9ed0c259af91a4cd6c1a2bf882c86804409a6cc9b5a13d3cfc9c75a649895f99` | `aa2d8845db0be1c367c2e345334f1b9a2792695b726c73950990076ae437b11e` |
 | vL128b | `6ed654388b6e52951eb0165c536c5a119e137eb08746daf4b26cb51b4abf2b1a` | `3150c3a4d8fc3abbc6c4c86bc358793a4c15fda95c1c92acfe3ef1284697dfa8` | `710baf59423c7f2a5ab2cb84d24d432f206c334c6ec39b7e4bebda2edc6bf68c` |
 
-The `rep512.*` and `deliverable.bin` files are the Oct 8 re-repairs made with the canonical `order_repair.py`; the superseded versions are in `rep512_v1/`. None of the eight `.bounds` files contains a duplicate.
+The `rep512.*` and `deliverable.bin` files are the repairs of 2026-10-08 made with the patched `order_repair.py` (the version the port implements); the superseded earlier repairs are in `rep512_v1/`. None of the eight `.bounds` files contains a duplicate.
 
-Archive-era `hmap_affine` (main checkout, mtime 2026-10-07 18:54:28): `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3`.
+Archive-era `hmap_affine` (the primary checkout's build, mtime 2026-10-07 18:54:28): `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3`.
 
 ## Appendix C. Review issues (revision 1) and resolutions
 
@@ -2072,7 +2074,7 @@ Every metric is inside the §5 range except L2 (1.0 % below) and M2 (0.01 % belo
 | driver total | 4,670 s (CPU 3,016 s; peak RSS 7.1 GB, the mixer) |
 | independent checks (`checks.sh`; oracle link census 17 s, oracle serializer 119 s) | ≈ 150 s |
 
-**End-to-end managed run, round 4, n=64 L8 (2026-10-10, binaries built from `a525f894` = review fixes round 3, clean tree; outputs `port_runs/e2e64_r4/`).** `tdp_gen` with the same minimal config as rounds 2 and 3: `source.wires = 64`, the run and build directories and `database.regular_dir` (`frozen_m1_m11`). Every other setting is the managed default. The dry run (`dryrun.out`) and manifest show preset L8, schedule `validated` (profile 2,2,2,2,2, moves int(2·2·|G|·1.3)), packing `default` (G = 512, 512/24576/3000, split budget 65,536, cpython39 caps), `pinned_recipe=val_chain-L8-20261007`, store fingerprint `fd1983677e4d5b74267d3802c9c34642`, `seed_source=random`. Before the run, `tests/shell/tdp_defaults.bash` with `LOCAL_MIXING_BIN` set passed (`tdp_defaults.out`): the Rust driver's gen argv, mixer argv, recipe environment, allow-list and stage-4 call are identical to the `val_chain.sh` transcripts for d64L8, d64A and d128. The only difference between the worktree `val_chain.sh` and the copy in the main checkout's `runs/ncdb_ab_20261001/waist/` is the retired `--p-comp 1.0 --p-any 0.1` (STAGE2_LINKABILITY §6). The stage-4 scripts (`window_pack3.py`, `repair.sh`, `order_repair.py`, `merge_bounds2.py`, `anf_split2.py`, `anf_dump_eval.py`, `link_census.py`, `verify_equiv.py`) are identical to that copy. Seeds are fresh CSPRNG draws in the private `run/SEEDS` (mode 0600). The zero-slice seed is in the private `checks/SEEDS.checks`. None of the four values occurs in any log, recipe, manifest or report. The run started first time under `caffeinate -ims`. The driver exited 0 with `status=ok`.
+**End-to-end managed run, round 4, n=64 L8 (2026-10-10, binaries built from `a525f894` = review fixes round 3, clean tree; outputs `port_runs/e2e64_r4/`).** `tdp_gen` with the same minimal config as rounds 2 and 3: `source.wires = 64`, the run and build directories and `database.regular_dir` (`frozen_m1_m11`). Every other setting is the managed default. The dry run (`dryrun.out`) and manifest show preset L8, schedule `validated` (profile 2,2,2,2,2, moves int(2·2·|G|·1.3)), packing `default` (G = 512, 512/24576/3000, split budget 65,536, cpython39 caps), `pinned_recipe=val_chain-L8-20261007`, store fingerprint `fd1983677e4d5b74267d3802c9c34642`, `seed_source=random`. Before the run, `tests/shell/tdp_defaults.bash` with `LOCAL_MIXING_BIN` set passed (`tdp_defaults.out`): the Rust driver's gen argv, mixer argv, recipe environment, allow-list and stage-4 call are identical to the `val_chain.sh` transcripts for d64L8, d64A and d128. The only difference between the tracked `val_chain.sh` (`scripts/windowed_delivery/waist/`) and the run-tree copy in `runs/ncdb_ab_20261001/waist/` is the inert `--p-comp 1.0 --p-any 0.1` that the tracked copy omits (STAGE2_LINKABILITY §6). The stage-4 scripts (`window_pack3.py`, `repair.sh`, `order_repair.py`, `merge_bounds2.py`, `anf_split2.py`, `anf_dump_eval.py`, `link_census.py`, `verify_equiv.py`) are identical to that copy. Seeds are fresh CSPRNG draws in the private `run/SEEDS` (mode 0600). The zero-slice seed is in the private `checks/SEEDS.checks`. None of the four values occurs in any log, recipe, manifest or report. The run started first time under `caffeinate -ims`. The driver exited 0 with `status=ok`.
 
 - Stages 1+2: 777,752 gates (sandwich 2,832), with 109,347 chained brackets. Forward and reverse verification PASS (256 samples each). The span check is 0 at all 12,154 cuts.
 - Stage 3: `--moves 4044310` with `FROZEN_FILTER=1` (auto). The chain stopped on the move budget after 1,490.1 s. Output: 1,595,222 gates.
@@ -2133,7 +2135,7 @@ The C-view, the equivalence and zero-slice checks, and the window budget are exa
 | xz -9 | 9.55 MB (9,546,172 B) | 9.62 MB | 9.62 MB | 9.50–9.62 MB |
 | eval, ANF form (Python, 1,024 lanes) | 1.98 ms/input | 1.96 | 1.94 | 1.83–1.99 |
 
-Every metric is inside the §5 range except M2 (0.2 % above) and anchors (0.4 % below), both well within the 1–2 % replicate spread §5 reports. This closes acceptance round 4: with binaries built from `a525f894`, the Rust defaults reproduce every oracle file on the four archived runs (vA64a, vL64a, vA128a, vL128a), and fresh managed runs at both scales are at the exact floor with the oracle's census and serializer agreeing byte for byte on the Rust outputs.
+Every metric is inside the §5 range except M2 (0.2 % above) and anchors (0.4 % below), both well within the 1–2 % replicate spread §5 reports. This completed acceptance round 4 of the port (2026-10-10): with binaries built from `a525f894`, the Rust defaults reproduce every oracle file on the four archived runs (vA64a, vL64a, vA128a, vL128a), and fresh managed four-stage runs at both scales are at the exact floor with the oracle's census and serializer agreeing byte for byte on the Rust outputs.
 
 | e2e128_r4 wall time | wall |
 |---|---|

@@ -1,10 +1,9 @@
 # Stage 2 Redesign and Linkable Exposure
 
-*2026-10-07. Branch `ran/stage2-windowed-delivery` (carried forward on the
-stacked branches up to `ran/seven-stage`). Every number below is
+*2026-10-07; on `main` (2026-10-12). Every number below is
 recorded in `docs/notes/ncdb_ab_20261001_RESULTS.md` (lab notebook) and was
-produced by the prototypes in `scripts/windowed_delivery/`. Validation
-replicates: §5.*
+produced by the prototypes in `scripts/windowed_delivery/`. Replicate
+results: §5.*
 
 ---
 
@@ -24,19 +23,28 @@ replicates: §5.*
 | 5. Crossing | the directional crossing walk under a size thermostat | `circuit_mixer --resume split.state --target-size …` |
 | 6. Delivery | packing (windowed ANF delivery: pack, repair, emit), then unpacking with lattice refinement | `tdp_packing run`, `tdp_unpacking run --refine` (`src/stages/packing/`, `src/stages/unpacking/`; Python oracle `scripts/windowed_delivery`) |
 
-The curated DB and the former stage 6 (fcompress) are historic. The split
-stage and the crossing walk, retired with them on 2026-10-07, were revived
-on 2026-10-11 as stages 4 and 5 of the default chain
-(`docs/notes/stage45_revival_20261011.md`); the four-stage chain validated
-here is `run.skip_stages = [4, 5]` with `delivery.anf_only = true` (see
-`docs/ANF_WINDOW_DELIVERY.md` §3 for the 2026-10-07 decision).
+The four-stage chain measured here is `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true`; stages 4 and 5 joined the default chain on
+2026-10-11 (`docs/notes/stage45_revival_20261011.md`). History of the stage
+list: `docs/local_mixing_history.md`.
 
 ## 2. What the adversary sees, and what we measure
 
-The deliverable is a sequence of ANF windows. An adversary sees the full wire
-state at every window boundary (and the inputs), not the gates inside a
-window. All metrics below are computed on the **boundary lattice** of the
-final artifact, exactly (no sampling).
+The adversary holds exactly the shipped file: the refined lattice of windows
+and, for each window, the ANF of the permutation it applies. Nothing else
+ships: not C, not the sandwich or the masked circuit of stages 1-2, not the
+mixed, split or crossed circuits of stages 3-5, not the packer's gate order,
+not the resynthesized circuit. From the ANFs the adversary can derive the
+wire state at every window boundary (on inputs of its choice), compose
+adjacent windows into wider ones, and resynthesize any window or merged
+window into a circuit of its own; it cannot see how the shipped function was
+spelled inside a window. The metrics below are the boundary metrics: they
+are computed at every cut of the **boundary lattice** of the final artifact
+(no cut sampling). The merged-window resynthesis adversary is measured
+separately: 244 of 936 interior C values at W=2000 on the n=64 crossing
+output (241 with 10× the time), 0 for the raw circuit at any cut; stages 4
+and 5 do not close it (`docs/notes/stubborn_windows_20261012.md`,
+`docs/notes/stage45_revival_20261011.md`).
 
 **C-view (hiding C).** For every value computed by a gate of C, the smallest
 number t\* of boundary wires whose XOR (plus a constant) equals it exactly, at
@@ -129,10 +137,11 @@ cancellation removes only ~4% of linkable values.
 
 ## 4. Results
 
-Recommended pipeline (the four-stage chain), packing = pack at G = 512 +
-repair (now the first sub-step of stage 6). A = no chains;
-L8 = bounded chains. All rows: C-view at the exact floor, no window over
-65,536 monomials, spot checks and functional equivalence pass.
+The four-stage chain (today `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true`), packing = pack at G = 512 + the order repair
+that every packing run includes (now the first sub-step of stage 6). A = no
+chains; L8 = bounded chains. All rows: C-view at the exact floor, no window
+over 65,536 monomials, spot checks and functional equivalence pass.
 
 | | exposed | linkable | sightings | linkable froth | anchors | size |
 |---|---|---|---|---|---|---|
@@ -159,16 +168,19 @@ Levers tested and dropped (n=64, G=512 unless noted):
 | just-in-time drains | celebrities unchanged; exposure 16 → 44% |
 | boundary redraw (post hoc) | impossible: celebrity liveness ~110 at every cut |
 
-## 5. Validation (replicates)
+## 5. Replicate results
 
 Three seeds per configuration per scale (the runs in §4 plus two new seeds
 each), every one run end to end with `scripts/windowed_delivery/waist/val_chain.sh`
-(gen → mix → pack G=512 → repair → serialize). All twelve: forward and reverse
+(gen → mix → pack G=512 → repair → serialize; the reference driver of the
+four-stage chain, today a parity tool). In all twelve: forward and reverse
 verification pass; the repaired circuit is functionally equivalent to the mixed
 one; no window exceeds 65,536 monomials; the C-view is at the exact floor; the
 span check is zero at every sampled stage-2 cut; and the end-to-end check
 `verify_zero_slice` (C(x) against the final circuit's payload wires, 512 random
-honest-slice inputs) passes.
+honest-slice inputs) passes. These are the reference numbers for the stage-2
+linkability of the four-stage chain; the six-stage chain has no replicate
+figures yet (`docs/TDP_PIPELINE_REFERENCE.md`, status block).
 
 | | exposed | linkable | sightings | linkable froth | anchors | `deliverable.bin` | xz | eval (ms/input) |
 |---|---|---|---|---|---|---|---|---|
@@ -183,10 +195,11 @@ linkable −12% / −13%, sightings −20% / −25%, exposed −24% / −36%, an
 serialized size +20% / 0% (xz +9% / −2%). Evaluation timings are from the
 Python reference evaluator (1,024-lane batched, ANF form).
 
-The validation found one bug in the prototype repair: the slide step
-re-located the breaker after moving the completer and picked up the moved gate.
-It is fixed in `order_repair.py`; all replicates were re-repaired with the
-fixed code (identical results except vL128a, which now reaches the floor).
+The figures are those of the patched `order_repair.py` (the slide step
+locates the breaker before moving the completer), the version the Rust
+packer ports (`stages::packing::repair`); the unpatched slide picked up the
+moved gate, and the difference shows only on vL128a, which reaches the floor
+with the patched version.
 
 ## 6. Recommended configuration
 
@@ -216,11 +229,11 @@ EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8
 Stage 3: `circuit_mixer --tdp --db-mixing --profile 2,2,2,2,2 --moves
 2·2·|G|·1.3 --p-db 1.0 --db-max-degree 9
 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048
---no-local-verify` (regular frozen store). The validation runs also passed
+--no-local-verify` (regular frozen store). The replicate runs (§5) also passed
 `--p-comp 1.0 --p-any 0.1`; those flags fed only the crossing walk's slot-3
 thermostat, which never fires at `--p-db 1.0`, and the validated schedule
-omits them (the output is byte-identical without them); the revived stages 4
-and 5 pass `--p-comp 0 --p-any 0`.
+omits them (the output is byte-identical without them); stages 4 and 5 pass
+`--p-comp 0 --p-any 0`.
 
 Packing (stage 6, first sub-step; stage 4 of the four-stage chain):
 `window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`

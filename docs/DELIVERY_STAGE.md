@@ -1,19 +1,21 @@
 # Stage 6, delivery: packing + unpacking with lattice refinement
 
 Status: design 2026-10-12 (RC), implemented in Python (`scripts/windowed_delivery/waist/deliver.py`,
-the reference) and in Rust (`tdp_unpacking run --refine`, driven by stage 6 of `tdp_gen`).
-Supersedes the separate stages 6 (packing) and 7 (unpacking) of `docs/STAGE7_UNPACKING.md`.
+the reference) and in Rust (`tdp_unpacking run --refine`, driven by stage 6 of `tdp_gen`); on `main`
+since 2026-10-12. Stage 6 of the six-stage pipeline (`docs/tdp_pipeline.md`,
+`docs/TDP_PIPELINE_REFERENCE.md` §6a-§6b). Supersedes the separate packing and unpacking stages of
+`docs/STAGE7_UNPACKING.md`, which still documents the unpacking kernel, its CLI and its outputs.
 
 ## 1. Decision
 
-RC, 2026-10-12: stages 6 and 7 become one stage. The stage packs the mixed circuit into ANF
+RC, 2026-10-12: packing and unpacking are one stage, stage 6 (delivery). The stage packs the mixed circuit into ANF
 windows, unpacks every window by resynthesis, and treats a window that does not resynthesize as a
 packing defect: the window is cut in two, both halves are repacked and unpacked separately,
 recursively. The size of a resynthesized window is irrelevant ("windows that unpack badly are
 completely fine"). An optional flag stops the stage after the ANFs are emitted (`anf_only`).
 
-Measured basis (`docs/notes/stubborn_windows_20261012.md`): on the n=64 seven-stage run, 157 of
-10,366 windows failed to unpack in 30 s; they are the windows whose ANF did not cancel (mean
+Measured basis (`docs/notes/stubborn_windows_20261012.md`): on the n=64 full-chain run (stages 1-5,
+then packing), 157 of 10,366 windows failed to unpack in 30 s; they are the windows whose ANF did not cancel (mean
 monomial degree 6.2 vs 2.6, the density in the last quarter: an uncancelled crossing-stage
 identity), not a gate-structure or position class. Ten times the time budget rescues 15 of 102.
 Bisection converges by ~90% per round and terminates: halves 302/314, quarters 21/24, eighths
@@ -55,13 +57,26 @@ Outputs (in the stage directory):
 
 | file | content |
 |---|---|
-| `deliverable.tdp4` | D_final, the container on the refined lattice; `bounds.final` its bounds (one cut per line) |
-| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the `tdp_unpacking` canonical order); header = state width |
+| `deliverable.tdp4` | D_final, the container on the refined lattice: **the shipped file**; `bounds.final` its bounds (one cut per line; private) |
+| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the `tdp_unpacking` canonical order); header = state width. The circuit a recipient obtains from the deliverable; private |
 | `windows.tsv` | one row per window of the final lattice: `idx lo hi round orig_gates syn_gates status synth_status seconds monomials changed_wires input_vars max_degree` |
 | `rounds.tsv` | per round: pending, converged, failed, split, seconds (header `round pending converged failed split seconds`). Unclean cuts are not a column: the per-round count is in the log's round line and the total is `unclean_cuts` in the report |
 | `delivery.report` (Python) / `unpacking.report` (Rust: the `tdp_unpacking` report keys of `docs/STAGE7_UNPACKING.md` §4 plus these) | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `over_budget`, `verbatim`, `gates_packed` (Rust: `gates_in`), `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
 
-With `anf_only` the stage stops after D_0 (= the packer's deliverable) and writes no circuit.
+With `anf_only` the stage stops after D_0 (= the packer's deliverable, `packing/deliverable.tdp4`, then the
+stage's output; with `run.skip_stages = [4, 5]` this is the validated four-stage chain) and writes no circuit.
+
+What ships is `deliverable.tdp4` alone. The adversary holds exactly that file, the refined lattice of windows
+and, for each window, the ANF of the permutation it applies, and nothing else: not C, not the circuits of
+stages 1-5, not `rep<G>.mpmct1` or the packer's gate order, not `unpacked.mpmct1`. From the ANFs it can derive
+the wire state at every window boundary on inputs of its choice, compose adjacent windows into wider ones and
+resynthesize any window or merged window into a circuit of its own; it cannot see how the shipped function
+was spelled inside a window (`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief"). Measured: merging and
+resynthesizing uniform W=2000 windows of the n=64 crossing output recovers 244 of 936 interior C values (241
+with a 10× time budget), while the raw circuit exposes none at any cut, and stages 4 and 5 do not close this
+leak; that is why every cut this loop adds is exposure-aware and re-scanned (`check.new_cuts`, §4;
+`docs/notes/stubborn_windows_20261012.md`, `docs/notes/stage45_revival_20261011.md`). The reports
+`delivery.report` / `unpacking.report` hold counts and parameters only and may be published.
 
 Checks before the outputs are committed (any failure is fatal, nothing renamed):
 
@@ -125,4 +140,4 @@ canon` or the Python fallback), (5) runs the checks. It is the oracle for the Ru
   refined lattice is `check.new_cuts`: every added cut was scanned clean at choice time or counted
   in `unclean_cuts` — a per-cut C-view result does not depend on the lattice, so the packer's
   final scan of the old cuts plus the choice-time scan of the new ones is exactly `check-final`'s
-  scan of the refined lattice, without a second full scan. (2) Over-budget halves: both implementations emit the half, skip its synthesis and split it again next round; the Python reference checks `final_budget` on every new window of D_final, the Rust refuses at max_rounds. Neither case occurs on n8_L8 (`over_budget=0` on both sides). 
+  scan of the refined lattice, without a second full scan. (2) Over-budget halves: both implementations emit the half, skip its synthesis and split it again next round; the Python reference checks `final_budget` on every new window of D_final, the Rust refuses at max_rounds. Neither case occurs on n8_L8 (`over_budget=0` on both sides).

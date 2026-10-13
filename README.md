@@ -20,10 +20,10 @@ binary `tdp_packing`; the Python prototypes under
 The unpacking sub-step is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
 [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the stages; the
 full reference for all six stages is
-[TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md). (The curated
-database and the old `fcompress` stage are historic: branch
-`ran/archive/curated-and-postmix`; see
-[the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
+[TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md). Everything
+described here is on `main` (2026-10-12); retired components and the
+earlier pipelines are recorded in
+[Local Mixing History](docs/local_mixing_history.md).
 
 ## Setup
 
@@ -58,8 +58,7 @@ lookup_miss_filter = "auto"
 allow_no_database_for_tests = false
 ```
 
-Stage 3 requires the regular frozen store. (The former curated store is
-historic; it lives on the branch `ran/archive/curated-and-postmix`.) A
+Stage 3 requires the regular frozen store. A
 frozen directory contains `tables.bin` and all 256 `shard_00.frz` through
 `shard_ff.frz` files. `filters.bin` supplies the optional miss filter. See
 [Frozen Database](docs/frozen_database.md) for the format and build tools.
@@ -78,10 +77,17 @@ the report-only stage-2 span check, and writes a timestamped directory under
 `runs/`. Database files are separate
 from the source checkout; building the project does not generate them.
 
-By default we generate a source circuit $C$ on 128 wires with 3,000 gates
-(the validated sizes are 1,000 gates at 64 wires and 3,000 at 128; other
-wire counts need `source.gates` or `source.gates_rule = "formula"`, i.e.
-$\mathrm{round}(n\log_2(n)^2)$). To use your own G57 source, edit `[source]`:
+By default we generate a secret source circuit $C$ on 128 wires with 3,000
+gates (the validated sizes are 1,000 gates at 64 wires and 3,000 at 128;
+other wire counts need `source.gates` or `source.gates_rule = "formula"`,
+i.e. $\mathrm{round}(n\log_2(n)^2)$). In general $C$ may use any reversible
+gate with up to two controls (NOT, CNOT, Toffoli with either control
+polarity); the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which
+expresses that class) through `source.path`, or generates a random $C$.
+What the pipeline then mixes is not $C$ itself but a specific circuit
+structure built around it: the sliced sandwich on $2n$ wires (stage 1) and
+the embedded-masking construction on $4n$ wires (stage 2). To supply your
+own $C$ in the g57 form, edit `[source]`:
 
 ```toml
 [source]
@@ -113,7 +119,9 @@ The settings we usually change are:
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
 
-Optional leakage repair is configured under `[leakage_repair]`. For a plumbing
+The optional post-stage-3 leakage audit and DB repair (off by default) is
+configured under `[leakage_repair]`; it is separate from the packer's order
+repair, which every stage-6 run performs. For a plumbing
 test without a database, clear the DB paths and set
 `database.allow_no_database_for_tests=true`; this disables DB replacements.
 
@@ -128,6 +136,11 @@ test without a database, clear the DB paths and set
 | 5. Crossing | `crossing.mpmct1` |
 | 6. Delivery | `packing/deliverable.tdp4` (the packer's lattice), `packing/packing.report` and the private intermediates in `packing/`; `unpacking/deliverable.tdp4` (**the shipped file**), `unpacking/unpacked.mpmct1` (the resynthesized circuit, canonical order), `unpacking/unpacking.report`; under `delivery.anf_only` the stage ends at `packing/deliverable.tdp4` |
 
+Only `unpacking/deliverable.tdp4` ships: the refined lattice of windows and,
+for each window, the ANF of the permutation it applies. Nothing else ships
+(not $C$, not the stage-1 to stage-5 circuits, not the packer's gate order,
+not the resynthesized circuit); the two reports may be published, and every
+other file in the run directory is private.
 `tdp_gen.log` records overall progress; `stage12.log`, `stage3.log`,
 `stage4.log`, `stage5.log` and `stage6.log` (both delivery sub-steps) hold
 stage output. The
@@ -285,9 +298,8 @@ construction, shuffling, mixing stages, optimizations, and attacks. The
 research narrative and historical experiments are preserved in
 [Local Mixing History](docs/local_mixing_history.md)
 ([PDF, stale](docs/local_mixing_history.pdf)). The committed PDFs were built
-on 2026-09-16, before the four-stage cleanup, and still describe the
-pre-cleanup pipeline (the curated database, the old post-mixing stages and
-`fcompress`), not today's six stages; the Markdown files are authoritative
+on 2026-09-16 and describe the pipeline of that date, not today's six
+stages; the Markdown files are authoritative
 until the PDFs are rebuilt. Install Pandoc, XeLaTeX and
 `rsvg-convert` (the `librsvg2-bin` package on Debian/Ubuntu), then rebuild both
 PDFs with the checked-in helper:

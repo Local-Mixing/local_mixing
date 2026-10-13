@@ -11,7 +11,9 @@
 # ANF alone; a window that does not resynthesize is cut in two and both halves
 # repacked and unpacked; canonical gate order). Every stage after the first is
 # optional (run.skip_stages); the default runs all six and ends with
-# unpacking/deliverable.tdp4 (the refined lattice) + unpacking/unpacked.mpmct1.
+# unpacking/deliverable.tdp4 (the shipped file: the refined lattice of
+# windows, each as the ANF of the permutation it applies; nothing else ships)
+# + unpacking/unpacked.mpmct1 (private).
 #
 # Defaults of stages 1-3 and the packer reproduce val_chain.sh CONFIG=L8 as
 # run for vL64a/b, vL128a/b (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset
@@ -34,11 +36,17 @@ build_binaries = true  # bool; build gen_sandwich_gadget, circuit_mixer, tdp_pac
 # threads = 8  # integer 1..1024; pins RAYON_NUM_THREADS and the --threads of both stage-6 binaries
 
 [source]
+# The secret circuit C. In general C may use any reversible gate with up to
+# two controls (NOT, CNOT, Toffoli with either control polarity); the engine
+# takes it in the g57 form (a ^= x OR NOT y, which expresses that class)
+# through `path`, or generates a random C. The pipeline mixes a circuit
+# structure built around C (the sliced sandwich, then the embedded-masking
+# construction), not C itself.
 wires = 128  # integer 3..4095 (stage 6: at most 256); logical wires of C
 # gates = 3000  # integer; default: the validated table (64 -> 1000, 128 -> 3000);
 #               other wire counts need gates or gates_rule = "formula"
 # gates_rule = "formula"  # "validated" (default) or "formula" = round(n*log2(n)^2), UNVALIDATED
-# path = "circuits/source.g57"  # string; load nonempty G57 C (a CSPRNG-generated C for production)
+# path = "circuits/source.g57"  # string; load a nonempty C in the g57 form (a CSPRNG-generated C for production)
 
 [database]
 # regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
@@ -74,7 +82,8 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 # Stage 4 (splitting) has no settings: it runs the archive-era flags to exhaustion.
 
 [packing]
-# Stage 6, the packing sub-step (tdp_packing run):
+# Stage 6, the packing sub-step (tdp_packing run: pack, the order repair,
+# which runs in every packing run and is not optional, serialization):
 # window_gates = 512  interval_cap = 512  monomial_budget = 24576  span_cap = 3000
 # split_budget = 65536  fix_iterations = 4  fallback_iterations = 4
 # anf_cap_semantics = "cpython39"  # "canonical" deviates from the oracle
@@ -102,6 +111,8 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 # threads = 5  # integer 1..1024; requires pieces>1 or target_piece_gates
 
 [leakage_repair]
+# The separate post-stage-3 leakage audit and DB repair, off by default
+# (db_mixing.leakage_repair.txt); not the packer's order repair, which always runs.
 enabled = false  # bool; sampled gate-wise audit and equivalent DB repair after stage 3
 # seed = 20803  # nonnegative TOML integer
 # reference = "circuits/reference.mpmct1"  # string; default is the stage-3 input

@@ -9,6 +9,15 @@ construction diagrams of the research document. The chronological experiments
 and superseded constructions are collected separately in
 [Local Mixing History](local_mixing_history.md).
 
+The input is a secret reversible circuit $C$ on $n$ wires. In general $C$
+may use any reversible gate with up to two controls (NOT, CNOT, Toffoli
+with either control polarity); the engine takes it in the g57 form
+($a\mathrel{\oplus{=}}x\vee\neg y$, which expresses that class) through
+`source.path`, or generates a random $C$. What the pipeline then mixes is
+not $C$ itself but a specific circuit structure built around it: the sliced
+sandwich on $2n$ wires (stage 1) and the embedded-masking construction on
+$4n$ wires (stage 2), to which stages 3-6 apply.
+
 The method has six stages: it constructs a sliced sandwich (1), applies
 embedded masking (2), performs database replacements with the regular
 frozen store (3), splits every complemented r57 gate into plain
@@ -18,11 +27,8 @@ lattice refinement, in which every window is resynthesized from its ANF
 alone and a window that does not resynthesize is cut in two, repacked and
 unpacked again. Every stage after the first is optional
 (`run.skip_stages`); `run.skip_stages = [4, 5]` with
-`delivery.anf_only = true` is the validated four-stage chain. (The curated
-store and the former `fcompress` stage are historic; see
-[Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md). The
-split stage and the crossing walk listed there were revived on October 11,
-2026 as stages 4 and 5.) Carrier migration, the shuffling transform, is a
+`delivery.anf_only = true` is the validated four-stage chain. Carrier
+migration, the shuffling transform, is a
 part of embedded masking and is on in the default stage-2 preset `L8`
 (`shuffling_segments = 8`, persistent migration with
 `shuffling_return_home = false`, up-front masking, a band seed that avoids
@@ -30,10 +36,9 @@ the first-layer control pairs, bounded bracket chains with `chain = 2` and
 `chain_len = 8`); preset `A` is the same without the chains, and only
 `preprocessing.preset = "custom"` with `shuffling_segments = 0` turns it
 off. Enabling it does not select another masking mode. This text describes
-the implementation as of October 12, 2026. The stage list was reduced to
-four on October 8, 2026 (curated store and post-mixing stages retired); the
-split and crossing stages were revived on October 11; packing and unpacking
-became the single delivery stage on October 12.
+the implementation on `main` as of October 12, 2026; earlier stage lists
+and the retired components are recorded in the
+[history](local_mixing_history.md).
 
 The goal is to change the internal representation of a computation while
 preserving its required behavior. The algebraic identities below explain
@@ -66,18 +71,40 @@ $\oplus$ denotes XOR, and products of bits denote AND, with arithmetic over
 $GF(2)$. The [construction and its contract](#current-mixing-method) below
 specifies the public input slice and answer block.
 
-The public object is a reversible gate list. An observer can evaluate it on
-chosen inputs, record its intermediate values, and run transformations that
-depend only on that circuit. Some diagnostics also know a reference source
-circuit and use it to label the logical values they try to recover. A
-source-dependent recovery is evidence of a relation; it is not automatically
-a blind recovery of an unknown source circuit or a preimage witness.
+**What the adversary sees.** Exactly the shipped file
+(`unpacking/deliverable.tdp4`): the refined lattice of windows and, for
+each window, the ANF of the permutation it applies. Nothing else ships: not
+$C$, not the sandwich or the masked circuit of stages 1-2, not the mixed,
+split or crossed circuits of stages 3-5, not the packer's gate order, not
+the resynthesized circuit. From the ANFs the adversary can derive the wire
+state at every window boundary (on inputs of its choice), compose adjacent
+windows into wider ones, and resynthesize any window or merged window into
+a circuit of its own; it cannot see how the shipped function was spelled
+inside a window. Measured: merging and resynthesizing uniform $W=2000$
+windows of the $n=64$ crossing output recovers 244 of 936 interior $C$
+values (241 with a tenfold time budget), while the raw circuit exposes none
+at any cut; stages 4 and 5 do not close this leak; the refinement's
+exposure-aware cuts are chosen so that no interior $C$ value is affine at a
+new cut, and each new cut is re-scanned
+([stubborn windows](notes/stubborn_windows_20261012.md),
+[the stage 4 and 5 revival](notes/stage45_revival_20261011.md)).
+
+The diagnostics below run on a reversible gate list: one of the private
+intermediate circuits, to measure what each stage contributes, or a circuit
+the adversary has resynthesized from the shipped ANFs. Given a gate list, an
+observer can evaluate it on chosen inputs, record its intermediate values,
+and run transformations that depend only on that circuit; on the shipped
+file itself the observable states are those at the window boundaries. Some
+diagnostics also know a reference source circuit and use it to label the
+logical values they try to recover. A source-dependent recovery is evidence
+of a relation; it is not automatically a blind recovery of an unknown source
+circuit or a preimage witness.
 
 These observation models must be distinguished:
 
 | Experiment | Inputs and observations | What success means |
 |---|---|---|
-| Full TDP preimage | Free $x$, fixed zero auxiliaries, specified answer block; whole published circuit available | Independently verified $x$ producing the target. |
+| Full TDP preimage | Free $x$, fixed zero auxiliaries, specified answer block; the shipped window ANFs available, and with them any circuit resynthesized from them | Independently verified $x$ producing the target. |
 | State reconstruction | Reference logical values and all physical wires at one chosen prefix | A fixed predictor recovers those values on held-out inputs. |
 | Whole-trace reconstruction | Reference logical values, initial wires, and selected or complete gate traces | A fixed relation across times predicts or reconstructs them. |
 | Isolated gadget gauntlet | Explicit encoded-I/O and auxiliary-input policy; source labels available | Detection by the stated attack family on that controlled construction. |
@@ -307,8 +334,10 @@ and selected product wires bound what a clean plate can exclude.
 A state heatmap fits a separate predictor at each prefix. It does not let
 that predictor combine the wire values seen at different moments.
 
-An observer of our circuit does not have this restriction. They can run the
-published gate list and keep the intermediate values. Thus, we should allow
+An observer who holds a gate list does not have this restriction. They can
+run it and keep the intermediate values (on the shipped file the ANFs give
+the states at the window boundaries; a gate list inside a window is one the
+observer has resynthesized itself). Thus, we should allow
 the correlator to use observations from across the entire circuit. Suppose
 $Z_w^{(j)}(x)$ is the value of physical wire $w$ after gate $j$, and $v(x)$ is
 one of the source circuit's intermediate values. We now ask whether
@@ -527,7 +556,9 @@ full-pipeline compression ratio is asserted here for that new transform.
 
 ### SAT preimage solving
 
-A reversible gate list is a straight-line Boolean program. The SAT encoder
+A reversible gate list is a straight-line Boolean program; since no gate
+list ships, the solver's input for the shipped file is a circuit the
+adversary has resynthesized from the window ANFs. The SAT encoder
 starts with one variable per input wire, tracks the current variable for each
 wire, and allocates a fresh target variable for each update. Its clauses force
 the new variable to match that gate's truth table. The other wire mappings
@@ -569,7 +600,7 @@ gate does not flip its target, so we instead enforce $o = a$. This encodes the t
 implications between $a$ and $o$, but the other assignments still leave
 ternary clauses.
 
-The published circuits also contain gates from the [mixed-polarity gate
+The circuits being encoded also contain gates from the [mixed-polarity gate
 vocabulary](#beyond-r57). Such a gate has the form
 $\texttt{fires}(x) = \texttt{comp} \oplus \bigwedge_i \texttt{lit}_i(x)$ with
 $x[\texttt{target}] \mathrel{{\oplus}{=}} \texttt{fires}(x)$, for $k$ mixed-polarity
@@ -614,14 +645,12 @@ algorithm will fail.
 
 ### Compression and demixing
 
-A final fragment compressor (`fcompress`, stage 6 of the pipeline retired on
-October 7, 2026) and two demixing probes built on it (`crossing_downhill`,
-`output_cone`) are historic: they
-remain on branch `ran/archive/curated-and-postmix`
-([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)). The attack question they
-asked still applies: a published size is honest only relative to the
-reductions an attacker can compute, and a circuit that resists one compressor
-may still admit another reduction algorithm.
+A published size is honest only relative to the reductions an attacker can
+compute, and a circuit that resists one compressor may still admit another
+reduction algorithm. On the shipped file this question is asked of the
+circuits the adversary resynthesizes from the window ANFs. No compressor or
+demixing probe is part of the current pipeline or its retained tools
+(history: [Local Mixing History](local_mixing_history.md)).
 
 ### What to record for a comparison
 
@@ -642,21 +671,28 @@ construction and available tests do not establish general iO.
 
 ## The construction and its contract
 
-Let $C$ be a reversible source circuit on $n$ wires. The default construction
-publishes a circuit $G$ on $4n$ wires with the public-slice behavior
+Let $C$ be a reversible source circuit on $n$ wires; in general it may use
+any reversible gate with up to two controls (NOT, CNOT, Toffoli with either
+control polarity), and the engine takes it in the g57 form through
+`source.path` or generates a random $C$. The default construction produces
+a reversible permutation $G$ on $4n$ wires with the public-slice behavior
 
 $$
 G(x,0^n,0^{2n})=(\text{junk},C(x),\text{junk}).
 $$
 
 Only $x$ is free at the input, and only the middle $n$ output bits are the
-answer. The circuit remains reversible on every complete $4n$-bit state.
+answer. The permutation is reversible on every complete $4n$-bit state.
 Fixing auxiliary inputs and projecting the outputs are part of the application
-contract; no gate forces an arbitrary input onto that slice.
+contract; no gate forces an arbitrary input onto that slice. What ships is
+not a gate list for $G$ but `unpacking/deliverable.tdp4`: the refined
+lattice of windows and, for each window, the ANF of the permutation it
+applies; composed, the windows compute $G$ (see
+[what the adversary sees](#attacks)).
 
 For a preimage problem, the target is an $n$-bit value $t$ and the required
 witness is an $x$ with $C(x)=t$. Knowing $C$ gives the intended trapdoor:
-reverse its gates on $t$. Knowing the published full output would likewise
+reverse its gates on $t$. Knowing the full $4n$-bit output would likewise
 allow anyone to reverse $G$, but the target does not include its junk outputs.
 This removes an immediate complete-output inversion, not every possible way
 to solve the projected problem.
@@ -681,13 +717,9 @@ C -> sliced sandwich -> embedded masking -> database mixing -> splitting -> cros
 
 Every stage after the first is optional (`run.skip_stages`); a stage reads
 the output of the last stage that ran, and `delivery.anf_only = true` ends
-stage 6 after the packer's deliverable. Of the former post-processing stages
-only compression and packing with `fcompress` (and the curated store) are
-historic; they remain on branch `ran/archive/curated-and-postmix` (see the
-[archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) for what was retired and
-why). Splitting and the crossing walk, retired with them on October 7, 2026,
-were revived on October 11 as stages 4 and 5; windowed packing, now the
-first sub-step of stage 6, replaced `fcompress`.
+stage 6 after the packer's deliverable. Earlier stage lists and the
+components they used are recorded in the
+[history](local_mixing_history.md).
 
 The [pipeline guide](tdp_pipeline.md) contains the complete configuration and
 shell-flag reference. [Gadgetization](gadgetization.md) explains the first two
@@ -706,7 +738,9 @@ an identity on every input.
 
 Throughout, $+$ and $\oplus$ denote XOR for Boolean values; multiplication
 denotes AND. Boolean polynomials use $GF(2)$ arithmetic with $x^2=x$.
-Our source and stored replacement circuits use r57, also written g57:
+The stored replacement circuits use r57, also written g57, and the engine
+takes the source circuit $C$ in the same form (any reversible gate with up
+to two controls can be expressed in it):
 
 $$
 A\mathrel{\oplus{=}}B\vee\neg C
@@ -1093,8 +1127,8 @@ unchanged outputs.
 
 The rainbow table is the logical mapping from a canonical functionality to
 its equivalent circuits. The frozen table is the read-only file format used
-to store that mapping. Stage 3 uses the regular table; the earlier
-[curated table](#curated-table) is historic.
+to store that mapping. Stage 3 uses the regular table (an earlier second
+table is recorded in the [history](local_mixing_history.md#curated-table)).
 
 The regular table is generated by gate count. A circuit with $m$ r57 gates
 touches at most $3m$ wires, and unused external wires do not affect its key.
@@ -1205,29 +1239,13 @@ the filter from the frozen table and check that it recognizes every retained
 key. The benefit depends on the query miss rate, available memory,
 store, hardware, and cache state; it is not a fixed latency guarantee.
 
-<a id="curated-table"></a>
-
-### The curated table (historic)
-
-Earlier recipes kept a second table, the *curated* table, built by
-splitting (approximately) minimal identities: for an identity $I=AB$,
-reversibility gives $A=B^{-1}$, so every prefix/suffix split, cyclic rotation
-and reversal of an identity supplies a structurally different spelling of a
-window's function. Curated lookup used the forward canonical form and was
-consulted ahead of the general table. The curated table and its builders are
-historic: they were removed from the current pipeline and remain on the
-branch `ran/archive/curated-and-postmix`. Ablations found no measurable
-mixing benefit from it. The [archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)
-lists the retired code and the reasons; the
-[history](local_mixing_history.md) records the measurements.
-
 <a id="sliced-sandwich"></a>
 
 ## The sliced sandwich
 
 The public slice fixes the auxiliary inputs in the preimage problem,
 so they are not additional valid choices for a witness. Slicing also stops
-reversal of the published circuit from
+reversal of the shipped permutation from
 immediately giving us $C^{-1}$. If an attacker knows the complete output of an
 ordinary reversible circuit, then they can simply reverse the gate list and
 recover the input. We instead reveal only the output block containing $C(x)$.
@@ -1249,9 +1267,9 @@ A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
 
 We first run $C$ on the first half while interleaving it with a slice block
 $S_1$. We then apply the copy step $N$, consisting of the $n$ CNOTs
-$y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random r57
-circuit $D$ on the first half while interleaving it with another slice block
-$S_2$. We give $D$ the same gate design and gate count as $C$. In the managed
+$y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random
+circuit $D$, drawn in the g57 form, on the first half while interleaving it
+with another slice block $S_2$. We give $D$ the same gate design and gate count as $C$. In the managed
 pipeline $|C| = |D|$ defaults to the validated table, 1,000 gates at $n=64$
 and 3,000 at $n=128$ (`source.gates`); any other width needs an explicit
 `source.gates` or `source.gates_rule = "formula"`, which uses
@@ -1937,13 +1955,10 @@ size, rather than treating one attempt as one whole-circuit pass.
 
 ## Splitting, the crossing walk, and delivery (stages 4-6)
 
-Database mixing is followed by two fragmentation stages, revived from the
-archive on October 11, 2026 and run as `circuit_mixer` modes with the
-archive-era driver's flags
+Database mixing is followed by two fragmentation stages, run as
+`circuit_mixer` modes
 (`src/stages/post-processing/{splitting,crossing}.rs`; the exact rewrite
-identities live in `src/engine/moves/rules.rs`). A third, `fcompress`, is
-historic and remains on branch `ran/archive/curated-and-postmix`
-([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)).
+identities live in `src/engine/moves/rules.rs`).
 
 <a id="fragmentation-splitting"></a>
 
@@ -1972,12 +1987,6 @@ historic and remains on branch `ran/archive/curated-and-postmix`
   `Mixer::run`, the default walk when `p_db < 1`; stage 3's `--p-db 1.0`
   keeps it from firing there. It writes `crossing.mpmct1`.
 
-<a id="fcompress"></a>
-
-- **`fcompress`** (historic) gathered commutable same-target gates, reduced
-  each group's ESOP (and, for small supports, its ANF) and packed each run
-  into one generalized gate (`esop1`).
-
 The fragmentation stages are motivated by gate variety: they remove the
 restriction that every gate has the r57 form, at the cost of wider
 conjunctions. Since the frozen table emits r57 circuits, they follow all
@@ -1988,9 +1997,12 @@ database mixing.
 Stage 6, delivery, is the last stage of the current design; packing is its
 first sub-step and unpacking with lattice refinement its second. Packing
 reorders the mixed circuit along commutations, cuts it into windows and
-publishes each window as its sparse algebraic normal form, so that an
-observer sees wire states only at window boundaries; a commutation-aware
-repair pass then removes the remaining boundary exposures of $C$'s values.
+emits each window as its sparse algebraic normal form, so that the only
+wire states an observer can derive are those at window boundaries; its
+commutation-aware order repair, which runs in every `tdp_packing run` and
+is not optional, then removes the remaining boundary exposures of $C$'s
+values (the separate post-stage-3 leakage audit and database repair,
+`[leakage_repair]`, is the one that is off by default).
 It runs in Rust as `tdp_packing run` (`src/stages/packing/`; design:
 [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md), written when packing was
 stage 4), a bit-exact port of the Python prototypes under
@@ -2017,15 +2029,14 @@ the shipped file) and `unpacking/unpacked.mpmct1`. Contract:
 [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md) (written when unpacking was
 stage 7); Python reference `scripts/windowed_delivery/waist/deliver.py`.
 
-### Packed formats
+### Legacy packed formats
 
-The `esop1` and `anf1` formats store gathered target updates as XORs of
-conjunction terms. The pipeline no longer emits them, but the circuit
-utilities still read them. Packing is a representation change; its groups
-expand into the equivalent controlled-XOR tape. Evaluators must use the
-format's group semantics. A text `mpmct1` gate count, an ESOP group count, and
-a file's byte size are different measurements and should be reported
-separately.
+The circuit utilities still read the `esop1` and `anf1` formats, which
+store gathered target updates as XORs of conjunction terms; no current stage
+emits them. A group expands into the equivalent controlled-XOR tape, and
+evaluators must use the format's group semantics. A text `mpmct1` gate
+count, an ESOP group count, a window count and a file's byte size are
+different measurements and should be reported separately.
 
 <a id="implementation"></a>
 
@@ -2149,9 +2160,10 @@ to `"validated"`, is an error. The main settings and their defaults are:
 | `delivery.time_limit`, `delivery.restarts`, `delivery.beam` | `30`, `16`, `6` | Per-window synthesis wall limit (seconds), restarts and lookahead width. |
 | `delivery.max_rounds` | `16` | Refinement rounds; a window still failing after the last round is emitted verbatim and reported as NOT recommended. |
 | `run.skip_stages` | `[]` | Stages not run, each in `2..6`; `[4, 5]` with `delivery.anf_only = true` is the validated four-stage chain. |
-| `leakage_repair.enabled` | `false` | Optional sampled leakage audit and equivalent DB repair after stage 3. |
+| `leakage_repair.enabled` | `false` | Optional sampled leakage audit and equivalent DB repair after stage 3; distinct from the packer's order repair, which runs in every stage-6 packing run. |
 
-Optional leakage repair is distinct from preprocessing shuffling. It uses a
+Optional leakage repair is distinct from preprocessing shuffling and from
+the packer's order repair (stage 6, always on). It uses a
 reference and sampled gate-wise audit to propose exact database rewrites;
 its sampled detector is not a guarantee that every leak has been removed.
 

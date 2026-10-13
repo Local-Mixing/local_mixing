@@ -1,21 +1,24 @@
 # Stage 7 (unpacking): resynthesis from the delivered ANF windows
 
-> **Superseded by `docs/DELIVERY_STAGE.md` (2026-10-12).** Packing (stage 6) and
-> unpacking (stage 7) are one stage, *delivery*, with a refinement loop: a window
-> that does not resynthesize is cut in two and both halves are re-emitted and
-> unpacked again. The binary, its per-window algorithm, outputs and checks below
-> are unchanged and remain the loop's kernel; the loop itself is `tdp_unpacking
-> run --refine` (§10 here, `docs/DELIVERY_STAGE.md` §2 and §4).
+> **Superseded by `docs/DELIVERY_STAGE.md` (2026-10-12).** Packing and
+> unpacking are one stage, *delivery*, stage 6 of the six-stage pipeline
+> (`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md` §6b); the "stage 7"
+> of this document's title is the numbering it was written under. Delivery adds a
+> refinement loop: a window that does not resynthesize is cut in two and both
+> halves are re-emitted and unpacked again. The binary, its per-window algorithm,
+> outputs and checks below are unchanged and remain the loop's kernel; the loop
+> itself is `tdp_unpacking run --refine` (§10 here, `docs/DELIVERY_STAGE.md` §2
+> and §4).
 
-Status: implemented 2026-10-11, branch `ran/stage7-unpacking` (based on
-`ran/seven-stage` @ 0569792e); `--refine`, `--windows` and `canon` added
-2026-10-12 (`ran/seven-stage`). Owner: RC.
+Status: implemented 2026-10-11 (from the base commit `0569792e`); `--refine`,
+`--windows` and `canon` added 2026-10-12; on `main` since 2026-10-12. Owner: RC.
 
 ## 1. Purpose
 
-Until 2026-10-12 the seven-stage TDP pipeline ended with **packing** (stage 6:
-the windowed ANF deliverable `deliverable.tdp4`) and **unpacking** (stage 7).
-The owner's specification of stage 7:
+Unpacking follows **packing** (the windowed ANF deliverable `deliverable.tdp4`)
+as the second sub-step of stage 6, delivery; it was specified and first built as
+a stage of its own, stage 7, and this document keeps that name. The owner's
+specification:
 
 > unpacking: simply resynthesizes a circuit from each ANF window using a
 > standard ANF synthesization, concatenates all the piecewise circuits,
@@ -26,6 +29,17 @@ Stage 7 is what a recipient of the deliverable does to obtain a circuit again.
 Its output `unpacked.mpmct1` computes exactly the deliverable's function (the
 same state width, inputs on wires `0..n`, the answer on `n..2n` on the zero
 slice); its gate order carries no window boundary.
+
+A recipient, or an adversary, holds exactly the shipped file: the lattice of
+windows and, for each window, the ANF of the permutation it applies. Nothing
+else ships: not C, not the circuits of stages 1-5, not the packed gates
+`rep<G>.mpmct1`, not the resynthesized circuit. From the ANFs the holder can
+derive the wire state at every window boundary on inputs of its choice, compose
+adjacent windows and resynthesize any window into a circuit of its own; it
+cannot see how the function was spelled inside a window
+(`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief"). `unpacked.mpmct1`
+is such a resynthesis, made in the secret-holding environment as a check of the
+deliverable, and is private.
 
 ## 2. Algorithm
 
@@ -157,7 +171,7 @@ Seeds of the sampled checks are fixed public constants (`param.verify_seed`).
 | 8 | internal invariant violated |
 | 101 | panic |
 
-## 7. Results (n = 64, `dressed_runs/base`, 2026-10-11)
+## 7. Results (plain `run` without `--refine`, n = 64, a four-stage-chain deliverable; `dressed_runs/base`, 2026-10-11)
 
 `tdp_unpacking run` on `packing/deliverable.tdp4` + `rep512.mpmct1/.bounds`
 + `tdp.mpmct1.source_c.g57 --n 64`, 8 threads, `nice -n 10`, defaults:
@@ -180,9 +194,12 @@ the algorithm, its defaults and its separation guarantee are the same.
 
 - State width ≤ 1024 wires (n ≤ 256), as in the packer (`tdp_packing`; the
   exact check's monomial width).
-- Convergence is heuristic; a stalled window falls back to the packed gates
-  (counted, `status=fallback_used`) or fails. No fallback occurred on the real
-  run or in the regression runs of `anf_synth`.
+- Convergence is heuristic; in the plain `run` a stalled window falls back to
+  the packed gates (counted, `status=fallback_used`) or fails, and under
+  `--refine` it is split instead (§10). No fallback occurred on the §7 run or in
+  the regression runs of `anf_synth`; on the crossing output 157 of 10,366
+  windows failed at n = 64, which is what the refinement loop is for
+  (`docs/DELIVERY_STAGE.md` §1).
 - A window that hits the deadline has a timing-dependent (still verified)
   output; `windows.tsv` flags it, the report counts it. Raise `--time-limit`
   for a bit-reproducible run.

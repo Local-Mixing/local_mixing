@@ -5,7 +5,7 @@
 packing sub-step of stage 6 (delivery; `docs/tdp_pipeline.md`). The directory
 name is kept because the tests and CI reference it.
 
-## Pinned reference binaries (docs/STAGE4_RUST_DESIGN.md §10.1)
+## Pinned reference binary (docs/STAGE4_RUST_DESIGN.md §10.1)
 
 - **Baseline `hmap_affine`**: built from `492564f0` with
   `cargo build --locked --release --features security-tools --bin hmap_affine`
@@ -15,9 +15,6 @@ name is kept because the tests and CI reference it.
   regeneration and `tests/manual/stage4/cview_parity.sh` refuse any other
   binary, so expected outputs never come from a binary that links the
   library under test.
-- **Archive-era `hmap_affine`** (produced the Oct 8 re-repairs): sha256
-  `94757413406e58c9fe40694e392213da015b198a0cfb22a83f4b9b79ca8a84f3`, copied
-  read-only to `port_runs/archive_hmap_affine`.
 
 ## `cview_n8/`: C-view exposure engine (P2)
 
@@ -101,7 +98,7 @@ completed. `cases.txt` lists each case with its budgets. Per case:
 `tests/integration/tdp_packing.rs` compares `tdp_packing serialize`,
 `anf-report` and `window-anf` with all of these byte for byte.
 `tests/manual/stage4/anf_parity.sh` does the same on the 8 archived
-validation runs (Appendix B sha256s).
+replicate runs (vA64a … vL128b; Appendix B sha256s).
 
 ## `pack/`: the packer `window_pack3.py` (P3)
 
@@ -145,7 +142,7 @@ against Appendix B.
   fix iteration 1, one clean exposure-aware split. Its expected circuit is
   `n8_L8/rep.mpmct1` (asserted equal by `regen.sh`).
 - synthetic cases from `repair_cases.py` (deterministic, seeds fixed): a
-  random g57 C on 8 wires run verbatim on the data wires of a 32-wire P,
+  random C in the g57 form on 8 wires run verbatim on the data wires of a 32-wire P,
   with noise gates on the ancillas (some reading data wires, which blocks
   slides) and inserted identical pairs, some nested; boundaries every few
   gates. `leaky` (split budget 64), `leaky_it23` (the same inputs, budget 256,

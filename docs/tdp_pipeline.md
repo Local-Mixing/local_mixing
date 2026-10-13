@@ -1,9 +1,15 @@
 # The TDP Pipeline
 
 This is the operational manual for the six-stage TDP pipeline: how to run
-each stage, what it writes, and where its code lives. We start with a
-reversible circuit $C$ on $n$ wires and end with a published circuit that
-computes $C$ on a public slice.
+each stage, what it writes, and where its code lives. We start with a secret
+reversible circuit $C$ on $n$ wires and end with a published file that
+computes $C$ on a public slice. In general $C$ may use any reversible gate
+with up to two controls (NOT, CNOT, Toffoli with either control polarity);
+the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which expresses that
+class) through `source.path`, or generates a random $C$. What the pipeline
+then mixes is not $C$ itself but a specific circuit structure built around
+it: the sliced sandwich on $2n$ wires (stage 1) and the embedded-masking
+construction on $4n$ wires (stage 2), to which stages 3-6 apply.
 
 | Stage | What it does | Runs as | Output |
 | --- | --- | --- | --- |
@@ -56,11 +62,9 @@ binary `tdp_packing`) of the Python prototypes in
 the canonical **oracle**: the port is bit-exact wherever the oracle is
 deterministic, and CI compares the two on random inputs on every push.
 
-The curated store and the former stage 6 (`fcompress`) are historic. They
-remain on branch `ran/archive/curated-and-postmix`; see
-[Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md) for what
-was retired, how to retrieve it, and why (the split stage and the crossing
-walk listed there are back in the pipeline as stages 4 and 5).
+Everything described here is on `main` (2026-10-12). Retired components and
+the earlier pipelines are not described here; history:
+[local_mixing_history.md](local_mixing_history.md).
 
 Further reading:
 
@@ -70,7 +74,7 @@ Further reading:
   the six-stage pipeline; formerly `TDP_FOUR_STAGE_PIPELINE.md`).
 - [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md): the packing port, the
   reference recipe the defaults reproduce, seeds and the environment policy,
-  and the validation results.
+  and the parity results on the archived runs.
 - [DELIVERY_STAGE.md](DELIVERY_STAGE.md): the delivery stage (the decision,
   the refinement contract, the Python reference and the Rust binaries).
 - [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md): the unpacking sub-step of
@@ -139,9 +143,12 @@ directory holds:
 | 6. Delivery | `packing/`: `deliverable.tdp4` (the packer's lattice), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds` (the repaired circuit and the lattice the refinement starts from), the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `unpacking/` (absent under `anf_only`): `deliverable.tdp4` (**the shipped file**: the refined lattice), `bounds.final`, `unpacked.mpmct1` (the resynthesized circuit, canonical order), `windows.tsv`, `rounds.tsv`, `unpacking.report`, `unpacking.log`, the per-round `bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the packer's; private, they regenerate the circuit); `stage6.log` (both sub-steps, a separator line between them); `delivery.recipe` (keyed completion marker); a failed sub-step leaves `delivery.failed` (`exit=<code>`, `step=packing\|unpacking`; the managed driver then reports that code's meaning for that binary, and no other failure is labelled as stage 6's); `NOT_RECOMMENDED` next to the final output after an allowed failure |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
-Everything except `packing.report`, `unpacking.report` and the two
-`deliverable.tdp4` is private (the per-round containers and bounds included):
-the circuits regenerate or expose $C$, and `SEEDS` regenerates everything.
+Only `unpacking/deliverable.tdp4` ships: the refined lattice of windows
+with, for each window, the ANF of the permutation it applies (under
+`anf_only`, `packing/deliverable.tdp4`). The two reports may be published.
+Everything except the two `deliverable.tdp4` and the two reports is private
+(the per-round containers and bounds included): the circuits regenerate or
+expose $C$, and `SEEDS` regenerates everything.
 
 ## Where a run starts
 
@@ -229,8 +236,8 @@ on the store the chosen runs used, unfiltered: `frozen_db_fingerprint`
 (the name and size of every file in the store plus the text of each `.ok`
 checksum marker, xxh3-128; the shards themselves are not read) must equal
 that of `frozen_m1_m11`, and `FROZEN_FILTER=1` on a store without
-`filters.bin`. A copy of the store with other shards or markers, a curated
-store, or a filtered run (`lookup_miss_filter = "on"`) records `none`.
+`filters.bin`. Any other store (other shards or markers) or a filtered run
+(`lookup_miss_filter = "on"`) records `none`.
 
 ### Source circuit
 
@@ -239,7 +246,7 @@ store, or a filtered run (`lookup_miss_filter = "on"`) records `none`.
 | `source.wires` | integer, `128` | Logical width $n$ of $C$, in `3..4095`; at most 256 when stage 6 runs. |
 | `source.gates` | integer, the validated table | $|C| = |D|$. Default: **1000 at n=64, 3000 at n=128** (the sizes the validation runs used); for any other $n$ a size or `gates_rule = "formula"` is required. Recorded as `source_gates_rule=validated` when it equals the table, `explicit` otherwise. |
 | `source.gates_rule` | string, `"validated"` | `"formula"` = `round(n·log2(n)^2)` for any $n$; recorded as `formula` and printed as `UNVALIDATED SIZE`. Exclusive with `source.gates`. |
-| `source.path` | string, unset | Supply $C$ as a nonempty G57 circuit instead of generating it (the route to a $C$ with more than 64 bits of entropy, §13.1 of the design). |
+| `source.path` | string, unset | Supply $C$ as a nonempty circuit in the g57 file form instead of generating it (any reversible gates with up to two controls, written as `a ^= x ∨ ¬y`; the route to a $C$ with more than 64 bits of entropy, §13.1 of the design). |
 
 ### Frozen replacement stores
 
@@ -308,9 +315,9 @@ otherwise starts from the previous circuit with its own `cross_seed`.
 Either budget is added to the split stage's move counter on a resume of
 `split.state`, because the mixer's resumed `--moves` ceiling is absolute.
 The target, penalty and temperature defaults are the archive-era driver's
-calibrated values; their promotion status was never resolved (the crossing
-walk was retired on 2026-10-07 and revived on 2026-10-11 for the resynthesis
-studies: `docs/notes/stage45_revival_20261011.md`).
+calibrated values; their promotion status was never resolved (the revival
+measurements: `docs/notes/stage45_revival_20261011.md`; history:
+[local_mixing_history.md](local_mixing_history.md)).
 
 ### Packing (stage 6, the first sub-step)
 
@@ -536,8 +543,10 @@ circuit_mixer --input tdp.mpmct1 --output db_mixing.mpmct1 --tdp --db-mixing --p
 
 `--verify-every` and `--report-every` stay at their defaults: the global
 check draws from the mixer RNG, so its cadence is part of the trajectory.
-Optional leakage repair runs here too. The output is `db_mixing.mpmct1` with
-`stage3.log`.
+The optional post-stage-3 leakage audit and DB repair (`[leakage_repair]`,
+off by default; `db_mixing.leakage_repair.txt`) runs here too; it is
+separate from the packer's order repair, which every stage-6 run performs.
+The output is `db_mixing.mpmct1` with `stage3.log`.
 
 Start with [src/programs/circuit_mixer/mod.rs](../src/programs/circuit_mixer/mod.rs) for how the
 mode is selected. Follow `Mixer::run` in
@@ -632,17 +641,36 @@ resynthesized circuit is `unpacking/unpacked.mpmct1`. With
 `delivery.anf_only` the stage ends after the packer's
 `packing/deliverable.tdp4`.
 
+**What the adversary sees.** Exactly the shipped file: the refined lattice
+of windows and, for each window, the ANF of the permutation it applies.
+Nothing else ships: not $C$, not the sandwich or the masked circuit of
+stages 1-2, not the mixed, split or crossed circuits of stages 3-5, not the
+packer's gate order, not the resynthesized circuit. From the ANFs the
+adversary can derive the wire state at every window boundary (on inputs of
+its choice), compose adjacent windows into wider ones, and resynthesize any
+window or merged window into a circuit of its own; it cannot see how the
+shipped function was spelled inside a window. Measured: merging and
+resynthesizing uniform W=2000 windows of the n=64 crossing output recovers
+244 of 936 interior $C$ values (241 with a 10× time budget), while the raw
+circuit exposes none at any cut; stages 4 and 5 do not close this leak; the
+refinement's exposure-aware cuts are chosen so that no interior $C$ value is
+affine at a new cut, each one re-scanned
+([notes/stubborn_windows_20261012.md](notes/stubborn_windows_20261012.md),
+[notes/stage45_revival_20261011.md](notes/stage45_revival_20261011.md)).
+
 ### Packing (the first sub-step)
 
-The adversary is assumed to see the full wire state at every window
-boundary and the inputs, but not the gates inside a window. The packer
-reorders its input (the last circuit produced: `crossing.mpmct1` by default,
-`db_mixing.mpmct1` under `run.skip_stages = [4, 5]`) along commutations so
-that values are born and consumed inside one window, cuts the order into
-windows of at most G gates, and publishes each window as its sparse
-algebraic normal form (ANF). A commutation-aware repair then removes the
-remaining boundary exposures of $C$'s values, and the result is serialized.
-The design and the measurements are in
+The packer reorders its input (the last circuit produced: `crossing.mpmct1`
+by default, `db_mixing.mpmct1` under `run.skip_stages = [4, 5]`) along
+commutations so that values are born and consumed inside one window, cuts
+the order into windows of at most G gates, and publishes each window as its
+sparse algebraic normal form (ANF). The packer's order repair
+(`stages::packing::repair`, the port of
+`scripts/windowed_delivery/waist/order_repair.py` in its patched version)
+then removes the remaining boundary exposures of $C$'s values; it runs in
+every `tdp_packing run` and is not optional (the optional repair is the
+separate post-stage-3 leakage audit, `[leakage_repair]`). The result is
+serialized. The design and the measurements are in
 [ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
 [STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md); the port in
 [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md).
@@ -688,12 +716,13 @@ budget and 4× the recommended split budget). The deliverable is emitted at
 the same ceiling; a window above it is exit 6 (`anf_dump_eval.py` emits at
 2^30; every window the repair leaves fitting emits identically).
 
-**`packing/deliverable.tdp4`** is the packer's deliverable (the shipped file
-under `anf_only`; otherwise the refinement's starting point): a 48-byte
-header (`LMTDPANF`, version, source and state wires, layout, window count,
-body length, CRC-32 of the body and of the header) followed by the unchanged
-`anf_dump_eval.py` body, which is also kept as `deliverable.bin`.
-`tdp_packing decode --format container` validates it; the refined
+**`packing/deliverable.tdp4`** is the packer's deliverable: the stage's
+output only under `anf_only`; otherwise the refinement's starting point
+(round 0), not the shipped file. It is a 48-byte header (`LMTDPANF`,
+version, source and state wires, layout, window count, body length, CRC-32
+of the body and of the header) followed by the unchanged `anf_dump_eval.py`
+body, which is also kept as `deliverable.bin` (a private intermediate).
+`tdp_packing decode --format container` validates it; the shipped
 `unpacking/deliverable.tdp4` has the same format.
 
 **Exit codes** (also printed by the driver with their meaning):
@@ -846,17 +875,14 @@ grade). It hard-codes the run tree (`/Users/rancanetti/code/local_mixing`,
 reproduction test's sandbox. Its CONFIG is `L8` (recommended) or `A`; the
 managed presets of the same names set exactly its environment.
 
-## Historic stages
+## History
 
-The former stage 6 (`fcompress`: gather commutable same-target gates, reduce
-each group's ESOP, pack runs into generalized gates) is historic, as is the
-curated store. Their code and tests remain on branch
-`ran/archive/curated-and-postmix`; runs that record recipe v8 need that
-branch to continue. The split stage and the crossing walk, retired with them
-on 2026-10-07, were revived from that branch on 2026-10-11 as stages 4 and
-5 (mixer state format v6 = the pre-cleanup v3 layout; v3-v5 states of the
-four-stage interval are refused). See
-[CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md).
+Retired components and the earlier pipelines are recorded in
+[local_mixing_history.md](local_mixing_history.md) (and the archive
+inventories it links to); this manual describes only the current six
+stages. A run that records a recipe earlier than v12, or a mixer state file
+of a format other than the current v6, is refused: resume it with the
+checkout that created it.
 
 ## The shared pieces
 
@@ -867,8 +893,7 @@ The mutable gate tape used by `circuit_mixer` is in
 [src/engine/arena.rs](../src/engine/arena.rs). Mixer state, sampling, checkpoint
 I/O, and reporting live together in [src/engine/mixer/](../src/engine/mixer/).
 
-Use these current module paths directly. The old top-level `preprocessing`,
-`db_mixing` and `postprocessing` wrappers have been removed. Files named
+Use these current module paths directly. Files named
 `environment.rs` read settings of the stage-3 engine and the store; the
 managed driver sets or forbids each of them (see the environment policy).
 Stages 4 and 5 live in

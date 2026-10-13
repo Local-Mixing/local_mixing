@@ -13,8 +13,8 @@ followed since 2026-10-12 by unpacking with lattice refinement
 
 ## 1. The proposal
 
-Replace stages 4–6 (split, crossing, fcompress) with a single
-delivery-form stage applied to the stage-3 output:
+A single delivery-form stage applied to the mixed circuit (the stage-3
+output, in the chain this document measured):
 
 1. reorder commuting gates (function-preserving by construction);
 2. partition the circuit into contiguous windows;
@@ -23,19 +23,28 @@ delivery-form stage applied to the stage-3 output:
 
 The delivered artifact is a sequence of window ANFs. Nothing else ships.
 
-*(Historical: adopted 2026-10-07. Split and crossing were revived as stages 4
-and 5 on 2026-10-11 and the packer now consumes the last circuit produced,
-the crossing output by default; the stage-3 input survives as
-`run.skip_stages = [4, 5]`: `docs/tdp_pipeline.md`,
-`docs/notes/stage45_revival_20261011.md`.)*
+*(Adopted 2026-10-07 as the stage after mixing. Since 2026-10-11 stages 4
+(splitting) and 5 (crossing) precede it in the default chain and the packer
+consumes the last circuit produced, the crossing output by default; the
+stage-3 input survives as `run.skip_stages = [4, 5]`: `docs/tdp_pipeline.md`,
+`docs/notes/stage45_revival_20261011.md`. How the stage list evolved:
+`docs/local_mixing_history.md`.)*
 
 ## 2. Why this erases more than the move system can
 
-Every exposure metric in the 2026-10 program (per-value visibility, t\*,
-reader law, closure law) quantifies over *cuts of the delivered
-spelling*. A window has no interior cuts, so a reference value is
-exposed only if it is **alive across a window boundary** — its carrier
-span must straddle the cut. Consequences:
+What the adversary sees is exactly the shipped file: the (refined) lattice
+of windows and, for each window, the ANF of the permutation it applies.
+Nothing else ships: not C, not the sandwich or the masked circuit of stages
+1-2, not the mixed, split or crossed circuits of stages 3-5, not the
+packer's gate order, not the resynthesized circuit. From the ANFs the
+adversary can derive the wire state at every window boundary (on inputs of
+its choice), compose adjacent windows into wider ones, and resynthesize any
+window or merged window into a circuit of its own; it cannot see how the
+shipped function was spelled inside a window. Every exposure metric in the
+2026-10 program (per-value visibility, t\*, reader law, closure law)
+therefore quantifies over *cuts of the delivered spelling*. A window has no
+interior cuts, so a reference value is exposed only if it is **alive across
+a window boundary** — its carrier span must straddle the cut. Consequences:
 
 - **Read values become hideable.** The reader law (≥1 reader ⇒ ~100%
   visible) presumed a cut between every pair of gates. If a value's
@@ -48,8 +57,15 @@ span must straddle the cut. Consequences:
   form of the "un-invertible respelling" that the stage-3 ledger showed
   is mixing's real contribution: templates, k-grams, gate provenance,
   stage-2 vocabulary signatures all vanish inside windows.
-- **What remains exposed** is exactly: (a) values alive at boundaries,
-  (b) the boundary-value equality-linkage graph, (c) the outputs.
+- **What remains exposed at the lattice** is exactly: (a) values alive at
+  boundaries, (b) the boundary-value equality-linkage graph, (c) the
+  outputs, (d) the lattice itself. Not bounded by the lattice: what
+  merging adjacent windows and resynthesizing recovers — 244 of 936
+  interior C values at W=2000 on the n=64 crossing output (241 with 10×
+  the time), against 0 for the raw circuit at any cut; stages 4 and 5 do
+  not close it, and the refinement re-scans each exposure-aware cut
+  (`docs/notes/stubborn_windows_20261012.md`,
+  `docs/notes/stage45_revival_20261011.md`).
 
 ## 3. Established facts (all measured on the TDP run, reference =
 stage-2 circuit, full-resolution cuts, function checks 256/256)
@@ -59,11 +75,13 @@ Tools in `scripts/windowed_delivery/` (snapshot of `runs/ncdb_ab_20261001/`):
 `interval_census.py`, `ideal_refresh_census.py`, `window_pack{,2,3}.py`,
 `anf_compose.py`, `boundary_cluster.py`, `carrier_refresh.py`.
 
-1. **Input choice: stage-3 output, not stage-5.** Crossing's ×3.45
-   inflation welds the conflict DAG (median forced interval 6 → 26
+1. **Input choice (2026-10-04): stage-3 output over stage-5.** Crossing's
+   ×3.45 inflation welds the conflict DAG (median forced interval 6 → 26
    gates); its 15% carrier erasure does not pay for it. Split adds
-   carriers. The whole post-3 pipeline is dominated by windowing on raw
-   stage-3 output.
+   carriers. On the cut metrics, windowing the raw stage-3 output
+   dominates windowing the crossed one. (The default chain nevertheless
+   packs the crossing output since 2026-10-11; the stage-3 input is
+   `run.skip_stages = [4, 5]`.)
 2. **Boundary *placement* in the delivered order is worthless** (spans
    long, waists flat: optimal ≈ uniform). All the leverage is in the
    *reorder*: a value's minimal bare residency is the DAG interval
@@ -232,5 +250,4 @@ carrier migration (preset L8). The original plan:
   (`docs/DELIVERY_STAGE.md`); what stays open is the merge-and-resynthesize
   adversary on wide windows (`docs/notes/stage45_revival_20261011.md` §3,
   `docs/notes/stubborn_windows_20261012.md`).
-- Interaction with the curated-DB rethink (moot: curated DB removed 2026-10-08) and with the sliced
-  deliverable / ends program.
+- Interaction with the sliced deliverable / ends program.

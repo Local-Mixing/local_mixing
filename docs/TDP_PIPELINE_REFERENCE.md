@@ -1,6 +1,6 @@
 # The TDP Pipeline: Reference
 
-**Status (2026-10-12).** Everything described here is on `main` (merged 2026-10-12 from the development branch `ran/seven-stage`; commit pins below name commits that are now on `main`). The pipeline has **six stages**: 1 sliced sandwich, 2 preprocessing (embedded masking), 3 database mixing, 4 splitting, 5 the crossing walk, 6 delivery = packing (commuting reorder into ANF windows, order repair, C-view repair loop, serialization of the container) followed by unpacking with lattice refinement (every window resynthesized from its ANF alone; a window that fails to resynthesize is cut in two at an exposure-aware cut, both halves re-emitted into the deliverable and unpacked separately, recursively). Stages 4 and 5 were revived from the archive on 2026-10-11 and stage 6 became one delivery stage on 2026-10-12 (commits `9f2adcd9`, `7be75f96`, `87a88e7e`, `b248a0f2`, `83e44ec5`). This document was written as the four-stage reference on branch `ran/stage2-windowed-delivery` (2026-10-09; committed on `ran/cleanup-four-stage`, the packer ported on `ran/stage4-rust`), and the four-stage chain it validated is today's `run.skip_stages = [4, 5]` with `delivery.anf_only = true` (bash: `--run-skip-stages 4,5 --delivery-anf-only`). Revised 2026-10-12 for the six-stage pipeline. Code pointers into tracked files are pinned as follows: §1-§3, §6a, §7 and §8 at commit `ea2e516f` unless marked "at HEAD" (the two most-cited files, gen `mod.rs` and `EM`, and the mixer files have drifted since; the anchor table under "Conventions" gives the current lines of every anchor this document's text depends on, and the pointers it re-pins are marked), §4, §5 and §6b at `83e44ec5`. Script line numbers refer to the tracked snapshot `scripts/windowed_delivery/` (see "Conventions").
+**Status (2026-10-12).** Everything described here is on `main` (2026-10-12; the commit pins below name commits on `main`). The pipeline has **six stages**: 1 sliced sandwich, 2 preprocessing (embedded masking), 3 database mixing, 4 splitting, 5 the crossing walk, 6 delivery = packing (commuting reorder into ANF windows, order repair, C-view repair loop, serialization of the container) followed by unpacking with lattice refinement (every window resynthesized from its ANF alone; a window that fails to resynthesize is cut in two at an exposure-aware cut, both halves re-emitted into the deliverable and unpacked separately, recursively). Stages 4 and 5 were revived from the archive on 2026-10-11 and stage 6 became one delivery stage on 2026-10-12 (commits `9f2adcd9`, `7be75f96`, `87a88e7e`, `b248a0f2`, `83e44ec5`). This document was written as the four-stage reference on 2026-10-09 (the packer was ported to Rust the same week), and the four-stage chain it validated is today's `run.skip_stages = [4, 5]` with `delivery.anf_only = true` (bash: `--run-skip-stages 4,5 --delivery-anf-only`). Revised 2026-10-12 for the six-stage pipeline. Code pointers into tracked files are pinned as follows: §1-§3, §6a, §7 and §8 at commit `ea2e516f` unless marked "at HEAD" (the two most-cited files, gen `mod.rs` and `EM`, and the mixer files have drifted since; the anchor table under "Conventions" gives the current lines of every anchor this document's text depends on, and the pointers it re-pins are marked), §4, §5 and §6b at `83e44ec5`. Script line numbers refer to the tracked snapshot `scripts/windowed_delivery/` (see "Conventions").
 
 - **Rust: all six stages.** Stages 1 and 2 run in one process, `gen_sandwich_gadget`. Stage 3 is `circuit_mixer --tdp --db-mixing --p-db 1.0` with the regular frozen store only. Stage 4 is `circuit_mixer --split --split-stop` (the archive-era flags), stage 5 the crossing walk `circuit_mixer --resume split.state --target-size …`. Stage 6 (delivery) is `tdp_packing run` (`src/stages/packing/`, a bit-exact port of the Python prototypes, `docs/STAGE4_RUST_DESIGN.md`) followed by `tdp_unpacking run --refine --max-rounds N` (`src/stages/unpacking/`; `docs/DELIVERY_STAGE.md`, `docs/STAGE7_UNPACKING.md`).
 - **The managed driver.** `tdp_gen` with `source.wires` (64 or 128), `run.skip_stages = [4, 5]` and `delivery.anf_only = true` (bash: `scripts/tdp_gen.sh --run-skip-stages 4,5 --delivery-anf-only`) reproduces `val_chain.sh` CONFIG=L8 byte for byte from the same seeds (stage-2 preset L8, schedule `validated`, the packer at G=512 with split budget 65536): proven on the archived runs vL64a and vL128a themselves (the historic anchor, `STAGE4_RUST_DESIGN.md` §12) and by the reproduction test against a sandboxed `val_chain.sh` (n=8, n=16 L8 and A, n=64 L8; `tests/shell/tdp_defaults.bash`). `pinned_recipe` (`val_chain-L8-20261007` / `val_chain-A-20261007`) is recorded only for that chain. With nothing set the driver runs all six stages and ends with `unpacking/deliverable.tdp4` and `unpacking/unpacked.mpmct1`. Config A is `preprocessing.preset = "A"`.
@@ -156,7 +156,7 @@ bash scripts/windowed_delivery/waist/val_chain.sh TAG N MC S SLICE CFG   # parit
 
 with (N, MC, S, SLICE) = (64, 1000, 384, 1280) or (128, 3000, 896, 2560) (§8.3). §8.4-§8.7 explain each step and the pass criteria.
 
-The block below is the driver body (`W/val_chain.sh:6-35`), self-contained, with two changes. `env -u FROZEN_CURATED_DIR` is added, because at the time of the validation runs an exported variable silently turned stage 3 curated-first (§3.1; this build ignores the variable and the managed driver refuses it). The inert `--p-comp 1.0 --p-any 0.1` is dropped: they govern slot-3 (crossing-walk) moves, which stage 3 never runs at `--p-db 1.0`; stages 4 and 5 set them to 0 explicitly (§3.2, §4, §5).
+The block below is the driver body (`W/val_chain.sh:6-35`), self-contained, with one change. The inert `--p-comp 1.0 --p-any 0.1` is dropped: they govern slot-3 (crossing-walk) moves, which stage 3 never runs at `--p-db 1.0`; stages 4 and 5 set them to 0 explicitly (§3.2, §4, §5).
 
 ```sh
 set -uo pipefail                                         # no -e: failures do not stop the run (§7.2)
@@ -177,7 +177,7 @@ env EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDD
 # stage 3 (regular store only)
 NG2=$(head -1 $R/tdp.mpmct1 | awk '{print $3}')                # |G2| from the mpmct1 header
 MOVES=$(python3 -c "print(int($NG2*2*2*1.3))")                 # ⌊N2·R1·1.3·|G2|⌋ = ⌊5.2·|G2|⌋ (§3.1)
-env -u FROZEN_CURATED_DIR FROZEN_DB_DIR=$HOME/code/local_mixing/frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
+FROZEN_DB_DIR=$HOME/code/local_mixing/frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
   target/release/circuit_mixer --input $R/tdp.mpmct1 --output $R/s3.mpmct1 --tdp --db-mixing \
   --profile 2,2,2,2,2 --moves $MOVES --p-db 1.0 \
   --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
@@ -206,7 +206,7 @@ Seeds are fresh CSPRNG draws (§8.2). They are passed on command lines and so ar
 ### Conventions of this document
 
 - **The code is the authority.** Where a code comment or another doc disagrees with the code, this document follows the code and marks the other text **[stale]**. Claims labelled *derived* or *inferred* are reasoned from the code and were not measured or stated by the authors.
-- **Sections.** §1-§6 are the six stages (stage 2 is split into §2a-§2c; stage 6 into §6a, packing, and §6b, unpacking with lattice refinement). §7 covers verification, metrics and attack tooling, and §8 how to run the pipeline. Appendix A (the managed-driver gap analysis) is closed. The 2026-10-12 renumbering moved the old §4 (packing) to §6a, §5 to §7 and §6 to §8; every cross-reference in this document was moved with it.
+- **Sections.** §1-§6 are the six stages (stage 2 is split into §2a-§2c; stage 6 into §6a, packing, and §6b, unpacking with lattice refinement). §7 covers verification, metrics and attack tooling, and §8 how to run the pipeline. The managed-driver gap analysis that this document once carried as Appendix A is closed; its content is in `docs/local_mixing_history.md` (October 8, 2026). The 2026-10-12 renumbering moved the old §4 (packing) to §6a, §5 to §7 and §6 to §8; every cross-reference in this document was moved with it.
 - **Paths** are relative to the repository root. Abbreviations used across sections:
 
 | short form | path |
@@ -505,7 +505,7 @@ The resulting gadget-level contract is G2(x, 0ⁿ, 0²ⁿ) = (junk, C(x), junk),
 - up to 4 `order_repair` fix iterations (`:22-26`);
 - then up to 4 `merge_bounds2`/`anf_split2` fallback iterations (`:28-33`).
 
-Reaching the floor is not enforced by the oracle: the script continues to `anf_compose` and `link_census` without a status check (`:35-39`). In the Rust port reaching the floor is enforced: a visible non-output row is exit 5 and an over-budget window exit 6, with no deliverable written, unless `packing.allow_floor_miss` / `allow_over_budget` are set (then `status=floor_miss`/`over_budget`, `NOT_RECOMMENDED`). The floor of n is the output values themselves, which are trivially visible because C(x) sits on the answer register (`STAGE2_LINKABILITY.md:29-33`). `anf_split2.py` also runs `hmap_affine` on the sidecar, and `val_chain.sh:26-27` uses it for the stage-2 span check (§7.3).
+Reaching the floor is not enforced by the oracle: the script continues to `anf_compose` and `link_census` without a status check (`:35-39`). In the Rust port reaching the floor is enforced: a visible non-output row is exit 5 and an over-budget window exit 6, with no deliverable written, unless `packing.allow_floor_miss` / `allow_over_budget` are set (then `status=floor_miss`/`over_budget`, `NOT_RECOMMENDED`). The floor of n is the output values themselves, which are trivially visible because C(x) sits on the answer register (`STAGE2_LINKABILITY.md` §2, "C-view"). `anf_split2.py` also runs `hmap_affine` on the sidecar, and `val_chain.sh:26-27` uses it for the stage-2 span check (§7.3).
 
 `source_c.g57`, `sandwich.mpmct1`, `gen.log` and `seed.txt` (`val_chain.sh:14`) are plaintext secrets under val_chain.sh (managed driver: `SEEDS`, `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` and every circuit; `stage12.log` holds no seed). `source_c.g57` must survive until stage 6 finishes (both sub-steps read it) and must never ship (§8.8).
 
@@ -1607,7 +1607,7 @@ FROZEN_DB_DIR=$HOME/code/local_mixing/frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
     --no-local-verify --seed $MSEED
 ```
 
-- **Store.** This build mixes with the regular frozen store only: the curated-first cascade was removed (`circuit_mixer/mod.rs:203-221` at HEAD warns and ignores `FROZEN_CURATED_*`; the managed driver refuses them when inherited). At the time of the validation runs an exported `FROZEN_CURATED_DIR` silently turned stage 3 curated-first (see "Environment"), which is why the Overview's copy of the driver body adds `env -u FROZEN_CURATED_DIR`; the eight validation logs, made before the removal, show `WARNING: curated-first ... curated OFF` and `curated=false` on the `DB ON` line.
+- **Store.** This build mixes with the regular frozen store only (`circuit_mixer/mod.rs:203-221` at HEAD warns on and ignores `FROZEN_CURATED_*`; the managed driver refuses them when inherited). Earlier stores: `docs/local_mixing_history.md`.
 - **Seed.** `MSEED` is a fresh 40-bit draw from Python's `secrets` module (`val_chain.sh:12`). The managed driver draws `mix_seed` (63-bit, OS CSPRNG) into `$RUN/SEEDS` (`seeds_format=3`) and passes it as `--seed-file /dev/fd/3`; the banner prints `(file)`.
 - **Driver extras.** The validation runs' `val_chain.sh` passed `--p-comp 1.0 --p-any 0.1`, the CLI defaults (`cli.rs:164-170`); the tracked copy dropped them on 2026-10-08 and the managed driver never passes them to stage 3 (stages 4 and 5 pass `--p-comp 0 --p-any 0`, §4-§5; see 3.2).
 - **Move budget.** The general rule is `moves = ⌊N2·R1·1.3·|G2|⌋` for a profile `N0,N1,N2,R1,R2`. For `2,2,2,2,2` this is ⌊5.2·|G2|⌋ (`W/val_chain.sh:17-18`). The pre-port managed driver used `round(N2·R1·|G2|·1.3)` (`tdp_gen.sh:456-462` at `ea2e516f`), a difference of at most one move; the managed driver now computes `int(G*2*2*1.3)` with Python, exactly as `val_chain.sh` does (`stage3_moves_rule=int(G*2*2*1.3)` in the manifest). Since eff (§3.4) counts passes over a circuit that grows to about R1·|G2|, the budget buys about N2·1.3 passes over the target-size circuit: in practice eff ≈ 3.03-3.05. That is past the ramp (eff 2) but before the eff-3.125 controller update that would enter phase 4. So the run ends on the budget in phase 3, at 2.04-2.14× (§3.4). The pre-port managed driver's comment called the formula a "move ceiling: effs x peak size x margin" (`tdp_gen.sh:461` at `ea2e516f`), i.e. a safety cap rather than the intended stop. With N0 = N1 = N2 = 2, however, the one-transition-per-update rule pushes phase 4 to eff 3.125, beyond the cap. Whether stopping in phase 3 is intended, or the budget should let `ProfileDone` fire, is open (§3.10). Anyone who changes `--profile` should recompute the budget with the general rule.
@@ -1624,7 +1624,7 @@ FROZEN_DB_DIR=$HOME/code/local_mixing/frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
 |---|---|---|
 | `FROZEN_DB_DIR` | `frozen_m1_m11` | Required; the mixer panics if it is absent (`src/database/environment.rs:25-30`). |
 | `FROZEN_FILTER` | `1` | Loads `<dir>/filters.bin` if present. `frozen_m1_m11` on this Mac has no such file, so the log prints "running unfiltered" and the flag does nothing (`src/database/frozen.rs:661-696`). Managed: `database.lookup_miss_filter` auto\|on\|off (`scripts/tdp_gen.sh:870-892`); `auto` resolves to 1 without `filters.bin`. |
-| `FROZEN_CURATED_*` | unset | Ignored with a WARNING at HEAD (`mod.rs:203-221`): the curated store is historic (branch `ran/archive/curated-and-postmix`); the managed driver refuses an inherited value (registry class forbidden). At `ea2e516f` only an unset `FROZEN_CURATED_DIR` kept stage 3 regular-only: `--tdp` set `curated = true` again unless `--curated` was typed (`mod.rs:95-101`), after `--no-curated` had been applied (`mod.rs:58-60`), and the mixer fell back to regular-only with a WARNING only when the variable was absent and `--frozen-curated-dir` was not passed (`mod.rs:214-230`); an exported variable silently ran the validation command curated-first. |
+| `FROZEN_CURATED_*` | unset | Ignored with a WARNING at HEAD (`mod.rs:203-221`); the managed driver refuses an inherited value (registry class forbidden). |
 | `FROZEN_REGULAR_VALUE_CONVENTION` | `native` (default) | `src/database/environment.rs:11-19` |
 | `MIN_DIR_LOOKUP` | `Min` (default) | See "Lookup" in 3.5; `src/database/environment.rs:42-49`. Refused by the managed driver when inherited (forbidden). |
 | `LOOKUP_CACHE_MB`, `CANON_CACHE_MB`, `XPOLY_CANON_CACHE_MB` | 512, 256, 1024 (defaults); managed run: 2048, 256, 1024 (`scripts/tdp_gen.sh:807`) | Exact caches, so their size affects only speed (output-neutral, `docs/STAGE4_RUST_DESIGN.md` D10b; `src/database/environment.rs:31-40`; `src/canonicalization/environment.rs:52-61`); the managed driver ignores inherited values with a note (registry class neutral). |
@@ -1641,7 +1641,7 @@ The pre-port TDP driver pinned different values: a Rule-L cap of 512 and `LOOKUP
 Options resolve in three layers: an explicitly typed flag, then the preset (`--tdp` above `--db-mixing`), then the shipped defaults (`mod.rs:111-165`, with the DB stack at `mod.rs:140-152`; `cli.rs:713-813`). A flag counts as typed only if it appears on the command line (`mod.rs:19-20`).
 
 - **`--db-mixing`** sets `twist_g57 = true`, `p_twist = 0.0005`, `db_advance = true` and `mix_pay_random = true` (`mod.rs:73-92`).
-- **`--tdp`** sets `db_advance = true` and deliberately leaves `p_mix` unset (`mod.rs:90-100` at HEAD; at `ea2e516f`, `mod.rs:95-109`, it also set `curated = true` and `curated_in_comp = true` unless typed, overriding `--no-curated`, code that went with the curated store, see 3.1). It supplies the DB preset layer `DbLayer::tdp()` (`cli.rs:735` at HEAD; `:789-802` at `ea2e516f`), which is the source of every value in the per-mode table below. That layer outranks the `p_mingen` 0.6 of `DbLayer::db_mixing()` (`cli.rs:752` at HEAD; `:806-812` at `ea2e516f`) and the shipped defaults `s_db` 9, `p_convex` 0.4, `p_mingen` 0.8, `s_db_comp` 12 and `p_convex_comp` 0.9 (`cli.rs:775-785`).
+- **`--tdp`** sets `db_advance = true` and deliberately leaves `p_mix` unset (`mod.rs:90-100` at HEAD). It supplies the DB preset layer `DbLayer::tdp()` (`cli.rs:735` at HEAD; `:789-802` at `ea2e516f`), which is the source of every value in the per-mode table below. That layer outranks the `p_mingen` 0.6 of `DbLayer::db_mixing()` (`cli.rs:752` at HEAD; `:806-812` at `ea2e516f`) and the shipped defaults `s_db` 9, `p_convex` 0.4, `p_mingen` 0.8, `s_db_comp` 12 and `p_convex_comp` 0.9 (`cli.rs:775-785`).
 - **Per-mode DB knobs** are resolved when used by `MixParams::db_knobs`, from mode plus geometry, then mode, then base (`params.rs:566-588`). The log prints the result in the `DB effective per mode` banner (`mod.rs:459-471`):
 
 | | MIX | COMP |
@@ -1672,13 +1672,12 @@ Constraints on the flags:
 - `--db-max-degree` must be at most 11 (`mod.rs:518-523`).
 - With `p_db > 0` and `p_mix` unset, any typed COMP-mode override is a hard error (exit 2). The affected flags are `--s-db-comp`, `--s-db-comp-ctg`, `--p-convex-comp`, `--p-mingen-comp` and `--db-prefixes-comp` (`mod.rs:171-207`; `mod.rs:159-200` at HEAD; `db_mode` defaults to `mix`, `cli.rs:174-175`). The guard tests only `p_mix < 0`, so it also fires under `--profile`, where COMP rounds do run (`scheduling.rs:181-190`). With `--db-mode comp`, the MIX overrides are refused instead. In stage 3, therefore, the COMP knobs come only from `DbLayer::tdp()` and cannot be changed from the CLI (see 3.10).
 
-**Inert and historic switches.**
+**Inert switches.**
 
 - `p_mingen` acts only when `gen_target > 0` (`sampling.rs:242-251`).
 - `w_window` and `w_pool` never bind, because no gate has more than two controls.
 - `--db-degree-probes` is vestigial, because the degree guard is now exact (`db/replacement.rs:1072-1077`).
 - `--p-comp`, `--p-any`, `temp`, `target_size` and `dir_p` are read only by the slot-3 walk (`scheduling.rs:545-578`; `transformations.rs:484-490`), which stage 3 never reaches because `p_db = 1.0`. `p_comp > 0` also gates opening the store (`state.rs:685-694`), and `p_comp`/`p_any` gate the `DB ON` banner (`mod.rs:426`; `:383` at HEAD). Both are already implied by `p_db = 1.0`. They are live again as the engine of stage 5 (the crossing walk, §5) and are passed as 0 by stages 4 and 5; nothing is scheduled for removal.
-- At `ea2e516f` the preset banners printed `curated=true` because they ran before the curated setting was resolved, and the `DB ON` line showed the effective `curated=false` (`mod.rs:88-91,105-108`); the curated fields and their banner text were removed with the curated store (at HEAD `mod.rs:84-98` prints twist, `p_twist`, `db_advance` and `mix_pay_random` only).
 
 ### 3.3 Round structure
 
@@ -1843,7 +1842,7 @@ The pivot is ⌊2m/3⌋ if the seed headed L and ⌊m/3⌋ if it headed R; gate 
 The parameter documentation gives two reasons for this step (`params.rs:325-334`):
 
 - Without it, the directions assigned at the splice would never be used.
-- It moves material without widening gates (the historic crossing walk widened them), and width is what makes store lookups miss.
+- It moves material without widening gates (the crossing walk widens them, §5), and width is what makes store lookups miss.
 
 The splice comment adds a third: scattering the litter "makes a later window less likely to be exactly this replacement" (`mixer/replacement.rs:808-811`). It does not prevent this. In vL64a, 2,225 of the 1,155,495 splices still took exactly one complete earlier replacement as their window (`litter … full=`; counted at `mixer/replacement.rs:748-751`, census at `provenance.rs:213-226`).
 
@@ -1949,7 +1948,6 @@ Counter caveats:
 ### 3.10 Open points
 
 - **Stopping rule.** Runs stop either on the budget at eff ≈ 3 or on `ProfileDone`, and the `ProfileDone` exit skips the in-loop final `global_check`. Whether the ⌊N2·R1·1.3·|G2|⌋ budget is meant to stop the run in phase 3 is undecided (§3.1). The managed driver now accepts only the two normal stop reasons and never skips the final float (so a managed run always ends with a `global_check`); whether the budget should let `ProfileDone` fire, and the in-mixer gap for `ProfileDone` + `--skip-final-float`, remain open.
-- **Regular-only depends on the environment** (resolved). At `ea2e516f` `--tdp` turned curated back on and overrode `--no-curated`, so regular-only held only while `FROZEN_CURATED_DIR` was unset. The mixer is now regular-store only (`mod.rs:203-221` at HEAD) and the managed driver refuses inherited `FROZEN_CURATED_*`.
 - **COMP knobs are not settable from the CLI** (defect, `mod.rs:171-207`; `:159-200` at HEAD). The inert-flag guard ignores `--profile`, so under the profile controller every typed COMP override exits with code 2, although COMP rounds run. The port should make the guard aware of `--profile`.
 - **Direction pivot.** The inclusive `i ≤ pivot` is intentional (`mixer/replacement.rs:758-762`) and biases new gates toward heading left; a single gate always heads left. The effect on positional drift has not been measured.
 - **Rule-L cap failures are not counted on this path.** (The cap itself is settled: unbounded in managed runs, as in the reference runs, since an inherited `CANON_RULE_L_BRANCH_CAP` is fatal; the caches are 2048/256/1024 MB, output-neutral.)
@@ -1957,7 +1955,7 @@ Counter caveats:
 - **Duplicate pairs.** Their source is unknown, and it is open whether stage 3 should cancel them itself.
 - **Store coverage.** The code documents the caps as the store's census maxima from `frozen_degree_scan` (`params.rs:305-318`; `cli.rs:322-327`), but the census itself is not recorded in `docs/`. What `frozen_m1_m11` covers is stated inconsistently: the archived write-up `CURATED_DB_V3_SUMMARY.md:14` (removed from the tree in `8070f5a0`; branch `ran/archive/curated-and-postmix`, see `docs/CURATED_AND_POSTMIX_ARCHIVE.md`) calls it "the complete g57 replacement corpus through 11 gates", while `docs/frozen_database.md:84-86` warns that the directory name does not establish exhaustive coverage (§8.1). The degree and span caps never fired (`dsk = ssk = 0`). Term-budget overflows are not counted, so whether the 1,024/2,048 caps bind is unknown.
 - **`FROZEN_FILTER`.** `database.lookup_miss_filter = "auto"` sets 1 when the store has no `filters.bin` (so it does nothing on this machine); `"on"` requires the file, `"off"` never loads it; a filtered run records `pinned_recipe = none`. §8.1 gives the build route.
-- **Cleanup status.** Of the removals listed in `docs/notes/cleanup_inventory_20261007.md:1-28,149-153`, the dead curated code paths were removed; slot 3 and `--p-comp`/`--p-any`/`temp`/`target_size`/`dir_p` are kept as the engine of stages 4 and 5 (revived 2026-10-11); `--db-degree-probes` (vestigial, `mod.rs:522` at HEAD) is the remaining candidate.
+- **Cleanup status.** Of the removals listed in `docs/notes/cleanup_inventory_20261007.md:1-28,149-153`, slot 3 and `--p-comp`/`--p-any`/`temp`/`target_size`/`dir_p` are kept as the engine of stages 4 and 5 (revived 2026-10-11); `--db-degree-probes` (vestigial, `mod.rs:522` at HEAD) is the remaining candidate.
 
 
 ## Stage 4: splitting
@@ -2157,7 +2155,7 @@ Packing has three steps, and the stage continues with a fourth:
 
 #### 6a.1 Threat model and what windows buy
 
-The adversary holds the window ANFs, hence the full wire state at every window boundary on inputs of its choice; it does not see the gates inside a window. All metrics are evaluated at every boundary of the final artifact, with no cut sampling (`STAGE2_LINKABILITY.md:25-28`). For the refined lattice (the shipped `unpacking/deliverable.tdp4`) every added cut is scanned at choice time; a per-cut C-view result does not depend on the lattice, so the packer's final scan of the old cuts plus the choice-time scans equal `tdp_packing check-final` on the refined lattice (`docs/DELIVERY_STAGE.md` §4; §6b). Equality and affine membership, however, are tested on random samples, not symbolically:
+The adversary holds exactly the shipped file, the refined lattice of windows and the ANF of each window's permutation; from the ANFs it can derive the wire state at every window boundary on inputs of its choice, compose adjacent windows and resynthesize any window into a circuit of its own, but it cannot see how the function was spelled inside a window. All metrics are evaluated at every boundary of the final artifact, with no cut sampling (`STAGE2_LINKABILITY.md` §2). For the refined lattice (the shipped `unpacking/deliverable.tdp4`) every added cut is scanned at choice time; a per-cut C-view result does not depend on the lattice, so the packer's final scan of the old cuts plus the choice-time scans equal `tdp_packing check-final` on the refined lattice (`docs/DELIVERY_STAGE.md` §4; §6b). Equality and affine membership, however, are tested on random samples, not symbolically:
 
 - the C-view uses 96×64 = 6,144 honest-slice samples with seed 12345 (`HA:112-117`, `HA:367-375`; §7.3);
 - the packer, link census and `verify_equiv.py` use 1,024 all-wire samples (`RD/window_pack3.py:22-26,165-166`; `W/link_census.py:25-26`; `W/verify_equiv.py:5-9`).
@@ -2357,7 +2355,7 @@ The script uses `set -uo pipefail` without `-e` and hard-codes `ROOT` and `W` (`
 
 1. **Pair cancellation** (`order_repair.py … cancel`, line 14). For each gate g at position i, `blk` is the first later gate that reads g's target or writes one of g's controls (`W/order_repair.py:88-90`). The next identical gate j with i < j < blk is cancelled together with g, since g is self-inverse and everything between them commutes with it. Passes repeat to a fixed point (lines 101-112). This removes about 7% of delivered gates. For example, vL128a went from 4,596,808 to 4,259,448 gates (168,680 pairs) (`W/vL128a/repair512.log`).
    - **Cancellation crosses boundaries.** `cancel_pass` runs on the bare gate list. `run_cancel` strips the markers before calling it and only afterwards drops the dead gates from the marker sequence (`W/order_repair.py:69-99,101-112`). A pair is therefore cancelled even when boundaries lie between i and j. At every such boundary the state changes: g's increment, applied at i and undone at j, is no longer present. The overall function is unchanged.
-   - **Consequence.** The packer's "fully hidden by construction" and RESULT "exposed (packer)" figures (§6a.4; "pack exposed" in §6a.7) describe the **pre-repair** lattice, not the shipped one. The delivered stage-2 exposure is the link census's `proxy values` on `rep512` (§6a.1, §7.5, §7.6). Re-running the packer's RESULT computation on `rep512` would give a like-for-like post-repair count, but this has not been done.
+   - **Consequence.** The packer's "fully hidden by construction" and RESULT "exposed (packer)" figures (§6a.4) describe the **pre-repair** lattice, not the shipped one. The delivered stage-2 exposure is the link census's `proxy values` on `rep512` (§6a.1, §7.5, §7.6). Re-running the packer's RESULT computation on `rep512` would give a like-for-like post-repair count, but this has not been done.
 2. **C-view scan.** `cview()` (lines 17-21) runs `hmap_affine --exposure --c-step 1 --g-cuts rep$G.bounds` with `EXPOSURE_WITNESS` and `EXPOSURE_ALLCUTS` set (§7.3). That binary requires `--features security-tools` (`Cargo.toml:308-311`; `:249-251` at HEAD). It uses 6,144 samples, seed 12345 (`HA:112-117`). Per cut, it deduplicates the scanned circuit's wire columns under complement and builds a GF(2) basis; a C value is visible iff it reduces to zero (`HA:512-590`). t\* is minimized over the nullspace coset by Gray code when the nullity is ≤ 14; above that, the value is an upper bound and is reported as "coset-minimizations skipped" (vL128a v1 skipped 1; `HA:597-616`). Only the best cut per value is kept as witness, with ties going to the earliest cut (`HA:619-633`). `cview()` returns the number parsed from line 2 of the log.
 3. **Fix loop**, at most 4 iterations (lines 22-26). It stops when `vis ≤ N`. Otherwise it runs `order_repair.py … fix wit.tsv exposure.tsv | tail -1`. The `tail -1` keeps only the gate/boundary count line and drops the `moved N gates` line (`W/order_repair.py:185,189`), so the logs cannot show whether a stalled pass moved anything.
 4. **Synchronous equivalence check** (line 27; see below).
@@ -2379,7 +2377,7 @@ Output gates of C are excluded by identity: `outs` is the last C gate per wire, 
 There are two versions of fix mode:
 
 - **Snapshot.** `scripts/windowed_delivery/waist/order_repair.py:155-170` re-finds the breaker in `gpos[cut:]` after the completer move (lines 163-170). When the completer has crossed the cut, that gate-count index is stale by one, so the completer itself can be re-selected as "breaker" and slid back.
-- **Live.** The run-tree copy `W/order_repair.py` (last modified 2026-10-08 08:24) keeps the pre-move breaker index `brk_i`, which stays valid because the pop and insert shifts cancel past the completer's landing point, and drops it if the completer passed the breaker (`W/order_repair.py:158-171`). `val_chain.sh` now calls this copy, but only the vL128a rerun ran with it (§6a.7).
+- **Live.** The run-tree copy `W/order_repair.py` (last modified 2026-10-08 08:24) keeps the pre-move breaker index `brk_i`, which stays valid because the pop and insert shifts cancel past the completer's landing point, and drops it if the completer passed the breaker (`W/order_repair.py:158-171`). `val_chain.sh` calls this copy; the vL128a rerun was the first run made with it, and the eight archived replicates were then re-repaired with it (§6a.7).
 
 Both versions share three further limits:
 
@@ -2387,7 +2385,7 @@ Both versions share three further limits:
 - **One cut per value per pass.** Fix acts only on each value's single witness cut, even when `allcuts.tsv` shows the value at several cuts.
 - **Lost move count.** The moved count is discarded by `tail -1`, as noted in step 3.
 
-**Canonical version: the live `W/order_repair.py`.** It is the copy the reference driver calls (`W/repair.sh:14,25`), and the snapshot's breaker re-find is a known bug. Validated 2026-10-08: all eight replicates were re-repaired with it and re-serialized (§6a.7 update; the earlier repairs are in `W/<TAG>/rep512_v1/`). It is ported as `stages::packing::repair`, and `tdp_packing run` reproduces every current `rep512.*` and `deliverable.bin` byte for byte (`tests/manual/stage4/run_parity.sh`, `STAGE4_RUST_DESIGN.md` Appendix B). Stalls occur under both versions: the snapshot stalled at 65 (vL64b), 129 (vA128b) and 131 (vL128a v1); the live version stalled at 130 (vL128a rerun).
+**The ported version is the patched `W/order_repair.py`** (the copy `W/repair.sh:14,25` calls; the snapshot's breaker re-find is a known bug). It is `stages::packing::repair`, which runs in every `tdp_packing run`; the eight archived replicates, re-repaired with it and re-serialized on 2026-10-08, are its parity targets (`tdp_packing run` reproduces every current `rep512.*` and `deliverable.bin` byte for byte: `tests/manual/stage4/run_parity.sh`, `STAGE4_RUST_DESIGN.md` Appendix B; the earlier repairs are in `W/<TAG>/rep512_v1/`, §6a.7). Stalls occur under both versions: the snapshot stalled at 65 (vL64b), 129 (vA128b) and 131 (vL128a v1); the live version stalled at 130 (vL128a rerun).
 
 **Merge and exposure-aware split.**
 
@@ -2413,7 +2411,7 @@ Both versions share three further limits:
   - cancellation was identical, and the fix loop went 132, 130, 130, 130;
   - fallback iteration 1 merged 1 boundary and added 1 clean split, and iteration 2 scanned 128 with 0 splits, so the floor was reached via merge;
   - ANF size 98.2 MB; L2 16,106; M2 187,248; froth L2 5,579.
-- **Stale deliverable** (superseded). `W/vL128a/deliverable.bin` (01:35) came from the v1 lattice until it was re-serialized on 2026-10-08 (§6a.7 update); the v1 artifacts are archived in `W/vL128a/rep512_v1/`.
+- **Stale deliverable** (superseded). `W/vL128a/deliverable.bin` (01:35) came from the v1 lattice until it was re-serialized on 2026-10-08 (§6a.7); the v1 artifacts are archived in `W/vL128a/rep512_v1/`.
 - **Concurrent runs.** Two repairs of the same TAG/G collide on the `rep$G.*` scratch names.
 
 #### 6a.6 Serialization and evaluation
@@ -2472,56 +2470,9 @@ All three exist since the port: the container header (`STAGE4_RUST_DESIGN.md` §
   - For vA64a (decode of `W/vA64a/deliverable.bin`): the model gives 24.60 MB; the real file is 26.04 MB = masks 24.38 + per-changed-wire fields 0.94 + support ids 0.69 + length prefixes and headers 0.02.
   - The 1.44 MB gap ≈ mask padding 0.60 + per-changed fields 0.47 + support ids 0.34 + headers 0.02.
 
-#### 6a.7 Validation replicates (G=512)
+#### 6a.7 Reference replicates (G=512)
 
-**Update (2026-10-08/09).** All eight replicates were re-repaired with the
-canonical `order_repair.py` and re-serialized on Oct 8; the earlier repairs
-are in `W/<TAG>/rep512_v1/`. The parity targets of the Rust port are the
-current `rep512.*` and `deliverable.bin` (`STAGE4_RUST_DESIGN.md`
-Appendix B), and `tdp_packing run` reproduces every one of them byte for byte
-from the archived `tdp.mpmct1` and `s3.mpmct1` (`tests/manual/stage4/run_parity.sh`).
-The **historic anchor** re-ran the chosen runs from their archived seeds:
-gen at `492564f0` reproduces `tdp.mpmct1`, the source and the sandwich of all
-eight tags; the mixer at `492564f0` reproduces `s3.mpmct1` of vL64a and
-vL128a; and the managed driver reproduces every artifact of
-vL64a and vL128a down to `deliverable.bin` (on the current six-stage driver:
-`run.skip_stages = [4, 5]` with `delivery.anf_only = true`, i.e.
-`--run-skip-stages 4,5 --delivery-anf-only`; the manifest records
-`pinned_recipe=val_chain-L8-20261007` only for that chain). The fix-mode paragraph below
-describes the first repairs and is superseded.
-
-All runs used the recommended stages 1-3 and `val_chain.sh` (logs in `W/v{A,L}{64,128}{a,b}/`). Across all eight runs:
-
-- the packer's input and emitted function checks passed (256/256 or 512/512 wires);
-- `verify_equiv.py` reported EQUIVALENT;
-- 0 windows exceeded 65,536 monomials after repair;
-- spot checks had 0 failures;
-- ANF evaluation reported `match=True`.
-
-**Fix-mode version.** Judging by file times, every repair except the vL128a rerun used the snapshot fix mode (`scripts/windowed_delivery/waist/order_repair.py:155-170`). Those repairs finished on Oct 8 between 00:01 and about 01:35 (the n=64 runs by 00:04; the vL128a v1 deliverable at 01:35), after the snapshot commit (`7163e457`, Oct 7 23:21) and before the live `W/order_repair.py` was last modified (Oct 8 08:24). The vL128a rerun (08:44) used the live version. Its cancellation output is identical to v1 but its fix trajectory differs (132→130 vs 132→131), which confirms that the code changed between the two.
-
-Paths to the floor:
-
-- floor at the first scan: vA64a, vA128a, vL128b;
-- by fix: vA64b (iteration 3), vL64a (iteration 2);
-- fix stalled, then merge: vL64b, vA128b, vL128a rerun;
-- failed: vL128a v1.
-
-Linkability results for the same runs, including the delivered stage-2 exposure (proxy values), are in §7.6. Stage-1 to stage-3 figures are in §8.9. Evaluation times are Python timings, not performance claims. Only the vL128a rerun row used the canonical (live) `order_repair.py` (§6a.5).
-
-| run | pack windows | exposed (packer, pre-repair; % carried) | C-view trajectory → final | final windows | ANF est. MB | `.bin` / `.xz` MB | ms/input gate / ANF |
-|---|---|---|---|---|---|---|---|
-| vA64a | 2,774 | 15,060 (10.3%) | 64 → 64 | 2,776 | 24.6 | 26.0 / 2.81 | 0.72 / 0.77 |
-| vA64b | 2,793 | 15,054 (10.3%) | 65, 65, 64 → 64 | 2,793 | 25.6 | 27.0 / 2.86 | 0.75 / 0.85 |
-| vL64a | 2,586 | 11,539 (7.0%) | 65, 64 → 64 | 2,588 | 31.2 | 32.8 / 3.10 | 0.68 / 1.00 |
-| vL64b | 2,600 | 11,512 (7.0%) | 66, 65, 65, 65, merge → 64 | 2,600 | 28.7 | 30.2 / 3.06 | 0.63 / 0.88 |
-| vA128a | 7,376 | 53,168 (12.5%) | 128 → 128 | 7,377 | 102.1 | 106.9 / 9.81 | 1.65 / 1.86 |
-| vA128b | 7,415 | 53,558 (12.5%) | 129 ×4, merge → 128 | 7,416 | 99.9 | 104.7 / 9.71 | 1.73 / 2.04 |
-| vL128a v1 | 7,059 | 34,424 (7.2%) | 132, 131 ×3, fallback → **129 at last scan (fail; final lattice unscanned)** | — | 98.7 | 103.2 / 9.52 (**stale**) | 1.52 / 1.77 |
-| vL128a rerun | (same pack) | (same pack) | 132, 130 ×3, merge → 128 | 7,059 | 98.2 | not re-serialized | — |
-| vL128b | 7,051 | 34,148 (7.2%) | 128 → 128 | 7,053 | 102.2 | 106.8 / 9.62 | 1.66 / 1.95 |
-
-The C-view rows are C's gates: 1,000 born values at n=64 and 3,000 at n=128. The replicate results are recorded in `docs/STAGE2_LINKABILITY.md` §5.
+The eight archived G=512 replicates (configs A and L8, n=64 and n=128, `W/<TAG>/`) are the parity targets of the Rust port: `tdp_packing run` reproduces every `rep512.*` and `deliverable.bin` byte for byte from the archived `tdp.mpmct1` and `s3.mpmct1` (`STAGE4_RUST_DESIGN.md` Appendix B; `tests/manual/stage4/run_parity.sh`), and `gen_sandwich_gadget` and the mixer reproduce the archived inputs from their seeds. How these runs were made and validated in October 2026 is recorded in `docs/local_mixing_history.md`.
 
 #### 6a.8 Trust boundary
 
@@ -2601,7 +2552,7 @@ Bit-exact parity with the Python oracle requires replicating its dict-insertion 
 
 ### 6b. Stage 6, second sub-step: unpacking with lattice refinement
 
-*Added 2026-10-12. Stages 6 (packing) and 7 (unpacking) of the seven-stage driver became one delivery stage on 2026-10-12 (RC; `docs/DELIVERY_STAGE.md` §1). The packing sub-step is §6a above; this sub-section describes what follows it. Line numbers refer to the worktree at commit `83e44ec5` (branch `ran/seven-stage`).*
+*Added 2026-10-12. Stages 6 (packing) and 7 (unpacking) of the seven-stage driver became one delivery stage on 2026-10-12 (RC; `docs/DELIVERY_STAGE.md` §1). The packing sub-step is §6a above; this sub-section describes what follows it. Line numbers refer to commit `83e44ec5` (on `main`).*
 
 Unpacking is what a recipient of the deliverable does to obtain a circuit again, and the refinement makes sure that it succeeds for every window. The sub-step takes the packer's repaired circuit `rep512.mpmct1`, its lattice `rep512.bounds` and its container `packing/deliverable.tdp4`, resynthesizes every window from its delivered ANF alone, and treats a window that does not resynthesize as a packing defect: the window is cut in two at an exposure-aware cut, both halves are re-emitted into the deliverable and unpacked in the next round, recursively, until every window unpacks or `max_rounds` is reached. The size of a resynthesized window is irrelevant ("windows that unpack badly are completely fine", RC). Its two outputs are the deliverable on the refined lattice, `unpacking/deliverable.tdp4`, which is **the shipped file**, and the resynthesized circuit in canonical commuting order, `unpacking/unpacked.mpmct1` (`docs/tdp_pipeline.md`, "Stage 6"). With `delivery.anf_only = true` the stage ends after the packer's deliverable and this sub-step does not run; together with `run.skip_stages = [4, 5]` that is the validated four-stage chain.
 
@@ -2765,8 +2716,8 @@ The all-wire model checks the whole permutation. That is stronger than delivery 
   2. If the support has at most 24 wires, `rules::verify_rewrite` evaluates both sides on all 2^k assignments (`src/engine/moves/rules.rs:278-318`).
   3. If the support is wider, `polys_equivalent` composes both sides to canonical ANF and compares them (`src/stages/db_mixing/replacement.rs:107-145`). This is a proof, not a sample.
   4. When `polys_equivalent` is undecided (support above 64 wires, or the term budget is hit), the splice is declined and counted (`db_wide_skip`).
-  5. A regular-store replacement that fails panics with "DB replacement verification failed". The historic curated path refuses the replacement instead of panicking (`replacement.rs:664-672`).
-- **Regular store only.** The recommended run uses the regular store only because `FROZEN_CURATED_DIR` is unset (§3.1). All replicates log `verify=true curated=false` (e.g. `vA64a/s3.log:3,9`).
+  5. A regular-store replacement that fails panics with "DB replacement verification failed".
+- **Regular store only.** The run uses the regular store only (§3.1).
 - **Global check.** It first asserts that the merge index matches the arena size. It then draws 4 batches × 64 lanes on *every* wire from the mixer RNG, evaluates the original input and the current arena, and panics on any difference. It runs every `verify_every` moves (default 10,000; `cli.rs:616-618`; `scheduling.rs:612-614`), at the stop-flag, eff-budget, canary, dose and moves-budget exits (`scheduling.rs:603-649`), and after the final float unless `--skip-final-float` is set (`circuit_mixer/mod.rs:901-904`). The ProfileDone exit (`scheduling.rs:476-478`) has no check of its own. The replicates ended on the moves budget (`vA64a/s3.log:1234`).
 - **`--no-local-verify`** (`cli.rs:622-624`) disables only the per-move exhaustive checks inside transformations. In the classic twist these are packet invertibility (`src/engine/mixer/transformations.rs:652-659`) and the per-gate `P^-1·g·P == g'` (`:689-699`). On the recommended path (`twist-g57=true`, `vA64a/s3.log:1`) they are the g57-twist conjugation check (`:1146-1153`) and the seam checks (`:1168-1186`). Correctness of the mixer output therefore rests on the per-splice proof and the sampled global check.
 
@@ -2776,7 +2727,7 @@ The all-wire model checks the whole permutation. That is stronger than delivery 
 
 ### 7.3 C-view: `hmap_affine --exposure`
 
-The binary is `security_tests/heatmaps/hmap_affine.rs` (`HA`). Building it requires the `security-tools` feature (`Cargo.toml:308-311`; `:249-251` at HEAD). In this section **P** is the circuit passed as `--g` (G2, the repaired pack, or a split candidate) and |P| its gate count. The binary that produced the replicate numbers was reproduced by a rebuild at `492564f0` (§8.9, resolved 2026-10-08). The exposure engine now lives in the library, `src/stages/packing/{gf2,cview}.rs`, byte-identical to it; `hmap_affine` keeps the CLI, `tdp_packing` uses it in-process, and `tdp_unpacking --refine` uses `CView::leaky` to choose refinement cuts.
+The binary is `security_tests/heatmaps/hmap_affine.rs` (`HA`). Building it requires the `security-tools` feature (`Cargo.toml:308-311`; `:249-251` at HEAD). In this section **P** is the circuit passed as `--g` (G2, the repaired pack, or a split candidate) and |P| its gate count. The binary that produced the replicate numbers was reproduced by a rebuild at `492564f0` (§8.9). The exposure engine now lives in the library, `src/stages/packing/{gf2,cview}.rs`, byte-identical to it; `hmap_affine` keeps the CLI, `tdp_packing` uses it in-process, and `tdp_unpacking --refine` uses `CView::leaky` to choose refinement cuts.
 
 **Definition.** For every value born by a gate of C, t\* is the minimum, over the scanned cuts of P, of the number of distinct nonconstant P wire values whose XOR plus a constant equals that value on all samples. Wires holding the same value or its complement count once, and constants are free. If no cut admits such a predictor, t\* = −1 (`HA:137-148`).
 
@@ -2873,7 +2824,7 @@ It also breaks linkable proxy values down by stage-2 birth multiplicity, both by
 
 ### 7.6 Current measurements
 
-**Threat model.** The adversary sees the full wire state at every boundary and at the input, but never the gates inside a window (`STAGE2_LINKABILITY.md:23-28`). The cut lattice is used exhaustively. Function equality is sampled: 1,024 inputs for linkability and 6,144 for the C-view. The boundaries of the shipped file are the refined lattice `unpacking/bounds.final` (the packer's lattice plus one cut per window that failed to resynthesize, recursively). A second adversary is now measured: merge consecutive windows into a width W, resynthesize in place, and census the materialised values against C ("Measurements on the six-stage chain" below).
+**Threat model.** The adversary holds exactly the shipped file: the refined lattice of windows and, for each window, the ANF of the permutation it applies; from the ANFs it can derive the wire state at every window boundary on inputs of its choice, compose adjacent windows and resynthesize any window into a circuit of its own; it cannot see how the function was spelled inside a window (`STAGE2_LINKABILITY.md` §2). The cut lattice is used exhaustively. Function equality is sampled: 1,024 inputs for linkability and 6,144 for the C-view. The boundaries of the shipped file are the refined lattice `unpacking/bounds.final` (the packer's lattice plus one cut per window that failed to resynthesize, recursively). A second adversary is now measured: merge consecutive windows into a width W, resynthesize in place, and census the materialised values against C ("Measurements on the six-stage chain" below).
 
 **No affine relation to C beyond the outputs was found in stage 2, at the cuts scanned.** The span check was run on 29 stage-2 variants, with outputs *not* counted trivial. At n=64 it scanned every 16th cut (about 41-60k cuts); at n=128 every 128th cut (about 15-17k cuts).
 
@@ -2893,7 +2844,7 @@ Sources: `RESULTS.md:1665-1681`. The mixer's role was localized on one artifact,
 - 0 spot-check failures;
 - span excess 0 at every scanned cut, outputs counted trivial: stride 64 / 256 including cuts 0 and |P|, 12,145-12,176 cuts at n=64 and 8,681-8,733 at n=128; dim U = 1,041-1,051 at n=64 and 3,104-3,113 at n=128. Each `span_s2.txt` is one line, for example vL64a: `[span] dim span(C values,1) = 1049 over 6144 samples; cuts by intersection dim: {0: 12176}; nonzero from cut None`. The span scans are strided like the study's; no dense tail scan was run on the replicates.
 
-`verify_zero_slice` was run afterwards on all twelve validation runs (512 random honest-slice inputs, fresh seeds; `docs/STAGE2_LINKABILITY.md` §5), and the zero-slice check is built into every `tdp_packing run` and `tdp_unpacking run --refine` since (4,096 inputs). Cancellation removed about 6.6-7.3% of gates; for example vA128a went from 4,757,723 to 4,437,893. Pack, repair and serialization figures are in §6a.7.
+`verify_zero_slice` was run afterwards on all twelve validation runs (512 random honest-slice inputs, fresh seeds; `docs/STAGE2_LINKABILITY.md` §5), and the zero-slice check is built into every `tdp_packing run` and `tdp_unpacking run --refine` since (4,096 inputs). Cancellation removed about 6.6-7.3% of gates; for example vA128a went from 4,757,723 to 4,437,893. Pack, repair and serialization timings are in §8.9; serialized sizes per configuration in `docs/STAGE2_LINKABILITY.md` §5.
 
 | run | C-view final | proxy values (delivered stage-2 exposure) | L2 | M2 | froth L2 | anchors (100+) |
 |---|---|---|---|---|---|---|
@@ -2906,11 +2857,11 @@ Sources: `RESULTS.md:1665-1681`. The mixer's role was localized on one artifact,
 | vL128a (rerun) | 128 | 34,958 | 16,106 | 187,248 | 5,579 | 718 |
 | vL128b | 128 | 34,751 | 16,062 | 187,496 | 5,544 | 701 |
 
-vL128a's first repair (v1, last scan at 129) gave L2 / M2 / froth L2 = 16,107 / 187,247 / 5,578. Its `deliverable.bin`, `deliver.txt` and timings were written at 01:35-01:36, before the patched rerun (08:24-08:44), describe the v1 artifact, and were regenerated on 2026-10-08 (§6a.7 update).
+vL128a's first repair (v1, last scan at 129) gave L2 / M2 / froth L2 = 16,107 / 187,247 / 5,578. Its `deliverable.bin`, `deliver.txt` and timings were written at 01:35-01:36, before the patched rerun (08:24-08:44), describe the v1 artifact, and were regenerated on 2026-10-08 (§8.9).
 
 The stage-2 rebirth census (`mult_s2.txt`, §2b.7) is consistent across seeds: config A has repeats 19.8-19.9% and 329-335 (n=64) / 968-973 (n=128) values with multiplicity ≥ 257; config L8 has repeats 8.6-8.7%, none at ≥ 257, and a top multiplicity of 186-214.
 
-**L8 against A.** This is the single reference table of L8-versus-A deltas. Each cell is the mean of the two replicates per configuration; sizes come from §6a.7.
+**L8 against A.** This is the single reference table of L8-versus-A deltas. Each cell is the mean of the two replicates per configuration; sizes are the per-run `deliverable.bin` sizes (ranges in `docs/STAGE2_LINKABILITY.md` §5).
 
 | metric | n=64: A → L8 | Δ | n=128: A → L8 | Δ |
 |---|---|---|---|---|
@@ -2923,7 +2874,7 @@ The stage-2 rebirth census (`mult_s2.txt`, §2b.7) is consistent across seeds: c
 | `deliverable.bin` MB | 26.5 → 31.5 | +18.9% | 105.8 → 105.0 | −0.8% |
 | ANF size estimate MB | 25.1 → 30.0 | +19.3% | 101.0 → 100.2 | −0.8% |
 
-The n=128 L8 row mixes the patched vL128a rerun with vL128b, and its `.bin` mean uses the size of vL128a's pre-rerun (v1) file (§6a.7); the re-serialized file's size has not been folded in. The doc-level summary in `STAGE2_LINKABILITY.md:120-135` predates the replicates. It uses the earlier finals (`RESULTS.md:1742-1751`) and gives L2 −13%, M2 −21% / −26%, "exposed" (= proxy values) −24% / −37%, anchors −39% / −28% and size +18% / 0% (n=64 / n=128). Those are earlier-final figures and should not be quoted as replicate results.
+The n=128 L8 row mixes the patched vL128a rerun with vL128b, and its `.bin` mean uses the size of vL128a's pre-rerun (v1) file, 103.2 MB (§8.9); the re-serialized file's size has not been folded in. The doc-level summary in `STAGE2_LINKABILITY.md:120-135` predates the replicates. It uses the earlier finals (`RESULTS.md:1742-1751`) and gives L2 −13%, M2 −21% / −26%, "exposed" (= proxy values) −24% / −37%, anchors −39% / −28% and size +18% / 0% (n=64 / n=128). Those are earlier-final figures and should not be quoted as replicate results.
 
 **Measurements on the six-stage chain (the resynthesis adversary).** The raw crossing output (stage 5, n=64 L8, `s45_runs/base64`; n=128, `s45_runs/e2e128`) holds no C value at any cut: 0 interior, 0 early outputs at both sizes. Merged windows resynthesized in place expose them anyway (`docs/notes/stage45_revival_20261011.md` §3-4; `docs/notes/stubborn_windows_20261012.md` §1-2):
 
@@ -3001,10 +2952,10 @@ A run turns a fresh secret circuit C into the refined deliverable `unpacking/del
 - **Stages 1 (sandwich) and 2 (preprocessing)** run as one Rust process, `gen_sandwich_gadget`.
 - **Stage 3 (mixing)** runs as one Rust process, `circuit_mixer --tdp --db-mixing`, against the regular frozen store.
 - **Stage 4 (splitting)** is `circuit_mixer --split --split-stop` (§4), and **stage 5 (the crossing walk)** is `circuit_mixer --resume split.state --target-size …` (§5); both are mixer modes.
-- **Stage 6 (delivery), packing sub-step** *(superseded 2026-10-09: ported to Rust as `tdp_packing run`, which the managed driver runs; the prototypes below are its oracle)* existed only as Python/bash prototypes: `window_pack3.py`, then `repair.sh`, then `anf_dump_eval.py`. The snapshot in `scripts/windowed_delivery/` (README: the reference oracle for the Rust port, `scripts/windowed_delivery/README.md:1-8`) was first taken at commit `7163e457` (2026-10-07 23:21), before the leak-slide fix to `W/order_repair.py:158-171` (2026-10-08 08:24), and without the reference driver `val_chain.sh`. Both gaps are closed: commit `5619b867` refreshed it, and at `ran/stage4-rust` HEAD `waist/order_repair.py`, `repair.sh`, `merge_bounds2.py`, `anf_split2.py`, `verify_equiv.py`, `anf_dump_eval.py`, `link_census.py`, `window_pack3.py` and `anf_compose.py` are byte-identical to the live copies in `W/` and `RD/` (checked with `cmp`), `waist/order_repair.py` has the patched slide (§6a.5), and `waist/val_chain.sh` is tracked (it differs from the run-tree copy only by dropping the inert `--p-comp 1.0 --p-any 0.1` on line 21). The tracked snapshot, which CI runs against `tdp_packing` (`tests/stage4/differential.sh`), is the oracle.
+- **Stage 6 (delivery), packing sub-step** *(superseded 2026-10-09: ported to Rust as `tdp_packing run`, which the managed driver runs; the prototypes below are its oracle)* existed only as Python/bash prototypes: `window_pack3.py`, then `repair.sh`, then `anf_dump_eval.py`. The snapshot in `scripts/windowed_delivery/` (README: the reference oracle for the Rust port, `scripts/windowed_delivery/README.md:1-8`) was first taken at commit `7163e457` (2026-10-07 23:21), before the leak-slide fix to `W/order_repair.py:158-171` (2026-10-08 08:24), and without the reference driver `val_chain.sh`. Both gaps are closed: commit `5619b867` refreshed it, and on `main` (2026-10-12) `waist/order_repair.py`, `repair.sh`, `merge_bounds2.py`, `anf_split2.py`, `verify_equiv.py`, `anf_dump_eval.py`, `link_census.py`, `window_pack3.py` and `anf_compose.py` are byte-identical to the live copies in `W/` and `RD/` (checked with `cmp`), `waist/order_repair.py` has the patched slide (§6a.5), and `waist/val_chain.sh` is tracked (it differs from the run-tree copy only by dropping the inert `--p-comp 1.0 --p-any 0.1` on line 21). The tracked snapshot, which CI runs against `tdp_packing` (`tests/stage4/differential.sh`), is the oracle.
 - **Stage 6, unpacking sub-step**: `tdp_unpacking run --refine` (Rust, 2026-10-11/12; Python reference `scripts/windowed_delivery/waist/deliver.py`), §6b.
 
-The reference end-to-end driver is `W/val_chain.sh` (`val_chain.sh:1-35`; a self-contained copy of its body is in the Overview). Every validated number in this section comes from it. *Superseded (2026-10-09):* the managed driver, `scripts/tdp_gen.sh` together with `src/tdp/`, used to implement the earlier six-step pipeline and could not express the recommended configuration (Appendix A, kept as it stood). It now runs six stages (config v4, recipe v12, SEEDS format 3) and defaults to config L8; `--run-skip-stages 4,5 --delivery-anf-only` (`run.skip_stages = [4, 5]`, `delivery.anf_only = true`) reproduces `val_chain.sh` from the same seeds, and its full default chain ends with `unpacking/deliverable.tdp4` + `unpacking/unpacked.mpmct1` (§8.10; `docs/tdp_pipeline.md`).
+The reference end-to-end driver is `W/val_chain.sh` (`val_chain.sh:1-35`; a self-contained copy of its body is in the Overview). Every validated number in this section comes from it. *Superseded (2026-10-09):* the managed driver, `scripts/tdp_gen.sh` together with `src/tdp/`, used to implement the earlier six-step pipeline and could not express the recommended configuration (the managed-driver gap analysis, closed 2026-10-09; `docs/local_mixing_history.md`, October 8, 2026). It now runs six stages (config v4, recipe v12, SEEDS format 3) and defaults to config L8; `--run-skip-stages 4,5 --delivery-anf-only` (`run.skip_stages = [4, 5]`, `delivery.anf_only = true`) reproduces `val_chain.sh` from the same seeds, and its full default chain ends with `unpacking/deliverable.tdp4` + `unpacking/unpacked.mpmct1` (§8.10; `docs/tdp_pipeline.md`).
 
 ### 8.1 Prerequisites
 
@@ -3027,7 +2978,7 @@ The reference end-to-end driver is `W/val_chain.sh` (`val_chain.sh:1-35`; a self
 - **Filters.** To make `FROZEN_FILTER=1` meaningful, build `filters.bin` with `frozen_filters_build from-frozen DIR` as part of a fresh build (`:250`). For an existing store, run `bash db_gen/maintenance/build_filters.sh FROZEN_DIR`, which refuses to overwrite and validates key membership, and check it with `check_filters.sh FROZEN_DIR [EXPECTED_SHA256]` (`:203-213`). Filters cost about 25.5 GB of RAM per process (`frozen.rs:7`).
 - **Coverage (m range).** *Inferred* from the name and the build command: the store holds regular tables built for gate counts m = 1..11. The construction bounds are not recorded with the store. These are `--min_n`/`--max_n`, which restrict the wire counts used (`:236-238`), and whether each length was generated completely. the archived write-up `CURATED_DB_V3_SUMMARY.md:14` (removed from the tree in `8070f5a0`; branch `ran/archive/curated-and-postmix`, see `docs/CURATED_AND_POSTMIX_ARCHIVE.md`) calls it "the complete g57 replacement corpus through 11 gates", while `docs/frozen_database.md:84-86` warns that the directory name does not establish exhaustive coverage. Treat coverage as undocumented (§3.10).
 - The local copy has no `filters.bin`. So `FROZEN_FILTER=1`, which would otherwise load about 25.5 GB of filters (`frozen.rs:662-690`), does nothing on this machine. Every `s3.log` prints `FROZEN_FILTER=1 but no filters.bin ...; running unfiltered`.
-- `FROZEN_CURATED_*` are ignored with a WARNING at HEAD (mixer `mod.rs:203-221`): the curated store is historic, and the managed driver refuses the variables when inherited. (At `ea2e516f` `FROZEN_CURATED_DIR` had to stay unset, §3.1: `--tdp` turned curated lookups on unless `--curated` was given, mixer `mod.rs:94-109`; with the variable unset the mixer fell back to the regular store with a WARNING, `mod.rs:217-229`, the log header still showed `TDP profile ON: curated=true` and the later lines `curated=false` and `value conventions: regular=native, curated=-`; passing `--curated` explicitly turned the missing store into a hard error, `mod.rs:218-222`.)
+- `FROZEN_CURATED_*` are ignored with a WARNING at HEAD (mixer `mod.rs:203-221`), and the managed driver refuses the variables when inherited. (At `ea2e516f` `FROZEN_CURATED_DIR` had to stay unset, §3.1: `--tdp` turned curated lookups on unless `--curated` was given, mixer `mod.rs:94-109`; with the variable unset the mixer fell back to the regular store with a WARNING, `mod.rs:217-229`, the log header still showed `TDP profile ON: curated=true` and the later lines `curated=false` and `value conventions: regular=native, curated=-`; passing `--curated` explicitly turned the missing store into a hard error, `mod.rs:218-222`.)
 
 **Python.** The oracle chain and `waist/deliver.py` need `python3` with the standard library only (the oracle must run under an interpreter that passes the CPython 3.9 set-order self-test, `tests/fixtures/stage4/pyset_selftest.py`). The managed driver uses `python3 -I` for seed drawing, number parsing and the HMAC markers; the stage binaries need no Python.
 
@@ -3128,7 +3079,6 @@ The remaining stage-2 settings are the production defaults (`EM:196-217`; gen `m
 ```
 NG2=$(head -1 $R/tdp.mpmct1 | awk '{print $3}')     # |G2|, from the mpmct1 header
 MOVES=$(python3 -c "print(int($NG2*2*2*1.3))")      # ⌊N2·R1·1.3·|G2|⌋ = ⌊5.2·|G2|⌋ (§3.1)
-env -u FROZEN_CURATED_DIR \
 FROZEN_DB_DIR=.../frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
   target/release/circuit_mixer --input $R/tdp.mpmct1 --output $R/s3.mpmct1 --tdp --db-mixing \
   --profile 2,2,2,2,2 --moves $MOVES --p-db 1.0 \
@@ -3136,7 +3086,7 @@ FROZEN_DB_DIR=.../frozen_db/frozen_m1_m11 FROZEN_FILTER=1 \
   --no-local-verify --seed $MSEED > $R/s3.log 2>&1
 ```
 
-This is `val_chain.sh:17-23` with the `env -u FROZEN_CURATED_DIR` guard added (§3.1; this build ignores the variable); `val_chain.sh` names the gate-count variable `G`. The validation runs' `val_chain.sh` also passed `--p-comp 1.0 --p-any 0.1`. Those values equal the defaults and have no effect here, because they act only in slot 3 (`scheduling.rs:545-575`), which is never reached when `p_db = 1.0` (§3.2); the tracked copy dropped them, and they are stage 5's live flags. The managed driver runs the same argv with `--output db_mixing.mpmct1` (written as `.tmp`, fsynced, renamed), `--seed-file /dev/fd/3` in place of `--seed`, log `stage3.log`, the completion marker `stage3.recipe`, and the output-neutral caches `LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256 XPOLY_CANON_CACHE_MB=1024`; `FROZEN_FILTER=1` is set by `lookup_miss_filter = "auto"` on a store without `filters.bin`.
+This is `val_chain.sh:17-23`; `val_chain.sh` names the gate-count variable `G`. The validation runs' `val_chain.sh` also passed `--p-comp 1.0 --p-any 0.1`. Those values equal the defaults and have no effect here, because they act only in slot 3 (`scheduling.rs:545-575`), which is never reached when `p_db = 1.0` (§3.2); the tracked copy dropped them, and they are stage 5's live flags. The managed driver runs the same argv with `--output db_mixing.mpmct1` (written as `.tmp`, fsynced, renamed), `--seed-file /dev/fd/3` in place of `--seed`, log `stage3.log`, the completion marker `stage3.recipe`, and the output-neutral caches `LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256 XPOLY_CANON_CACHE_MB=1024`; `FROZEN_FILTER=1` is set by `lookup_miss_filter = "auto"` on a store without `filters.bin`.
 
 | flag | value | default | role |
 |---|---|---|---|
@@ -3278,7 +3228,7 @@ The managed run directory, by stage:
 
 ### 8.9 Reference measurements (validation replicates, 2026-10-07/08)
 
-Eight runs were launched together on an 18-core, 128 GiB Apple M5 Max. Each mixer ran single-threaded. They are recorded in `STAGE2_LINKABILITY.md` §5. C-view, window, size and evaluation figures are in §6a.7; linkability figures in §7.6.
+Eight runs were launched together on an 18-core, 128 GiB Apple M5 Max. Each mixer ran single-threaded. They are recorded in `STAGE2_LINKABILITY.md` §5 (which also carries the serialized sizes and evaluation speed per configuration); linkability figures are in §7.6, and the archived runs themselves are the port's parity targets (§6a.7).
 
 | run | G2 | G3 (×) | stage-3 wall | total wall |
 |---|---|---|---|---|
@@ -3296,9 +3246,9 @@ Eight runs were launched together on an 18-core, 128 GiB Apple M5 Max. Each mixe
 - The fix iterations went 132 → 130 → 130 → 130.
 - Fallback iteration 1 merged 1 boundary and split 1 window. Iteration 2 reached **128** with 0 splits, with no warning.
 - After the rerun: 7,059 windows, proxy L2 / M2 = 16,106 / 187,248, froth L2 5,579, estimated ANF size 98.2 MB.
-- `deliverable.bin` was re-serialized on 2026-10-08 (§6a.7 update); the 103.2 MB file quoted in §6a.7 is the first repair's.
+- `deliverable.bin` was re-serialized on 2026-10-08 (§6a.7); the first repair's file was 103.2 MB (9.52 MB xz).
 
-All eight runs were re-repaired with the canonical script and re-serialized on 2026-10-08 (§6a.7).
+All eight runs were re-repaired with the patched `order_repair.py` (the ported version, §6a.5) and re-serialized on 2026-10-08; the resulting `rep512.*` and `deliverable.bin` are the port's parity targets (§6a.7).
 
 **Phase timings** (measured with 8 jobs running concurrently; single-job timings were not recorded):
 
@@ -3316,15 +3266,7 @@ All eight runs were re-repaired with the canonical script and re-serialized on 2
 
 **Stage-3 share of wall time** is stage-3 wall time divided by total wall time, per run: 87.4, 88.1, 82.2, 82.5% at n=64 (vA64a, vA64b, vL64a, vL64b) and 84.7, 80.3, 74.0, 82.6% at n=128 (vA128a, vA128b, vL128a, vL128b). vL128a's total includes its first, failed repair.
 
-**Build provenance (resolved 2026-10-08).** `hmap_affine` rebuilt from
-`492564f0` reproduces the archived `rep512.{exposure,allcuts,wit}.tsv`,
-line 2 of `rep512.cview.log` and the split-candidate TSVs on all eight tags
-(`STAGE4_RUST_DESIGN.md` §12, P2), so the numbers below stand. Gen and the
-mixer at `492564f0` reproduce the archived stage-2 artifacts of all eight
-tags and `s3.mpmct1` of vL64a and vL128a (the historic anchor). The original
-note follows.
-
-No commit hash was recorded for the binaries. File times on this machine:
+**Build provenance.** The archived C-view TSVs (`rep512.{exposure,allcuts,wit}.tsv`, line 2 of `rep512.cview.log` and the split-candidate TSVs of all eight tags) are reproduced by `hmap_affine` built from `492564f0` (`STAGE4_RUST_DESIGN.md` §12, P2), so the numbers below stand; gen and the mixer at `492564f0` reproduce the archived stage-2 artifacts of all eight tags and `s3.mpmct1` of vL64a and vL128a (the archived anchor runs). No commit hash was recorded for the binaries that ran; their file times on this machine:
 
 | binary | built | newer sources? |
 |---|---|---|
@@ -3332,13 +3274,13 @@ No commit hash was recorded for the binaries. File times on this machine:
 | `target/release/circuit_mixer` | 2026-10-07 19:18:35 | none |
 | `target/release/hmap_affine` | 2026-10-07 18:54:28 | **yes**: `security_tests/heatmaps/hmap_affine.rs` was last modified at 19:17:46 and committed in `7163e457` (23:21) |
 
-The replicates were launched at 23:23 (`W/v*/seed.txt`), so gen and the mixer match the tree as of 19:18. Every C-view, span-check and repair number (§6a.5, §6a.7, §7.6, §8.6) comes from an `hmap_affine` binary that predates its committed source. So the `HA` line numbers cited in this document cannot be confirmed to describe the code that ran. To close this item, rebuild `hmap_affine` at `ea2e516f` (`cargo build --release --features security-tools --bin hmap_affine`) and re-run at least one replicate's repair C-view (the `cview()` command of `W/repair.sh:18-19` on `rep512`) and its span check (`W/val_chain.sh:26-27`). Then confirm that `rep512.cview.log` line 2, `rep512.exposure.tsv` and `span_s2.txt` are identical.
+The replicates were launched at 23:23 (`W/v*/seed.txt`), so gen and the mixer match the tree as of 19:18, while every C-view, span-check and repair number (§6a.5, §7.6, §8.6) came from an `hmap_affine` binary older than its committed source; the rebuild from `492564f0` above is what ties those numbers to committed code.
 
 **Six-stage reference runs.** n=64 L8 (`port_runs/seven_n64`, 2026-10-11, budget 2×target, 8 threads): stages 1+2 775,332 gates (1 min); 3: 1,583,698 (29 min, 4,031,726 moves); 4: 2,987,961 (1 min); 5: target 5,975,922, temperature 239,037, budget 11.95M moves → 5,380,721 (7 min); packing 10,150 windows → repair 5,153,273 gates / 10,365 bounds, floor 64/0, 88 min; unpacking before the refinement policy: 10,366 windows, 10,209 synthesized, 157 verbatim (1.5%), 371 deadline hits, 4,766,644 gates (0.925), 68 min (8.9 CPU-hours). n=128 stages 4/5 (the revival study, 6× budget): 4.59M → 8.66M (8.5 min) → 15.7M (6.3 h); packing of the stage-5 output 29,969 windows, 7.7 h, floor 128/0. n=16 six-stage run (`port_runs/six_n16b`, 2026-10-12, |C|=|D|=32, budget factor 2 at the time): 48,447 → 100,826 → 192,489 → 347,900 gates (target 384,978, temperature 15,399); delivery 678 windows, 3 refinement rounds (16 + 2 splits, 0 unclean cuts, 0 over budget, 0 verbatim, 24 deadline hits), 696 final windows, 333,588 → 227,981 gates (0.683), all checks ok, 18 min end to end (`docs/notes/seven_stage_20261011.md` §3-4; `docs/notes/stage45_revival_20261011.md` §1; `port_runs/six_n16b/{tdp_gen.log,unpacking/unpacking.report,unpacking/rounds.tsv}`).
 
 ### 8.10 The managed driver today
 
-The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen --config`) runs all six stages (every stage after 1 optional: `run.skip_stages` / `--run-skip-stages 2..6`; `run.stop_after_stage` default 6), config v4, recipe v12, SEEDS format 3 (gen, mix, split, cross, unpack). Its defaults: preset `L8` (`A` selectable), schedule `validated` (profile `2,2,2,2,2`, moves `int(G·2·2·1.3)`, serial), the validated source sizes (1000 at n=64, 3000 at n=128), stage 4 with the archive-era flags (`--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256 --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12 --moves G+10^6`), stage 5 with `target_size_factor` 2, `width_penalty_base` 3, `width_penalty_threshold` 1, `size_tolerance_divisor` 25 (temperature max(64, target/25)), `move_budget_factor` 3 (RC 2026-10-12; 2 on 2026-10-11; 6 in the archive-era driver; `move_attempts` = absolute override), packing at G=512 with split budget 65536, 4+4 iterations and `cpython39` caps, delivery `anf_only=false`, `time_limit` 30 s per window per round, `restarts` 16, `beam` 6, `max_rounds` 16. `--run-skip-stages 4,5 --delivery-anf-only` is the validated four-stage chain and the only chain for which `pinned_recipe` is recorded. Markers: `stage12.recipe`, `stage3.recipe`, `stage4.recipe`, `stage5.recipe`, `delivery.recipe`; failure marker `delivery.failed` (`exit=`, `step=packing|unpacking`); logs `stage12.log`, `stage3.log`, `stage4.log`, `stage5.log`, `stage6.log`. Every gap of Appendix A is closed (`docs/STAGE4_RUST_DESIGN.md` §2.2, D1-D18). Use it; `W/val_chain.sh` is a parity tool.
+The managed driver (`scripts/tdp_gen.sh` with `src/tdp/`, run through `tdp_gen --config`) runs all six stages (every stage after 1 optional: `run.skip_stages` / `--run-skip-stages 2..6`; `run.stop_after_stage` default 6), config v4, recipe v12, SEEDS format 3 (gen, mix, split, cross, unpack). Its defaults: preset `L8` (`A` selectable), schedule `validated` (profile `2,2,2,2,2`, moves `int(G·2·2·1.3)`, serial), the validated source sizes (1000 at n=64, 3000 at n=128), stage 4 with the archive-era flags (`--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100 --split-canaries 256 --p-db 0 --p-comp 0 --p-any 0 --p-twist 0 --k-max 12 --moves G+10^6`), stage 5 with `target_size_factor` 2, `width_penalty_base` 3, `width_penalty_threshold` 1, `size_tolerance_divisor` 25 (temperature max(64, target/25)), `move_budget_factor` 3 (RC 2026-10-12; 2 on 2026-10-11; 6 in the archive-era driver; `move_attempts` = absolute override), packing at G=512 with split budget 65536, 4+4 iterations and `cpython39` caps, delivery `anf_only=false`, `time_limit` 30 s per window per round, `restarts` 16, `beam` 6, `max_rounds` 16. `--run-skip-stages 4,5 --delivery-anf-only` is the validated four-stage chain and the only chain for which `pinned_recipe` is recorded. Markers: `stage12.recipe`, `stage3.recipe`, `stage4.recipe`, `stage5.recipe`, `delivery.recipe`; failure marker `delivery.failed` (`exit=`, `step=packing|unpacking`); logs `stage12.log`, `stage3.log`, `stage4.log`, `stage5.log`, `stage6.log`. Every gap of the managed-driver gap analysis is closed (`docs/STAGE4_RUST_DESIGN.md` §2.2, D1-D18; `docs/local_mixing_history.md`, October 8, 2026). Use it; `W/val_chain.sh` is a parity tool.
 
 Resume semantics: a stage is skipped only when its keyed marker matches its inputs, parameters, binary and output; `run.rerun_from_stage` recomputes a stage and every later one; rerunning any of stages 2-5, or changing any packing or delivery parameter (`anf_only` included), reruns the whole stage 6 (both sub-steps); a `*.stopped.mpmct1` output is under-dosed and never handed on; a pre-marker run's `db_mixing.mpmct1` is adopted when its `delivery.recipe` (or the seven-stage driver's `packing.recipe`) carries the tags of exactly these bytes. Failure outcomes: `delivery.failed` and a non-zero exit; an allowed failure (`floor_miss`, `over_budget`, `verbatim_used`) writes `NOT_RECOMMENDED` next to the final output and ends with `PIPELINE FINISHED WITH AN ALLOWED FAILURE`.
 
@@ -3350,7 +3292,6 @@ Driver history, so that old run directories and notes can be read: the four-stag
 - **Concurrency.** Never run two repairs in the same TAG directory: they share the `rep<G>.*` scratch files (`repair.sh:10-19`). (Oracle. `tdp_packing run` and `tdp_unpacking run` into a reused `--out-dir` first remove the earlier run's outputs; the managed driver removes `packing/` and `unpacking/` before re-running stage 6.) The earlier finalizer `W/finalize3.sh` (not used by `val_chain.sh`) likewise shares `fin.*` and `final_G<G>.bounds` (`finalize3.sh:10-18`). Never edit a bash driver while instances are running it, because bash reads scripts by byte offset.
 - **No `set -e`.** `repair.sh` and `val_chain.sh` use `set -uo pipefail` without `-e`. If `hmap_affine` is missing or fails, `cview` returns an empty string, the `-le` test errors, and the script keeps going. `cview` also depends on line 2 of the hmap log (`repair.sh:20`).
 - **The fallback loop can exit unchecked** (oracle; the port rescans and exits 5/6). After its fourth iteration it exits without rescanning, so the final printed C-view can predate the last merge or split (`repair.sh:28-33,39`). Always confirm the `0 splits added` line and the absence of `WARNING: no exposure-free split`.
-- **Curated leaks back in** (historic). At `ea2e516f` an exported `FROZEN_CURATED_DIR` silently turned stage 3 curated-first (§3.1); the current mixer ignores the variable with a WARNING and the managed driver refuses it.
 - **Pack report labels are wrong at n = 128.** `window_pack3.py:49-50` hard-codes the wire-class thresholds at 64/128, so the per-class exposure lines in `pack_G512.txt` are mislabeled for n = 128 runs.
 - **Stale documentation.** `docs/ANF_WINDOW_DELIVERY.md` describes 4,096 fingerprint lanes, per-window verification and a G = 128-era parameter table (`:183-187`; §7.8). The code uses 1,024-sample (16 × 64-bit) fingerprints, checks every 500th window and runs at G = 512. *(Superseded 2026-10-09 and 2026-10-12: `docs/tdp_pipeline.md` once described the historic six stages (old 4-6: split, crossing, fcompress) with profile `3,30,30,2,2`; on 2026-10-09 the four stages; since 2026-10-12 the current six stages, 1-3, 4 splitting, 5 crossing, 6 delivery, with the `validated` schedule.)*
 - **`--moves` is absolute on a resume**: the stage-5 budget is added to the split counter (§5.1).
@@ -3373,30 +3314,6 @@ Decided by the port (`docs/STAGE4_RUST_DESIGN.md`): the default |C| is the valid
 - **Timings:** solo stage-3 timings and validation of `--parallel-pieces` with this configuration. (The managed driver no longer sets the 512/200000 canonicalization caps: the reference runs had them unbounded.)
 
 
-## Appendix A. The managed driver: gap analysis
-
-**Closed (2026-10-09; on `main` since 2026-10-12).** Every item below is resolved: persistent migration and the new stage-2 knobs are the L8/A presets (custom preset for anything else); the profile `2,2,2,2,2` is the `validated` schedule; the historic stages and the curated store are gone; stage 4 (packing, today §6a) is `tdp_packing run`; seeds are `gen_seed` (all three gen seeds) and an independent `mix_seed` in the private `SEEDS` file. The full list of differences and their resolutions is `docs/STAGE4_RUST_DESIGN.md` §2.2 (D1-D18). Since then (2026-10-11 the seven-stage driver, config v3 / recipe v11; 2026-10-12 the six-stage driver with one delivery stage, config v4 / recipe v12): stages 4 and 5 revived, five seeds in SEEDS format 3, markers `stage4.recipe` / `stage5.recipe` / `delivery.recipe`, failure marker `delivery.failed`; a v3 config or an `[unpacking]` table is refused with a migration pointer (§8.10). The analysis below is kept as it stood.
-
-This appendix collects the managed driver's differences from the recommended pipeline. None of them affects a run made with `W/val_chain.sh`.
-
-`configs/` ships only `tdp.toml`, which is also the default config (`src/tdp/cli.rs:6,12`). The documented workflow first runs `cp configs/tdp.toml configs/local.toml` and edits the database paths (`README.md:18`; `docs/local_mixing_documentation.md:2285-2291`), then runs `cargo run --release --locked -- tdp_gen --config configs/local.toml`. The command builds the binaries, writes a `tdp_command.conf` manifest, scrubs the environment and execs `scripts/tdp_gen.sh` (`src/tdp/runner.rs:93-212,330-411`). It cannot run the recommended configuration until the cleanup changes the following:
-
-1. **Persistent migration is rejected.** `SHUFFLING > 0` with `RETURN_HOME=0` is refused by `tdp_gen.sh:272-275` and `src/tdp/config/validate.rs:118-125` (and expected to be refused by `tests/shell/tdp_flags.bash:40-41`). The generator itself preserves ports in both modes (gen `mod.rs:70-73`). The driver also requires `segments ≥ 8`, whereas the generator accepts any positive value (§2c.12).
-2. **The new stage-2 knobs are scrubbed.** The wrapper removes every `PROD_*`, `SAT_*`, `EMBEDDED_MASKING_*` and `DB_QC*` variable (`runner.rs:334-343`). It then re-sets only K, `MAX_OPEN`, `MIN_OPEN`, `BALANCED`, `QUAD_FIRE`, `SHUFFLING` and `SHUFFLING_RETURN_HOME` (`runner.rs:353-380`). Neither the TOML nor the manifest has fields for `PREMASK`, `SEED_AVOID_C1`, `CHAIN` or `CHAIN_LEN`.
-3. **Profile `2,2,2,2,2` cannot be expressed.** `tdp_gen.sh:451-464` hard-codes `n0=3` and `n1=n2=3+HOLD`. Its default (HOLD = 27, EXPAND = 2; `:115`) amounts to 78·|G2| moves, against the recommended 5.2·|G2|.
-4. **Inert DB flags remain.** `DBFLAGS` still carries the inert `--p-comp` / `--p-any` (`tdp_gen.sh:490`).
-5. **Curated is still promoted.** The driver still describes curated as "recommended" (`tdp_gen.sh:96-102`), and the wrapper exports `FROZEN_CURATED_DIR` when it is configured (`runner.rs:382-386`).
-6. **The historic stages are still on by default.** Old stages 4–6 still run by default (`stop_after_stage = 6`; `tdp_gen.sh:517-587`), and `fcompress` is a required binary.
-7. **There is no new stage 4.** Neither `tdp_gen.sh` nor the Rust `tdp_gen` wrapper has a windowed-delivery (`deliverable.bin`) step. Only the research driver `val_chain.sh` has one (`val_chain.sh:29-33`). [Stage 4 = packing at the time, today §6a; resolved by `tdp_packing run`.]
-8. **Seeds** are handled differently (below), and `docs/tdp_pipeline.md` still describes six stages and the profile `3,30,30,2,2`. [The six stages meant here were the historic ones, old stages 4-6 = split, crossing, fcompress; the current manual's six stages are 1-3, splitting, crossing, delivery.]
-
-**Seed handling in the managed driver.**
-
-- `tdp_gen.sh:342-345` draws `secrets.randbelow(2**63 - 16)`. The code comment explains that a full 64-bit value overflows bash's signed arithmetic.
-- It then uses `seed=SEED`, `gadget_seed=SEED+1`, `sandwich_seed=SEED` (`:434-435`) and the mixer seed `SEED+2` (`:504`).
-- The seed goes to `RUN/SEED` under `umask 077` / `chmod 600` and is kept out of the narrative log (`:414-417`).
-- The `[gen]` header still writes all three seeds in clear into `$RUN/stage12.log` (`:434-435`; gen `mod.rs:184-188`). That log is owner-only only because the `umask 077` at `:417` comes before it (§1.8, open issue 2). [Resolved: gen reads its seeds from `@/dev/fd/3..5` and its banner prints `(file)`; the driver refuses a stage-2 artifact whose banner does not show the three driver-supplied seeds.]
-
 ## Glossary
 
 | term | meaning | see |
@@ -3409,7 +3326,7 @@ This appendix collects the managed driver's differences from the recommended pip
 | band seed / band reseed | Modules 2 and 4 of stage 2: `seed_band_rich` fills each band wire with a pivot, 1-7 linear terms and 4 products. The reseed plays the seed's role for backward evaluation | §2a.3, §2a.4 |
 | birth, born value | A value written by a gate. A born value of C is the value a C gate leaves on its target; these are the C-view rows | §7.3 |
 | birth advance | Stage-3 post-splice slide of each new gate by ⌊0.85·slack⌋ in its direction | §3.5 |
-| boundary | An interior cut of the delivered window lattice, listed in `rep<G>.bounds` (the packer's lattice) and, after refinement, in `unpacking/bounds.final` (the shipped lattice). The adversary sees the full wire state at every boundary | §6a.1, §6a.2, §6b |
+| boundary | An interior cut of the delivered window lattice, listed in `rep<G>.bounds` (the packer's lattice) and, after refinement, in `unpacking/bounds.final` (the shipped lattice). The adversary can derive the wire state at every boundary from the shipped ANFs | §6a.1, §6a.2, §6b |
 | bracket | A dirty-ancilla gadget that adds a product term to the fire target using only ≤2-control gates: the 4-gate `and3` (adds p·x·y) or the 8-gate Gray walk (adds P1·P2). Its final gate restores the ancilla | §2b.5 |
 | breaker / completer | For a C-view witness at cut c with predictor support S: the completer is the last gate before c that writes S, the breaker the first at or after c. Fix mode slides them apart | §6a.5 |
 | burst (rerand burst), slot | A 16-gate refresh of one band wire, `b ^= lit·lit`; one burst per slot, m/8 slots per build. Not to be confused with the packer's atomic burst of an interval | §2b.8, §6a.4 |

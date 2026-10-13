@@ -40,7 +40,7 @@ How to run the packer: `docs/tdp_pipeline.md`, "Stage 6: delivery", "Packing
 Delivery path (post stage 3), with the Rust counterpart:
 - `window_pack3.py`  joint window packer (ANF-budget-adaptive) -> `tdp_packing pack`
 - `anf_compose.py`   per-window sparse ANF + spot verification -> `tdp_packing anf-report`
-- `waist/order_repair.py`  commutation-aware repair (pair cancel, leak slides)
+- `waist/order_repair.py`  commutation-aware repair (pair cancel, leak slides; part of every packing run) -> `stages::packing::repair`
 - `waist/merge_bounds2.py`, `waist/anf_split2.py`  merge / exposure-aware split fallback
 - `waist/repair.sh`  repair driver -> `tdp_packing repair`; `waist/finalize3.sh` merge-only finalize
 - `waist/verify_equiv.py`  functional equivalence check -> `tdp_packing verify-equiv`
@@ -55,13 +55,13 @@ Delivery path (post stage 3), with the Rust counterpart:
 Censuses / attacks: `boundary_cluster.py`, `waist/link_census.py` (linkable
 values, sightings, froth), `waist/mult_census.py`, `wire_balance.py`, plus
 the diagnostic scripts in `waist/` (leak tracing, C structure, births).
-Drivers: `waist/val_chain.sh` (the validation run of the four-stage chain, today
-`--run-skip-stages 4,5 --delivery-anf-only` in the managed driver:
+Drivers: `waist/val_chain.sh` (the reference driver of the four-stage chain,
+today `--run-skip-stages 4,5 --delivery-anf-only` in the managed driver:
 gen -> stage-3 mix -> pack G=512 + `repair.sh` -> serialized deliverable; now
 a parity tool, see tests/manual/stage4/reproduce_val_chain.sh),
 `waist/run_ret3.sh` (full chain: gen -> mix -> pack -> scans),
 `waist/score_arm.sh`, `waist/auto_score2.sh`. The drivers call
 `circuit_mixer` with the stage-3 flags (`--p-db 1.0`, regular frozen store);
 the inert `--p-comp`/`--p-any` flags were dropped from the stage-3 command on
-2026-10-08 (they act only in the crossing walk, which is stage 5 again since
-2026-10-11; stage 3's `--p-db 1.0` never runs it).
+2026-10-08 (they act only in the crossing walk, stage 5; stage 3's `--p-db 1.0`
+never runs it).

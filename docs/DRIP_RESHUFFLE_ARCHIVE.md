@@ -2,7 +2,7 @@
 
 2026-09-27 · Ran Canetti · live version: https://claude.ai/code/artifact/c3f95909-bf29-4208-93e7-34029e3a4e72
 
-Status (2026-10-12): historical, an inventory of the `drip-reshuffle` archive against `main` as of 2026-09-27; the current pipeline is described in `docs/tdp_pipeline.md` and `docs/TDP_PIPELINE_REFERENCE.md`.
+Status (2026-10-12): historical, an inventory of the `drip-reshuffle` archive against `main` as of 2026-09-27; the current pipeline (six stages, on `main`) is described in `docs/tdp_pipeline.md` and `docs/TDP_PIPELINE_REFERENCE.md`. The entry point for everything historic is `docs/local_mixing_history.md`, which links this inventory.
 
 ## Summary
 

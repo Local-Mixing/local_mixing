@@ -2,15 +2,15 @@
 
 2026-10-08 · cleanup branch `ran/cleanup-four-stage` · inventory: `docs/notes/cleanup_inventory_20261007.md`
 
-Status (2026-10-12): archive inventory as of 2026-10-08, historical; the 2026-10-11 note below records the revival of stages 4 and 5; the pipeline is six-stage since 2026-10-12 (`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`).
+Status (2026-10-12): archive inventory as of 2026-10-08, historical; the 2026-10-11 note below records the revival of stages 4 and 5; the pipeline is six-stage since 2026-10-12 and on `main` (`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`). The entry point for everything historic is `docs/local_mixing_history.md`, which links this inventory.
 
 ## Summary
 
-> **2026-10-11:** the split stage and the crossing walk were revived from this archive (commit `9499f42a` on `ran/seven-stage`: the reverse of cleanup steps 3 and 4, 3-way merged onto the stage-4 port) as stages 4 and 5 of the pipeline (seven stages then; six since 2026-10-12, when packing and unpacking became the one delivery stage 6: `docs/tdp_pipeline.md`); mixer states are v6 (the v3 layout). The curated DB and `fcompress` remain archive-only. The "Old stage 4: split" and "Old stage 5: crossing walk" tables below are therefore historical: that code is in the working tree again.
+> **2026-10-11:** the split stage and the crossing walk were revived from this archive (commit `9499f42a`, on `main` since 2026-10-12: the reverse of cleanup steps 3 and 4, 3-way merged onto the stage-4 port) as stages 4 and 5 of the pipeline (seven stages then; six since 2026-10-12, when packing and unpacking became the one delivery stage 6: `docs/tdp_pipeline.md`); mixer states are v6 (the v3 layout). The curated DB and `fcompress` remain archive-only. The "Old stage 4: split" and "Old stage 5: crossing walk" tables below are therefore historical: that code is in the working tree again.
 
 TDP had four stages at the time of the cleanup: 1 sliced sandwich, 2 preprocessing (embedded masking), 3 database mixing with the **regular** frozen store (`circuit_mixer --tdp --db-mixing --p-db 1.0`), and 4 windowed ANF packing (`tdp_packing`, the Rust port of the Python oracle under `scripts/windowed_delivery/`). The curated database and the old stages 4 (split), 5 (crossing walk) and 6 (`fcompress`) are historic. This doc lists what exists only on the archive branch, how to get it back, and why it was retired.
 
-- **Where the archive is:** branch `ran/archive/curated-and-postmix`, tip `ea2e516f` (2026-10-08, "docs: stage-2 linkability write-up, repair pass, cleanup inventory"). It is the last commit of `ran/stage2-windowed-delivery` before the cleanup. At the time of writing it is a local branch; push it before relying on it from another machine.
+- **Where the archive is:** branch `ran/archive/curated-and-postmix`, tip `ea2e516f` (2026-10-08, "docs: stage-2 linkability write-up, repair pass, cleanup inventory"). It is the last commit of the development line before the cleanup. As of 2026-10-12 it is still a local branch (not on `origin`); push it before relying on it from another machine.
 - **What the cleanup did:** five steps on `ran/cleanup-four-stage`, each ending in a summary commit: step 1 curated DB (`04973782`), step 2 `fcompress` (`2dfaaca2`), step 3 split (`c4e6c0d6`), step 4 crossing walk (`ece32ceb`), step 5 driver, CI and docs. 46 files were deleted outright (about 14.4k lines of source, tests and docs) and about 100 more were edited.
 - **What stayed byte-identical:** `gen_sandwich_gadget` output and `circuit_mixer` output for the stage-3 command (minus the inert `--p-comp`/`--p-any`), checked after every step on 300k-move A/B runs (serial, `--leakage-repair`, `--parallel-pieces 2`) against an `ea2e516f` build, plus an end-to-end `tdp_gen` run at n=16.
 - **What is archive-only:** the curated store format, builders, runtime cascade and about 20 analysis tools; the split, crossing (both revived 2026-10-11, see above) and `fcompress` stages with their mixer machinery, CLI flags and tests; three demixing/benchmark probes; the old run formats (mixer states v1/v2, TDP recipe v8).
@@ -66,7 +66,7 @@ Curated analysis tools (all `db_gen/analysis/` unless noted; Cargo `[[bin]]` ent
 
 Kept and adapted (they run on the regular store): `identity_shingle_sieve`, `minimal_halves_probe`, `minimal_identity_filter`, `frozen_class_census`, `identity_length_census`, `cross_gluing_probe` (without `--partner-composite`), `blocker_census`, `db_match_synth`, `far_pair_probe`, `wide_yield_probe`, and `id_rewrite` (regular store only; `--curated`/`--regular` flags gone).
 
-## Old stage 4: split
+## Old stage 4: split (as removed on 2026-10-08; back in the tree since 2026-10-11)
 
 Split replaced every complemented r57 gate `a ^= b OR NOT c` by two disjoint plain conjunctions and joined fragments to distant brackets through absorbed NOT twists. It ran as a mixer mode (`circuit_mixer --split`) on the stage-3 output.
 
@@ -81,7 +81,7 @@ Split replaced every complemented r57 gate `a ^= b OR NOT c` by two disjoint pla
 | Flags `--split`, `--split-stop`, `--p-join`, `--split-fail-limit`, `--split-canaries`, `--split-reach-k`, `--p-split-twist`, `--split-rounds-max` | `src/programs/circuit_mixer/cli.rs` | Gone |
 | Tests: `tests/unit/engine/mixer/splitting.rs`, split checkpoint round trip, `golden_split_stop` (`GOLDEN_SPLIT_STOP`), piecewise split test | `tests/` | Gone |
 
-## Old stage 5: crossing walk
+## Old stage 5: crossing walk (as removed on 2026-10-08; back in the tree since 2026-10-11)
 
 The crossing walk shot fragments to their first true collider and rewrote each collision by one of three exact case-split rules (R1-R3). A thermostat held the size near a target with two contraction channels: exact undo of isolated crossings from a journal, and a pairwise merge catalogue over same-target gates, with a short tabu for fresh siblings. In the mixer it was slot 3 of `Mixer::run`, the default walk when `p_db < 1`. Stage 3 passes `--p-db 1.0`, so slot 3 never ran there; `random_bool(1.0)` draws no randomness, so removing it left stage-3 output unchanged.
 
@@ -94,7 +94,7 @@ The crossing walk shot fragments to their first true collider and rewrote each c
 | Undo journal (`UndoEntry`), tabu ring, per-gate events (`Meta.event`, `next_event`), min-dgen cross pool, `child_gen`, `splice_replace_one` | `state.rs`, `provenance.rs`, `sampling.rs` | Gone (`Meta.dir` stays: it is drawn from the RNG) |
 | MixParams `split_damp`, `split_base`, `dir_p`, `target_size`, `temp`, `merge_reach`, `journal_len`, `undo_frac`, `tabu_moves`, `w_cross`, `w_fresh`, `w_unsub`, `w_insert`, `w_twist_neg`, `w_twist_swap`, `w_twist_cnot`, `p_comp`, `p_any`, `p_comp_g57`, `s_db_g57`, `contract_ceiling`, `gen_split_inherit`, `p_mincross`, `cross_pool_k`, `cross_rescan`; 31 crossing/merge/g57-only counters | `params.rs`, `state.rs`, `reporting.rs` | Gone |
 | Flags for all of the above, including `--p-comp`, `--p-any`, `--target-size`, `--temp` | `src/programs/circuit_mixer/cli.rs` | Gone; the store opens only when `p_db > 0` or `p_bridge > 0` |
-| TDP `[crossing]` section (`xr`..`xmoves`), stage 5 in `tdp_gen.sh` | `src/tdp/`, `configs/tdp.toml`, `scripts/tdp_gen.sh` | Rejected with a pointer to this branch (revived 2026-10-11: `[crossing]` with `target_size_factor`, `width_penalty_base`, `width_penalty_threshold`, `size_tolerance_divisor`, `move_budget_factor`, `move_attempts`) |
+| TDP `[crossing]` section (`xr`..`xmoves`), stage 5 in `tdp_gen.sh` | `src/tdp/`, `configs/tdp.toml`, `scripts/tdp_gen.sh` | Rejected with a pointer to this branch during the four-stage interval; accepted again since the 2026-10-11 revival as the stage-5 section `[crossing]` with `target_size_factor`, `width_penalty_base`, `width_penalty_threshold`, `size_tolerance_divisor`, `move_budget_factor` (default 3 since 2026-10-12), `move_attempts` |
 | Tests: thermostat, crossing, erosion, directional, tabu-age, mincross, cross-union and journal-prune ancestry, split-generation, merge-catalogue, presplit, `cross_random_pairs`, `fig12`; golden `GOLDEN_THERMOSTAT_WALK` | `tests/unit/` | Gone. Tests that only used the walk as a driver now run the stage-3 DB path on an in-memory fixture store (`FrozenDb::from_memory`, test-only) |
 
 `gauntlet_gen --mix` used the thermostat walk; during the four-stage interval (2026-10-08 .. 2026-10-11) it mixed through the DB path (p_db 1.0 with the TDP MIX knobs and p_twist 0.16) and needed `FROZEN_DB_DIR`; since the revival (`9499f42a`) it runs the store-free walk again (crossings, splits, conjugation twists at p_twist 0.16, thermostat at the input size), so the mixed gauntlet results of that interval are the ones not comparable with the archive's.
@@ -123,13 +123,12 @@ The crossing walk shot fragments to their first true collider and rewrote each c
 
 ## Porting notes
 
-Nothing here is scheduled for revival (the split stage and the crossing walk were revived into `circuit_mixer` on 2026-10-11, commit `9499f42a`, so the "separate post-mix tool" row below no longer applies; the curated DB and `fcompress` remain archive-only). If an experiment needs a piece:
+Nothing here is scheduled for revival. The split stage and the crossing walk were already revived into `circuit_mixer` on 2026-10-11 (commit `9499f42a`, stages 4 and 5 of the current pipeline), so they need no port; the curated DB and `fcompress` remain archive-only. If an experiment needs a piece:
 
 | Piece | Lands in | Effort |
 | --- | --- | --- |
 | A curated-tool analysis on the regular store | `db_gen/analysis/`, adapting to `FrozenDb::open(dir)` and single-key lookups | Small |
-| `crossing_downhill` / `output_cone` as demixing probes | `security_tests/`, together with the crossing rules they call | Medium (needs `rules::cross`, presplit, compression downhill) |
-| The crossing walk or split as a separate post-mix tool | A new executable outside `circuit_mixer`; the mixer no longer has the merge index, journal, tabu or events | Large |
+| `crossing_downhill` / `output_cone` as demixing probes | `security_tests/`, together with the crossing rules they call (the rules are back in the tree since the revival) | Medium (needs presplit and the compression downhill) |
 | Reading an old (state v1/v2, recipe v8) run | Build the archive branch (it reads states v1 and v2; the v3, v4 and v5 states of the four-stage interval, 2026-10-08 .. 2026-10-11, are unreadable by both builds); do not port the old formats | None |
 
 For each port: copy from the archive with `git show ran/archive/curated-and-postmix:<path>`, adapt to the current module paths and signatures, build with the relevant `--features`, and cite the archive commit (`ea2e516f`) in the commit message.

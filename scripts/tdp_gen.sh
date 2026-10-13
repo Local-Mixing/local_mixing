@@ -5,8 +5,11 @@
 #
 # Stages (every stage after the first is optional: --run-skip-stages; the
 # default runs all six):
-#   1+2  gen_sandwich_gadget: sliced sandwich S of a source C, then embedded
+#   1+2  gen_sandwich_gadget: sliced sandwich S of a secret source C (any
+#        reversible gates with up to two controls, taken in the g57 form
+#        a ^= x OR NOT y through --source-path, or generated), then embedded
 #        masking (preset L8 by default; A = no bounded chains) or nonlinear291.
+#        The later stages mix this structure built around C, not C itself.
 #        Skipping stage 2 hands the sandwich itself (tdp.mpmct1.sandwich.mpmct1)
 #        to the next stage.
 #   3    circuit_mixer db_mixing: --tdp --db-mixing, schedule `validated`
@@ -16,14 +19,17 @@
 #   5    circuit_mixer crossing walk (resumes split.state when stage 4 ran):
 #        target = round(G * factor), temperature target/divisor, 3*target moves
 #   6    delivery (RC, 2026-10-12: the former stages 6 packing and 7 unpacking
-#        as ONE stage): tdp_packing run (pack G=512, repair, ANF serialization
-#        with budget 65536) -> packing/deliverable.tdp4; then tdp_unpacking
-#        run --refine: every window resynthesized from its ANF alone, a window
-#        that does not resynthesize cut in two and both halves repacked and
-#        unpacked (up to --delivery-max-rounds rounds), the result concatenated
-#        and canonically reordered -> unpacking/deliverable.tdp4 (the refined
-#        lattice) + unpacking/unpacked.mpmct1. --delivery-anf-only ends the
-#        stage after the packer's deliverable.
+#        as ONE stage): tdp_packing run (pack G=512, the order repair, which
+#        runs in every packing run, ANF serialization with budget 65536) ->
+#        packing/deliverable.tdp4; then tdp_unpacking run --refine: every
+#        window resynthesized from its ANF alone, a window that does not
+#        resynthesize cut in two and both halves repacked and unpacked (up to
+#        --delivery-max-rounds rounds), the result concatenated and
+#        canonically reordered -> unpacking/deliverable.tdp4 (THE SHIPPED
+#        FILE: the refined lattice of windows, each as the ANF of the
+#        permutation it applies; nothing else ships) + unpacking/unpacked.mpmct1
+#        (private). --delivery-anf-only ends the stage after the packer's
+#        deliverable.
 #
 # DEFAULTS of stages 1-3 and the packer reproduce scripts/windowed_delivery/
 # waist/val_chain.sh CONFIG=L8 as run for the chosen validation runs vL64a/b,
@@ -74,7 +80,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                            1000 at n=64 and 3000 at n=128]
   --source-gates-rule R    validated (default; other n need --source-gates) or
                            formula (round(n·log2(n)^2); prints UNVALIDATED SIZE)
-  --source-path PATH       load C (G57) instead of generating it; needs --source-gates
+  --source-path PATH       load C in the g57 form (any gates with <= 2 controls) instead
+                           of generating it; needs --source-gates
   --preprocessing-mode M   embedded-masking (default) or nonlinear291
   --preprocessing-preset P L8 (default) | A | custom (embedded-masking only).
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
@@ -96,7 +103,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --db-mixing-hold-work-units E          [27] profile n1 = n2 = n0 + E
     --db-mixing-target-size-factor R       [2]  profile r1 = r2
   --database-lookup-miss-filter F   auto (default) | on | off (FROZEN_FILTER)
-  --leakage-repair                  sampled gate-wise audit + DB repair after stage 3
+  --leakage-repair                  sampled gate-wise audit + DB repair after stage 3 (off by
+                                    default; the packer's order repair in stage 6 always runs)
   --leakage-repair-seed S           [20803]
   --leakage-repair-reference PATH   [stage-3 input]
   --packing-window-gates G          [512]

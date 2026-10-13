@@ -23,10 +23,9 @@ The packing sub-step of stage 6 (delivery) consumes the **last circuit
 produced** (`crossing.mpmct1` by default; the stage-3 DB-mixed circuit
 `db_mixing.mpmct1` under `run.skip_stages = [4, 5]`, the validated
 four-stage chain this document measured) and produces the packer's
-deliverable, which the unpacking sub-step refines into the shipped file. It
-replaced the former stage 6 (fcompress); the split and crossing stages,
-retired with it on 2026-10-07, were revived as stages 4 and 5 on 2026-10-11
-(`docs/notes/stage45_revival_20261011.md`). Three steps:
+deliverable, which the unpacking sub-step refines into the shipped file
+(how the stage list came to be this one: `docs/local_mixing_history.md`).
+Three steps:
 
 ### 1.1 Commuting reorder + window scheduling (`window_pack3.py`)
 
@@ -140,10 +139,11 @@ ANF = gates, exhaustively for windows with at most 16 support wires and on
 ### 1.2a Commutation-aware repair (`scripts/windowed_delivery/waist/order_repair.py`, `scripts/windowed_delivery/waist/repair.sh`; Rust: `stages::packing::repair`)
 
 *Added 2026-10-07; see `docs/STAGE2_LINKABILITY.md` §3.6.* Runs on the
-packed order before emission; window boundaries are markers that stay
-between the same surviving gates, and every step is a legal rewrite of
-the gate sequence (two gates commute iff neither's target is a control
-of the other).
+packed order before emission in every packing run (`repair.sh` in the
+oracle chain; `stages::packing::repair` in every `tdp_packing run`, not
+optional). Window boundaries are markers that stay between the same
+surviving gates, and every step is a legal rewrite of the gate sequence
+(two gates commute iff neither's target is a control of the other).
 
 1. **Pair cancellation.** Delete pairs of identical gates that commute
    adjacent: do/undo pairs the mixer leaves in place. Iterated to a
@@ -162,10 +162,13 @@ The repaired circuit is checked functionally equivalent to its input
 
 ### 1.3 Serialization
 
-The artifact (`deliverable.bin`) is the sequence of window ANFs in a
-binary format (wire ids, monomial lists over window inputs). Nothing
-else ships: no gate list, no boundary metadata beyond the windows
-themselves, no stage provenance.
+The body (`deliverable.bin`) is the sequence of window ANFs in a binary
+format (wire ids, monomial lists over window inputs); the shipped file is
+the container on the refined lattice described next. Nothing else ships:
+no gate list, no boundary metadata beyond the windows themselves, no stage
+provenance, and none of the circuits (not C, not the stage-1/2 structure,
+not the stage-3/4/5 circuits, not the packer's gate order, not the
+resynthesized circuit).
 
 **Container v1 (2026-10-09).** The raw body carries no n, no version and no
 integrity check, so the managed pipeline ships a container `deliverable.tdp4`:
@@ -215,7 +218,7 @@ are identical: `--tdp --db-mixing --profile 2,2,2,2,2 --p-db 1.0
 --p-comp 1.0 --p-any 0.1 --db-max-degree 9 --db-max-span 30
 --db-wire-terms 1024 --db-total-terms 2048`, regular frozen store
 `frozen_m1_m11` (`--p-comp`/`--p-any` are inert at `--p-db 1.0` and the
-validated stage-3 schedule omits them; the revived stages 4 and 5 pass
+validated stage-3 schedule omits them; stages 4 and 5 pass
 `--p-comp 0 --p-any 0`),
 moves = ⌈2·2·1.3·(stage-2 gates)⌉. Packing and
 emission are identical: `W_cap` 128, `G` 128 (hard 256), `B_mono`
@@ -244,11 +247,21 @@ recorded in each run directory.
 
 ### 2.1 The threat model that motivates windowing
 
+**What the adversary sees.** Exactly the shipped file: the refined lattice
+of windows and, for each window, the ANF of the permutation it applies.
+Nothing else ships: not C, not the sandwich or the masked circuit of stages
+1-2, not the mixed, split or crossed circuits of stages 3-5, not the
+packer's gate order, not the resynthesized circuit. From the ANFs the
+adversary can derive the wire state at every window boundary (on inputs of
+its choice), compose adjacent windows into wider ones, and resynthesize any
+window or merged window into a circuit of its own; it cannot see how the
+shipped function was spelled inside a window.
+
 Every exposure metric in the 2026-10 program — per-value visibility,
 the t\* exposure census (exact affine predictors), the equality-cluster
-attack — quantifies over **cuts of the delivered spelling**: the
-adversary reads wire values at positions between delivered blocks. Two
-measured laws made gate-granular delivery look fundamentally leaky:
+attack — therefore quantifies over **cuts of the delivered spelling**:
+the wire values at the window boundaries. Two measured laws made
+gate-granular delivery look fundamentally leaky:
 
 - **Reader law**: any value with ≥1 bare reader is ~100% visible under
   every-gate cuts (measured 3.2 / 55.4 / 63.8 / 100.0% visibility at
@@ -269,8 +282,17 @@ gates; (b) sidesteps the closure law — nothing is rewritten between
 cuts, the cuts are deleted; and (c) annihilates all within-window
 text: templates, k-grams, gate provenance, stage-2 vocabulary
 signatures, and the gate count itself vanish into a canonical
-polynomial. What remains observable is exactly: values alive at
-boundaries, the boundary equality-linkage graph, and the outputs.
+polynomial. What remains observable at the lattice is exactly: values
+alive at boundaries, the boundary equality-linkage graph, the outputs,
+and the lattice itself. What the lattice does not bound is what the
+adversary can make of merged windows: merging and resynthesizing uniform
+W=2000 windows of the n=64 crossing output recovers 244 of 936 interior C
+values (241 with a 10× time budget), while the raw circuit exposes none
+at any cut; stages 4 and 5 do not close this leak, and the refinement's
+exposure-aware cuts are each re-scanned so that no interior C value is
+affine at a new cut (`docs/notes/stubborn_windows_20261012.md`,
+`docs/notes/stage45_revival_20261011.md`; `docs/TDP_PIPELINE_REFERENCE.md`
+§6b).
 
 ### 2.2 The objective function
 
@@ -344,31 +366,30 @@ v2.1 35% → v3 budget-adaptive 46/58/72% at G=64/128/256.
 
 ---
 
-## 3. Why stages 4–6 were abandoned
+## 3. The packer's input: stage-3 output vs. the crossing output
 
-*Status 2026-10-12: historical. The decision stood for the four-stage chain
-(now `run.skip_stages = [4, 5]` with `delivery.anf_only = true`); split and
-crossing were revived as stages 4 and 5 on 2026-10-11 for the resynthesis
-studies and are in the default chain
-(`docs/notes/stage45_revival_20261011.md`: they do not close the
-resynthesis leak); fcompress remains historic. Current pipeline:
-`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`.*
+*Measured 2026-10-03/04 (the stage-wise exposure study, nine arms, random
+family and TDP, and the direct input-choice measurement of the windowing
+program). The 2026-10-07 decision to pack a mixed circuit directly, and the
+retirements that went with it, are recorded in `docs/local_mixing_history.md`
+(October 8, 2026). Since 2026-10-11 stages 4 (splitting) and 5 (crossing)
+precede packing in the default chain and the packer consumes the last
+circuit produced; the stage-3 input survives as `run.skip_stages = [4, 5]`
+(`docs/notes/stage45_revival_20261011.md`: stages 4 and 5 do not close the
+merged-window resynthesis leak). Current pipeline: `docs/tdp_pipeline.md`,
+`docs/TDP_PIPELINE_REFERENCE.md`.*
 
-The decision rests on the stage-wise exposure study (nine arms × four
-stages, random family and TDP, 2026-10-03) plus the direct
-input-choice measurement of the windowing program (2026-10-04).
-
-### 3.1 What stages 4–6 actually bought (measured)
+### 3.1 What splitting and crossing buy at the cuts (measured)
 
 Per-stage visibility % [t\*≥2 share %], random-family arms, every-cut
 grids (excerpt; full table in `runs/exposure_report_20261003/REPORT.md`):
 
-| arm | s3 mix | s4 split | s5 crossing | s6 fcompress |
-|---|---|---|---|---|
-| random f=2 | 85.1 [1.5] | 84.0 [8.3] | 76.1 [8.9] | 79.2 [5.8] |
-| f=10 | 79.5 [1.7] | 79.0 [5.1] | 76.0 [6.1] | 76.3 [4.3] |
-| eq. arity-2 | 82.6 [1.3] | 81.6 [4.5] | 78.7 [6.0] | 79.4 [4.6] |
-| twists p=.05 | 87.0 [2.2] | 87.0 [5.8] | 82.7 [7.8] | 83.9 [5.8] |
+| arm | s3 mix | s4 split | s5 crossing |
+|---|---|---|---|
+| random f=2 | 85.1 [1.5] | 84.0 [8.3] | 76.1 [8.9] |
+| f=10 | 79.5 [1.7] | 79.0 [5.1] | 76.0 [6.1] |
+| eq. arity-2 | 82.6 [1.3] | 81.6 [4.5] | 78.7 [6.0] |
+| twists p=.05 | 87.0 [2.2] | 87.0 [5.8] | 82.7 [7.8] |
 
 Stage signatures, replicated at TDP scale:
 
@@ -376,21 +397,12 @@ Stage signatures, replicated at TDP scale:
   4–8 points of t\*=1 mass into small parities and erases nothing. In
   carrier terms it *adds* exposure surface: 105.7k → 107.9k carried
   values on the TDP.
-- **Stage 5 (crossing)** was the only post-processing eraser:
+- **Stage 5 (crossing)** is the only post-mixing eraser at the cuts:
   −3…−5 points of visibility in every arm (105.7k → 89.8k carried on
-  the TDP). This is the entire measured security content of the old
-  post-3 pipeline.
-- **Stage 6 (fcompress)** partially *refunds* stages 4–5: +1…+3 points,
-  parities collapse back. Its packing component is exposure-neutral
-  (pack-only ≡ crossing to ±0.1; pack-then-compress ≡
-  compress-then-pack, order flip null at +2% size).
-- At TDP scale the whole chain is flat: stage-2-view visibility
-  26.5 → 26.5 → 25.6 → 27.2/27.3% across s3 → s6. The C-view
-  output-only floor is owned by stage 2 and never moves.
-
-So the old pipeline's net effect was: one eraser (crossing), one
-neutral t-raiser (split) whose gains the compressor refunded, at the
-price of large inflation and run time.
+  the TDP).
+- At TDP scale the chain is flat: stage-2-view visibility
+  26.5 → 26.5 → 25.6% across s3 → s5. The C-view output-only floor is
+  owned by stage 2 and never moves.
 
 ### 3.2 The direct comparison: windowing s3 vs windowing s5
 
@@ -403,8 +415,9 @@ The windowing program's first decision was its input. Measured:
   69.6% of carried values (s3) vs 46.9% (s5).
 - **Crossing's erasure does not pay for the welding.** In absolute
   terms at W=20: ~32k exposed values on the s3 ceiling vs ~48k on the
-  s5 ceiling — windowing the raw mixed circuit strictly dominates
-  windowing the crossed one, despite crossing's 15% carrier erasure.
+  s5 ceiling — on the cut metrics, windowing the raw mixed circuit
+  strictly dominates windowing the crossed one, despite crossing's 15%
+  carrier erasure.
 - **Split only adds carriers** (§3.1), and the walk family generally
   is exposure-hostile: the order-preserving greedy walk measured
   97.4% exposure against its own 79.4% floor — verbatim-dressing
@@ -412,10 +425,11 @@ The windowing program's first decision was its input. Measured:
 
 Against these, a single windowing pass hides 58–72% of carried values
 (G=128–256) — an order of magnitude beyond crossing's −3…−5 points —
-while *deleting* within-window text rather than respelling it, at
-lower wall-clock cost than the crossing walk it replaces.
+while *deleting* within-window text rather than respelling it. On the
+crossing output the packer needs about 4× the windows and far longer
+(`docs/TDP_PIPELINE_REFERENCE.md`, "What each stage contributes").
 
-### 3.3 Division of labor after the replacement
+### 3.3 Division of labor
 
 - **Stage 2** — semantic hiding: which values ever exist bare (data
   path at zero bare reads; band carrier hygiene: lifetime, migration,
@@ -433,8 +447,8 @@ lower wall-clock cost than the crossing walk it replaces.
 ## 4. Production reference results (pipeline v2.1, final64/final128)
 
 *Status: results of the 2026-10-07 G=128 runs (final64/final128); superseded
-by the G=512 validation in `docs/STAGE2_LINKABILITY.md` §4–5 and the managed
-defaults (`docs/tdp_pipeline.md`).*
+by the G=512 results and their replicates in `docs/STAGE2_LINKABILITY.md`
+§4–5 and the managed defaults (`docs/tdp_pipeline.md`).*
 
 End-to-end: classic sandwich → embedded masking (rich band seed,
 persistent carrier migration dose 8, read-pressure partners, feistel
@@ -457,11 +471,13 @@ vocabulary (the celebrity class, 330/966 values of multiplicity ≥257),
 which is a **stage-2 birth phenomenon**, not a packing phenomenon:
 boundary redrawing was measured infeasible (celebrity spans
 median 494 / p95 2,505 packed gates, liveness ~110 wires at every cut
-position), and the fix in progress (threshold retirement of band
-carriers at the emitter) operates upstream of this stage. The delivery
-stage's own contract — C-view at the output-only floor, within-window
-annihilation, recurrence-law behavior at boundaries — is identical
-with and without that fix.
+position), and any fix operates upstream of this stage (the lever then
+in progress, threshold retirement of band carriers at the emitter, was
+tested and dropped because it only redistributes rebirths; the levers
+kept are chained brackets, premask and seed avoidance, preset L8:
+`docs/STAGE2_LINKABILITY.md` §3.3, §4, §6). The delivery stage's own
+contract — C-view at the output-only floor, within-window annihilation,
+recurrence-law behavior at boundaries — is the same either way.
 
 ---
 

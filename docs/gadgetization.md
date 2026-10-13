@@ -12,7 +12,14 @@ are already present before database mixing begins.
 
 ## The circuit entering gadgetization
 
-Let $C$ be our source circuit on $n$ wires. The default, classic sandwich is
+Let $C$ be our source circuit on $n$ wires. In general $C$ may use any
+reversible gate with up to two controls (NOT, CNOT, Toffoli with either
+control polarity); the engine takes it in the g57 form
+($a\mathrel{\oplus{=}}x\lor\neg y$, which expresses that class) through
+`source.path`, or generates a random $C$. What the pipeline then mixes is not
+$C$ itself but the structure built around it here: the sliced sandwich on
+$2n$ wires (stage 1) and the embedded-masking construction on $4n$ wires
+(stage 2). The default, classic sandwich is
 
 $$
 A=[C\text{ interleaved with }S_1]\ ;\ N\ ;\
@@ -138,7 +145,7 @@ mid-write mask hides the complete firing increment of that write.
 
 ## Computing through the masks
 
-Suppose a source gate is
+Suppose a source gate, in the g57 form in which the engine holds $C$, is
 
 $$
 V_t\mathrel{\oplus{=}}1\oplus V_b\oplus V_aV_b.
@@ -174,8 +181,8 @@ started. Degree-four terms use an eight-gate block with two such helpers.
 Thus, the fire itself uses gates with at most two controls and adds no clean
 scratch wires. The surrounding slice guards are the accumulate-and-inject
 (feistel) guards with no gate wider than two controls (the default since
-punchlist #7, 2026-10-06); `SLICE_GUARD_LEGACY=1` restores the width-3 quad
-guard for comparison arms.
+2026-10-06); `SLICE_GUARD_LEGACY=1` restores the width-3 quad guard for
+comparison arms.
 
 This is the restore-per-block form. The current generator drops the helper's
 restore where its stability layers allow (`EMBEDDED_MASKING_DRIFT`, default
@@ -338,8 +345,8 @@ so the $4n$ width of embedded masking does not apply. After construction,
 eight bounded passes randomly swap adjacent gates only when they commute.
 Its complete stage-2 output has at most two controls per gate.
 
-The earlier product-share construction with Gray folding is historical. It is
-not the implementation selected by either of these two current mode names.
+Neither mode name selects the earlier product-share construction (history:
+[Local Mixing History](local_mixing_history.md)).
 
 ## Where this lives in the code
 
