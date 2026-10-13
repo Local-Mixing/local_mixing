@@ -1,5 +1,10 @@
 # Stage-4 fixtures
 
+"Stage 4" in this directory and in `docs/STAGE4_RUST_DESIGN.md` is the packer
+(`tdp_packing`): stage 4 of the four-stage pipeline and, since 2026-10-12, the
+packing sub-step of stage 6 (delivery; `docs/tdp_pipeline.md`). The directory
+name is kept because the tests and CI reference it.
+
 ## Pinned reference binaries (docs/STAGE4_RUST_DESIGN.md §10.1)
 
 - **Baseline `hmap_affine`**: built from `492564f0` with

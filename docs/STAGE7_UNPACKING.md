@@ -13,9 +13,9 @@ Status: implemented 2026-10-11, branch `ran/stage7-unpacking` (based on
 
 ## 1. Purpose
 
-The seven-stage TDP pipeline ends with **packing** (stage 6: the windowed ANF
-deliverable `deliverable.tdp4`) and **unpacking** (stage 7). The owner's
-specification of stage 7:
+Until 2026-10-12 the seven-stage TDP pipeline ended with **packing** (stage 6:
+the windowed ANF deliverable `deliverable.tdp4`) and **unpacking** (stage 7).
+The owner's specification of stage 7:
 
 > unpacking: simply resynthesizes a circuit from each ANF window using a
 > standard ANF synthesization, concatenates all the piecewise circuits,
@@ -70,14 +70,14 @@ measured results on the fx12ctl and a128 arms). Per window:
    sampled (1024 random full states, every changed wire equals the window ANF
    evaluated from the decoded masks, every other wire unchanged — so a
    borrowed ancilla must be restored) and **exact**: the gates are composed
-   by stage 4's audited `packing::anf::window_anf` and the encoded blob must
+   by the packer's audited `packing::anf::window_anf` and the encoded blob must
    equal the deliverable's window byte for byte (the test `check_windows_anf`
    runs on the packing side). The composition runs at the emission budget
    2^18 and is retried once at 2^20 if it overflows (`exact_retried` in the
    report; 0 on the real run).
 5. **Fallback**. A window that does not converge or fails a check is emitted
    verbatim from the packed circuit (`--packed rep512.mpmct1 --bounds
-   rep512.bounds`, stage 6's repaired circuit, windows `[0] + bounds + [m]`
+   rep512.bounds`, the packer's repaired circuit, windows `[0] + bounds + [m]`
    with the deliverable's indexing) **after that window's gates pass the same
    exact check against the deliverable** (a mismatch is exit 4: the packed
    circuit is not the deliverable's). Without `--packed`, or under
@@ -178,8 +178,8 @@ the algorithm, its defaults and its separation guarantee are the same.
 
 ## 8. Limits
 
-- State width ≤ 1024 wires (n ≤ 256), as in stage 4 (the exact check's
-  monomial width).
+- State width ≤ 1024 wires (n ≤ 256), as in the packer (`tdp_packing`; the
+  exact check's monomial width).
 - Convergence is heuristic; a stalled window falls back to the packed gates
   (counted, `status=fallback_used`) or fails. No fallback occurred on the real
   run or in the regression runs of `anf_synth`.
@@ -208,7 +208,7 @@ The integration test builds the n8_L8 deliverable with `tdp_packing run` on
 the committed fixture, unpacks it (fallback allowed, zero slice against C),
 re-checks equivalence independently, exercises the no-fallback path, seed
 reproducibility (`--seed` vs `--seed-file`), thread independence and the exit
-codes on the crafted stage-4 fixtures. `cargo test --locked --lib --test
+codes on the crafted `tests/fixtures/stage4` (packing) cases. `cargo test --locked --lib --test
 tdp_unpacking`.
 
 ## 10. `--refine`, `--windows`, `canon` (2026-10-12, the delivery loop)
@@ -260,8 +260,8 @@ The loop of `docs/DELIVERY_STAGE.md` §2, in process:
   cap semantics); the next round's deliverable is the container with the blobs
   spliced in order (window count, body bytes, CRCs recomputed). A half whose ANF
   exceeds the packer's budget (65,536 monomials) counts in `over_budget`, is not
-  synthesized and is split again in the next round (the Python reference synthesizes
-  and delivers it; see `DELIVERY_STAGE.md` §4). A half above 2^20 monomials is a
+  synthesized and is split again in the next round (the Python reference does the
+  same since `b248a0f2`; `DELIVERY_STAGE.md` §4). A half above 2^20 monomials is a
   fatal error (exit 4).
 
 Outputs (in `--out-dir`; stale ones of an earlier run removed first): per round

@@ -2,6 +2,13 @@
 
 # Local Mixing of Reversible Circuits: History
 
+*Status (October 12, 2026): this is a historical record. Its narrative, its
+measurements and the "complete method" it describes belong to the pipelines of
+their time, through the dated updates at the end (the latest:
+[six stages](#six-stage-update)); the current pipeline is described in
+[the TDP pipeline guide](tdp_pipeline.md) and
+[the pipeline reference](TDP_PIPELINE_REFERENCE.md).*
+
 This is the research history of the project: its constructions, experiments,
 attacks, and the reasons the method changed. The narrative and measurements
 below retain their original experimental context. References to the "current"
@@ -17,6 +24,10 @@ records the addition while preserving the earlier discussion and results.
 The [update of October 8, 2026](#four-stage-update) records the move to a
 four-stage pipeline, which retired the curated store and the post-mixing
 stages described below.
+The [update of October 12, 2026](#six-stage-update) records the return of
+splitting and the crossing walk as stages 4 and 5, and the delivery stage
+(packing, then unpacking with lattice refinement) that now ends the pipeline,
+making six stages; the curated store and `fcompress` remain retired.
 
 The following document details the ideas and experiments of Ran Canetti, Nicholas Ho, and other collaborators. The document is written by Nicholas Ho.
 
@@ -44,7 +55,7 @@ what an attacker can still recover.
 - [The trapdoor permutation challenge](#trapdoor-permutation-challenge) and [SAT solvers](#sat-solvers)
 - [Slicing and fragmentation](#making-the-solver-struggle)
 - [The complete mixing method](#current-mixing-method)
-- [Conclusion](#conclusion), the dated updates ([carrier shuffling](#embedded-masking-shuffling-update), [four stages](#four-stage-update)), and [references](#references)
+- [Conclusion](#conclusion), the dated updates ([carrier shuffling](#embedded-masking-shuffling-update), [four stages](#four-stage-update), [six stages](#six-stage-update)), and [references](#references)
 
 <a id="introduction"></a>
 
@@ -4397,6 +4408,12 @@ compares the questions asked by the different attacks.
 
 ## The Complete Mixing Method
 
+*Status: the method as it stood before the dated updates at the end, which
+record what changed since: optional carrier shuffling (September 16, 2026),
+the retirement of the curated store and of `fcompress` (October 8), and the
+six-stage pipeline in which the crossing walk is followed by the delivery
+stage instead of a final compression (October 12).*
+
 We combine the constructions above in the following order.
 
 1.  **[Build the sliced sandwich.](#sliced-sandwich)** We place the source computation inside a
@@ -4568,13 +4585,21 @@ for the distinctions a new comparison must preserve.
 
 ## October 8, 2026: Four stages; the curated store and post-mixing stages retired
 
-The pipeline now has four stages: the sliced sandwich, embedded masking,
-database mixing with the regular frozen store, and packing. The curated store
-and the three post-mixing stages described in
+*Status: dated entry. Superseded on October 11-12, 2026 (see
+[the next update](#six-stage-update)): splitting and the crossing walk
+returned as stages 4 and 5, and packing became the first half of the
+delivery stage.*
+
+As of this update the pipeline had four stages: the sliced sandwich, embedded
+masking, database mixing with the regular frozen store, and packing. The
+curated store and the three post-mixing stages described in
 [Slicing and fragmentation](#making-the-solver-struggle) (splitting, the
-crossing walk, and `fcompress`) are no longer part of the method. Their code
+crossing walk, and `fcompress`) were retired from the method. Their code
 remains on the branch `ran/archive/curated-and-postmix`, and
 [the archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) lists what it holds.
+(Splitting and the crossing walk were restored on October 11, 2026, as stages
+4 and 5, with the archive-era flags; see the next update. The curated store
+and `fcompress` remain archived.)
 
 Two lines of measurement led to this. First, the curated store did not help
 the mixing. On random circuits we removed it, restricted it to the
@@ -4608,13 +4633,46 @@ the validation runs only the outputs of $C$ remained visible.
 
 So the stages divide the work differently. Preprocessing decides which values
 ever exist in the clear; database mixing respells and dilutes; packing
-decides where anything can be observed at all. Packing is still a set of
-Python prototypes, and a Rust port is planned. The measurements are in
+decides where anything can be observed at all. Packing was ported to Rust
+shortly after this update (`tdp_packing`, `src/stages/packing/`;
+[STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md)); the Python prototypes under
+`scripts/windowed_delivery/` remain its oracle. The measurements are in
 [ANF window delivery](ANF_WINDOW_DELIVERY.md) and
 [the stage-2 linkability report](STAGE2_LINKABILITY.md); the pipeline is
 described in [the TDP pipeline guide](tdp_pipeline.md). As with the earlier
 update, the heatmaps, SAT timings and compression ratios above describe the
 earlier pipeline and its parameters, not this one.
+
+<a id="six-stage-update"></a>
+
+## October 12, 2026: Six stages; splitting and crossing return, packing becomes delivery
+
+On October 11, 2026, the split stage and the crossing walk were brought back
+from the archive as stages 4 and 5, between database mixing and packing, with
+the archive-era driver's flags (the crossing walk's move budget is now three
+times the target size rather than six), so that the window-resynthesis
+studies could be run on the crossing output
+([the stage 4 and 5 revival](notes/stage45_revival_20261011.md),
+[the seven-stage pipeline](notes/seven_stage_20261011.md)). An unpacking
+stage was added at the end: it resynthesizes a circuit from each delivered
+ANF window, concatenates the pieces, and puts the gates into the canonical
+commuting order. On October 12 packing and unpacking became one delivery
+stage ([DELIVERY_STAGE.md](DELIVERY_STAGE.md)): every window is resynthesized
+from its ANF alone, and a window that does not resynthesize is treated as a
+packing defect rather than emitted verbatim. It is cut in two at an
+exposure-aware cut, repacked, and each half is unpacked again, recursively
+([stubborn windows](notes/stubborn_windows_20261012.md)). The stage ends with
+the refined deliverable and one canonically ordered circuit;
+`delivery.anf_only` stops it after the packer's deliverable.
+
+The pipeline is therefore 1 sliced sandwich, 2 preprocessing, 3 database
+mixing, 4 splitting, 5 crossing walk, 6 delivery. Every stage after the first
+is optional; `run.skip_stages = [4, 5]` with `delivery.anf_only = true` is
+the validated four-stage chain of the previous update. The curated store and
+`fcompress` remain archived. The current stage list, parameters and outputs
+are in [the TDP pipeline guide](tdp_pipeline.md) and
+[the pipeline reference](TDP_PIPELINE_REFERENCE.md); as with the earlier
+updates, the measurements above describe the earlier pipelines, not this one.
 
 <a id="references"></a>
 

@@ -11,7 +11,7 @@ computes $C$ on a public slice.
 | 2. Preprocessing | Embedded masking on $4n$ wires: masked fires, band, guards, persistent carrier migration (preset L8) | `gen_sandwich_gadget` | `tdp.mpmct1` |
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
 | 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
-| 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input, budget 2× the target) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
+| 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input, move budget 3× the target) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
 | 6. Delivery | Packing (commuting reorder into ANF windows, repair, serialization), then unpacking with lattice refinement: every window resynthesized from its ANF alone, a window that does not resynthesize cut in two and both halves repacked and unpacked, the result concatenated and canonically reordered | `tdp_packing run`, then `tdp_unpacking run --refine` | `packing/deliverable.tdp4` (the packer's lattice), `unpacking/deliverable.tdp4` (the refined lattice, the shipped file), `unpacking/unpacked.mpmct1` |
 
 ```text
@@ -45,9 +45,10 @@ packed, repaired and deliverable artifacts. This is checked on the archived
 runs themselves (the historic anchor) and by a reproduction test against the
 reference script; see [docs/STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2
 and §12 (written when packing was stage 4; its stage numbers are the
-four-stage ones). Stages 4 and 5 run with the flags of the archive-era driver
-(`ea2e516f`), revived 2026-10-11; the unpacking sub-step dates from the same
-week.
+four-stage ones). Stage 4 runs the archive-era driver's flags (`ea2e516f`); stage 5 runs its
+target, penalty and temperature values with a 3×target move budget (the
+archive-era driver ran 6×target); both were revived 2026-10-11, and the
+unpacking sub-step dates from the same week.
 
 The packing sub-step of stage 6 is the Rust port (`src/stages/packing/`,
 binary `tdp_packing`) of the Python prototypes in
@@ -63,10 +64,10 @@ walk listed there are back in the pipeline as stages 4 and 5).
 
 Further reading:
 
-- [TDP_FOUR_STAGE_PIPELINE.md](TDP_FOUR_STAGE_PIPELINE.md): the full
-  reference for stages 1, 2, 3 and 6 (construction details, parameters,
-  measured behaviour, pass criteria, open issues; written when packing was
-  stage 4).
+- [TDP_PIPELINE_REFERENCE.md](TDP_PIPELINE_REFERENCE.md): the full
+  reference for all six stages (construction details, parameters, measured
+  behaviour, rationale, pass criteria, open issues; revised 2026-10-12 for
+  the six-stage pipeline; formerly `TDP_FOUR_STAGE_PIPELINE.md`).
 - [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md): the packing port, the
   reference recipe the defaults reproduce, seeds and the environment policy,
   and the validation results.
@@ -80,6 +81,17 @@ Further reading:
   by.
 - [ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md): windowed ANF packing, its
   threat model, and the deliverable format.
+- [notes/stubborn_windows_20261012.md](notes/stubborn_windows_20261012.md):
+  the measured basis of the refinement policy (157 of 10,366 windows failed
+  at n=64; they are ANF-dense tails, not a gate-structure class; 10× time
+  rescues 15/102; bisection converges ~90 % per round and terminates; the
+  final assembly has 0 interior C values).
+- [notes/stage45_revival_20261011.md](notes/stage45_revival_20261011.md):
+  stages 4 and 5 measured (the crossing output has no C value at any cut,
+  but merged-window resynthesis at W=2000 still exposes 244/936 interior
+  values; stages 4+5 do not close the leak).
+- [notes/seven_stage_20261011.md](notes/seven_stage_20261011.md): the n=16
+  and n=64 run tables of the seven-stage session.
 
 For first-time setup and the circuit utilities, start with the
 [README](../README.md).
@@ -98,7 +110,8 @@ window per round for up to 16 rounds.
 [scripts/windowed_delivery/waist/val_chain.sh](../scripts/windowed_delivery/waist/val_chain.sh)
 is the script the validation runs were made with. It is now a **parity
 tool**: it hard-codes the run tree's paths, draws seeds below $2^{31}$ /
-$2^{40}$ (calibration grade) and runs the Python stage 4. The reproduction
+$2^{40}$ (calibration grade) and runs the Python packer (today's stage 6 under
+`delivery.anf_only`, with stages 4 and 5 skipped). The reproduction
 test (`tests/manual/stage4/reproduce_val_chain.sh`) runs it in a
 path-rewritten sandbox next to the managed driver with the same seeds and
 compares every artifact.
@@ -123,12 +136,12 @@ directory holds:
 | 3. Database mixing | `db_mixing.mpmct1` (the mixer writes `db_mixing.mpmct1.tmp`, fsyncs it and renames it, so a kill or crash never leaves a truncated output under this name), `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER` and the mixer's `stop_reason`), `stage3.recipe` (keyed completion marker: the schedule arguments, HMAC-SHA256 tags of `tdp.mpmct1` and of `db_mixing.mpmct1`, the stop reason; written only after an accepted stop) (and `db_mixing.leakage_repair.txt` with leakage repair). A resume skips stage 3 only when `stage3.recipe` matches; a missing or stale marker (an interrupted output, a changed stage-2 input or schedule) re-runs stage 3, which then needs the store. A run made before the marker existed is adopted without re-mixing when its `delivery.recipe` (or the seven-stage driver's `packing.recipe`) carries the tags of exactly these `tdp.mpmct1` and `db_mixing.mpmct1` bytes and `stage3.settings` records an accepted stop. A chain ended by the operator stop flag (`touch $RUN/stage3.stop`) is under-dosed: its output is moved to `db_mixing.stopped.mpmct1`, the run stops with exit 2 and no deliverable, and a resume re-runs stage 3 from scratch |
 | 4. Splitting | `split.mpmct1`, `split.state` (the resume point of stage 5), `stage4.log`, `stage4.recipe` (keyed completion marker); a split ended by `$RUN/stage4.stop` is kept as `split.stopped.mpmct1` |
 | 5. Crossing | `crossing.mpmct1`, `stage5.log`, `stage5.recipe` |
-| 6. Delivery | `packing/`: `deliverable.tdp4` (the packer's lattice), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds` (the repaired circuit and the lattice the refinement starts from), the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `unpacking/` (absent under `anf_only`): `deliverable.tdp4` (**the shipped file**: the refined lattice), `bounds.final`, `unpacked.mpmct1` (the resynthesized circuit, canonical order), `windows.tsv`, `rounds.tsv`, `unpacking.report`, `unpacking.log`; `stage6.log` (both sub-steps, a separator line between them); `delivery.recipe` (keyed completion marker); a failed sub-step leaves `delivery.failed` (`exit=<code>`, `step=packing\|unpacking`; the managed driver then reports that code's meaning for that binary, and no other failure is labelled as stage 6's); `NOT_RECOMMENDED` next to the final output after an allowed failure |
+| 6. Delivery | `packing/`: `deliverable.tdp4` (the packer's lattice), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds` (the repaired circuit and the lattice the refinement starts from), the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `unpacking/` (absent under `anf_only`): `deliverable.tdp4` (**the shipped file**: the refined lattice), `bounds.final`, `unpacked.mpmct1` (the resynthesized circuit, canonical order), `windows.tsv`, `rounds.tsv`, `unpacking.report`, `unpacking.log`, the per-round `bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the packer's; private, they regenerate the circuit); `stage6.log` (both sub-steps, a separator line between them); `delivery.recipe` (keyed completion marker); a failed sub-step leaves `delivery.failed` (`exit=<code>`, `step=packing\|unpacking`; the managed driver then reports that code's meaning for that binary, and no other failure is labelled as stage 6's); `NOT_RECOMMENDED` next to the final output after an allowed failure |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
 Everything except `packing.report`, `unpacking.report` and the two
-`deliverable.tdp4` is private: the circuits regenerate or expose $C$, and
-`SEEDS` regenerates everything.
+`deliverable.tdp4` is private (the per-round containers and bounds included):
+the circuits regenerate or expose $C$, and `SEEDS` regenerates everything.
 
 ## Where a run starts
 
@@ -189,7 +202,7 @@ same pointer.
 | --- | --- | --- |
 | `config_version` | integer, required `4` | TOML schema identifier, separate from the saved recipe v12. `1`, `2` and `3` are rejected with migration messages. |
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
-| `run.build_binaries` | bool, `true` | Build `gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing` and `tdp_unpacking` for a fresh run. `false` requires them under the resolved build directory. |
+| `run.build_binaries` | bool, `true` | Build `gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing` and `tdp_unpacking` for a fresh run, plus `hmap_affine` (`--features security-tools`, a separate cargo build whose failure also aborts the run) for the report-only stage-2 span check. `false` requires them under the resolved build directory. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory; stage binaries come from its host-target `release/` directory. |
 | `run.skip_stages` | integer array, `[]` | Stages not run, each in `2..6` (stage 1 always runs). Recorded in the manifest (`skip_stages=`): it changes the output. `[4, 5]` with `delivery.anf_only = true` is the validated four-stage chain. |
 | `run.stop_after_stage` | integer, `6` | Last stage to reach, `2..6`. |
@@ -289,7 +302,7 @@ otherwise starts from the previous circuit with its own `cross_seed`.
 | `crossing.width_penalty_base` | number, `3.0` | Base `B` of the wide-split acceptance penalty, in `1..1_000_000`. A relevant parent/control width `c` above threshold `d` is allowed with probability `B^(-(c-d))`; `B=1` disables this damping. |
 | `crossing.width_penalty_threshold` | integer, `1` | Width `d` below which this penalty does not apply, in `0..1_000_000_000`. A width bias, not a maximum legal gate width (`--k-max 12`). |
 | `crossing.size_tolerance_divisor` | integer, `25` | Size-controller temperature `max(64, round(target / divisor))`, in `1..1_000_000_000`. |
-| `crossing.move_budget_factor` | number, `3.0` | Move budget `round(factor * target)`, factor in `(0, 1000]`. The walk reaches its target in about `2 * target` moves; the archive-era driver ran `6 * target`; RC set the default to 2 on 2026-10-11 and to 3 on 2026-10-12. |
+| `crossing.move_budget_factor` | number, `3.0` | Move budget `round(factor * target)`, factor in `(0, 1000]`. At 2×target the n=64 walk stopped at 0.90 of its target (5.38M of 5.98M gates, 7 min; `docs/notes/seven_stage_20261011.md` §4) instead of settling on it; the archive-era driver ran `6 * target` (46 min, on target). RC set the default to 2 on 2026-10-11 and to 3 on 2026-10-12; a run at 3× is not yet measured. |
 | `crossing.move_attempts` | integer, unset | An absolute move budget instead of the factor (the two are exclusive), in `1..10^12`. |
 
 Either budget is added to the split stage's move counter on a resume of
@@ -538,8 +551,6 @@ for lookup and candidate selection.
 [frozen DB](frozen_database.md) and
 [canonicalization](polynomial_canonicalization.md) guides explain these parts.
 
-<a id="stage-4-packing"></a>
-
 ## Stage 4: splitting
 
 The database leaves many gates in the r57 shape `a ⊕= b ∨ ¬c`. The split
@@ -590,8 +601,11 @@ With stage 4 skipped it starts from the previous circuit (`--input …
 --seed-file /dev/fd/3`, the `cross_seed`) with `--moves 3*TARGET`. It writes
 `crossing.mpmct1`, `stage5.log` and `stage5.recipe` (which records the
 source: `resume split.state` or `input <file>`). No state file is written:
-nothing downstream resumes it. At n=64 the walk takes 3.03M gates to 5.49M
-in 46 min; at n=128 8.66M to 15.7M in 6.3 h; it slows several-fold under CPU
+nothing downstream resumes it. With the archive-era 6×target budget the n=64 walk took 3.03M gates to
+5.49M in 46 min and the n=128 walk 8.66M to 15.7M in 6.3 h
+(`docs/notes/stage45_revival_20261011.md`); with 2×target the n=64 walk
+stopped at 5.38M after 7 min (`docs/notes/seven_stage_20261011.md`); the 3×
+default is not yet measured. The walk slows several-fold under CPU
 contention. Read `cross_move_on`, `undo_move` and `merge_move` in
 [src/stages/post-processing/crossing.rs](../src/stages/post-processing/crossing.rs);
 the scheduler and acceptance logic are in
@@ -599,6 +613,9 @@ the scheduler and acceptance logic are in
 the mixer the walk is slot 3 of `Mixer::run`, the default walk when `p_db <
 1`; stage 3 passes `--p-db 1.0`, so slot 3 never runs there and stage-3
 output is unchanged by its presence.
+
+<a id="stage-4-packing"></a>
+<a id="stage-6-delivery"></a>
 
 ## Stage 6: delivery
 
@@ -643,7 +660,7 @@ output.) On the stage-5 output the packer needs about 4× the windows and far
 longer (n=64: 2.2 h instead of 23 s; n=128: 7.7 h instead of 2 min;
 `docs/notes/stage45_revival_20261011.md`).
 
-which does, in one process, what val_chain.sh does after stage 3:
+The command does, in one process, what val_chain.sh does after stage 3:
 
 | Step | Oracle | Rust | Writes (in `packing/`) |
 | --- | --- | --- | --- |
@@ -728,23 +745,30 @@ failed window of two or more gates is cut in two at an exposure-aware cut
 (32 candidates, one C-view scan, the one nearest the midpoint at which no
 interior value of $C$ is affine; the midpoint when none is clean, counted
 as an unclean cut), the deliverable is re-emitted with the two halves'
-blobs in its place, and the next round unpacks the new halves; the loop
-ends when nothing is pending or after `max_rounds`. The converged windows
+blobs in its place, and the next round unpacks the new halves (a half whose
+ANF exceeds the 65,536-monomial budget is emitted but not synthesized and is
+split again in the next round, `over_budget` in the report; one still over
+budget at the last round is a check failure, exit 4); the loop ends when
+nothing is pending or after `max_rounds`. The converged windows
 are concatenated in lattice order and the whole circuit is put into the
 canonical commuting gate order (`xgate_canonicalize`, so no window boundary
 survives). Measured basis and the full contract: [DELIVERY_STAGE.md](DELIVERY_STAGE.md)
 (on the n=64 seven-stage run 157 of 10,366 windows failed to unpack in 30 s;
 bisection converges by about 90 % per round and ends at 15-16-gate pieces);
 the synthesizer, its checks and its exit codes: [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md).
+First six-stage run (n=16, 2026-10-12, `port_runs/six_n16b`, made at
+`move_budget_factor = 2`): 18 min end to end; delivery 3 rounds, 678 → 696
+windows, 18 clean cuts, 0 unclean cuts, 0 verbatim, every check ok.
 
 It writes into `unpacking/`: `deliverable.tdp4` (the refined lattice: **the
 shipped file**), `bounds.final` (its cuts), `unpacked.mpmct1` (the state
 width in the header, canonical order), `windows.tsv` (one row per window of
 the final lattice with its round and status), `rounds.tsv` (per round:
-pending, converged, failed, split, unclean cuts, seconds), `unpacking.report`
+pending, converged, failed, split, seconds), `unpacking.report`
 (`status=ok|verbatim_used`, `rounds`, `windows_initial`, `windows_final`,
-`splits`, `unclean_cuts`, `verbatim`, the gate counts and ratio, every
-check) and `unpacking.log`; the driver appends its output to `stage6.log`
+`splits`, `unclean_cuts`, `over_budget`, `verbatim`, the gate counts and
+ratio, every check), `unpacking.log` and the per-round `bounds.<r>` /
+`deliverable.<r>.tdp4` (round 0 = the packer's; private); the driver appends its output to `stage6.log`
 after a separator line. Before anything is committed every converged window
 is checked exactly and by sampling, the refined deliverable passes the
 packer's final check at every cut and evaluates equal to the packed circuit,
@@ -795,6 +819,12 @@ macOS), with the `hmap_affine` baseline built from `492564f0`
 
 - `tests/integration/tdp_packing.rs`: oracle fixtures (pack, repair, serialize,
   the whole `run` at n=8) byte for byte, exit codes, thread independence;
+- `tests/manual/delivery_parity.sh OUT`: the Rust delivery loop
+  (`tdp_unpacking run --refine`) against the Python reference `deliver.py` on
+  n8_L8 with the same seed, time limit and restarts; `bounds.final`,
+  `deliverable.tdp4`, `unpacked.mpmct1` and every per-round file identical
+  (`TDP_UNPACKING`, `TDP_PACKING`, `HMAP_AFFINE` env);
+  `tests/integration/tdp_unpacking.rs` for the binary;
 - the CI job `stage4-oracle` (`tests/stage4/differential.sh`): the oracle and
   `tdp_packing` on 20 random pack and repair/serialize cases per push;
 - `tests/manual/stage4/{run,pack,repair,anf,cview}_parity.sh`: the 8
@@ -808,8 +838,9 @@ macOS), with the `hmap_affine` baseline built from `492564f0`
 
 ### The reference driver
 
-`waist/val_chain.sh TAG N MC S SLICE CONFIG` runs stages 1-4 with the Python
-stage 4 and seeds below $2^{31}$/$2^{40}$ in `W/<TAG>/seed.txt` (calibration
+`waist/val_chain.sh TAG N MC S SLICE CONFIG` runs stages 1-3 and the Python
+packer (the four-stage chain: today's `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true`) and seeds below $2^{31}$/$2^{40}$ in `W/<TAG>/seed.txt` (calibration
 grade). It hard-codes the run tree (`/Users/rancanetti/code/local_mixing`,
 `runs/ncdb_ab_20261001/waist/<TAG>`), so outside that tree run it through the
 reproduction test's sandbox. Its CONFIG is `L8` (recommended) or `A`; the

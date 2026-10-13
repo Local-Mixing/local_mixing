@@ -1,24 +1,35 @@
 # Stage 2 Redesign and Linkable Exposure
 
-*2026-10-07. Branch `ran/stage2-windowed-delivery`. Every number below is
+*2026-10-07. Branch `ran/stage2-windowed-delivery` (carried forward on the
+stacked branches up to `ran/seven-stage`). Every number below is
 recorded in `docs/notes/ncdb_ab_20261001_RESULTS.md` (lab notebook) and was
 produced by the prototypes in `scripts/windowed_delivery/`. Validation
 replicates: §5.*
 
 ---
 
-## 1. The pipeline: four stages
+## 1. The pipeline: six stages
+
+*(Revised 2026-10-12. This document was written for the four-stage chain of
+2026-10-07, which is now `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true`; current pipeline: `docs/tdp_pipeline.md`,
+`docs/TDP_PIPELINE_REFERENCE.md`.)*
 
 | stage | what it does | code |
 |---|---|---|
 | 1. Sandwich | classic sliced sandwich around the secret C | `stages/sandwich` (unchanged) |
 | 2. Preprocessing | embedded masking: masked fires, band, migration, guards | `stages/preprocessing` |
 | 3. Mixing | DB mixing with the **regular** frozen store | `circuit_mixer --tdp --db-mixing` |
-| 4. Packing | windowed ANF delivery: pack, repair, emit | `scripts/windowed_delivery` (Rust port planned) |
+| 4. Splitting | every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists | `circuit_mixer --split --split-stop` |
+| 5. Crossing | the directional crossing walk under a size thermostat | `circuit_mixer --resume split.state --target-size …` |
+| 6. Delivery | packing (windowed ANF delivery: pack, repair, emit), then unpacking with lattice refinement | `tdp_packing run`, `tdp_unpacking run --refine` (`src/stages/packing/`, `src/stages/unpacking/`; Python oracle `scripts/windowed_delivery`) |
 
-The curated DB and the former stages 4–6 (split, crossing walk, fcompress)
-are historic: the new pipeline does not use them (see
-`docs/ANF_WINDOW_DELIVERY.md` §3 for why windowing replaced stages 4–6).
+The curated DB and the former stage 6 (fcompress) are historic. The split
+stage and the crossing walk, retired with them on 2026-10-07, were revived
+on 2026-10-11 as stages 4 and 5 of the default chain
+(`docs/notes/stage45_revival_20261011.md`); the four-stage chain validated
+here is `run.skip_stages = [4, 5]` with `delivery.anf_only = true` (see
+`docs/ANF_WINDOW_DELIVERY.md` §3 for the 2026-10-07 decision).
 
 ## 2. What the adversary sees, and what we measure
 
@@ -40,7 +51,8 @@ boundaries at which one wire holds the same function (up to complement). The
 *proxy* if it equals the output of some stage-2 gate, *froth* otherwise
 (mixer-made). Values seen once are near-innocuous; values seen in ≥ 2
 separate runs are recognizable from the artifact alone. Reported
-(`link_census.py`):
+(`scripts/windowed_delivery/waist/link_census.py`; Rust:
+`stages::packing::census`, `packing/link_rep512.txt`):
 
 - **linkable values (L2)**: proxy values with cluster size ≥ 2;
 - **sightings (M2)**: total runs over those values;
@@ -117,7 +129,8 @@ cancellation removes only ~4% of linkable values.
 
 ## 4. Results
 
-Recommended pipeline, stage 4 = pack at G = 512 + repair. A = no chains;
+Recommended pipeline (the four-stage chain), packing = pack at G = 512 +
+repair (now the first sub-step of stage 6). A = no chains;
 L8 = bounded chains. All rows: C-view at the exact floor, no window over
 65,536 monomials, spot checks and functional equivalence pass.
 
@@ -177,11 +190,15 @@ fixed code (identical results except vL128a, which now reaches the floor).
 
 ## 6. Recommended configuration
 
-**Managed default (2026-10-09).** This configuration is the default of the
-managed driver (`tdp_gen`, config v2, `docs/tdp_pipeline.md`): preset `L8`
-sets exactly the stage-2 environment below and nothing else, schedule
-`validated` is the stage-3 command below (serial), and stage 4 is
-`tdp_packing run` with the parameters below. From the same seeds the
+**Managed default (2026-10-09; updated 2026-10-12).** The stages 1–3 and
+the packer of the managed driver (`tdp_gen`, config v4,
+`docs/tdp_pipeline.md`) default to this configuration; the default chain
+additionally runs stages 4 (splitting) and 5 (crossing) and the unpacking
+sub-step, so this four-stage chain is `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true`: preset `L8` sets exactly the stage-2 environment
+below and nothing else, schedule `validated` is the stage-3 command below
+(serial), and the packing sub-step of stage 6 is `tdp_packing run` with the
+parameters below. From the same seeds the
 managed run is byte-identical to `val_chain.sh` CONFIG=L8 (checked on the
 archived vL64a and vL128a runs and by a reproduction test;
 `docs/STAGE4_RUST_DESIGN.md` §12). Config A (no chains) is
@@ -201,10 +218,12 @@ Stage 3: `circuit_mixer --tdp --db-mixing --profile 2,2,2,2,2 --moves
 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048
 --no-local-verify` (regular frozen store). The validation runs also passed
 `--p-comp 1.0 --p-any 0.1`; those flags fed only the crossing walk's slot-3
-thermostat, which never fires at `--p-db 1.0`, and they are retired (the
-current build rejects them; the output is byte-identical without them).
+thermostat, which never fires at `--p-db 1.0`, and the validated schedule
+omits them (the output is byte-identical without them); the revived stages 4
+and 5 pass `--p-comp 0 --p-any 0`.
 
-Stage 4: `window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`
+Packing (stage 6, first sub-step; stage 4 of the four-stage chain):
+`window_pack3.py A s3 512 512 24576 3000` then `repair.sh TAG 512 N`
 (pair cancellation, leak slides, merge/split fallback), then ANF emission
 (`anf_dump_eval.py`); in the managed pipeline `tdp_packing run` with its
 defaults, a bit-exact port.
@@ -222,10 +241,13 @@ defaults, a bit-exact port.
   fields (off in the library's base parameters) and the managed presets
   L8/A set them; chains / premask / seed-avoidance have no unit tests beyond
   end-to-end verification and the byte-identity test of the typed-knob
-  refactor (`tests/integration/stage2_typed_params.rs`). Stage 4 is in Rust
-  (`tdp_packing`), with the Python prototypes as its oracle.
+  refactor (`tests/integration/stage2_typed_params.rs`). Packing (the first
+  sub-step of stage 6) is in Rust (`tdp_packing`) and unpacking with
+  refinement in `tdp_unpacking`, with the Python prototypes as the packer's
+  oracle.
 - **Small n.** L8 generation works at n=8 (18,238 gates, 1,734 chained
-  brackets) and n=16; the stage-4 fixtures and the reproduction tests run
+  brackets) and n=16; the packing fixtures (`tests/fixtures/stage4/`) and
+  the reproduction tests run
   the whole L8 chain at n=8 and n=16 (calibration material, not validated
   sizes).
 

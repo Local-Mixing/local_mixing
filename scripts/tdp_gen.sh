@@ -66,7 +66,9 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --source-wires N         wires of the source computation C (required; 3..4095)
   --run-directory DIR      run directory (created; artifacts + logs land here)
   --seed-file PATH         CALIBRATION/REPRODUCTION ONLY: private file (chmod 600,
-                           <= 256 bytes) with lines gen_seed=<u63> and mix_seed=<u63>.
+                           <= 256 bytes) with lines gen_seed=<u63> and mix_seed=<u63>,
+                           optionally split_seed=, cross_seed= and unpack_seed= (drawn
+                           fresh when absent).
                            Default: fresh CSPRNG seeds, kept in the private $RUN/SEEDS
   --source-gates M (-m)    |C| = |D| gate count [default: the validated table,
                            1000 at n=64 and 3000 at n=128]
@@ -107,7 +109,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --packing-anf-cap-semantics C     cpython39 (default, the oracle) | canonical
   --packing-allow-floor-miss        ship despite a visible non-output row (NOT recommended)
   --packing-allow-over-budget       ship despite an over-budget window (NOT recommended)
-  --threads T              pin RAYON_NUM_THREADS and tdp_packing --threads
+  --threads T              pin RAYON_NUM_THREADS and the --threads of tdp_packing
+                           and tdp_unpacking
   --crossing-target-size-factor R   stage-5 target = round(G * R), R in [1, 16]  [2]
   --crossing-width-penalty-base B   wide-split acceptance penalty base B >= 1     [3]
   --crossing-width-penalty-threshold C  width below which the penalty is off     [1]
@@ -996,9 +999,10 @@ import sys
 g, xr, tdiv, xmf, xmoves = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5])
 tgt = round(g * xr)
 temp = max(64, round(tgt / tdiv))
-# The walk reaches its target in about 2*target moves (RC, 2026-10-11: the
-# default budget is 2*target; the archive-era driver's 6*target also held the
-# fragments under the thermostat for a while, eroding them).
+# The walk reaches its target in about 2*target moves (RC, 2026-10-11); the
+# default budget is 3*target (RC, 2026-10-12; it was 2*target on 2026-10-11; the
+# archive-era driver's 6*target also held the fragments under the thermostat
+# for a while, eroding them).
 print(tgt, temp, xmoves if xmoves > 0 else max(1, round(xmf * tgt)))
 PY
 )"

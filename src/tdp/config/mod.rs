@@ -354,9 +354,9 @@ impl DeliveryConfig {
 
 /// The stage-5 crossing walk's controls (`[crossing]`), each `None` = the
 /// default (target factor 2, penalty base 3, threshold 1, tolerance divisor
-/// 25: the archive-era driver's; move budget 2 * target: RC 2026-10-11, the
-/// archive ran 6 * target). `xmoves` is an absolute budget overriding the
-/// factor.
+/// 25: the archive-era driver's; move budget 3 * target: RC 2026-10-12, it was
+/// 2 * target on 2026-10-11 and the archive ran 6 * target). `xmoves` is an
+/// absolute budget overriding the factor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CrossingConfig {
     pub(crate) xr: Option<String>,

@@ -183,7 +183,12 @@ lookup_miss_filter = "auto"
 ```
 
 The regular store is required for normal database mixing.
-`auto` enables filters when at least 60 GiB of available RAM is reported.
+`auto` sets `FROZEN_FILTER=1` when the store has no `filters.bin` (the
+reference runs' situation: the mixer notes it and runs unfiltered); when
+`filters.bin` exists the filter stays off until its output neutrality is
+recorded (`docs/STAGE4_RUST_DESIGN.md` D11). The manifest records the
+resolved value (`frozen_filter=auto(1)`) and `$RUN/stage3.settings` the
+value stage 3 set.
 `"on"` explicitly requires a nonempty `filters.bin` in the store,
 and `"off"` avoids loading them. Keep each filter with the exact frozen store
 from which it was built. The reader checks the shard count and total entry

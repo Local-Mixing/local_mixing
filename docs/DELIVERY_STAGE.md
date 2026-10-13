@@ -55,11 +55,11 @@ Outputs (in the stage directory):
 
 | file | content |
 |---|---|
-| `deliverable.tdp4` | D_final, the container on the refined lattice; `rep<G>.bounds.final` its bounds |
-| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the stage-7 canonical order); header = state width |
+| `deliverable.tdp4` | D_final, the container on the refined lattice; `bounds.final` its bounds (one cut per line) |
+| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the `tdp_unpacking` canonical order); header = state width |
 | `windows.tsv` | one row per window of the final lattice: `idx lo hi round orig_gates syn_gates status synth_status seconds monomials changed_wires input_vars max_degree` |
-| `rounds.tsv` | per round: pending, converged, failed, split, unclean cuts, seconds |
-| `delivery.report` (Python) / `unpacking.report` (Rust: the stage-7 keys plus these) | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `over_budget`, `verbatim`, `gates_packed` (Rust: `gates_in`), `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
+| `rounds.tsv` | per round: pending, converged, failed, split, seconds (header `round pending converged failed split seconds`). Unclean cuts are not a column: the per-round count is in the log's round line and the total is `unclean_cuts` in the report |
+| `delivery.report` (Python) / `unpacking.report` (Rust: the `tdp_unpacking` report keys of `docs/STAGE7_UNPACKING.md` §4 plus these) | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `over_budget`, `verbatim`, `gates_packed` (Rust: `gates_in`), `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
 
 With `anf_only` the stage stops after D_0 (= the packer's deliverable) and writes no circuit.
 
@@ -81,7 +81,7 @@ Parameters (`[delivery]` in the config; CLI of the binaries in §4):
 | `restarts` | 16 | synthesizer restarts; "less optimized" = fewer restarts, e.g. 2 |
 | `beam` | 6 | |
 | `max_rounds` | 16 | |
-| `threads` | all | |
+| `run.threads` (not a `[delivery]` key) | all cores | the `--threads` of `tdp_packing` and `tdp_unpacking`; the output depends on it only through the per-window deadline |
 
 ## 3. Python reference
 
@@ -89,9 +89,10 @@ Parameters (`[delivery]` in the config; CLI of the binaries in §4):
 binaries, as in the packer chain which already calls `hmap_affine`):
 
 ```
-deliver.py --rep rep512.mpmct1 --bounds rep512.bounds --body deliverable.bin --source-c C --n N
-           --out DIR [--anf-only] [--time-limit 30] [--restarts 16] [--max-rounds 16] [--threads T]
-           [--synth tdp_unpacking|anf_synth] [--hmap target/release/hmap_affine]
+deliver.py --rep rep512.mpmct1 --bounds rep512.bounds --source-c C --n N --out DIR [--body deliverable.bin]
+           [--anf-only] [--time-limit 30] [--restarts 16] [--beam 6] [--max-rounds 16] [--threads T] [--seed 1]
+           [--budget 65536] [--synth tdp_unpacking|anf_synth] [--synth-bin PATH] [--canon-bin tdp_unpacking]
+           [--hmap ~/code/local_mixing/target/release/hmap_affine] [--label tdp]
 ```
 
 Per round it (1) emits D_r by blob splicing (`anf_compose.window_anf` on the new halves, the blob
@@ -112,7 +113,7 @@ canon` or the Python fallback), (5) runs the checks. It is the oracle for the Ru
   into the container with window count, body bytes and CRCs recomputed), assembly, canonical
   order, checks, outputs as in §2. Per round it writes `bounds.<r>` and `deliverable.<r>.tdp4`
   (round 0 = the inputs), at the end `deliverable.tdp4`, `bounds.final`, `unpacked.mpmct1`,
-  `windows.tsv`, `rounds.tsv`, `unpacking.log` and `unpacking.report` (the stage-7 report with
+  `windows.tsv`, `rounds.tsv`, `unpacking.log` and `unpacking.report` (the `tdp_unpacking` report of `docs/STAGE7_UNPACKING.md` §4 with
   `refine=1 rounds windows_initial windows_final splits unclean_cuts over_budget verbatim` and
   `status=ok|verbatim_used`). A pending window is synthesized with its index in the current
   lattice, so the tie-break PRNG and verify seeds equal the reference's, which calls `--windows`

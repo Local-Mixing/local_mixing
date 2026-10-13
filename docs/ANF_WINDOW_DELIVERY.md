@@ -1,20 +1,32 @@
 # Windowed ANF Delivery: Packing the DB-Mixed Circuit into ANF Blocks
 
-*2026-10-07. Status: prototype-validated pipeline stage (python tools in
-`runs/ncdb_ab_20261001/`), production artifacts at n=64 and n=128
-(`waist/final64/`, `waist/final128/`). Update 2026-10-09: stage 4 now runs
-in Rust (`tdp_packing run`, `docs/STAGE4_RUST_DESIGN.md`), bit-exact against
-these tools, which remain its oracle. All measurements cited here are
-recorded in that run's RESULTS.md and in
-`runs/exposure_report_20261003/REPORT.md`.*
+*2026-10-07. Status: prototype-validated pipeline stage (python tools
+snapshotted in `scripts/windowed_delivery/`, originally
+`runs/ncdb_ab_20261001/`; now the packer's oracle), production artifacts at
+n=64 and n=128 (`waist/final64/`, `waist/final128/` in that untracked run
+tree). Update 2026-10-12: packing is the first sub-step of stage 6 (delivery)
+of the six-stage pipeline and runs in Rust (`tdp_packing run`,
+`docs/STAGE4_RUST_DESIGN.md`, written when it was stage 4), bit-exact against
+these tools, which remain its oracle; it is followed by unpacking with
+lattice refinement (`tdp_unpacking run --refine`, `docs/DELIVERY_STAGE.md`),
+whose `unpacking/deliverable.tdp4` is the shipped file. Current pipeline:
+`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`. All measurements
+cited here are recorded in `docs/notes/ncdb_ab_20261001_RESULTS.md` (the
+run's RESULTS.md) and in `runs/exposure_report_20261003/REPORT.md`
+(untracked run tree).*
 
 ---
 
 ## 1. The current process
 
-The delivery stage consumes the **stage-3 (DB-mixed) circuit** and
-produces the shipped artifact. It replaces the former stages 4–6
-(split, crossing walk, fcompress/packing). Three steps:
+The packing sub-step of stage 6 (delivery) consumes the **last circuit
+produced** (`crossing.mpmct1` by default; the stage-3 DB-mixed circuit
+`db_mixing.mpmct1` under `run.skip_stages = [4, 5]`, the validated
+four-stage chain this document measured) and produces the packer's
+deliverable, which the unpacking sub-step refines into the shipped file. It
+replaced the former stage 6 (fcompress); the split and crossing stages,
+retired with it on 2026-10-07, were revived as stages 4 and 5 on 2026-10-11
+(`docs/notes/stage45_revival_20261011.md`). Three steps:
 
 ### 1.1 Commuting reorder + window scheduling (`window_pack3.py`)
 
@@ -125,7 +137,7 @@ port (`tdp_packing`) checks every window: decoded ANF = composed ANF, and
 ANF = gates, exhaustively for windows with at most 16 support wires and on
 1,024 sampled states otherwise.]
 
-### 1.2a Commutation-aware repair (`waist/order_repair.py`, `waist/repair.sh`)
+### 1.2a Commutation-aware repair (`scripts/windowed_delivery/waist/order_repair.py`, `scripts/windowed_delivery/waist/repair.sh`; Rust: `stages::packing::repair`)
 
 *Added 2026-10-07; see `docs/STAGE2_LINKABILITY.md` §3.6.* Runs on the
 packed order before emission; window boundaries are markers that stay
@@ -156,7 +168,11 @@ else ships: no gate list, no boundary metadata beyond the windows
 themselves, no stage provenance.
 
 **Container v1 (2026-10-09).** The raw body carries no n, no version and no
-integrity check, so the managed pipeline ships `deliverable.tdp4`: a 48-byte
+integrity check, so the managed pipeline ships a container `deliverable.tdp4`:
+the packer writes `packing/deliverable.tdp4` (the shipped file under
+`delivery.anf_only`, otherwise the refinement's starting point) and the
+unpacking sub-step writes `unpacking/deliverable.tdp4` on the refined
+lattice, the shipped file, in the same format: a 48-byte
 little-endian header (`LMTDPANF`, format version 1, header size 48, flags 0,
 source wires n, state wires 4n, I/O layout 1 = the classic zero slice, window
 count, body length, CRC-32 of the body, CRC-32 of the header) followed by the
@@ -182,7 +198,12 @@ Compressibility is 6.1–6.7× under xz — and the compressed ANF is
 *smaller* than the compressed gate list, i.e. the ×4–5 raw inflation
 is redundancy of the format, not information added.
 
-### 1.4 Full production parameters, both scales
+### 1.4 Parameters of the 2026-10-07 reference runs (final64/final128, G=128)
+
+*Superseded for production by the validated configuration of
+`docs/STAGE2_LINKABILITY.md` §6: stage-2 preset L8 (chains, premask,
+seed-avoid-C1), packing G=512 / W_cap 512 / budget 24,576 / span 3,000 /
+split budget 65,536 (`configs/tdp.toml` `[packing]`).*
 
 Stage-2 knobs are identical at both scales (the managed embedded-
 masking preset): K=2 band wires per LGI, `max_open` 3 / `min_open` 2,
@@ -193,8 +214,9 @@ carrier shuffling dose 8 with **persistent migration**
 are identical: `--tdp --db-mixing --profile 2,2,2,2,2 --p-db 1.0
 --p-comp 1.0 --p-any 0.1 --db-max-degree 9 --db-max-span 30
 --db-wire-terms 1024 --db-total-terms 2048`, regular frozen store
-`frozen_m1_m11` (`--p-comp`/`--p-any` are retired since the four-stage
-cleanup: they were inert at `--p-db 1.0`, and current builds reject them),
+`frozen_m1_m11` (`--p-comp`/`--p-any` are inert at `--p-db 1.0` and the
+validated stage-3 schedule omits them; the revived stages 4 and 5 pass
+`--p-comp 0 --p-any 0`),
 moves = ⌈2·2·1.3·(stage-2 gates)⌉. Packing and
 emission are identical: `W_cap` 128, `G` 128 (hard 256), `B_mono`
 6,144 (hard 12,288 in a burst; ¾ pre-burst guard), `span_cap` 3,000,
@@ -287,7 +309,9 @@ The one real tradeoff surface is window size G:
   combinatorial: boundary count vs the circuit ends, the
   re-synthesis-hardness floor (very small windows are canonically
   re-synthesizable; very large windows reduce the boundary count
-  toward the ends), and delivery size (≈ ×12 at G=512).
+  toward the ends) [2026-10-12: no longer a floor — the unpacking
+  sub-step of stage 6 resynthesizes every window by design,
+  `docs/DELIVERY_STAGE.md`], and delivery size (≈ ×12 at G=512).
 - Scheduler quality, not material, is the current binding constraint:
   on migration-refreshed material, 93% of carried values are winnable
   while v3 hides 72–73% of winnable; the gap is attributed by the
@@ -321,6 +345,14 @@ v2.1 35% → v3 budget-adaptive 46/58/72% at G=64/128/256.
 ---
 
 ## 3. Why stages 4–6 were abandoned
+
+*Status 2026-10-12: historical. The decision stood for the four-stage chain
+(now `run.skip_stages = [4, 5]` with `delivery.anf_only = true`); split and
+crossing were revived as stages 4 and 5 on 2026-10-11 for the resynthesis
+studies and are in the default chain
+(`docs/notes/stage45_revival_20261011.md`: they do not close the
+resynthesis leak); fcompress remains historic. Current pipeline:
+`docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`.*
 
 The decision rests on the stage-wise exposure study (nine arms × four
 stages, random family and TDP, 2026-10-03) plus the direct
@@ -389,7 +421,8 @@ lower wall-clock cost than the crossing walk it replaces.
   path at zero bare reads; band carrier hygiene: lifetime, migration,
   dedup/retirement, seed density).
 - **Stage 3** — un-invertible respelling, dilution, DB-form digestion.
-- **Windowed ANF delivery (new stage 4)** — cut deletion: *where*
+- **Stage 6, delivery (windowed ANF packing, then unpacking with lattice
+  refinement)** — cut deletion: *where*
   anything is observable at all, plus canonical within-window
   respelling.
 - **Circuit ends (sandwich/slicing)** — the t\*-spectrum of the
@@ -398,6 +431,10 @@ lower wall-clock cost than the crossing walk it replaces.
 ---
 
 ## 4. Production reference results (pipeline v2.1, final64/final128)
+
+*Status: results of the 2026-10-07 G=128 runs (final64/final128); superseded
+by the G=512 validation in `docs/STAGE2_LINKABILITY.md` §4–5 and the managed
+defaults (`docs/tdp_pipeline.md`).*
 
 End-to-end: classic sandwich → embedded masking (rich band seed,
 persistent carrier migration dose 8, read-pressure partners, feistel
@@ -432,12 +469,15 @@ with and without that fix.
 
 - Design doc: `docs/windowed_delivery_design.md` (architecture + the
   stage-2 band-subsystem spec).
-- Tools: `runs/ncdb_ab_20261001/window_pack3.py`, `anf_compose.py`,
-  `boundary_cluster.py`, `waist/recurrence2.py`, `waist/anf_dump_eval.py`,
-  `wire_balance.py`; exposure scans via `hmap_affine --exposure
-  --g-cuts` (boundary-lattice mode).
+- Tools: `scripts/windowed_delivery/{window_pack3.py,anf_compose.py,boundary_cluster.py,wire_balance.py}`
+  and `scripts/windowed_delivery/waist/{recurrence2.py,anf_dump_eval.py}`
+  (snapshot of `runs/ncdb_ab_20261001/`, the packer's oracle; Rust:
+  `src/stages/packing/`, `tdp_packing`); exposure scans via `hmap_affine
+  --exposure --g-cuts` (boundary-lattice mode).
 - Production artifacts: `runs/ncdb_ab_20261001/waist/final64/`,
-  `.../final128/` (stage-2/3 circuits, packed order + bounds,
-  deliverable.bin + compressed forms, full census logs, seeds).
-- Measurement record: `runs/ncdb_ab_20261001/RESULTS.md`;
-  stage-wise study: `runs/exposure_report_20261003/REPORT.md`.
+  `.../final128/` (untracked run tree in the main checkout: stage-2/3
+  circuits, packed order + bounds, deliverable.bin + compressed forms, full
+  census logs, seeds).
+- Measurement record: `docs/notes/ncdb_ab_20261001_RESULTS.md` (the run's
+  RESULTS.md); stage-wise study: `runs/exposure_report_20261003/REPORT.md`
+  (untracked run tree).

@@ -179,9 +179,12 @@ or establish that no equivalent circuit exists. In particular, intermediate
 polynomials can grow before later gates cancel them, and a touched-wire span
 can be larger than the function's final support.
 
-The [TDP driver](../src/tdp/runner.rs) currently pins the Rule L budget to
-512 and the legacy g57 monomial cap to 200,000. XGate composition uses its
-separate term budgets. Explicit library APIs accept
+The [TDP driver](../src/tdp/runner.rs) leaves the Rule L budget and the
+legacy g57 monomial cap unbounded, as in the reference runs
+(`CANON_RULE_L_BRANCH_CAP` and `CANON_MONOMIAL_CAP` are forbidden in its
+environment); the stage-3 speed guards are the mixer's `--db-max-degree 9
+--db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048`. XGate
+composition uses its separate term budgets. Explicit library APIs accept
 `CanonicalizationOptions`, `G57CanonicalizationOptions`, or
 `XGateCanonicalizationOptions`; these calls use their supplied options and
 bypass the legacy process-wide canonicalization caches.

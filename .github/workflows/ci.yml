@@ -50,16 +50,19 @@ jobs:
           assert not names.intersection({'rocksdb', 'librocksdb-sys', 'rhai', 'pyo3', 'numpy', 'lmdb', 'lmdb-sys'}), names
           PY
 
-      # tdp_packing (stage 4) against Python-oracle fixtures in tests/fixtures/stage4;
+      # tdp_packing (the packing sub-step of stage 6, delivery; "stage 4" in the
+      # four-stage numbering of tests/fixtures/stage4) against Python-oracle fixtures;
       # stage2_typed_params pins gen's L8/A output bytes to the validated binary.
       - name: Runtime and command correctness
         run: cargo test --locked --lib --test circuit_cli --test tdp_packing --test stage2_typed_params
 
-      # The managed driver runs all four stages (docs/STAGE4_RUST_DESIGN.md §11).
+      # The managed driver runs all six stages (docs/tdp_pipeline.md; the driver
+      # design in docs/STAGE4_RUST_DESIGN.md §11 predates stages 4 and 5 and the
+      # unpacking sub-step of stage 6; its packer is stage 6's first sub-step).
       # tdp_defaults diffs its transcript against the oracle script
       # val_chain.sh itself (sandboxed, on recording mocks); stage12_parity
       # runs the real gen at n=16 both ways; reproduce_small needs a frozen
-      # store and skips here (the stage4-oracle job covers stage 4).
+      # store and skips here (the stage4-oracle job covers the packer).
       - name: TDP script flags and block sizing
         run: |
           bash tests/shell/tdp_flags.bash
@@ -70,9 +73,11 @@ jobs:
           TDP_STAGE_BIN="$PWD/target/debug" bash tests/shell/tdp_stage12_parity.bash
           bash tests/shell/tdp_reproduce_small.bash
 
-      # The Python stage-4 prototypes are the canonical ORACLE of the Rust
-      # stage 4; the stage4-oracle job runs them. Here: they still parse.
-      - name: Stage-4 oracle scripts parse
+      # The Python packing prototypes (scripts/windowed_delivery) are the canonical
+      # ORACLE of tdp_packing (stage 6's packing sub-step); the stage4-oracle job
+      # runs them. Here: they (and waist/deliver.py, the delivery-loop reference)
+      # still parse.
+      - name: Packing oracle scripts parse
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -108,7 +113,8 @@ jobs:
       - name: Trace-affine heatmap and plot analysis correctness
         run: |
           cargo test --locked --features security-tools --bin hmap_trace_affine
-          # hmap_affine --exposure on the stage-4 C-view engine, byte-compared
+          # hmap_affine --exposure on the packer's C-view engine (stages::packing::cview),
+          # byte-compared
           # with outputs of the pinned baseline binary (tests/fixtures/stage4).
           cargo test --locked --features security-tools --test hmap_affine_exposure
           python -B security_tests/heatmaps/plot_hmap_trace.py --self-test
@@ -129,8 +135,10 @@ jobs:
               assert callable(getattr(local_mixing, name)), name
           PY
 
-  # The Python stage-4 ORACLE against tdp_packing on fresh random inputs on
-  # every push (docs/STAGE4_RUST_DESIGN.md §10.6): pack, repair and emit,
+  # The Python packing ORACLE against tdp_packing (stage 6's packing sub-step; the
+  # job keeps its four-stage-era id, which docs/tdp_pipeline.md and tests/stage4/
+  # reference) on fresh random inputs on every push (docs/STAGE4_RUST_DESIGN.md
+  # §10.6): pack, repair and emit,
   # byte for byte. The oracle runs under CPython 3.9 (set iteration order
   # decides the ANF caps; the self-test pins the semantics, not the version
   # string) with the baseline hmap_affine built from 492564f0, never from the

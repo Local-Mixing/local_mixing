@@ -2,9 +2,14 @@
 
 *2026-10-04. Working notes from the ANF-window program (RC's design
 direction; experiments in `runs/ncdb_ab_20261001/`, summarized in that
-run's RESULTS.md). Status: measurement-backed design, implemented as
-the stage-4 (packing) Python prototypes under `scripts/windowed_delivery/`
-since the four-stage cleanup (2026-10-08); the Rust port is pending.*
+run's RESULTS.md, now `docs/notes/ncdb_ab_20261001_RESULTS.md`). Status
+2026-10-12: measurement-backed design, implemented in Rust as the packing
+sub-step of stage 6 (delivery) of the six-stage pipeline (`tdp_packing run`,
+`src/stages/packing/`, `docs/STAGE4_RUST_DESIGN.md`), with the Python
+prototypes under `scripts/windowed_delivery/` as its bit-exact oracle;
+followed since 2026-10-12 by unpacking with lattice refinement
+(`docs/DELIVERY_STAGE.md`). Current pipeline: `docs/tdp_pipeline.md`,
+`docs/TDP_PIPELINE_REFERENCE.md`.*
 
 ## 1. The proposal
 
@@ -17,6 +22,12 @@ delivery-form stage applied to the stage-3 output:
    as polynomials over its input wires.
 
 The delivered artifact is a sequence of window ANFs. Nothing else ships.
+
+*(Historical: adopted 2026-10-07. Split and crossing were revived as stages 4
+and 5 on 2026-10-11 and the packer now consumes the last circuit produced,
+the crossing output by default; the stage-3 input survives as
+`run.skip_stages = [4, 5]`: `docs/tdp_pipeline.md`,
+`docs/notes/stage45_revival_20261011.md`.)*
 
 ## 2. Why this erases more than the move system can
 
@@ -43,7 +54,8 @@ span must straddle the cut. Consequences:
 ## 3. Established facts (all measured on the TDP run, reference =
 stage-2 circuit, full-resolution cuts, function checks 256/256)
 
-Tools in `runs/ncdb_ab_20261001/`: `waist_census.py`,
+Tools in `scripts/windowed_delivery/` (snapshot of `runs/ncdb_ab_20261001/`):
+`waist_census.py`,
 `interval_census.py`, `ideal_refresh_census.py`, `window_pack{,2,3}.py`,
 `anf_compose.py`, `boundary_cluster.py`, `carrier_refresh.py`.
 
@@ -71,7 +83,8 @@ Tools in `runs/ncdb_ab_20261001/`: `waist_census.py`,
    hidden per doubling of the gate cap, with the ANF budget never
    binding (median ~750 monomials in 512-gate windows); the limit on
    window size is architectural (boundary count vs the ends,
-   resynthesis-hardness floor, delivery size ×12), not combinatorial.
+   resynthesis-hardness floor [2026-10-12: no longer a floor, see §8],
+   delivery size ×12), not combinatorial.
 5. **ANF budgets are not the binding constraint.** Real composed
    windows use median ~200–400 monomials of multi-thousand budgets,
    zero overflows, zero functional mismatches (every window
@@ -171,16 +184,17 @@ relying on the packer's reorder to rediscover locality.
   dedup + density).
 - **Stage 3**: un-invertible respelling, dilution, DB-form digestion
   (judged by text metrics, per the stage-3 ledger).
-- **Window packing (new stage 4)**: cut deletion — where anything is
+- **Stage 6, delivery (window packing, then unpacking with lattice
+  refinement)**: cut deletion — where anything is
   observable at all; plus canonical within-window respelling.
 - **Ends (sandwich/slicing)**: exposure complexity of survivors (the
   t\*-spectrum belongs to the ends; unchanged by this program).
 
 ## 7. Implementation plan
 
-**Superseded (2026-10-09).** Stage 4 is implemented in Rust as
-`tdp_packing run` (`src/stages/packing/`) and integrated in the managed
-driver; the plan, the exactness requirements (bit-exact against the Python
+**Superseded (2026-10-09; renumbered 2026-10-12).** Packing is implemented
+in Rust as `tdp_packing run` (`src/stages/packing/`) and is the first
+sub-step of stage 6 (delivery) of the managed driver; the plan, the exactness requirements (bit-exact against the Python
 oracle, including the CPython 3.9 set order of the ANF caps) and the
 validation are in [STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md). Item 3
 below (band refresh as a stage 3.5) was superseded earlier by stage-2
@@ -212,8 +226,11 @@ carrier migration (preset L8). The original plan:
   quantify against the approximate/nonlinear-predictor flank (open
   thread #1 of the exposure program).
 - Boundary randomization policy (boundaries are new visible structure).
-- Window width vs re-synthesis: small windows are canonically
-  re-synthesizable; floor on window size, or deliberate window-size
-  jitter.
+- Window width vs re-synthesis — decided 2026-10-12: every window is
+  resynthesized by the unpacking sub-step of stage 6, and a window that
+  does not resynthesize is cut in two and repacked
+  (`docs/DELIVERY_STAGE.md`); what stays open is the merge-and-resynthesize
+  adversary on wide windows (`docs/notes/stage45_revival_20261011.md` §3,
+  `docs/notes/stubborn_windows_20261012.md`).
 - Interaction with the curated-DB rethink (moot: curated DB removed 2026-10-08) and with the sliced
   deliverable / ends program.

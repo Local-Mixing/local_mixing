@@ -2,6 +2,8 @@
 
 2026-09-27 · Ran Canetti · live version: https://claude.ai/code/artifact/c3f95909-bf29-4208-93e7-34029e3a4e72
 
+Status (2026-10-12): historical, an inventory of the `drip-reshuffle` archive against `main` as of 2026-09-27; the current pipeline is described in `docs/tdp_pipeline.md` and `docs/TDP_PIPELINE_REFERENCE.md`.
+
 ## Summary
 
 Work continues on `main` as of 2026-09-27. `drip-reshuffle` is frozen as the archive; this doc lists what exists only there.
@@ -53,7 +55,7 @@ The blinded-V5 construction itself survived: quad-fire, balanced masks, `min_ope
 
 ## Post-processing, DB generation, experiments
 
-fcompress (transport + `esop1` packing), crossing and splitting all moved to `src/stages/post-processing/` on `main`; that module, the pool-swap code and the SGDB/MGDB tools have since become historic as well (four-stage cleanup, 2026-10-08: branch `ran/archive/curated-and-postmix`, inventory in [CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md)). The losses here are mostly small binaries and the store-convention fix.
+fcompress (transport + `esop1` packing), crossing and splitting all moved to `src/stages/post-processing/` on `main`; fcompress (the compression part of that module), the pool-swap code and the SGDB/MGDB tools have since become historic as well (four-stage cleanup, 2026-10-08: branch `ran/archive/curated-and-postmix`, inventory in [CURATED_AND_POSTMIX_ARCHIVE.md](CURATED_AND_POSTMIX_ARCHIVE.md)); splitting and crossing were revived on 2026-10-11 as stages 4 and 5 and live in `src/stages/post-processing/` again. The losses here are mostly small binaries and the store-convention fix.
 
 | Feature | Archive location | On `main` |
 | --- | --- | --- |
@@ -61,7 +63,7 @@ fcompress (transport + `esop1` packing), crossing and splitting all moved to `sr
 | `python-heatmap` feature gate (pyo3 optional so ordinary binaries link without a libpython shim) | `Cargo.toml`, `src/lib.rs` (WIP) | Solved on `main` differently (feature `python-extension`) |
 | Identity minting: `extract_identities`, `mint_long_identities`, `db_unit_synth` | `experimental/db_generation/` | Missing |
 | MGDB / SGDB build, `frozen_census`, `frozen_find_small` as `src/bin` binaries | `src/bin/`, `experimental/db_generation/` | `frozen_census`, `frozen_find_small` in `db_gen/analysis/`; the MGDB/SGDB builders are historic (`ran/archive/curated-and-postmix`) |
-| Legacy compress, `fsplit`, `fsplit_trace` | `src/postprocessing/compress.rs`, `experimental/postprocessing/` | Superseded by `stages/post-processing/`, itself historic since the four-stage cleanup (`ran/archive/curated-and-postmix`) |
+| Legacy compress, `fsplit`, `fsplit_trace` | `src/postprocessing/compress.rs`, `experimental/postprocessing/` | Superseded by `stages/post-processing/` (splitting and crossing, revived 2026-10-11 as stages 4 and 5; its compression part is historic since the four-stage cleanup, `ran/archive/curated-and-postmix`) |
 | Small experiment probes: `flip_match`, `float_histogram`, `window_span_stats`, `sandwich_compare`, `fragment_wide`, `shuffle_mpmct` | `experimental/` | Gone (`shuffle_mpmct` moved to `security_tests/fixtures`) |
 | Challenge circuits: block cipher, Newton–Feistel, point function, polynomial canonicalization | `challenges/` | Gone |
 | Poly-canon graph experiment + its 3 tests | `src/experimental/poly_canon_graph.rs`, `tests/poly_canon_*.rs` | Gone |
@@ -89,7 +91,7 @@ fcompress (transport + `esop1` packing), crossing and splitting all moved to `sr
 
 ## Python tools, docs and reports
 
-`main` has no `tools/` folder and keeps only 8 docs plus images, so all of the following is archive-only.
+As of 2026-09-27 `main` has no `tools/` folder and keeps only 8 docs plus images, so all of the following is archive-only.
 
 - **PR identity generator** (`tools/pr_identity/`, 28 files): `generator.py`, `id_strings.py` (the (d,k)-strings solution), `chain.py`, `atoms.py`, audits, the repeat-free construction and the `synth_mmd` synthesis experiments.
 - **Heatmap ridge reader** `reports/plot_hmap_ridge.py` — the standard way plates are read. `main` has its own `security_tests/heatmaps/` plotters but not this one.

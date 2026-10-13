@@ -1,4 +1,6 @@
-//! `tdp_unpacking`: the stage-7 production binary (docs/STAGE7_UNPACKING.md).
+//! `tdp_unpacking`: the production binary of the unpacking sub-step of stage 6
+//! (delivery), which the driver runs as `run --refine` (docs/DELIVERY_STAGE.md;
+//! the per-window kernel: docs/STAGE7_UNPACKING.md).
 //!
 //! It reads NO environment variables; threads are set by `--threads` only.
 //! Exit codes are `Stage7Error::exit_code`.

@@ -19,16 +19,18 @@ binary `tdp_packing`; the Python prototypes under
 [`scripts/windowed_delivery/`](scripts/windowed_delivery/) are its oracle.
 The unpacking sub-step is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
 [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the stages; the
-full reference for stages 1-3 and the packer is
-[TDP_FOUR_STAGE_PIPELINE.md](docs/TDP_FOUR_STAGE_PIPELINE.md). (The curated
+full reference for all six stages is
+[TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md). (The curated
 database and the old `fcompress` stage are historic: branch
 `ran/archive/curated-and-postmix`; see
 [the archive inventory](docs/CURATED_AND_POSTMIX_ARCHIVE.md).)
 
 ## Setup
 
-Run from the repository root on Linux or WSL, with Bash, Python 3.10 or newer,
-a native compiler/linker, and Rust installed through rustup. The repository
+Run from the repository root on macOS, Linux or WSL with bash 5.1 or newer (the
+driver refuses an older one; macOS: `brew install bash`, the managed `tdp_gen`
+finds it), Python 3.10 or newer, a native compiler/linker, and Rust installed
+through rustup. The repository
 pins Rust 1.97.1 in [`rust-toolchain.toml`](rust-toolchain.toml); rustup selects
 it automatically. [`Cargo.lock`](Cargo.lock) pins the Rust dependencies.
 
@@ -69,8 +71,11 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
 The dry run resolves and validates the recipe without creating a run or
-starting the stages. A normal fresh run builds the three stage executables
-and writes a timestamped directory under `runs/`. Database files are separate
+starting the stages. A normal fresh run builds the four stage executables
+(`gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing`, `tdp_unpacking`),
+plus `hmap_affine` (`--features security-tools`, a separate cargo build) for
+the report-only stage-2 span check, and writes a timestamped directory under
+`runs/`. Database files are separate
 from the source checkout; building the project does not generate them.
 
 By default we generate a source circuit $C$ on 128 wires with 3,000 gates
@@ -96,7 +101,14 @@ The settings we usually change are:
   `preprocessing.mode = "nonlinear291"` is also supported, without a preset.
 - `db_mixing.schedule`: `"validated"` (default; profile `2,2,2,2,2`) or
   `"custom"` with explicit growth, hold and size factor.
-- `[packing]`: stage-4 parameters; the defaults are the validated ones.
+- `[packing]`: the packing sub-step of stage 6; the defaults are the validated ones.
+- `[crossing]`: stage 5 (`target_size_factor` 2, `width_penalty_base` 3,
+  `width_penalty_threshold` 1, `size_tolerance_divisor` 25,
+  `move_budget_factor` 3 or `move_attempts`).
+- `[delivery]`: `anf_only` (stop after the packer's deliverable), `time_limit`
+  30 s, `restarts` 16, `beam` 6, `max_rounds` 16.
+- `run.skip_stages`: any of 2..6; `[4, 5]` with `delivery.anf_only = true` is
+  the validated four-stage chain.
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
@@ -112,17 +124,22 @@ test without a database, clear the DB paths and set
 | 1. Sliced sandwich | `tdp.mpmct1.source_c.g57`, `tdp.mpmct1.sandwich.mpmct1` |
 | 2. Gadgetization / preprocessing | `tdp.mpmct1` |
 | 3. Database mixing | `db_mixing.mpmct1` |
-| 4. Packing | `packing/deliverable.tdp4` (the shipped file), `packing/packing.report`, and the private intermediates in `packing/` |
+| 4. Splitting | `split.mpmct1`, `split.state` |
+| 5. Crossing | `crossing.mpmct1` |
+| 6. Delivery | `packing/deliverable.tdp4` (the packer's lattice), `packing/packing.report` and the private intermediates in `packing/`; `unpacking/deliverable.tdp4` (**the shipped file**), `unpacking/unpacked.mpmct1` (the resynthesized circuit, canonical order), `unpacking/unpacking.report`; under `delivery.anf_only` the stage ends at `packing/deliverable.tdp4` |
 
-`tdp_gen.log` records overall progress; `stage12.log`, `stage3.log` and
-`stage4.log` hold stage output. The
+`tdp_gen.log` records overall progress; `stage12.log`, `stage3.log`,
+`stage4.log`, `stage5.log` and `stage6.log` (both delivery sub-steps) hold
+stage output. The
 [TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
 
 To continue a run, set `run.directory` to its directory and invoke the same
 command again. Completed stage outputs are skipped. Set `run.stop_after_stage`
-to `2` or `3` to stop early (`4`, the default, runs every stage; the historic
-stages 5-6 are rejected); stages 1 and 2 execute together.
+to any of `2..6` to stop early (`6`, the default, runs every stage);
+`run.skip_stages` (stages in 2..6) leaves stages out (`[4, 5]` with
+`delivery.anf_only = true` is the validated four-stage chain); stages 1 and 2
+execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
@@ -132,8 +149,10 @@ recorded stage binaries and skips rebuilding them. Preserve their build
 directory; use a fresh run directory after changing recipe settings or stage
 binaries. Continue only runs created by the matching TDP recipe; earlier
 pipeline runs use different artifact names and are explicitly rejected.
-The private `SEEDS` file (fresh CSPRNG seeds; an explicit seed file is for
-calibration only) and `stage12.recipe` also belong to the run.
+The private `SEEDS` file (five fresh CSPRNG seeds, format 3; an explicit seed
+file is for calibration only) and the keyed markers `stage12.recipe`,
+`stage3.recipe`, `stage4.recipe`, `stage5.recipe` and `delivery.recipe` also
+belong to the run.
 
 ## Using circuit files
 
@@ -152,8 +171,9 @@ We must distinguish the source from the public TDP circuit. With default
 embedded masking, an $n$-wire source becomes a $4n$-wire circuit. To compute
 $C(x)$, place $x$ on wires `0..n`, set the remaining input wires to zero, and
 read output wires `n..2n`. Other outputs can contain junk. Thus, comparing the
-source directly with `db_mixing.mpmct1` using the full-function command above is
-not the TDP payload check. See [Gadgetization](docs/gadgetization.md) for the
+source directly with `unpacking/unpacked.mpmct1` (or any intermediate such as
+`db_mixing.mpmct1`) using the full-function command above is not the TDP
+payload check. See [Gadgetization](docs/gadgetization.md) for the
 slice contract.
 
 ## Working in the codebase
@@ -175,9 +195,10 @@ slice contract.
 
 [`scripts/tdp_gen.sh`](scripts/tdp_gen.sh) runs the stage executables;
 [`src/programs/`](src/programs/) contains each stage executable's `main.rs`
-alongside its argument handling and artifact I/O. `circuit_mixer` is the
-database-mixing executable (stage 3); `tdp_gen` is
-the complete managed pipeline command.
+alongside its argument handling and artifact I/O. `gen_sandwich_gadget` runs
+stages 1-2, `circuit_mixer` stages 3 (DB mixing), 4 (splitting) and 5 (the
+crossing walk), `tdp_packing` and `tdp_unpacking` the two sub-steps of stage
+6; `tdp_gen` is the complete managed pipeline command.
 The benchmark launchers live directly under `benchmarks/`. Python's
 `__pycache__/` directories are generated locally and ignored by Git.
 [Polynomial Canonicalization](docs/polynomial_canonicalization.md) explains
@@ -202,22 +223,34 @@ The correctness tests are grouped by how they run:
   template regeneration, gauntlet orchestration, and heatmap plotting.
 - [`tests/shell/`](tests/shell/) checks driver flags and piece sizing with mock
   executables.
-- [`tests/manual/`](tests/manual/) contains the zero-slice validator for
-  explicitly supplied generated circuits.
+- [`tests/manual/`](tests/manual/) contains the zero-slice validator
+  (`tdp/verify_zero_slice.rs`), the packing parity and reproduction scripts
+  (`stage4/`) and the delivery-loop parity test (`delivery_parity.sh`); all
+  need built binaries and, for parity, the archived runs or the oracle sandbox.
 
 Run the ordinary checks from the repository root:
 
 ```sh
 cargo fmt --all -- --check
 rustfmt --check --edition 2024 tests/unit/engine/mixer/*.rs
-cargo test --locked --lib --test circuit_cli --test frozen_roundtrip --test mixer_db_replacement
+cargo test --locked --lib --test circuit_cli --test tdp_packing --test stage2_typed_params
+cargo test --locked --test frozen_roundtrip --test mixer_db_replacement
+cargo test --locked --test tdp_unpacking
 bash tests/shell/tdp_flags.bash
 bash tests/shell/tdp_block_size.bash
+LOCAL_MIXING_BIN="$PWD/target/debug/local_mixing_bin" bash tests/shell/tdp_defaults.bash
+bash tests/shell/tdp_seeds.bash
+bash tests/shell/tdp_stage_resume.bash
+TDP_STAGE_BIN="$PWD/target/debug" bash tests/shell/tdp_stage12_parity.bash
+bash tests/shell/tdp_reproduce_small.bash
 python3 -B -m unittest discover -s tests/python -v
 ```
 
+These are the commands CI runs, plus the `tdp_unpacking` integration target
+(which CI does not run yet).
+
 The Rust tests check functional equivalence through gadgetization, mixing,
-database replacement and compression, along with circuit formats and run
+database replacement, packing (against the Python oracle) and unpacking, along with circuit formats and run
 management. The Python tests require NumPy and Matplotlib
 (`python3 -m pip install numpy matplotlib`). The frozen integration
 tests create small LMDB fixtures and convert them to frozen stores before
@@ -236,6 +269,7 @@ Security-tool checks cover the trace heatmap and SAT workflow separately:
 
 ```sh
 cargo test --locked --features security-tools --bin hmap_trace_affine
+cargo test --locked --features security-tools --test hmap_affine_exposure
 python3 security_tests/heatmaps/plot_hmap_trace.py --self-test
 python3 -B -m unittest security_tests.sat_solve.test_workflow -v
 ```
@@ -251,8 +285,9 @@ construction, shuffling, mixing stages, optimizations, and attacks. The
 research narrative and historical experiments are preserved in
 [Local Mixing History](docs/local_mixing_history.md)
 ([PDF, stale](docs/local_mixing_history.pdf)). The committed PDFs were built
-on 2026-09-16, before the four-stage cleanup, and still describe the curated
-database and the six-stage pipeline; the Markdown files are authoritative
+on 2026-09-16, before the four-stage cleanup, and still describe the
+pre-cleanup pipeline (the curated database, the old post-mixing stages and
+`fcompress`), not today's six stages; the Markdown files are authoritative
 until the PDFs are rebuilt. Install Pandoc, XeLaTeX and
 `rsvg-convert` (the `librsvg2-bin` package on Debian/Ubuntu), then rebuild both
 PDFs with the checked-in helper:

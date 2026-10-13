@@ -6,7 +6,7 @@ The idea is to keep the intermediate values under nonlinear masks while still
 being able to compute on them. All random choices are made when we generate
 the circuit. Evaluating the resulting circuit requires only its gate list.
 
-The four-stage order is described in [the pipeline guide](tdp_pipeline.md). Here,
+The six-stage order is described in [the pipeline guide](tdp_pipeline.md). Here,
 we describe what happens in its first two stages, including the shuffles which
 are already present before database mixing begins.
 
@@ -57,18 +57,23 @@ These are five parts within stage 2, not five additional TDP stages.
    targets the low $n$ wires. It is dead when the band is zero. Its slice
    controls are distributed across the band and shuffled; the sampled gates
    are then shuffled as well.
-2. **Band seed.** Starting from a zero band, we fill each band wire with
-   $B_j=x_a\oplus x_b$, using two distinct wires sampled from the original
-   $n$-wire input prefix. This is emitted as two CNOTs. In particular, the
-   band is derived from the input; it is not an independent random string.
+2. **Band seed.** Starting from a zero band, we fill the band with the rich
+   seed (`EMBEDDED_MASKING_SEED_NL`, default 4): per band wire a pivot and a
+   few further linear sources from the original $n$-wire input prefix
+   (CNOTs), then nonlinear products of pairs drawn from the input prefix and
+   from earlier band wires. Under the managed presets (`SEED_AVOID_C1=1`)
+   the products avoid the control pairs of the sandwich's first-layer gates.
+   The legacy thin seed, $B_j=x_a\oplus x_b$ from two distinct input wires
+   (two CNOTs), is `SEED_NL=0`. In particular, the band is derived from the
+   input; it is not an independent random string.
 3. **Masked computation.** We compute the sandwich while opening and closing
    masks, emitting its gates through masked reads, and refreshing the band.
    At the end of this part, we close the remaining masks so that the low
    $2n$ wires contain the sandwich output.
-4. **Band reseed.** We apply another collection of two-CNOT updates to the
-   band, now reading the current low $n$ wires. This uses a different seed
-   from the first fill. It is not the inverse of that fill and does not
-   restore the band to zero.
+4. **Band reseed.** We apply another fill of the same form to the band
+   (rich by default, two-CNOT updates under `SEED_NL=0`), now reading the
+   current low $n$ wires. This uses a different seed from the first fill. It
+   is not the inverse of that fill and does not restore the band to zero.
 5. **Closing guard.** We apply an independently sampled slice block against
    the resulting band. In the classic sandwich it targets only the low
    junk half, leaving the high-half answer intact. With the balanced sandwich
@@ -119,8 +124,11 @@ small bands can force the sampler to relax this disjointness condition.
 The lower bound applies during the masked interior. Before a control is read,
 we bring it up to at least two open masks and keep those masks open. The
 three-mask setting is a rolling cap for the ordinary mask schedule; temporary
-cover masks and refresh replacements can exceed it. Public inputs and outputs
-still have unmasked fringes.
+cover masks and refresh replacements can exceed it. Without up-front masking
+the public inputs keep an unmasked fringe (31–45 of 64 wires were still raw a
+thousand gates into the compute); the managed presets set `PREMASK=1`
+(`preprocessing.premask`), which masks every data wire up front. The outputs
+are unmasked once the compute closes its remaining masks.
 
 We sample filler masks throughout the computation, choosing their target
 wires according to the remaining per-wire budget. Each logical write also
@@ -164,7 +172,18 @@ h ^= a & b
 adds $abc$ to $t$ and restores $h$, regardless of the value with which $h$
 started. Degree-four terms use an eight-gate block with two such helpers.
 Thus, the fire itself uses gates with at most two controls and adds no clean
-scratch wires. The surrounding slice guards can still have three controls.
+scratch wires. The surrounding slice guards are the accumulate-and-inject
+(feistel) guards with no gate wider than two controls (the default since
+punchlist #7, 2026-10-06); `SLICE_GUARD_LEGACY=1` restores the width-3 quad
+guard for comparison arms.
+
+This is the restore-per-block form. The current generator drops the helper's
+restore where its stability layers allow (`EMBEDDED_MASKING_DRIFT`, default
+on), and the recommended preset L8 chains brackets
+(`EMBEDDED_MASKING_CHAIN=2`, `CHAIN_LEN=8`): the first three gates of a
+bracket add the product to $t$ whatever $h$ holds, so the brackets of a fire
+can share an ancilla and defer their restores, which are flushed every 8
+brackets (`docs/STAGE2_LINKABILITY.md` §3.5).
 
 We treat each of these complete blocks as one *fire unit*. The order inside a
 unit matters. Its net action restores its helpers and only updates the target,
@@ -215,14 +234,16 @@ The sandwich gates themselves are placed using a dependency-ready queue.
 Reads remain after the earlier writes they depend on, and writes remain after
 earlier reads of that wire. Gates which only XOR into the same target can
 commute. The queue is FIFO; the randomness comes from the sampled masks,
-refreshes, and fire-unit shuffles. The default keeps carrier and band roles on
-fixed physical wires. The optional preprocessing shuffling below changes that
-layout inside each fire block.
+refreshes, and fire-unit shuffles. The library base parameters keep carrier
+and band roles on fixed physical wires. The preprocessing shuffling below (on
+under the managed presets) changes that layout.
 
 ## Optional preprocessing shuffling
 
 `preprocessing.shuffling_segments = 8` enables internal role transfers in the
-embedded-masking compute. It defaults to `0` (off). The standalone generator
+embedded-masking compute. The library base value is `0` (off); the managed
+presets `L8` and `A` set `8` (`EMBEDDED_MASKING_SHUFFLING=8`), so a default
+TDP run shuffles. The standalone generator
 accepts `EMBEDDED_MASKING_SHUFFLING=8`; configuration parsing stays in the
 executable adapters. Enabled segment counts must be at least eight.
 
@@ -241,13 +262,18 @@ to `q`; its extra mask is tracked until removal at the end of the block.
 Transfers never split a borrowed-ancilla unit. The pass rejects a block that
 reads its target, since such a read would observe the temporary masks.
 
-TDP generation requires `preprocessing.shuffling_return_home = true`. At the
-end boundary, after the final original write in the block, a reserved transfer
+The managed presets `L8` and `A` run with
+`preprocessing.shuffling_return_home = false` (persistent carrier migration,
+`EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0`): data roles stay where their last
+transfer left them for the whole stream and are swapped home once at the
+stream tail (3-CNOT swaps), so the output ports are unchanged. With `true`
+(the library base value, selectable under `preset = "custom"`), at the end
+boundary, after the final original write in the block, a reserved transfer
 returns the target to its original physical wire and removes the first
 temporary mask. The remaining temporary masks close there as well. An
 unavailable interior partner causes a skipped transfer; it never moves the
 return before the final write.
-Band roles keep their permutation. Every subsequent gate, including band
+In both modes band roles keep their permutation. Every subsequent gate, including band
 refreshes and final mask closes, is emitted through that permutation. The
 five-part sandwich and its physical output ports therefore retain their
 existing contract.

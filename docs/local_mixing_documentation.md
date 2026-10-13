@@ -9,16 +9,31 @@ construction diagrams of the research document. The chronological experiments
 and superseded constructions are collected separately in
 [Local Mixing History](local_mixing_history.md).
 
-The method has four stages: it constructs a sliced sandwich, applies
-embedded masking, performs database replacements with the regular frozen
-store, and packs the result into windows. (The curated store and the former
-split, crossing-walk and `fcompress` stages are historic; see
-[Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md).)
-Optional carrier shuffling is a part of embedded masking. It is implemented
-but disabled by default; enabling it does not select another masking mode.
-This text describes the implementation as of September 16, 2026; the stage
-list was updated on October 8, 2026, when the curated store and the
-post-mixing stages were retired.
+The method has six stages: it constructs a sliced sandwich (1), applies
+embedded masking (2), performs database replacements with the regular
+frozen store (3), splits every complemented r57 gate into plain
+conjunctions (4), runs the crossing walk under a size thermostat (5), and
+delivers the result (6): packing into ANF windows followed by unpacking with
+lattice refinement, in which every window is resynthesized from its ANF
+alone and a window that does not resynthesize is cut in two, repacked and
+unpacked again. Every stage after the first is optional
+(`run.skip_stages`); `run.skip_stages = [4, 5]` with
+`delivery.anf_only = true` is the validated four-stage chain. (The curated
+store and the former `fcompress` stage are historic; see
+[Curated DB and post-mixing archive](CURATED_AND_POSTMIX_ARCHIVE.md). The
+split stage and the crossing walk listed there were revived on October 11,
+2026 as stages 4 and 5.) Carrier migration, the shuffling transform, is a
+part of embedded masking and is on in the default stage-2 preset `L8`
+(`shuffling_segments = 8`, persistent migration with
+`shuffling_return_home = false`, up-front masking, a band seed that avoids
+the first-layer control pairs, bounded bracket chains with `chain = 2` and
+`chain_len = 8`); preset `A` is the same without the chains, and only
+`preprocessing.preset = "custom"` with `shuffling_segments = 0` turns it
+off. Enabling it does not select another masking mode. This text describes
+the implementation as of October 12, 2026. The stage list was reduced to
+four on October 8, 2026 (curated store and post-mixing stages retired); the
+split and crossing stages were revived on October 11; packing and unpacking
+became the single delivery stage on October 12.
 
 The goal is to change the internal representation of a computation while
 preserving its required behavior. The algebraic identities below explain
@@ -35,9 +50,9 @@ establish indistinguishability obfuscation or preimage hardness.
 - [Frozen databases](#frozen-table)
 - [The sliced sandwich](#sliced-sandwich)
 - [Embedded masking](#embedded-masking)
-- [Optional preprocessing shuffling](#preprocessing-shuffling)
+- [Carrier migration (preprocessing shuffling)](#preprocessing-shuffling)
 - [Database mixing and its schedule](#generation-mixing)
-- [Packing and the historic fragmentation stages](#fragmentation)
+- [Splitting, the crossing walk, and delivery](#fragmentation)
 - [Implementation and optimizations](#implementation)
 - [Running the method and interpreting results](#running-the-method)
 - [References](#references)
@@ -599,8 +614,9 @@ algorithm will fail.
 
 ### Compression and demixing
 
-A final fragment compressor (`fcompress`, the old stage 6) and two demixing
-probes built on it (`crossing_downhill`, `output_cone`) are historic: they
+A final fragment compressor (`fcompress`, stage 6 of the pipeline retired on
+October 7, 2026) and two demixing probes built on it (`crossing_downhill`,
+`output_cone`) are historic: they
 remain on branch `ran/archive/curated-and-postmix`
 ([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)). The attack question they
 asked still applies: a published size is honest only relative to the
@@ -652,18 +668,26 @@ The stages are:
 | 1 | Source $C$ to a sliced sandwich on $2n$ wires | Separates the answer from unconstrained junk and defines forward/reverse slices. |
 | 2 | Embedded masking on $4n$ wires | Computes through balanced nonlinear masks, refreshes the band, and optionally moves physical carriers. |
 | 3 | Database mixing | Replaces local windows by different equivalent circuits and repeatedly overlaps replacements. |
-| 4 | Packing | Prototype only (Python, `scripts/windowed_delivery/`); not yet run by `tdp_gen`. |
+| 4 | Splitting | Rewrites every complemented r57 gate into two plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion (`circuit_mixer --split --split-stop`). |
+| 5 | Crossing walk | Shoots fragments to their first collider and rewrites each collision by an exact case split, under a size thermostat whose target is twice its input (`circuit_mixer --resume split.state --target-size ...`). |
+| 6 | Delivery | Packing: reorders along commutations into ANF windows of at most 512 gates, repairs boundary exposures of $C$'s values and serializes `packing/deliverable.tdp4` (`tdp_packing run`); then unpacking with lattice refinement: resynthesizes every window from its ANF alone, cuts a window that fails in two at an exposure-aware cut and repacks and unpacks the halves for up to 16 rounds, and emits `unpacking/deliverable.tdp4` (the shipped file) and `unpacking/unpacked.mpmct1` in canonical order (`tdp_unpacking run --refine`). |
 
 ```text
-C -> sliced sandwich -> embedded masking -> database mixing -> db_mixing.mpmct1
-  -> (packing)
+C -> sliced sandwich -> embedded masking -> database mixing -> splitting -> crossing walk
+     tdp.mpmct1.sandwich.mpmct1  tdp.mpmct1   db_mixing.mpmct1   split.mpmct1   crossing.mpmct1
+  -> packing -> unpacking with refinement
+     packing/deliverable.tdp4   unpacking/deliverable.tdp4 + unpacking/unpacked.mpmct1
 ```
 
-The former post-processing stages -- splitting, the crossing walk, and
-compression and packing with `fcompress` -- are historic; they remain on
-branch `ran/archive/curated-and-postmix` (see the
+Every stage after the first is optional (`run.skip_stages`); a stage reads
+the output of the last stage that ran, and `delivery.anf_only = true` ends
+stage 6 after the packer's deliverable. Of the former post-processing stages
+only compression and packing with `fcompress` (and the curated store) are
+historic; they remain on branch `ran/archive/curated-and-postmix` (see the
 [archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md) for what was retired and
-why). Windowed packing replaced them.
+why). Splitting and the crossing walk, retired with them on October 7, 2026,
+were revived on October 11 as stages 4 and 5; windowed packing, now the
+first sub-step of stage 6, replaced `fcompress`.
 
 The [pipeline guide](tdp_pipeline.md) contains the complete configuration and
 shell-flag reference. [Gadgetization](gadgetization.md) explains the first two
@@ -1227,9 +1251,12 @@ We first run $C$ on the first half while interleaving it with a slice block
 $S_1$. We then apply the copy step $N$, consisting of the $n$ CNOTs
 $y_i\mathrel{{\oplus}{=}}x_i$. Finally, we run an independent random r57
 circuit $D$ on the first half while interleaving it with another slice block
-$S_2$. We give $D$ the same gate design and gate count as $C$. For the
-random source circuits considered here, we choose this count to be
-$\max(n,\mathrm{round}(n(\log_2 n)^2))$.
+$S_2$. We give $D$ the same gate design and gate count as $C$. In the managed
+pipeline $|C| = |D|$ defaults to the validated table, 1,000 gates at $n=64$
+and 3,000 at $n=128$ (`source.gates`); any other width needs an explicit
+`source.gates` or `source.gates_rule = "formula"`, which uses
+$\max(n,\mathrm{round}(n(\log_2 n)^2))$ (the standalone generator's
+default) and is reported as UNVALIDATED.
 
 Each slice block has $\max(n,\mathrm{round}(n\log_2 n))$ gates drawn from
 two shapes:
@@ -1367,16 +1394,19 @@ when its $n$ auxiliary inputs are zero, places $C(x)$ on one output half
 and allows the other half to contain junk.
 Thus, $q=2n$ and the gadgetized circuit has $4n$ wires. The
 first $q$ wires carry the masked computation, and the latter $q$ wires hold
-the band values $B_1,\ldots,B_q$. With shuffling disabled, physical carriers stay fixed. With the optional
-[shuffling transform](#preprocessing-shuffling), data and band roles are
-mapped to changing physical wires inside a fire block.
+the band values $B_1,\ldots,B_q$. Under `preprocessing.preset = "custom"`
+with `shuffling_segments = 0`, physical carriers stay fixed. Under the
+default presets (`L8`, `A`) the
+[carrier-migration transform](#preprocessing-shuffling) maps data and band
+roles to changing physical wires, persistently across fire boxes, with every
+data role swapped back to its port once at the stage-2 tail.
 
 <a id="open-quadratic-masks"></a>
 
 ### Open quadratic masks
 
 Write $V_w$ for a logical value and $W_w$ for its current physical carrier.
-Before the optional carrier-shuffling transform, we maintain a collection
+Before the carrier-migration transform, we maintain a collection
 $\mathcal O_w$ of masks which are *open* on that carrier:
 
 $$
@@ -1528,8 +1558,9 @@ from a dependency-ready queue: reads remain after their earlier writes, and
 writes remain after earlier reads. Among gates whose dependencies have
 been satisfied, we take the one which entered the ready queue first. We randomize the
 surrounding masks, refreshes, and fire units; we do not randomly violate the
-logical dependencies. These shuffles change gate ordering and mask placement. Optional carrier
-shuffling additionally changes where the target and band roles live.
+logical dependencies. These shuffles change gate ordering and mask placement. Carrier
+migration (on in the default presets) additionally changes where the target
+and band roles live.
 
 <a id="embedded-masking-ports"></a>
 
@@ -1595,11 +1626,14 @@ slice behaves.
 
 <a id="preprocessing-shuffling"></a>
 
-## Optional preprocessing shuffling
+## Carrier migration (preprocessing shuffling)
 
-Carrier shuffling moves the logical target within each masked write. It is
-controlled by `preprocessing.shuffling_segments`: zero leaves it off, and an
-enabled value must be at least eight. The segment count requests target-write
+Carrier migration, the preprocessing shuffling transform, moves the logical
+target within each masked write. Its dose is set by the stage-2 preset: `L8`
+and `A` run eight segments (`EMBEDDED_MASKING_SHUFFLING=8`); under
+`preprocessing.preset = "custom"` the field `preprocessing.shuffling_segments`
+is required, zero leaves it off, and an enabled value must be at least
+eight. The segment count requests target-write
 quantiles, not a number of source gates, a width, or an exact count of
 successful transfers. `embedded-masking` remains the only spelling of the
 masking mode.
@@ -1680,10 +1714,16 @@ small bands or boxes with few legal cuts.
 
 ### Returning home and preserving ports
 
-The full sandwich requires `preprocessing.shuffling_return_home = true`.
-The last selected transfer is reserved for returning home. With eight
-segments, this permits up to seven outward transfers and one return; the
-carried-layout policy instead permits up to eight outward transfers.
+The default presets run persistent carrier migration
+(`shuffling_return_home = false`, `EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0`):
+data roles hop across wires for the whole stream and are swapped back to
+their physical ports once, at the stage-2 tail (three CNOTs per role), so the
+sandwich's output ports are preserved. With `shuffling_return_home = true`
+(the generator's standalone default, selectable under `preset = "custom"`)
+the last selected transfer of each box is instead reserved for returning
+home. With eight segments, this permits up to seven outward transfers and
+one return; the carried-layout policy instead permits up to eight outward
+transfers.
 At the box end, after every original gate, the final transfer uses the first escort
 to return the data role to its original physical wire. If no outward transfer
 occurred, no home-return packet is needed. Remaining escort masks are closed
@@ -1772,10 +1812,9 @@ the following database move:
 
 If a lookup fails, that round simply makes no replacement. It does not fall
 through to a different kind of move. This keeps database mixing focused on
-repeated database re-spelling. (The mixer once had a fourth slot, the
-[historic crossing walk](#crossing-walk), which received the rounds the
-database move did not take; stage 3 gives every such round to the database
-move, so that slot never ran there and has been removed.)
+repeated database re-spelling. (The mixer's slot 3 is the
+[crossing walk](#crossing-walk), the default walk when `p_db < 1`; stage 3
+passes `--p-db 1.0`, so that slot never fires there. Stage 5 runs it.)
 
 For a small example, suppose part of the circuit is
 
@@ -1819,9 +1858,13 @@ spellings and more room for the new gates to move into other neighborhoods.
 Holding keeps that space while many overlapping replacements re-spell the
 circuit. The controller also supports a compression period.
 
-The [complete mixing method](#current-mixing-method) uses only the first
-two periods here. We grow toward twice the incoming gate count over three
-work units, then hold that size for another 27. One work unit represents
+The [complete mixing method](#current-mixing-method) uses only the
+expansion period here (`db_mixing.schedule = "validated"`, profile
+`2,2,2,2,2`): we grow toward twice the incoming gate count over two work
+units, with no holding or compression period, under a ceiling of
+`int(G*2*2*1.3)` moves for a stage-2 gate count $G$. A custom schedule
+(`growth_work_units`, `hold_work_units`, `target_size_factor`) can add a
+hold. One work unit represents
 roughly one mixing round per gate, counting the circuit's changing
 size as we go. There is no shrinking period at this stage.
 
@@ -1884,58 +1927,95 @@ Every chosen replacement passes exact functional verification. The `--tdp` prese
 does not fix the per-round MIX/COMP probability: the size controller adjusts
 that balance to the requested growth and hold schedule.
 
-With the default incoming gate count $M$, stage 3 aims for $2M$, grows over
-three work units, and holds for 27 more. Each move adds $1/M_{\mathrm{current}}$
+With incoming gate count $M$, the validated schedule aims for $2M$ over two
+work units and stops there (profile `2,2,2,2,2`, at most `int(4*M*1.3)`
+moves); there is no hold. Each move adds $1/M_{\mathrm{current}}$
 to the work counter. Thus work units scale attempts with the changing tape
 size, rather than treating one attempt as one whole-circuit pass.
 
 <a id="fragmentation"></a>
 
-## Packing and the historic fragmentation stages
+## Splitting, the crossing walk, and delivery (stages 4-6)
 
-Stage 4, packing, is the last stage of the current design. It reorders the
-mixed circuit along commutations, cuts it into windows and publishes each
-window as its sparse algebraic normal form, so that an observer sees wire
-states only at window boundaries; a commutation-aware repair pass then
-removes the remaining boundary exposures of $C$'s values. It runs in Rust
-as `tdp_packing run` (`src/stages/packing/`; design:
-[STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md)), a bit-exact port of the
-Python prototypes under `scripts/windowed_delivery/`, which remain its
-oracle (measurements: [ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
-[STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` runs it as the
-last stage, see the [pipeline guide](tdp_pipeline.md#stage-4-packing).
-
-Earlier versions of the pipeline followed database mixing with three
-fragmentation stages. They are historic; their code, tests and full
-description remain on branch `ran/archive/curated-and-postmix`
-([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)):
+Database mixing is followed by two fragmentation stages, revived from the
+archive on October 11, 2026 and run as `circuit_mixer` modes with the
+archive-era driver's flags
+(`src/stages/post-processing/{splitting,crossing}.rs`; the exact rewrite
+identities live in `src/engine/moves/rules.rs`). A third, `fcompress`, is
+historic and remains on branch `ran/archive/curated-and-postmix`
+([archive inventory](CURATED_AND_POSTMIX_ARCHIVE.md)).
 
 <a id="fragmentation-splitting"></a>
 
-- **Splitting** replaced every complemented r57 gate
-  $a\mathrel{\oplus{=}}b\vee\neg c$ by two disjoint plain conjunctions and
-  joined fragments to distant brackets through absorbed NOT twists.
+- **Splitting** (stage 4) replaces every complemented r57 gate
+  $a\mathrel{\oplus{=}}b\vee\neg c$ by two disjoint plain conjunctions and,
+  with probability 0.8, joins a fragment to a distant bracket through an
+  absorbed NOT twist, until the complemented-gate pool is exhausted
+  (`--split --split-stop --p-join 0.8 --split-reach-k 2 --split-fail-limit 100
+  --split-canaries 256 --k-max 12`). It writes `split.mpmct1` and
+  `split.state`, the resume point of stage 5.
 
 <a id="crossing-walk"></a>
 <a id="fragmentation-contraction"></a>
 
-- **The crossing walk** shot fragments to their first true collider and
-  rewrote each collision by one of three exact case-split rules (R1-R3), so
-  pieces of colliding gates could move past one another. A thermostat held
-  the size near a target with two contraction channels: exact undo of
-  isolated crossings from a journal, and a pairwise merge catalogue over
-  same-target gates (with a short tabu period for fresh siblings). Within the
-  mixer it was the fourth scheduling slot.
+- **The crossing walk** (stage 5) shoots fragments to their first true
+  collider and rewrites each collision by one of three exact case-split
+  rules (R1-R3), so pieces of colliding gates can move past one another. A
+  thermostat holds the size near $\mathrm{round}(2\times\text{input gates})$
+  (`crossing.target_size_factor`) with two contraction channels: exact undo
+  of isolated crossings from a journal, and a pairwise merge catalogue over
+  same-target gates (with a short tabu period for fresh siblings). Its
+  temperature is $\max(64,\mathrm{round}(\text{target}/25))$, a wide-split
+  acceptance penalty of base 3 applies above control width 1, and the move
+  budget is three times the target (`crossing.move_budget_factor`); its
+  gates reach up to 12 controls (median 3). Within the mixer it is slot 3 of
+  `Mixer::run`, the default walk when `p_db < 1`; stage 3's `--p-db 1.0`
+  keeps it from firing there. It writes `crossing.mpmct1`.
 
 <a id="fcompress"></a>
 
-- **`fcompress`** gathered commutable same-target gates, reduced each
-  group's ESOP (and, for small supports, its ANF) and packed each run into one
-  generalized gate (`esop1`).
+- **`fcompress`** (historic) gathered commutable same-target gates, reduced
+  each group's ESOP (and, for small supports, its ANF) and packed each run
+  into one generalized gate (`esop1`).
 
-The stages were motivated by gate variety: they removed the restriction that
-every gate has the r57 form, at the cost of wider conjunctions. Since the
-frozen table emits r57 circuits, they had to follow all database mixing.
+The fragmentation stages are motivated by gate variety: they remove the
+restriction that every gate has the r57 form, at the cost of wider
+conjunctions. Since the frozen table emits r57 circuits, they follow all
+database mixing.
+
+<a id="delivery"></a>
+
+Stage 6, delivery, is the last stage of the current design; packing is its
+first sub-step and unpacking with lattice refinement its second. Packing
+reorders the mixed circuit along commutations, cuts it into windows and
+publishes each window as its sparse algebraic normal form, so that an
+observer sees wire states only at window boundaries; a commutation-aware
+repair pass then removes the remaining boundary exposures of $C$'s values.
+It runs in Rust as `tdp_packing run` (`src/stages/packing/`; design:
+[STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md), written when packing was
+stage 4), a bit-exact port of the Python prototypes under
+`scripts/windowed_delivery/`, which remain its oracle (measurements:
+[ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md) and
+[STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` runs it as the
+first sub-step of stage 6, see the
+[pipeline guide](tdp_pipeline.md#stage-6-delivery). Its output,
+`packing/deliverable.tdp4`, is the shipped file only under
+`delivery.anf_only = true`.
+
+The second sub-step, unpacking with lattice refinement
+(`tdp_unpacking run --refine`, `src/stages/unpacking/`), resynthesizes every
+delivered window from its ANF alone (a port of `anf_synth`: beam 6, 16
+restarts, 30 s per window per round). A window that fails to resynthesize is
+treated as a packing defect: it is cut in two at an exposure-aware cut, the
+deliverable is re-emitted with the two halves' ANFs, and the halves are
+unpacked in the next round, for up to 16 rounds; a window still failing
+after the last round is emitted verbatim and reported as NOT recommended.
+The converged windows are concatenated and put into the canonical commuting
+order. The outputs are `unpacking/deliverable.tdp4` (the refined lattice,
+the shipped file) and `unpacking/unpacked.mpmct1`. Contract:
+[DELIVERY_STAGE.md](DELIVERY_STAGE.md); synthesizer:
+[STAGE7_UNPACKING.md](STAGE7_UNPACKING.md) (written when unpacking was
+stage 7); Python reference `scripts/windowed_delivery/waist/deliver.py`.
 
 ### Packed formats
 
@@ -1963,8 +2043,11 @@ boundaries are:
 | [`db_gen/`](../db_gen/) | Regular database construction and conversion. |
 | [`src/engine/arena.rs`](../src/engine/arena.rs) and [`src/engine/mixer/`](../src/engine/mixer/) | Mutable tape, legal motion, work scheduling, checkpoints, and parallel execution. |
 | [`src/stages/sandwich/`](../src/stages/sandwich/) | Slice blocks, classic/balanced sandwich assembly, and copy-gate scattering. |
-| [`src/stages/preprocessing/`](../src/stages/preprocessing/) | Embedded masking, optional carrier shuffling, and construction diagnostics. |
+| [`src/stages/preprocessing/`](../src/stages/preprocessing/) | Embedded masking, carrier migration (preprocessing shuffling), and construction diagnostics. |
 | [`src/stages/db_mixing/`](../src/stages/db_mixing/) | Window selection, candidate policy, mapping, and exact replacement verification. |
+| [`src/stages/post-processing/`](../src/stages/post-processing/) and [`src/engine/moves/rules.rs`](../src/engine/moves/rules.rs) | Splitting and the crossing walk (mixer modes) and their exact rewrite identities. |
+| [`src/stages/packing/`](../src/stages/packing/) and [`src/programs/tdp_packing/`](../src/programs/tdp_packing/) | Windowed ANF packing: scheduler, order and C-view repair, census, container serialization. |
+| [`src/stages/unpacking/`](../src/stages/unpacking/) and [`src/programs/tdp_unpacking/`](../src/programs/tdp_unpacking/) | Per-window ANF resynthesis, lattice refinement, canonical reorder and its checks. |
 | [`src/programs/`](../src/programs/) | Stage executable adapters and argument parsing. |
 | [`src/tdp/`](../src/tdp/) and [`scripts/tdp_gen.sh`](../scripts/tdp_gen.sh) | Typed recipe, resume checks, and stage orchestration. |
 
@@ -2041,22 +2124,31 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
 cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
-The default source width is 128, with a default gate count near
-$n(\log_2 n)^2$. Embedded masking uses two quadratic-pair wires, a separate
+The default source width is 128 with the validated gate count 3,000 (1,000
+at width 64); other widths require `source.gates` or
+`source.gates_rule = "formula"` ($\mathrm{round}(n(\log_2 n)^2)$, reported
+as UNVALIDATED). Embedded masking uses two quadratic-pair wires, a separate
 balancing wire, an ordinary maximum of three open masks, and an interior
-minimum of two. The main adjustable defaults are:
+minimum of two. Under config v4 the stage-2 preset and the stage-3 schedule
+are authoritative: a knob field next to a preset, or a schedule field next
+to `"validated"`, is an error. The main settings and their defaults are:
 
 | Setting | Default | Meaning |
 |---|---:|---|
 | `preprocessing.mode` | `"embedded-masking"` | Current default gadget construction. |
-| `preprocessing.mask_pair_wires` | `2` | Band wires forming the quadratic-pair component. |
-| `preprocessing.max_open_masks` | `3` | Ordinary rolling mask cap, excluding temporary covers. |
-| `preprocessing.min_open_masks` | `2` | Interior coverage floor. |
-| `preprocessing.balanced_masks` | `true` | Adds a balancing band variable to each mask. |
-| `preprocessing.shuffling_segments` | `0` | Off; values at least 8 enable carrier-transfer quantiles. |
-| `preprocessing.shuffling_return_home` | `true` | Required for the complete sandwich when shuffling is enabled. |
-| `db_mixing.target_size_factor` | `2.0` | Stage-3 target relative to its incoming gate count. |
-| `db_mixing.hold_work_units` | `27.0` | Holding work after three growth work units. |
+| `preprocessing.preset` | `"L8"` | Equivalent custom knobs: `mask_pair_wires` 2, `max_open_masks` 3, `min_open_masks` 2, `balanced_masks` true, `shuffling_segments` 8, `shuffling_return_home` false, `premask` true, `seed_avoid_c1` true, `chain` 2, `chain_len` 8. `"A"` is the same without the chains; `"custom"` requires every knob. |
+| `preprocessing.shuffling_segments` | `8` under preset `L8`/`A` (custom only) | `0` off; otherwise at least 8 carrier-transfer quantiles per fire box. |
+| `preprocessing.shuffling_return_home` | `false` under preset `L8`/`A` (custom only) | `false` = persistent carrier migration, ports restored once at the stage-2 tail; `true` = per-box return home. |
+| `db_mixing.schedule` | `"validated"` | Profile `2,2,2,2,2`: grow to twice the stage-2 gate count over two work units, no hold, move ceiling `int(G*2*2*1.3)`. `"custom"` requires `growth_work_units`, `hold_work_units`, `target_size_factor`. |
+| `crossing.target_size_factor` | `2.0` | Stage-5 target relative to its input gate count. |
+| `crossing.width_penalty_base`, `crossing.width_penalty_threshold` | `3.0`, `1` | Wide-split acceptance penalty: a control width $c$ above the threshold is allowed with probability $3^{-(c-1)}$. |
+| `crossing.size_tolerance_divisor` | `25` | Thermostat temperature $\max(64,\mathrm{round}(\text{target}/25))$. |
+| `crossing.move_budget_factor` | `3.0` | Stage-5 move budget relative to the target (`crossing.move_attempts` sets an absolute budget instead). |
+| `packing.window_gates`, `packing.split_budget` | `512`, `65536` | Window gate cap and the repair's split budget. |
+| `delivery.anf_only` | `false` | `true` ends stage 6 after the packer's deliverable (no resynthesis). |
+| `delivery.time_limit`, `delivery.restarts`, `delivery.beam` | `30`, `16`, `6` | Per-window synthesis wall limit (seconds), restarts and lookahead width. |
+| `delivery.max_rounds` | `16` | Refinement rounds; a window still failing after the last round is emitted verbatim and reported as NOT recommended. |
+| `run.skip_stages` | `[]` | Stages not run, each in `2..6`; `[4, 5]` with `delivery.anf_only = true` is the validated four-stage chain. |
 | `leakage_repair.enabled` | `false` | Optional sampled leakage audit and equivalent DB repair after stage 3. |
 
 Optional leakage repair is distinct from preprocessing shuffling. It uses a

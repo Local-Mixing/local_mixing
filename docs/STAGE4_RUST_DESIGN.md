@@ -1,8 +1,8 @@
 # Stage 4 (packing) in Rust: design
 
-Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; results in §12), branch `ran/stage4-rust` (based on `492564f0`). Owner: RC.
+Status: design revision 2 (2026-10-08), **implemented** (P0.5-P9, 2026-10-09; results in §12), branch `ran/stage4-rust` (based on `492564f0`; since 2026-10-11 stacked under `ran/seven-stage`, worktree `port_wt`). Owner: RC.
 
-> **2026-10-11 / 2026-10-12:** packing is now the first sub-step of **stage 6** (delivery) of a six-stage pipeline (4 splitting, 5 crossing walk, 6 delivery = packing then unpacking with lattice refinement; `docs/tdp_pipeline.md`, `docs/DELIVERY_STAGE.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`, `packing.recipe`) are now config v4, recipe v12, SEEDS format 3 (five seeds), `delivery.failed` (with `step=packing`) and `delivery.recipe`, and the chain it reproduces is `run.skip_stages = [4, 5]` with `delivery.anf_only = true`.
+> **2026-10-11 / 2026-10-12:** packing is now the first sub-step of **stage 6** (delivery) of a six-stage pipeline (4 splitting, 5 crossing walk, 6 delivery = packing then unpacking with lattice refinement; `docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`, `docs/DELIVERY_STAGE.md`). This document keeps the four-stage numbering; the driver facts it states (config v2, recipe v10, SEEDS format 2, `stage4.failed`, `packing.recipe`) are now config v4, recipe v12, SEEDS format 3 (five seeds), `delivery.failed` (with `step=packing`) and `delivery.recipe`, and the chain it reproduces is `run.skip_stages = [4, 5]` with `delivery.anf_only = true`. "The TDP doc" and `docs/TDP_FOUR_STAGE_PIPELINE.md` below mean `docs/TDP_PIPELINE_REFERENCE.md` (renamed on 2026-10-12 when it was extended to six stages; §1-§3 keep their numbers, its old §4.x is §6a.x, old §5 is §7, old §6 is §8), and `tdp_stage4_resume.bash` is `tests/shell/tdp_stage_resume.bash` (renamed 2026-10-11).
 
 This document does two things:
 
@@ -69,12 +69,12 @@ Verified against the script, `seed.txt` and the gen/s3 logs of all four L8 runs.
 | stage-2 environment | exactly `EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8`. Every other `EMBEDDED_MASKING_*` variable is unset, so gen uses its base `EmbeddedMaskingParams::managed_tdp(gadget_seed, n)` (K=2, max_open=3, min_open=2, balanced, quad_fire) | `val_chain.sh:13,15`; gen `mod.rs:240-260` |
 | gen seed | `secrets.randbelow(2**31)` | `val_chain.sh:11` |
 | mix seed | `secrets.randbelow(2**40)` | `val_chain.sh:12` |
-| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header, and `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`, which equal the CLI defaults and are inert at `p_db=1.0`. They were removed on this branch (TDP doc §3.2), and the tracked `val_chain.sh` omits them | `val_chain.sh:17-23`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
+| stage-3 argv | `--input tdp.mpmct1 --output s3.mpmct1 --tdp --db-mixing --profile 2,2,2,2,2 --moves int(G*2*2*1.3) --p-db 1.0 --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 --no-local-verify --seed MSEED`. G is field 3 of the `tdp.mpmct1` header, and `int` truncates. The runs also passed `--p-comp 1.0 --p-any 0.1`, which equal the CLI defaults and are inert at `p_db=1.0`. They were removed on this branch (the TDP doc, `docs/TDP_PIPELINE_REFERENCE.md`, formerly `TDP_FOUR_STAGE_PIPELINE.md`, §3.2), and the tracked `val_chain.sh` omits them | `val_chain.sh:17-23`; s3.log `profile ON: n=[2.0, 2.0, 2.0] r=[2.0, 2.0]`, `moves=4051814` |
 | stage-3 environment | `FROZEN_DB_DIR=<regular store> FROZEN_FILTER=1`, and nothing else from the recipe: `CANON_*` caps unset (unbounded), cache sizes at their built-in defaults, `--verify-every` and `--report-every` at their CLI defaults (10 000 and 50 000). The local store has no `filters.bin`, so the filter was off. The interactive shell's other variables were inherited and are unknown; the historic anchor (§10.8) is what proves they were inert | s3.log `FROZEN_FILTER=1 but no filters.bin ... running unfiltered`; reports every 50 000 moves |
 | stage-3 mode | serial: no `--parallel-*` | `val_chain.sh` |
 | side reports | `mult_census.py tdp.mpmct1` → `mult_s2.txt`; `hmap_affine` SPAN on stage 2 (`SPAN_OUTPUTS_TRIVIAL=1`, `--g-step 64` at n=64 or `256` otherwise) → `span_s2.{tsv,txt}`. Both are report-only | `val_chain.sh:24-27` |
 | stage 4 | `window_pack3.py tdp s3 512 512 24576 3000 TAG-G512 packed_G512.mpmct1`, then `repair.sh TAG 512 N`, then `anf_dump_eval.py rep512.mpmct1 rep512.bounds deliverable.bin TAG` | `val_chain.sh:29-31` |
-| repair version | All eight replicates were re-repaired on Oct 8 with the canonical `order_repair.py` (breaker located before the completer moves) and re-serialized. The earlier repairs are in `rep512_v1/`, so TDP doc §4.7 is stale. The parity targets are the current `rep512.*` and `deliverable.bin` (Appendix B), subject to the binary-provenance check of §10.5 step 0 | file times; `repair512.log` |
+| repair version | All eight replicates were re-repaired on Oct 8 with the canonical `order_repair.py` (breaker located before the completer moves) and re-serialized. The earlier repairs are in `rep512_v1/`, so TDP doc §4.7 (now `docs/TDP_PIPELINE_REFERENCE.md` §6a.7) was stale until its 2026-10-08/09 update. The parity targets are the current `rep512.*` and `deliverable.bin` (Appendix B), subject to the binary-provenance check of §10.5 step 0 | file times; `repair512.log` |
 | binaries | stage-1/2/3 artifacts are timestamped 2026-10-07 23:23 (gen) to 2026-10-08 01:01 (vL128a s3), three minutes after commit `e720d5c0` (23:20). The stage-2 fix `d9631d0e` (Oct 8 18:54) and the stage-3 cleanup commits `8070f5a0..b5608cd9` (Oct 8) came **after** the runs | file mtimes; `git log` |
 
 ### 2.2 Differences in today's managed driver that must change
@@ -164,7 +164,7 @@ There is one library module tree, `src/stages/packing/`, with **no environment r
 
 ## 4. Library layout: `src/stages/packing/`
 
-Add `pub mod packing;` to `src/stages/mod.rs`. Its doc comment becomes: "TDP stage ownership: sandwich, preprocessing, database mixing and packing (stage 4)." Unit tests attach by the repo convention:
+Add `pub mod packing;` to `src/stages/mod.rs`. Its doc comment names every stage owner (today: sandwich (1), preprocessing (2), database mixing (3), post-processing (4 split, 5 crossing walk), packing and unpacking, the two sub-steps of stage 6, delivery; the comment still numbers them 6 and 7). Unit tests attach by the repo convention:
 
 ```rust
 #[cfg(test)] #[path = "../../../tests/unit/stages/packing/<module>.rs"] mod tests;
@@ -181,7 +181,7 @@ The `repair/` submodules use one more `../`.
 
 `rayon` and `xxhash-rust` are already dependencies.
 
-**Supported range.** Stage 4 supports n ≤ 256, i.e. a state of at most 1024 wires, so the monomial width is W ∈ {1, 2, 4, 8, 16}. Config validation rejects n > 256 when `stop_after_stage = 4`, and `tdp_packing` rejects it with exit 2.
+**Supported range.** Stage 4 supports n ≤ 256, i.e. a state of at most 1024 wires, so the monomial width is W ∈ {1, 2, 4, 8, 16}. Config validation rejects n > 256 whenever the packing stage is reached and not skipped (today stage 6, delivery: `stage_on(6) && n > 256`, "stage 6 (delivery) supports source.wires up to 256; stop before stage 6 or skip it for larger n"), and `tdp_packing` rejects it with exit 2.
 
 ```
 src/stages/packing/
@@ -739,13 +739,15 @@ tdp_packing run   --stage2 <tdp.mpmct1> --stage3 <db_mixing.mpmct1> --source-c <
                   [--anf-cap-semantics cpython39|canonical]
                   [--allow-floor-miss] [--allow-over-budget] [--threads K] [--no-oracle-files]
 tdp_packing pack      <A> <B> <W_cap> <G> <B_mono> <span_cap> <label> <out.mpmct1>      # WP argv, parity mode
-tdp_packing repair    --packed P --bounds B --source-c C --n N --out-dir DIR [repair flags] # repair.sh parity mode
+tdp_packing repair    --packed P [--bounds B] --source-c C --n N --out-dir DIR [--g 512] [repair flags] # repair.sh parity mode
 tdp_packing serialize <rep.mpmct1> <rep.bounds> <out.bin> <label>                        # DE parity mode (raw body)
 tdp_packing check-final --rep R --bounds B --source-c C --n N [--split-budget 65536] [--anf-cap-semantics …]
                                                      # final identity + budget test on any (oracle or Rust) repair
-tdp_packing decode    <file> --format raw --n N | --format container [--stats]
-tdp_packing eval      <file> --format … --input <hex|file>
+tdp_packing decode    <file> (--format raw --n N [--state-wires M] | --format container) [--stats]
+tdp_packing eval      <file> (--format raw --n N | --format container) (--x HEX | --state HEX)
 tdp_packing census    <A> <P> <B> <label>                                                # link_census parity
+# plus the parity subcommands anf-report, window-anf, pack-replay, container, verify-equiv and
+# mult-census (usage text in src/programs/tdp_packing/mod.rs)
 ```
 
 `--label` is the text prefix of the report lines (`<label>-G512`, `<label>-rep512`; the oracle's `TAG`); it reaches no binary artifact. The zero-slice check always draws 4096 samples (the constant `ZERO_SLICE_SAMPLES`; there is no flag). The parameters are bounded as in the managed driver's `[packing]` (`PackParams::validate`, `RepairParams::validate`): window gates and interval cap 1..=10^6, span cap 1..=10^9, monomial budget and split budget 1..=2^18 (`MAX_MONOMIAL_BUDGET`), iterations 0..=1000; anything else is exit 2. The gate bounds keep the scheduler's `2·G` and `G − load` from wrapping in release builds; the budget bound is a resource limit (review round 3): a window holds up to 4·budget monomials and a product 8·budget, budgets of 10^6-10^9 reached 5-9 GB on the n=8 fixture within two minutes, 2^20 still held 2-3 GB at one monomial word, and 2^18 peaked at 1.2 GB (G = W_cap = 10^6, 156 s). 2^18 is 5× the largest measured packer budget (49,152 at G=1024) and 4× the recommended split budget.
@@ -827,7 +829,7 @@ time.pack_s= time.repair_s= time.emit_s= time.verify_s= peak_rss_mb=
 
 ## 6. Deliverable container v1 (`deliverable.tdp4`)
 
-The DE body has no header, so it carries no n, no version and no integrity check (TDP doc §6.12). Container v1 wraps the **unchanged** body under a **distinct name**. The raw `deliverable.bin` keeps its existing meaning.
+The DE body has no header, so it carries no n, no version and no integrity check (TDP doc §6.12, now `docs/TDP_PIPELINE_REFERENCE.md` §8.12). Container v1 wraps the **unchanged** body under a **distinct name**. The raw `deliverable.bin` keeps its existing meaning.
 
 | offset | size | field | value |
 |---|---|---|---|
@@ -926,30 +928,33 @@ They are recorded in `packing.report`. Rayon parallelism is restricted to pure p
 
 **Managed path (Rust).** `runner.rs` resolves the seeds before anything else is written to the run directory:
 
-- **random** (default): `gen_seed` and `mix_seed` uniform in `[0, 2^63 − 16]` from the OS CSPRNG (`rand::rngs::OsRng`, by rejection sampling), plus a 256-bit `run_key`;
+- **random** (default): `gen_seed` and `mix_seed` (since recipe v11 also `split_seed`, `cross_seed` and `unpack_seed`, the delivery seed) uniform in `[0, 2^63 − 16]` from the OS CSPRNG (`rand::rngs::OsRng`, by rejection sampling), plus a 256-bit `run_key`;
 - **explicit** (calibration only): read from `[calibration] seed_file`, plus a fresh random `run_key`.
 
 On a fresh run, Rust creates `$RUN/SEEDS` with `create_new` and mode 0600, **then** writes `tdp_command.conf`. On a resume, `SEEDS` must already exist and is never rewritten. An explicit `seed_file` whose values differ from the existing `SEEDS` is fatal; the comparison is done in Rust and never printed.
 
 Seeds never travel on argv between Rust and bash: bash only reads `$RUN/SEEDS`.
 
-`$RUN/SEEDS` format, version 2:
+`$RUN/SEEDS` format, version 3 (version 2, the four-stage layout, had only `gen_seed` and `mix_seed`; a format-2 file is upgraded in place on resume, the three new seeds drawn fresh):
 
 ```
-seeds_format=2
+seeds_format=3
 gen_seed=<decimal>
 mix_seed=<decimal>
+split_seed=<decimal>
+cross_seed=<decimal>
+unpack_seed=<decimal>
 run_key=<64 hex>
 seed_source=random|explicit
 ```
 
-**Standalone path (bash).** When `tdp_gen.sh` runs without Rust and `$RUN/SEEDS` is absent, bash draws the same three values with `python3 -I -c 'import secrets; …'` and writes the file under `umask 077` with `set -o noclobber`. Explicit seeds in standalone mode are given only as `--seed-file PATH`: a private file (mode 0600, at most 256 bytes) with `gen_seed=` and `mix_seed=` lines.
+**Standalone path (bash).** When `tdp_gen.sh` runs without Rust and `$RUN/SEEDS` is absent, bash draws the same values (the five seeds and `run_key`) with `python3 -I -c 'import secrets; …'` and writes the file under `umask 077` with `set -o noclobber`. Explicit seeds in standalone mode are given only as `--seed-file PATH`: a private file (mode 0600, at most 256 bytes) with `gen_seed=` and `mix_seed=` lines (optionally `split_seed=`, `cross_seed=` and `unpack_seed=`; the driver draws the ones absent).
 
 ### 8.3 Legacy seed inputs
 
 These are rejected with migration messages; there is no silent reinterpretation:
 
-- A one-integer `seed_file` / calibration file (recipe v9): "seed file format 1 holds one seed; recipe v10 needs `gen_seed=` and `mix_seed=` lines (the old seed was the gen seed; the old mix seed was gen+2)".
+- A one-integer `seed_file` / calibration file (recipe v9): "seed file format 1 holds one seed; recipe v12 needs `gen_seed=` and `mix_seed=` lines (the old seed was the gen seed; the old mix seed was gen+2)".
 - `-s` / `--calibration-seed` on the `tdp_gen.sh` command line: "seeds on argv are no longer accepted (they appear in ps); use --seed-file".
 - A v9 `$RUN/SEED` file: "created by recipe v9; resume with the checkout that created it".
 
@@ -957,7 +962,7 @@ Calibration mode never draws a random mix seed.
 
 ### 8.4 Validation and redaction
 
-- `tdp_gen.sh` parses `SEEDS` strictly: exactly the five keys, `gen_seed` and `mix_seed` through `bounded_uint 0 9223372036854775792`, and `run_key` as 64 lowercase hex characters. A malformed file is fatal (exit 2).
+- `tdp_gen.sh` parses `SEEDS` strictly: exactly the eight lines of format 3 (`seeds_format`, the five seeds, `run_key`, `seed_source`; a five-line format-2 file is upgraded in place on resume), every seed through `bounded_uint 0 9223372036854775792`, and `run_key` as 64 lowercase hex characters. A malformed file is fatal (exit 2).
 - **Gen banner check.** After stage 2, bash requires line 1 of `stage12.log` to show `seed=(file) gadget_seed=(file) sandwich_seed=(file)`, i.e. that gen took all three seeds from the driver's descriptors (§8.5). It prints only `gen seeds: verified` or a fatal "gen used a different seed than SEEDS". With strict gen parsing (D17) this is a second line of defence.
 - `render_command` (`runner.rs:542`) redacts the value after **every** flag whose name contains `seed`, except `--seed-file`, whose path is not secret. Seed values are never printed to `tdp_gen.log`, stdout or the dry-run output.
 - `tdp_command.conf` records `seed_record=SEEDS`, `seed_source`, `seed_bits=63` and `calibration_only`, and nothing derived from the seeds. The stage-12 marker records `seeds_mac = HMAC-SHA256(run_key, "gen_seed=…\nmix_seed=…\n")`, so a swapped `SEEDS` file is detected on resume without publishing a brute-forceable hash.
@@ -1188,7 +1193,7 @@ The anchor proves that the managed defaults reproduce the **chosen runs themselv
 
 **B. After P7.** Run the managed driver with the archived seeds (calibration seed file, default size table) for **vL64a and vL128a**, and `cmp` every artifact against the archive: `tdp.mpmct1`, `s3.mpmct1` vs `db_mixing.mpmct1`, `packed_G512*`, `rep512.*`, and `deliverable.bin` (or the Appendix B′ targets if §10.5 step 0 fell back).
 
-**If A or B mismatches.** Bisect over `e720d5c0..492564f0` (the run binaries were built from `e720d5c0`) to the responsible commit, and record it in §2.1 and in TDP doc §4.7. State plainly that the chosen runs are no longer reproducible by the current binaries. The **new reference** is then the oracle chain run with the archived seeds on the current binaries, regenerated into `port_runs/anchor_<tag>/` and with sha256s recorded as Appendix B″. RC decides whether to re-validate (L2/M2 and floor) on it. P7 does not start until A is resolved.
+**If A or B mismatches.** Bisect over `e720d5c0..492564f0` (the run binaries were built from `e720d5c0`) to the responsible commit, and record it in §2.1 and in TDP doc §4.7 (now `docs/TDP_PIPELINE_REFERENCE.md` §6a.7). State plainly that the chosen runs are no longer reproducible by the current binaries. The **new reference** is then the oracle chain run with the archived seeds on the current binaries, regenerated into `port_runs/anchor_<tag>/` and with sha256s recorded as Appendix B″. RC decides whether to re-validate (L2/M2 and floor) on it. P7 does not start until A is resolved.
 
 ### 10.9 CI-sized version of the reproduction claim
 
@@ -1217,7 +1222,7 @@ The anchor proves that the managed defaults reproduce the **chosen runs themselv
    - no seed value appears in `tdp_gen.log`, `stage12.log`, `stage3.log`, stdout or the dry-run output;
    - no seed value is on any stage binary's raw argv: gen gets `@/dev/fd/3..5`, the mixer `--seed-file /dev/fd/3` (the mocks resolve them and record both forms).
    - Every assertion is its own command (errexit ignores all but the last command of an `&&` list and any `!`-negated command).
-8. **`tests/shell/tdp_stage4_resume.bash`:**
+8. **`tests/shell/tdp_stage_resume.bash`** (renamed from `tdp_stage4_resume.bash` on 2026-10-11; it now also covers the stage-4/5 and delivery markers):
    - a resume after an `--allow-floor-miss` run does not print `PIPELINE COMPLETE`;
    - regenerating stage 3 forces stage 4;
    - a changed packing parameter forces stage 4;
@@ -1228,7 +1233,7 @@ The anchor proves that the managed defaults reproduce the **chosen runs themselv
 The CI workflow adds:
 
 - `--test tdp_packing` and `--test stage2_typed_params` (gen's L8/A output bytes pinned to the validated binary; the only CI guard of stage-2 bytes, since `tdp_stage12_parity.bash` compares one binary with itself) to "Runtime and command correctness";
-- `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash` and `tdp_stage4_resume.bash` to "TDP script flags and block sizing";
+- `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash` and `tdp_stage_resume.bash` (then `tdp_stage4_resume.bash`) to "TDP script flags and block sizing";
 - `--features security-tools --test hmap_affine_exposure` to "Trace-affine heatmap". This test runs the **refactored** HA on the n8 fixture and compares with TSVs produced by the **baseline** HA;
 - the new `stage4-oracle` job (§10.6).
 
@@ -1243,8 +1248,8 @@ The CI workflow adds:
 - `--preprocessing-preset L8|A|custom`, default L8. Not applicable to `nonlinear291`: an explicit preset there is fatal.
 - `--source-gates N` (alias `-m`) and `--source-gates-rule validated|formula`.
 - `--seed-file PATH`.
-- `--packing-window-gates`, `--packing-split-budget`, `--packing-anf-cap-semantics`, `--packing-allow-floor-miss`, `--packing-allow-over-budget`.
-- The stop/rerun range is `2..4`; `5` and `6` keep the "historic" error.
+- the ten `--packing-*` flags (`window-gates`, `interval-cap`, `monomial-budget`, `span-cap`, `split-budget`, `fix-iterations`, `fallback-iterations`, `anf-cap-semantics`, `allow-floor-miss`, `allow-over-budget`); the stage-5 `--crossing-*` and stage-6 `--delivery-*` flags and `--run-skip-stages` came later (`scripts/tdp_gen.sh --help`).
+- The stop/rerun/skip range is `2..6` (`--run-stop-after-stage`, `--run-rerun-from-stage`, `--run-skip-stages`); it was `2..4`, with a "historic" error for 5 and 6, until stages 4-6 were revived or added on 2026-10-11/12.
 
 **Environment discipline** (§11.5).
 
@@ -1263,7 +1268,7 @@ The CI workflow adds:
 - Gen call (D14: no mode positional for embedded-masking): `stage_exec "$GADGET_BIN" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" "$GEN_SEED" "$GEN_SEED" "$GEN_SEED"`.
 - After gen: the banner seed check (§8.4).
 - **Side reports**, report-only and parallel with stage 3, written to `$RUN`:
-  - `stage2_mult.txt`, from `mult_census.py` under `python3 -I` (copied into `scripts/tdp_reports/`, unchanged);
+  - `stage2_mult.txt`, from `tdp_packing mult-census` (as implemented: the Rust port of `mult_census.py`, which stays in `scripts/windowed_delivery/waist/`; the sketch ran the script under `python3 -I` from a copy in `scripts/tdp_reports/`);
   - `stage2_span.{tsv,txt}`, from `hmap_affine` SPAN mode with val_chain's arguments, **when a `security-tools` build of `hmap_affine` is present**; otherwise the note "span_s2 skipped (hmap_affine not built)".
 
   A failure of either is a note, never fatal.
@@ -1284,7 +1289,7 @@ The CI workflow adds:
 - `MIXER_STOP_FLAG` and `MIXER_DUMP_FLAG` are driver-set paths (no RNG effect when the files are absent) and stay.
 - **If stage 3 actually runs**, then `FORCE_FROM=min(FORCE_FROM,4)`.
 
-**Stage 4.** A completion marker makes resume safe:
+**Stage 4.** A completion marker makes resume safe. The block below is the 2026-10-08 sketch; as implemented (2026-10-12) the step is stage 6 (delivery), its log `$RUN/stage6.log` (shared with the unpacking sub-step, a separator line between them), its marker `delivery.recipe`, its failure marker `delivery.failed` (`exit=`, `step=packing|unpacking`), its MAC helper `scripts/tdp_reports/run_mac.py`; `$RUN/stage4.log` is the splitting stage's log:
 
 ```bash
 PACK_DIR=$RUN/packing; MARKER=$RUN/packing.recipe
@@ -1302,10 +1307,10 @@ if [ "$stage4_done" -eq 0 ]; then
   note "stage 4: tdp_packing run (G=$PACK_G, split budget $SPLIT_BUDGET, caps $CAP_SEM)"
   set +e
   stage_exec "$BIN/tdp_packing" run --stage2 "$GADGET" --stage3 "$DB_MIXING" --source-c "$GADGET.source_c.g57" \
-      --n "$N" --out-dir "$PACK_DIR" ${PACKFLAGS[@]+"${PACKFLAGS[@]}"} > "$RUN/stage4.log" 2>&1
+      --n "$N" --out-dir "$PACK_DIR" ${PACKFLAGS[@]+"${PACKFLAGS[@]}"} > "$RUN/stage6.log" 2>&1   # as implemented: stage6.log holds both delivery sub-steps
   rc=$?; set -e
   if [ "$rc" -ne 0 ]; then
-    note "stage 4 FAILED: exit $rc ($(stage4_exit_meaning "$rc")); see $RUN/stage4.log"; exit "$rc"
+    note "stage 6 FAILED: packing exit $rc ($(packing_exit_meaning "$rc")); see $RUN/stage6.log"; exit "$rc"
   fi
   status=$(kv status "$PACK_DIR/packing.report")
   # atomic: write .tmp then mv; records status, params, input MACs, MAC of deliverable.tdp4
@@ -1313,7 +1318,7 @@ if [ "$stage4_done" -eq 0 ]; then
 fi
 status=$(kv status "$MARKER")
 if [ "$status" = ok ]; then
-  note "PIPELINE COMPLETE (stages 1-4): $PACK_DIR/deliverable.tdp4"
+  note "PIPELINE COMPLETE (stages $(ran_text)): $CUR"   # default run: (stages 1-6): $RUN/unpacking/unpacked.mpmct1; under delivery.anf_only: $RUN/packing/deliverable.tdp4
 else
   : > "$PACK_DIR/NOT_RECOMMENDED"
   note "PIPELINE FINISHED WITH AN ALLOWED FAILURE (status=$status): $PACK_DIR/deliverable.tdp4 is NOT a recommended deliverable"
@@ -1321,17 +1326,17 @@ fi
 ```
 
 - `PACKFLAGS` is empty at the defaults.
-- `stage4_exit_meaning` mirrors `Stage4Error::meaning`, and a unit test checks that the two tables agree.
-- `packing_marker.py` (new, in `scripts/tdp_reports/`) computes HMAC-SHA256 with `run_key`.
+- `packing_exit_meaning` (the sketch's `stage4_exit_meaning`; `unpacking_exit_meaning` serves the second sub-step) mirrors `Stage4Error::meaning` / `EXIT_CODES`, and a unit test checks that the two tables agree.
+- `run_mac.py` (in `scripts/tdp_reports/`; the sketch's `packing_marker.py`) computes HMAC-SHA256 with `run_key`; the marker is `delivery.recipe` since 2026-10-12.
 - The marker is written **only after exit 0**, and `status` is either `ok` or `allowed_floor_miss`/`allowed_over_budget`.
 - On a skip path the marker is **re-checked** against the current inputs, parameters, binary and deliverable.
 - `tdp_packing` is added to the binary presence check, and the "stage 4 is not run" note is deleted.
 
 ### 11.2 `src/tdp` (managed path): config schema v2
 
-**`config_version = 2` is required.** A v1 file fails with this migration message:
+**`config_version = 2` is required** (this revision; today `config_version = 4` is required, and v2 and v3 files are refused with their own migration messages, `CONFIG_V2_MIGRATION` / `CONFIG_V3_MIGRATION` in `src/tdp/config/parse.rs`). A v1 file fails with this migration message:
 
-> config_version 1 is not supported by recipe v10: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.
+> config_version 1 is not supported by recipe v12: defaults now reproduce the chosen L8 runs. Remove shuffling_segments, shuffling_return_home, hold_work_units and stop_after_stage = 3 copied from the old template; use preprocessing.preset / db_mixing.schedule; seed files need gen_seed=/mix_seed= lines. See docs/STAGE4_RUST_DESIGN.md §11.2.
 
 **Authoritative presets.**
 
@@ -1347,16 +1352,16 @@ fi
 
 - `source.gates`: optional, default per §2.4. `source.gates_rule = "validated" | "formula"`, default `validated`.
 - `[packing]`: `window_gates=512`, `interval_cap=512`, `monomial_budget=24576`, `span_cap=3000`, `split_budget=65536`, `fix_iterations=4`, `fallback_iterations=4`, `anf_cap_semantics="cpython39"`, `allow_floor_miss=false`, `allow_over_budget=false`. The section is added to the list at `parse.rs:255-266`. Any non-default value is recorded as `packing_params=custom`.
-- `[calibration] seed_file`: format 2 (§8.2).
-- `run.stop_after_stage`: default 4, range 2..4.
+- `[calibration] seed_file`: format 2 (§8.2; `split_seed=`, `cross_seed=` and `unpack_seed=` lines are optional since recipe v11).
+- `run.stop_after_stage`: default 6, range 2..6 (plus `run.skip_stages`, a list in 2..6, and `run.rerun_from_stage` in 2..6).
 - `run.threads`: optional; when present it pins `RAYON_NUM_THREADS` and `--threads`.
 
 **`config/validate.rs`.**
 
 - Delete the `return_home` rejection.
 - Validate the preset and schedule exclusivity rules.
-- n ≤ 256 when stop_after_stage is 4.
-- Packing integers positive; `monomial_budget` and `split_budget` at most 2^18 (a resource bound, `MAX_MONOMIAL_BUDGET`, shared with `tdp_packing`); with `preprocessing.mode = "nonlinear291"` and stage 4 on, the planned stage-2 width (`nonlinear_tdp_resource_plan`) at most 1024 state wires (review round 3).
+- n ≤ 256 when stage 6 (delivery) runs, i.e. is reached and not in `skip_stages`.
+- Packing integers positive; `monomial_budget` and `split_budget` at most 2^18 (a resource bound, `MAX_MONOMIAL_BUDGET`, shared with `tdp_packing`); with `preprocessing.mode = "nonlinear291"` and stage 6 (delivery) on, the planned stage-2 width (`nonlinear_tdp_resource_plan`) at most 1024 state wires (review round 3; the error points at stopping before stage 6, skipping it, or embedded-masking).
 - The `2*n > K + balanced` rule stays.
 - `read_calibration_seed` becomes `read_seed_file`: format 2 only, with the §8.3 legacy message.
 
@@ -1383,7 +1388,7 @@ fi
 
 **`manifest.rs`.**
 
-- `CURRENT_RECIPE_VERSION = 10`. `read_recipe_version` accepts only 10; v9 gives "recipe v9 run: resume with the checkout that created it".
+- `CURRENT_RECIPE_VERSION = 12` (10 in this revision). `read_recipe_version` accepts only 12; v9, v10 (the four-stage driver) and v11 (the seven-stage driver) give "resume with the checkout that created it" messages.
 - `production_binary_fingerprints` adds `tdp_packing`; `run_binary_fingerprints` adds `hmap_affine` (`binary_hmap_affine_xxh3`) when it is in the binary directory, and the manifest records `stage2_span_report=hmap_affine|skipped`.
 - `frozen_filter=<mode>(<resolved>)`: the `FROZEN_FILTER` value stage 3 will use, resolved as `tdp_gen.sh` does (`auto`: 1 without `filters.bin`, 0 with one while no neutrality comparison is recorded; `unset` without a store). The script records the value it actually set in `$RUN/stage3.settings`.
 - `pinned_recipe` is derived, not constant: `val_chain-L8-20261007` or `val_chain-A-20261007` only for embedded masking with preset L8/A, the validated |C| for a generated source, schedule validated in one piece, `FROZEN_FILTER` resolving to 1 on a real store, no leakage repair and default packing; otherwise `none`.
@@ -1413,7 +1418,7 @@ stage2_span_report=hmap_affine|skipped
 
 **`tests/unit/tdp.rs`:**
 
-- stop/rerun 4 accepted, 5 and 6 rejected;
+- stop/rerun 4 accepted, 5 and 6 rejected (today 2..6 accepted for stop, rerun and skip);
 - `return_home=false` accepted under `custom`;
 - the exact default manifest text;
 - three mock binaries; a v10 fresh run.
@@ -1446,9 +1451,9 @@ New tests:
 - the mock key list at line 64 expects exactly the preset's variables;
 - new cases: an explicit preset with `nonlinear291` is fatal, and `nonlinear291` exports no `EMBEDDED_MASKING_*`.
 
-**`tests/shell/tdp_block_size.bash`:** lines 35-40 reject only 5 and 6; line 89 has three stage calls; line 96 is the "PIPELINE COMPLETE (stages 1-4)" line; add a `tdp_packing` mock. Callers that relied on the derived source size pass `-m`.
+**`tests/shell/tdp_block_size.bash`:** lines 35-40 reject only 5 and 6; line 89 has three stage calls; line 96 is the "PIPELINE COMPLETE (stages 1-4)" line; add a `tdp_packing` mock. Callers that relied on the derived source size pass `-m`. (As implemented, 2026-10-11/12: on mock binaries (`tests/shell/lib/tdp_mock.py`) the test runs the four-stage chain under `--run-skip-stages 4,5 --delivery-anf-only`, whose completion line is "PIPELINE COMPLETE (stages 1-3,6)", and the full six-stage chain with every stage-5/6 knob, completion line "(stages 1-6)", as `ran_text` prints.)
 
-**New:** `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash`, `tdp_stage4_resume.bash` and `tdp_reproduce_small.bash` (§10.9).
+**New:** `tdp_defaults.bash`, `tdp_stage12_parity.bash`, `tdp_seeds.bash`, `tdp_stage_resume.bash` (then `tdp_stage4_resume.bash`) and `tdp_reproduce_small.bash` (§10.9).
 
 **Gen strict parsing (D17).**
 
@@ -1561,7 +1566,7 @@ So the chosen runs are reproducible by the current binaries, and the targets sta
 - `src/tdp`: config v2 (v1 refused with the migration message; authoritative preset and schedule; `[packing]`; `source.gates_rule`; `run.threads`), `SEEDS` created with `create_new` and mode 0600 before the manifest, the allow-list environment (`env_clear`), the registry `src/tdp/env_registry.rs`, recipe v10 with resolved values only, `tdp_packing` built and fingerprinted, seed-flag redaction, exit-code meanings.
 - **Gen strict parsing (D17):** an unparsable positional exits 2 naming it.
 - **Typed stage-2 knobs (§11.4):** `EmbeddedMaskingParams { premask, seed_avoid_c1, chain_k, chain_len, chain_rotate, retire: RetireParams, drift, drift_window, anc_reserve, legacy_slice_guard }` and the diagnostics in `EmbeddedMaskingExecution`; gen's adapter (`stage2_knobs_from_env`, `execution_from_env`, reused by the two security tools) is the only mapping from the environment names. `stage2_typed_params_byte_identical` (`tests/integration/stage2_typed_params.rs`): 6 configurations (A, L8, two retirement configurations, chains/rotation/ancilla reserve/drift window/legacy slice guard, drift off) × 3 calibration seeds at n=16, blake2b-256 of the three outputs against the pre-refactor binary's: all 18 identical. `src/stages` reads no environment except the stage-3 engine's `db_mixing/environment.rs` (§13.4), asserted by a test.
-- **Tests:** `tests/unit/tdp.rs` (43 tests: the default L8 resolution, the size table, preset/schedule conflicts, v1/v9 refusals, the exact default manifest text, seeds created before the manifest and absent from every log, the allow-list environment, refusals per registry class, `env_registry_covers_every_env_read`, `env_registry_tsv_in_sync`, `stages_library_reads_no_environment`, `exit_code_tables_agree`, ...); `tests/shell/tdp_flags.bash`, `tdp_block_size.bash` (rewritten), and the new `tdp_defaults.bash` (§10.9 item 1: a sandboxed copy of `val_chain.sh` on recording mocks against `tdp_gen.sh` and the Rust driver, same seeds: gen argv, mixer argv, effective recipe/driver environment, allow-list, stage-4 calls; the `int`-not-`round` case; n=64/128 default sizes; n=32 refused; 16 forbidden variables refused by name), `tdp_seeds.bash`, `tdp_stage4_resume.bash`, `tdp_stage12_parity.bash` (real gen at n=16, L8 and A, both ways) and `tdp_reproduce_small.bash`.
+- **Tests:** `tests/unit/tdp.rs` (43 tests: the default L8 resolution, the size table, preset/schedule conflicts, v1/v9 refusals, the exact default manifest text, seeds created before the manifest and absent from every log, the allow-list environment, refusals per registry class, `env_registry_covers_every_env_read`, `env_registry_tsv_in_sync`, `stages_library_reads_no_environment`, `exit_code_tables_agree`, ...); `tests/shell/tdp_flags.bash`, `tdp_block_size.bash` (rewritten), and the new `tdp_defaults.bash` (§10.9 item 1: a sandboxed copy of `val_chain.sh` on recording mocks against `tdp_gen.sh` and the Rust driver, same seeds: gen argv, mixer argv, effective recipe/driver environment, allow-list, stage-4 calls; the `int`-not-`round` case; n=64/128 default sizes; n=32 refused; 16 forbidden variables refused by name), `tdp_seeds.bash`, `tdp_stage4_resume.bash` (renamed `tdp_stage_resume.bash` on 2026-10-11), `tdp_stage12_parity.bash` (real gen at n=16, L8 and A, both ways) and `tdp_reproduce_small.bash`.
 - **D10b cache neutrality:** not run separately. The reference runs used the built-in cache sizes (512 MB lookup) and the managed runs use 2048 MB; the historic anchor (vL64a, vL128a) and the reproduction runs produced identical stage-3 bytes under the two settings, which is the property `cache_neutrality` was to establish (at full scale rather than n=16).
 - **D11 filter neutrality:** not recorded (the local store has no `filters.bin`); `auto` keeps the filter off whenever `filters.bin` exists.
 
@@ -1761,7 +1766,7 @@ The wall times are not representative. From about 08:00 the laptop's lid was clo
 - **Exit meanings.** A failed `tdp_packing run` writes `$RUN/stage4.failed` (`exit=<code>`); the runner removes it before starting and attaches a stage-4 meaning only when it names the pipeline's exit code.
 - **`pinned_recipe`.** The manifest records `frozen_db_fingerprint` (xxh3-128 of every file's name and size plus each `.ok` checksum marker's text; the shards are not read). The recipe label needs that fingerprint to equal `frozen_m1_m11`'s (`VALIDATED_REGULAR_STORE`) and an unfiltered stage 3 (`FROZEN_FILTER=1`, no `filters.bin`); a filtered `on` run, another store or a copy with other shards records `none`.
 - **`tdp_packing`.** `packing.report`'s `status` names every violation (`floor_miss+over_budget`) whatever is allowed; `run` removes the outputs of a run with any window size from a reused `--out-dir`; `census`, `mult-census` and `verify-equiv` refuse circuits wider than 65,536 wires (exit 3), `anf-report` wider than 1,024 (exit 2), `eval --format raw` a `--state-wires` below 2n (exit 2).
-- **Tests.** Unit tests for the bash resolution, the stage-4 marker and the store-gated `pinned_recipe` (including `on` with `filters.bin`); integration tests for the four width cases, `eval` raw, both-violation status and other-G stale outputs; `tdp_stage4_resume.bash` covers the stop flag and the marker; the Rust-driver case of `tdp_defaults.bash` now runs d64L8, d64A (TOML `preset = "A"`) and d128 (validated size, no `--mcd`) against the oracle transcripts. `docs/TDP_FOUR_STAGE_PIPELINE.md` marks its pre-port passages as superseded; D10b and review row 37 state the actual cache-neutrality evidence.
+- **Tests.** Unit tests for the bash resolution, the stage-4 marker and the store-gated `pinned_recipe` (including `on` with `filters.bin`); integration tests for the four width cases, `eval` raw, both-violation status and other-G stale outputs; `tdp_stage4_resume.bash` covers the stop flag and the marker; the Rust-driver case of `tdp_defaults.bash` now runs d64L8, d64A (TOML `preset = "A"`) and d128 (validated size, no `--mcd`) against the oracle transcripts. `docs/TDP_PIPELINE_REFERENCE.md` (then `TDP_FOUR_STAGE_PIPELINE.md`) marks its pre-port passages as superseded; D10b and review row 37 state the actual cache-neutrality evidence.
 
 **Reproduction round 2 (§10.7), n=64, L8 and A, at `6400aa53`** (binaries copied to `port_runs/repro_r3_{L8,A}/bin/` with sha256 `PROVENANCE`; both runs detached from the session with `setsid`; fresh private seeds; `/usr/bin/python3` 3.9.6; baseline `hmap_affine`). The managed driver ran with `PATH=<cargo>:/usr/bin:/bin`, so `/bin/bash` 3.2 came first: it skipped it and ran `/opt/homebrew/bin/bash` 5.3. Both: **RESULT: ALL IDENTICAL**. Stage 2 (`tdp.mpmct1`, source C, sandwich), stage 3 (`s3.mpmct1` = `db_mixing.mpmct1`), the stage-2 reports (mult, span txt/tsv), every stage-4 file (packed and bounds, `rep512.mpmct1`, bounds, the three TSVs, the pack/anf/link reports), `deliverable.bin`, `deliverable.tdp4[48:]` and `deliverable.tdp4` = `container_header.py` of the oracle body; `stop_reason=moves budget spent`, `frozen_filter=1`, `pinned_recipe=val_chain-L8-20261007` / `val_chain-A-20261007` (store fingerprint `fd1983677e4d5b74267d3802c9c34642`); four inherited decoys refused; no seed value in any log. Wall time, val_chain.sh / managed: L8 1,842 / 1,493 s, A 1,832 / 1,535 s. The n=8 reproductions (`port_runs/fix_r2/repro_n8_{L8,A}`) also pass: A all identical; L8 the faithful failure path (exit 5, `stage 4 tdp_packing: exposure floor missed` from the marker, the oracle's `rep512` fails `check-final` the same way, `--allow-floor-miss` payload identical). This is also the evidence for D10b at n=64 in config A.
 
@@ -1872,7 +1877,7 @@ The Rust stage 4, its checks included, takes 0.063x the oracle's wall time (16x 
 - **Stage-3 completion marker.** `$RUN/stage3.recipe` (`tdp_stage3_recipe=1`, the schedule arguments, HMAC tags of `tdp.mpmct1` and `db_mixing.mpmct1`, the stop reason) is written only after an accepted stop; a resume skips stage 3 only when it matches, so a truncated or interrupted output, a changed stage-2 input or a changed schedule re-runs stage 3 instead of failing stage 4 on every resume. The store is not part of it (a resume after stage 3 needs no store, as before). A run from before the marker is adopted without re-mixing when `packing.recipe` carries the tags of exactly these stage-2 and stage-3 bytes and `stage3.settings` records an accepted stop. `circuit_mixer` writes `--output` through `<path>.tmp`, fsync, rename (`formats::write_mpmct_atomic`). The Rust driver's store prediction (`validate_external_paths`) counts `db_mixing.mpmct1` as done only next to a marker.
 - **`--source-wires` overflow.** `container` and `serialize` bound n (1..=65536) before `2·n`, which wrapped at 2^63 in release builds and wrote `source_wires=0`; `eval --format raw` saturates its `4·n` default.
 - **Resource bounds.** The monomial and split budgets are capped at 2^18 = 262,144 (`MAX_MONOMIAL_BUDGET`; Rust config, `tdp_gen.sh`, `tdp_packing`), measured: 10^6-10^9 grew to 5-9 GB, 2^20 held 2-3 GB at one monomial word, 2^18 peaked at 1.2 GB (G = W_cap = 10^6, n=8 fixture, 156 s). Emission uses the same ceiling (`EMIT_BUDGET`) and returns `OverBudget` (exit 6) instead of panicking or allocating without limit: serializing the whole n=8 chain as one window now exits 6 in 0.9 s at 0.3 GB (it reached 5.5 GB before). Bit-exactness is kept: a cap only ever aborts, and every window the repair leaves fits a split budget ≤ 2^18 or has at most 2 gates. The `OverBudget` message names the first window.
-- **Docs.** TDP_FOUR_STAGE_PIPELINE §1.8 open issues carry status notes (seeds, argv, |C| default, presets/`val_chain.sh` resolved; pins, `rg_freq`, D⁻¹ test still open); §3 move budget and §6.3 library size describe the pre-port driver as such; the stage-4 snapshot note records that the oracle snapshot equals the run-tree copies (`cmp` at HEAD) and has the patched slide. The cache sizes are described as classified neutral with the evidence actually available (identical stage-3 bytes against the reference runs; `cache_neutrality` never run) in `env_registry.rs`, §2.2, §11.5, the P7 row, `tdp_gen.sh` and `tdp_pipeline.md`. §2.2 says `SANDWICH_VARIANT` is not exported (built-in `classic`); §11.5 lists the implemented classes (`FROZEN_DB_DIR` is `input`, `MIXER_DUMP_OUT` `forbidden`, plus `input` and `diagnostic`).
+- **Docs.** TDP_PIPELINE_REFERENCE (then TDP_FOUR_STAGE_PIPELINE) §1.8 open issues carry status notes (seeds, argv, |C| default, presets/`val_chain.sh` resolved; pins, `rg_freq`, D⁻¹ test still open); §3 move budget and §6.3 library size describe the pre-port driver as such; the stage-4 snapshot note records that the oracle snapshot equals the run-tree copies (`cmp` at HEAD) and has the patched slide. The cache sizes are described as classified neutral with the evidence actually available (identical stage-3 bytes against the reference runs; `cache_neutrality` never run) in `env_registry.rs`, §2.2, §11.5, the P7 row, `tdp_gen.sh` and `tdp_pipeline.md`. §2.2 says `SANDWICH_VARIANT` is not exported (built-in `classic`); §11.5 lists the implemented classes (`FROZEN_DB_DIR` is `input`, `MIXER_DUMP_OUT` `forbidden`, plus `input` and `diagnostic`).
 - **Defaults tie.** `packing_defaults_are_the_stage_four_binary_defaults` (unit) ties `PackingConfig::default()` to `PackParams::PRODUCTION`, `RepairParams::default()`, the literal `val_chain.sh` values and `tdp_gen.sh`'s `PACK_*` initial values and `pf` omission defaults; `run_end_to_end_n8` (integration) pins all nine `param.*` defaults of a flagless `tdp_packing run`.
 - **Tests added.** `nonlinear_width_beyond_stage_four_is_refused_up_front`, `packing_budgets_are_bounded_by_the_resource_limit`, the defaults tie above, marker cases in the two resume unit tests; `tdp_flags.bash` (nonlinear291 n=16 refused before any directory, budgets 262,145 refused); `tdp_stage4_resume.bash` (stage-3 skip on a matching marker, truncated output and changed schedule re-run, legacy adoption, no marker and no stage-4 marker re-run); `tdp_packing` integration (`--source-wires` 0, 65537, 2^32, 2^63 refused by `container` and `serialize` with nothing written; whole-chain emission exit 6; budgets 262,145 exit 2).
 - **Checked.** G1-G7, `cargo fmt --check` (incl. the mixer topic files), clippy (no new warnings), `cargo test --features security-tools --test hmap_affine_exposure`, the CI shell set (`tdp_defaults.bash` with `LOCAL_MIXING_BIN`, `tdp_seeds`, `tdp_stage4_resume`, `tdp_stage12_parity`); `tdp_reproduce_small.bash` run for real (regular store, pinned baseline `hmap_affine`): ALL IDENTICAL; `tests/stage4/differential.sh` with a random seed, K=12: 24/24 identical. G5 has the 3 baseline numpy import errors only.
@@ -1881,7 +1886,7 @@ The Rust stage 4, its checks included, takes 0.063x the oracle's wall time (16x 
 
 1. **Seed entropy beyond 64 bits** (§2.3): route (a) a 256-bit ChaCha-derived C and gadget streams, which changes bytes and needs re-validation, or route (b) a CSPRNG-generated C via `source.path` for production deliverables. Until RC decides, the default is the reference algorithm with 63-bit seeds, recorded as a stopgap.
 2. **Sizes for other n.** Today other n require an explicit size or the `formula` opt-in (§2.4). RC may add validated rows (for example after new runs at n=96 or n=256).
-3. **Repair improvements** (TDP doc §4.9): slide across markers, marker-identity cuts, all exposing cuts, finer split candidates. Each would be a new `RepairMode` behind a flag, never the default until RC re-validates.
+3. **Repair improvements** (TDP doc §4.9, now `docs/TDP_PIPELINE_REFERENCE.md` §6a.9): slide across markers, marker-identity cuts, all exposing cuts, finer split candidates. Each would be a new `RepairMode` behind a flag, never the default until RC re-validates.
 4. **Typed stage-3 knobs** (`MIXER_STOP_AT_*`, `TWIST_G57_*`, `MIXER_DB_LEN_BAND`, `MIN_DIR_LOOKUP`): a follow-up after the port. The driver already forbids them.
 5. **`CapSemantics::Canonical` as the default:** never, unless RC re-validates. It changes bytes relative to the oracle on real runs.
 
@@ -1889,7 +1894,7 @@ Revision 1's open items "source size" and "where the seed values live" are resol
 
 ## 14. Documentation to update (P9)
 
-- `docs/TDP_FOUR_STAGE_PIPELINE.md`:
+- `docs/TDP_PIPELINE_REFERENCE.md` (then `TDP_FOUR_STAGE_PIPELINE.md`; since 2026-10-12 its §4 is §6a, §5 is §7 and §6 is §8):
   - §4.5 and line 171: one canonical `order_repair.py`;
   - §4.7: all 8 replicates re-repaired, and the anchor result;
   - §4.9 and §5.7: port status, linking here;
