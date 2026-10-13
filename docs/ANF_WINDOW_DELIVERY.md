@@ -9,7 +9,10 @@ of the six-stage pipeline and runs in Rust (`tdp_packing run`,
 `docs/STAGE4_RUST_DESIGN.md`, written when it was stage 4), bit-exact against
 these tools, which remain its oracle; it is followed by unpacking with
 lattice refinement (`tdp_unpacking run --refine`, `docs/DELIVERY_STAGE.md`),
-whose `unpacking/deliverable.tdp4` is the shipped file. Current pipeline:
+whose resynthesized circuit `unpacking/unpacked.mpmct1` is the published
+object (its `unpacking/deliverable.tdp4`, the refined deliverable, is an
+internal record; the packer's deliverable itself ships only under
+`delivery.anf_only`). Current pipeline:
 `docs/tdp_pipeline.md`, `docs/TDP_PIPELINE_REFERENCE.md`. All measurements
 cited here are recorded in `docs/notes/ncdb_ab_20261001_RESULTS.md` (the
 run's RESULTS.md) and in `runs/exposure_report_20261003/REPORT.md`
@@ -23,8 +26,10 @@ The packing sub-step of stage 6 (delivery) consumes the **last circuit
 produced** (`crossing.mpmct1` by default; the stage-3 DB-mixed circuit
 `db_mixing.mpmct1` under `run.skip_stages = [4, 5]`, the validated
 four-stage chain this document measured) and produces the packer's
-deliverable, which the unpacking sub-step refines into the shipped file
-(how the stage list came to be this one: `docs/local_mixing_history.md`).
+deliverable, the windowed ANF form from which the unpacking sub-step
+resynthesizes the published circuit `unpacking/unpacked.mpmct1` (under
+`delivery.anf_only` the packer's deliverable is itself what ships; how the
+stage list came to be this one: `docs/local_mixing_history.md`).
 Three steps:
 
 ### 1.1 Commuting reorder + window scheduling (`window_pack3.py`)
@@ -163,19 +168,26 @@ The repaired circuit is checked functionally equivalent to its input
 ### 1.3 Serialization
 
 The body (`deliverable.bin`) is the sequence of window ANFs in a binary
-format (wire ids, monomial lists over window inputs); the shipped file is
-the container on the refined lattice described next. Nothing else ships:
-no gate list, no boundary metadata beyond the windows themselves, no stage
-provenance, and none of the circuits (not C, not the stage-1/2 structure,
-not the stage-3/4/5 circuits, not the packer's gate order, not the
-resynthesized circuit).
+format (wire ids, monomial lists over window inputs), wrapped in the
+container described next. Under `delivery.anf_only` that container is what
+ships, and nothing else: no gate list, no boundary metadata beyond the
+windows themselves, no stage provenance, and none of the circuits (not C,
+not the stage-1/2 structure, not the stage-3/4/5 circuits, not the packer's
+gate order). In a default six-stage run the container is an internal
+record: the unpacking sub-step resynthesizes every window from it, and what
+ships is the resynthesized circuit `unpacking/unpacked.mpmct1` alone, a
+gate list in canonical order with no window lattice, no ANFs and no stage
+provenance; the window ANFs, the bounds and the per-round files stay in the
+secret-holding environment.
 
 **Container v1 (2026-10-09).** The raw body carries no n, no version and no
-integrity check, so the managed pipeline ships a container `deliverable.tdp4`:
-the packer writes `packing/deliverable.tdp4` (the shipped file under
-`delivery.anf_only`, otherwise the refinement's starting point) and the
-unpacking sub-step writes `unpacking/deliverable.tdp4` on the refined
-lattice, the shipped file, in the same format: a 48-byte
+integrity check, so the managed pipeline wraps it in a container
+`deliverable.tdp4`: the packer writes `packing/deliverable.tdp4` (the shipped
+file under `delivery.anf_only`, otherwise the refinement's starting point) and
+the unpacking sub-step writes `unpacking/deliverable.tdp4` on the refined
+lattice, the refined deliverable (an internal record: the published object of
+a default run is the circuit `unpacking/unpacked.mpmct1` resynthesized from
+it), in the same format: a 48-byte
 little-endian header (`LMTDPANF`, format version 1, header size 48, flags 0,
 source wires n, state wires 4n, I/O layout 1 = the classic zero slice, window
 count, body length, CRC-32 of the body, CRC-32 of the header) followed by the
@@ -247,21 +259,30 @@ recorded in each run directory.
 
 ### 2.1 The threat model that motivates windowing
 
-**What the adversary sees.** Exactly the shipped file: the refined lattice
-of windows and, for each window, the ANF of the permutation it applies.
-Nothing else ships: not C, not the sandwich or the masked circuit of stages
-1-2, not the mixed, split or crossed circuits of stages 3-5, not the
-packer's gate order, not the resynthesized circuit. From the ANFs the
-adversary can derive the wire state at every window boundary (on inputs of
-its choice), compose adjacent windows into wider ones, and resynthesize any
+**What the adversary sees.** In the default six-stage pipeline, a circuit
+and nothing else: `unpacking/unpacked.mpmct1`, the canonical-order
+concatenation of the resynthesized windows. Nothing else ships: not C, not
+the sandwich or the masked circuit of stages 1-2, not the mixed, split or
+crossed circuits of stages 3-5, not the packer's gate order, not the window
+lattice, not the window ANFs. The adversary can cut the circuit anywhere,
+compute the function of any segment, compose segments and resynthesize them
+into circuits of its own; it is never handed the lattice or the ANFs, and it
+does not see how a window was spelled before resynthesis (the packer's
+spelling is gone; what it holds is the synthesizer's spelling). Under
+`delivery.anf_only`, the four-stage chain this document measured, the
+adversary holds the packer's deliverable instead: the lattice of windows
+and, for each window, the ANF of the permutation it applies. From the ANFs
+it can derive the wire state at every window boundary (on inputs of its
+choice), compose adjacent windows into wider ones, and resynthesize any
 window or merged window into a circuit of its own; it cannot see how the
-shipped function was spelled inside a window.
+function was spelled inside a window.
 
 Every exposure metric in the 2026-10 program — per-value visibility,
 the t\* exposure census (exact affine predictors), the equality-cluster
-attack — therefore quantifies over **cuts of the delivered spelling**:
-the wire values at the window boundaries. Two measured laws made
-gate-granular delivery look fundamentally leaky:
+attack — was measured on that ANF artifact and therefore quantifies over
+**cuts of the delivered spelling**: the wire values at the window
+boundaries. Two measured laws made gate-granular delivery look
+fundamentally leaky:
 
 - **Reader law**: any value with ≥1 bare reader is ~100% visible under
   every-gate cuts (measured 3.2 / 55.4 / 63.8 / 100.0% visibility at
@@ -274,23 +295,33 @@ gate-granular delivery look fundamentally leaky:
   weight-raising operator; the t\* spectrum belongs to the circuit
   ends.
 
-Windowing attacks the quantifier instead of the values: **a window has
-no interior cuts.** A value is exposed only if it is alive across a
-window boundary. Deleting cuts (a) makes read values hideable for the
-first time — the reader law presumed a cut between every pair of
-gates; (b) sidesteps the closure law — nothing is rewritten between
-cuts, the cuts are deleted; and (c) annihilates all within-window
-text: templates, k-grams, gate provenance, stage-2 vocabulary
-signatures, and the gate count itself vanish into a canonical
-polynomial. What remains observable at the lattice is exactly: values
-alive at boundaries, the boundary equality-linkage graph, the outputs,
-and the lattice itself. What the lattice does not bound is what the
-adversary can make of merged windows: merging and resynthesizing uniform
-W=2000 windows of the n=64 crossing output recovers 244 of 936 interior C
-values (241 with a 10× time budget), while the raw circuit exposes none
-at any cut; stages 4 and 5 do not close this leak, and the refinement's
-exposure-aware cuts are each re-scanned so that no interior C value is
-affine at a new cut (`docs/notes/stubborn_windows_20261012.md`,
+Windowing attacks the quantifier instead of the values. In the ANF
+artifact (`delivery.anf_only`) **a window has no interior cuts**: a value
+is exposed only if it is alive across a window boundary. Deleting cuts
+(a) makes read values hideable for the first time — the reader law
+presumed a cut between every pair of gates; (b) sidesteps the closure
+law — nothing is rewritten between cuts, the cuts are deleted; and (c)
+annihilates all within-window text: templates, k-grams, gate provenance,
+stage-2 vocabulary signatures, and the gate count itself vanish into a
+canonical polynomial. What remains observable at the lattice is exactly:
+values alive at boundaries, the boundary equality-linkage graph, the
+outputs, and the lattice itself. In the default pipeline the published
+circuit's windows *do* have interior cuts again — the synthesizer's
+gates — so the lattice bounds nothing there; what windowing buys is that
+the packer's and the mixer's spelling never ship and every window is
+re-spelled from its function alone (the synthesizer sees no gate: the
+separation guarantee, `docs/DELIVERY_STAGE.md`). The measurements that
+model this adversary are the all-cuts C-view census of the resynthesized
+circuit (at n=64 the unpacked circuit, resynthesized at the delivered
+lattice, exposes 5 of 936 interior C values at its own cuts; the raw packed
+circuit 0) and the uniform re-cut-and-resynthesize experiments, which
+re-cut the circuit uniformly and never use the delivered lattice: merging
+and resynthesizing uniform W=2000 windows of the n=64 crossing output
+recovers 244 of 936 interior C values (241 with a 10× time budget;
+canonical reorder changes it by at most 2%), while the raw circuit exposes
+none at any cut; stages 4 and 5 do not close this leak, and the
+refinement's exposure-aware cuts are each re-scanned so that no interior C
+value is affine at a new cut (`docs/notes/stubborn_windows_20261012.md`,
 `docs/notes/stage45_revival_20261011.md`; `docs/TDP_PIPELINE_REFERENCE.md`
 §6b).
 
@@ -350,8 +381,9 @@ v2.1 35% → v3 budget-adaptive 46/58/72% at G=64/128/256.
 
 - **Size** ×4–5 raw (×≈0.9 after compression, see §1.3): the format
   buys erasure, not compression.
-- **Boundaries are new visible structure**: the window lattice itself
-  is observable. Measured consequence: a value recurring ≥5 times
+- **Boundaries are new visible structure** in the ANF artifact: the
+  window lattice itself is observable there (the default pipeline's
+  published circuit is not handed the lattice). Measured consequence: a value recurring ≥5 times
   among the carried values is *always* boundary-exposed
   (deterministic at both scales; non-exposed maximum multiplicity
   is 4). This "recurrence law" shifted the program's focus upstream to
@@ -438,7 +470,8 @@ crossing output the packer needs about 4× the windows and far longer
 - **Stage 6, delivery (windowed ANF packing, then unpacking with lattice
   refinement)** — cut deletion: *where*
   anything is observable at all, plus canonical within-window
-  respelling.
+  respelling (the ANF artifact); for the published circuit of the default
+  pipeline, the re-spelling of every window from its function alone.
 - **Circuit ends (sandwich/slicing)** — the t\*-spectrum of the
   survivors (interior moves provably cannot move it).
 

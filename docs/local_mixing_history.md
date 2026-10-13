@@ -4715,24 +4715,37 @@ from its ANF alone, and a window that does not resynthesize is treated as a
 packing defect rather than emitted verbatim. It is cut in two at an
 exposure-aware cut, repacked, and each half is unpacked again, recursively
 ([stubborn windows](notes/stubborn_windows_20261012.md)). The stage ends with
-the refined deliverable and one canonically ordered circuit;
-`delivery.anf_only` stops it after the packer's deliverable.
+the refined deliverable and one canonically ordered circuit (the published
+TDP); `delivery.anf_only` stops it after the packer's deliverable.
 
-What ships is exactly the refined deliverable (`unpacking/deliverable.tdp4`):
-the refined lattice of windows and, for each window, the ANF of the
-permutation it applies. Nothing else ships: not $C$, not the sandwich or the
-masked circuit of stages 1-2, not the mixed, split or crossed circuits of
-stages 3-5, not the packer's gate order, not the resynthesized circuit. From
-the ANFs an adversary can derive the wire state at every window boundary on
-inputs of its choice, compose adjacent windows into wider ones, and
-resynthesize any window or merged window into a circuit of its own; it cannot
-see how the shipped function was spelled inside a window. The resynthesis
-studies that motivated the revival measured this adversary: merging and
-resynthesizing uniform 2,000-gate windows of the $n=64$ crossing output
-recovers 244 of 936 interior values of $C$ (241 with ten times the time
-budget), while the raw circuit exposes none at any cut, and stages 4 and 5 do
-not close the leak; the refinement's exposure-aware cuts are chosen so that no
-interior value of $C$ is affine at a new cut, each one re-scanned.
+What ships is the circuit (`unpacking/unpacked.mpmct1`): the canonical-order
+concatenation of the resynthesized windows, the TDP itself. Nothing else
+ships: not $C$, not the sandwich or the masked circuit of stages 1-2, not the
+mixed, split or crossed circuits of stages 3-5, not the packer's gate order,
+not the window lattice, not the window ANFs. The refined deliverable
+(`unpacking/deliverable.tdp4`), the windowed form the circuit was
+resynthesized from, is an internal record kept for auditing and parity. The
+adversary holds that circuit alone: it can cut it anywhere, compute the
+function of any segment, compose segments and resynthesize them into circuits
+of its own; what it never sees is how a window was spelled before
+resynthesis, since the packer's spelling is gone and the spelling it holds is
+the synthesizer's, whose gates are interior cuts of the window. The
+resynthesis studies that motivated the revival measured exactly this
+adversary, re-cutting the circuit uniformly and never using the delivered
+lattice: merging and resynthesizing uniform 2,000-gate windows of the $n=64$
+crossing output recovers 244 of 936 interior values of $C$ (241 with ten
+times the time budget; the canonical reorder changes the count by under 2
+percent), while the raw circuit exposes none at any cut, and stages 4 and 5
+do not close the leak; at its own cuts the unpacked $n=64$ circuit exposes 5
+of 936 (the raw packed circuit 0). What windowing buys in this mode is
+therefore not the absence of interior cuts but the separation guarantee: the
+packer's and the mixer's spelling never ship, every window is re-spelled from
+its function alone, and the refinement's exposure-aware cuts are chosen so
+that no interior value of $C$ is affine at a new cut, each one re-scanned.
+Under `delivery.anf_only` the packer's deliverable (`packing/deliverable.tdp4`)
+is the published object and the framing of the previous update applies: the
+adversary holds the window ANFs, hence the wire state at every window boundary
+on inputs of its choice, and a window has no interior cuts.
 
 The pipeline is therefore 1 sliced sandwich, 2 preprocessing, 3 database
 mixing, 4 splitting, 5 crossing walk, 6 delivery. Every stage after the first

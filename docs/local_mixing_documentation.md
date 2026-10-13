@@ -25,7 +25,8 @@ conjunctions (4), runs the crossing walk under a size thermostat (5), and
 delivers the result (6): packing into ANF windows followed by unpacking with
 lattice refinement, in which every window is resynthesized from its ANF
 alone and a window that does not resynthesize is cut in two, repacked and
-unpacked again. Every stage after the first is optional
+unpacked again; the published object is the resynthesized circuit in
+canonical order. Every stage after the first is optional
 (`run.skip_stages`); `run.skip_stages = [4, 5]` with
 `delivery.anf_only = true` is the validated four-stage chain. Carrier
 migration, the shuffling transform, is a
@@ -71,30 +72,44 @@ $\oplus$ denotes XOR, and products of bits denote AND, with arithmetic over
 $GF(2)$. The [construction and its contract](#current-mixing-method) below
 specifies the public input slice and answer block.
 
-**What the adversary sees.** Exactly the shipped file
-(`unpacking/deliverable.tdp4`): the refined lattice of windows and, for
-each window, the ANF of the permutation it applies. Nothing else ships: not
-$C$, not the sandwich or the masked circuit of stages 1-2, not the mixed,
-split or crossed circuits of stages 3-5, not the packer's gate order, not
-the resynthesized circuit. From the ANFs the adversary can derive the wire
-state at every window boundary (on inputs of its choice), compose adjacent
-windows into wider ones, and resynthesize any window or merged window into
-a circuit of its own; it cannot see how the shipped function was spelled
-inside a window. Measured: merging and resynthesizing uniform $W=2000$
-windows of the $n=64$ crossing output recovers 244 of 936 interior $C$
-values (241 with a tenfold time budget), while the raw circuit exposes none
-at any cut; stages 4 and 5 do not close this leak; the refinement's
-exposure-aware cuts are chosen so that no interior $C$ value is affine at a
-new cut, and each new cut is re-scanned
+**What the adversary sees.** A circuit, nothing else: the shipped file
+`unpacking/unpacked.mpmct1`, the canonical-order concatenation of the
+windows resynthesized in stage 6. Nothing else ships: not $C$, not the
+sandwich or the masked circuit of stages 1-2, not the mixed, split or
+crossed circuits of stages 3-5, not the packer's gate order, not the window
+lattice and not the window ANFs (`unpacking/deliverable.tdp4`, the internal
+windowed form the circuit was resynthesized from). The adversary can cut the
+circuit anywhere, compute the function of any segment, compose segments and
+resynthesize them into circuits of its own; what it does not see is how a
+window was spelled before resynthesis: the packer's and the mixer's spelling
+never ship, every window is re-spelled from its function alone, and the
+spelling it holds is the synthesizer's, whose gates are interior cuts of the
+window. The measurements that model this adversary are the all-cuts $C$-view
+census of the resynthesized circuit (at $n=64$ the unpacked circuit exposes
+5 of 936 interior $C$ values at its own cuts, the raw packed circuit none)
+and the uniform re-cut-and-resynthesize experiments, which re-cut the
+circuit uniformly and never use the window lattice: merging and
+resynthesizing uniform $W=2000$ windows of the $n=64$ crossing output
+recovers 244 of 936 interior $C$ values (241 with a tenfold time budget;
+canonical reorder changes the count by at most 2%), while the raw circuit
+exposes none at any cut; stages 4 and 5 do not close this leak; the
+refinement's exposure-aware cuts are chosen so that no interior $C$ value is
+affine at a new cut, and each new cut is re-scanned
 ([stubborn windows](notes/stubborn_windows_20261012.md),
-[the stage 4 and 5 revival](notes/stage45_revival_20261011.md)).
+[the stage 4 and 5 revival](notes/stage45_revival_20261011.md)). Under
+`delivery.anf_only` the published object is instead `packing/deliverable.tdp4`,
+the lattice of windows and, for each window, the ANF of the permutation it
+applies; the adversary then derives from the ANFs the wire state at every
+window boundary on inputs of its choice, and a window has no interior cuts.
+That is the four-stage chain's threat model.
 
-The diagnostics below run on a reversible gate list: one of the private
-intermediate circuits, to measure what each stage contributes, or a circuit
-the adversary has resynthesized from the shipped ANFs. Given a gate list, an
-observer can evaluate it on chosen inputs, record its intermediate values,
-and run transformations that depend only on that circuit; on the shipped
-file itself the observable states are those at the window boundaries. Some
+The diagnostics below run on a reversible gate list: the shipped circuit
+itself, one of the secret intermediate circuits, to measure what each stage
+contributes, or a circuit the adversary has resynthesized from segments of
+the shipped one. Given a gate list, an observer can evaluate it on chosen
+inputs, record its intermediate values, and run transformations that depend
+only on that circuit (under `delivery.anf_only`, where only window ANFs
+ship, the observable states are those at the window boundaries). Some
 diagnostics also know a reference source circuit and use it to label the
 logical values they try to recover. A source-dependent recovery is evidence
 of a relation; it is not automatically a blind recovery of an unknown source
@@ -104,7 +119,7 @@ These observation models must be distinguished:
 
 | Experiment | Inputs and observations | What success means |
 |---|---|---|
-| Full TDP preimage | Free $x$, fixed zero auxiliaries, specified answer block; the shipped window ANFs available, and with them any circuit resynthesized from them | Independently verified $x$ producing the target. |
+| Full TDP preimage | Free $x$, fixed zero auxiliaries, specified answer block; the shipped circuit available (under `delivery.anf_only`, the shipped window ANFs and any circuit resynthesized from them) | Independently verified $x$ producing the target. |
 | State reconstruction | Reference logical values and all physical wires at one chosen prefix | A fixed predictor recovers those values on held-out inputs. |
 | Whole-trace reconstruction | Reference logical values, initial wires, and selected or complete gate traces | A fixed relation across times predicts or reconstructs them. |
 | Isolated gadget gauntlet | Explicit encoded-I/O and auxiliary-input policy; source labels available | Detection by the stated attack family on that controlled construction. |
@@ -335,9 +350,10 @@ A state heatmap fits a separate predictor at each prefix. It does not let
 that predictor combine the wire values seen at different moments.
 
 An observer who holds a gate list does not have this restriction. They can
-run it and keep the intermediate values (on the shipped file the ANFs give
-the states at the window boundaries; a gate list inside a window is one the
-observer has resynthesized itself). Thus, we should allow
+run it and keep the intermediate values (the shipped file is a gate list;
+under `delivery.anf_only` the ANFs give the states at the window boundaries
+and a gate list inside a window is one the observer has resynthesized
+itself). Thus, we should allow
 the correlator to use observations from across the entire circuit. Suppose
 $Z_w^{(j)}(x)$ is the value of physical wire $w$ after gate $j$, and $v(x)$ is
 one of the source circuit's intermediate values. We now ask whether
@@ -556,9 +572,10 @@ full-pipeline compression ratio is asserted here for that new transform.
 
 ### SAT preimage solving
 
-A reversible gate list is a straight-line Boolean program; since no gate
-list ships, the solver's input for the shipped file is a circuit the
-adversary has resynthesized from the window ANFs. The SAT encoder
+A reversible gate list is a straight-line Boolean program, and the shipped
+file is one (under `delivery.anf_only` no gate list ships and the solver's
+input is a circuit the adversary has resynthesized from the window ANFs).
+The SAT encoder
 starts with one variable per input wire, tracks the current variable for each
 wire, and allocates a fresh target variable for each update. Its clauses force
 the new variable to match that gate's truth table. The other wire mappings
@@ -647,8 +664,10 @@ algorithm will fail.
 
 A published size is honest only relative to the reductions an attacker can
 compute, and a circuit that resists one compressor may still admit another
-reduction algorithm. On the shipped file this question is asked of the
-circuits the adversary resynthesizes from the window ANFs. No compressor or
+reduction algorithm. On the shipped circuit this question is asked of the
+circuit itself and of the circuits the adversary resynthesizes from its
+segments (under `delivery.anf_only`, of the circuits resynthesized from the
+window ANFs). No compressor or
 demixing probe is part of the current pipeline or its retained tools
 (history: [Local Mixing History](local_mixing_history.md)).
 
@@ -685,10 +704,12 @@ Only $x$ is free at the input, and only the middle $n$ output bits are the
 answer. The permutation is reversible on every complete $4n$-bit state.
 Fixing auxiliary inputs and projecting the outputs are part of the application
 contract; no gate forces an arbitrary input onto that slice. What ships is
-not a gate list for $G$ but `unpacking/deliverable.tdp4`: the refined
-lattice of windows and, for each window, the ANF of the permutation it
-applies; composed, the windows compute $G$ (see
-[what the adversary sees](#attacks)).
+a gate list for $G$: `unpacking/unpacked.mpmct1`, the canonical-order
+concatenation of the windows resynthesized in stage 6 (under
+`delivery.anf_only`, `packing/deliverable.tdp4` instead: the lattice of
+windows and, for each window, the ANF of the permutation it applies;
+composed, the windows compute $G$); see
+[what the adversary sees](#attacks).
 
 For a preimage problem, the target is an $n$-bit value $t$ and the required
 witness is an $x$ with $C(x)=t$. Knowing $C$ gives the intended trapdoor:
@@ -706,7 +727,7 @@ The stages are:
 | 3 | Database mixing | Replaces local windows by different equivalent circuits and repeatedly overlaps replacements. |
 | 4 | Splitting | Rewrites every complemented r57 gate into two plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion (`circuit_mixer --split --split-stop`). |
 | 5 | Crossing walk | Shoots fragments to their first collider and rewrites each collision by an exact case split, under a size thermostat whose target is twice its input (`circuit_mixer --resume split.state --target-size ...`). |
-| 6 | Delivery | Packing: reorders along commutations into ANF windows of at most 512 gates, repairs boundary exposures of $C$'s values and serializes `packing/deliverable.tdp4` (`tdp_packing run`); then unpacking with lattice refinement: resynthesizes every window from its ANF alone, cuts a window that fails in two at an exposure-aware cut and repacks and unpacks the halves for up to 16 rounds, and emits `unpacking/deliverable.tdp4` (the shipped file) and `unpacking/unpacked.mpmct1` in canonical order (`tdp_unpacking run --refine`). |
+| 6 | Delivery | Packing: reorders along commutations into ANF windows of at most 512 gates, repairs boundary exposures of $C$'s values and serializes `packing/deliverable.tdp4` (`tdp_packing run`); then unpacking with lattice refinement: resynthesizes every window from its ANF alone, cuts a window that fails in two at an exposure-aware cut and repacks and unpacks the halves for up to 16 rounds, and emits `unpacking/unpacked.mpmct1` in canonical order (the shipped file) and `unpacking/deliverable.tdp4` (the refined deliverable, an internal record) (`tdp_unpacking run --refine`). |
 
 ```text
 C -> sliced sandwich -> embedded masking -> database mixing -> splitting -> crossing walk
@@ -717,7 +738,8 @@ C -> sliced sandwich -> embedded masking -> database mixing -> splitting -> cros
 
 Every stage after the first is optional (`run.skip_stages`); a stage reads
 the output of the last stage that ran, and `delivery.anf_only = true` ends
-stage 6 after the packer's deliverable. Earlier stage lists and the
+stage 6 after the packer's deliverable, which is then the published object.
+Earlier stage lists and the
 components they used are recorded in the
 [history](local_mixing_history.md).
 
@@ -1997,8 +2019,10 @@ database mixing.
 Stage 6, delivery, is the last stage of the current design; packing is its
 first sub-step and unpacking with lattice refinement its second. Packing
 reorders the mixed circuit along commutations, cuts it into windows and
-emits each window as its sparse algebraic normal form, so that the only
-wire states an observer can derive are those at window boundaries; its
+emits each window as its sparse algebraic normal form, the form the second
+sub-step resynthesizes from (under `delivery.anf_only` it is the published
+form, and the only wire states an observer can derive from it are those at
+window boundaries); its
 commutation-aware order repair, which runs in every `tdp_packing run` and
 is not optional, then removes the remaining boundary exposures of $C$'s
 values (the separate post-stage-3 leakage audit and database repair,
@@ -2011,8 +2035,9 @@ stage 4), a bit-exact port of the Python prototypes under
 [STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md)); `tdp_gen` runs it as the
 first sub-step of stage 6, see the
 [pipeline guide](tdp_pipeline.md#stage-6-delivery). Its output,
-`packing/deliverable.tdp4`, is the shipped file only under
-`delivery.anf_only = true`.
+`packing/deliverable.tdp4`, is the published object only under
+`delivery.anf_only = true`; otherwise it is an internal representation that
+the second sub-step consumes.
 
 The second sub-step, unpacking with lattice refinement
 (`tdp_unpacking run --refine`, `src/stages/unpacking/`), resynthesizes every
@@ -2023,8 +2048,16 @@ deliverable is re-emitted with the two halves' ANFs, and the halves are
 unpacked in the next round, for up to 16 rounds; a window still failing
 after the last round is emitted verbatim and reported as NOT recommended.
 The converged windows are concatenated and put into the canonical commuting
-order. The outputs are `unpacking/deliverable.tdp4` (the refined lattice,
-the shipped file) and `unpacking/unpacked.mpmct1`. Contract:
+order. The outputs are `unpacking/unpacked.mpmct1`, the circuit, which is
+the published object of the pipeline (the TDP), and
+`unpacking/deliverable.tdp4`, the refined deliverable: the windowed ANF form
+the circuit was resynthesized from, an internal record kept for auditing and
+parity. What windowing buys in this mode is that the packer's and the
+mixer's spelling never ship and every window is re-spelled from its function
+alone; the resynthesized windows have interior cuts of their own, and the
+measured residue is 5 of 936 interior $C$ values exposed at the delivered
+lattice at $n=64$ and 244 of 936 under uniform $W=2000$ re-cutting
+([what the adversary sees](#attacks)). Contract:
 [DELIVERY_STAGE.md](DELIVERY_STAGE.md); synthesizer:
 [STAGE7_UNPACKING.md](STAGE7_UNPACKING.md) (written when unpacking was
 stage 7); Python reference `scripts/windowed_delivery/waist/deliver.py`.
@@ -2156,7 +2189,7 @@ to `"validated"`, is an error. The main settings and their defaults are:
 | `crossing.size_tolerance_divisor` | `25` | Thermostat temperature $\max(64,\mathrm{round}(\text{target}/25))$. |
 | `crossing.move_budget_factor` | `3.0` | Stage-5 move budget relative to the target (`crossing.move_attempts` sets an absolute budget instead). |
 | `packing.window_gates`, `packing.split_budget` | `512`, `65536` | Window gate cap and the repair's split budget. |
-| `delivery.anf_only` | `false` | `true` ends stage 6 after the packer's deliverable (no resynthesis). |
+| `delivery.anf_only` | `false` | `true` ends stage 6 after the packer's deliverable, which is then the published object (no resynthesis; the recipient unpacks). |
 | `delivery.time_limit`, `delivery.restarts`, `delivery.beam` | `30`, `16`, `6` | Per-window synthesis wall limit (seconds), restarts and lookahead width. |
 | `delivery.max_rounds` | `16` | Refinement rounds; a window still failing after the last round is emitted verbatim and reported as NOT recommended. |
 | `run.skip_stages` | `[]` | Stages not run, each in `2..6`; `[4, 5]` with `delivery.anf_only = true` is the validated four-stage chain. |

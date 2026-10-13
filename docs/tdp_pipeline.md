@@ -2,14 +2,15 @@
 
 This is the operational manual for the six-stage TDP pipeline: how to run
 each stage, what it writes, and where its code lives. We start with a secret
-reversible circuit $C$ on $n$ wires and end with a published file that
-computes $C$ on a public slice. In general $C$ may use any reversible gate
-with up to two controls (NOT, CNOT, Toffoli with either control polarity);
-the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which expresses that
-class) through `source.path`, or generates a random $C$. What the pipeline
-then mixes is not $C$ itself but a specific circuit structure built around
-it: the sliced sandwich on $2n$ wires (stage 1) and the embedded-masking
-construction on $4n$ wires (stage 2), to which stages 3-6 apply.
+reversible circuit $C$ on $n$ wires and end with a published circuit, the
+TDP, that computes $C$ on a public slice. In general $C$ may use any
+reversible gate with up to two controls (NOT, CNOT, Toffoli with either
+control polarity); the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which
+expresses that class) through `source.path`, or generates a random $C$. What
+the pipeline then mixes is not $C$ itself but a specific circuit structure
+built around it: the sliced sandwich on $2n$ wires (stage 1) and the
+embedded-masking construction on $4n$ wires (stage 2), to which stages 3-6
+apply.
 
 | Stage | What it does | Runs as | Output |
 | --- | --- | --- | --- |
@@ -18,13 +19,13 @@ construction on $4n$ wires (stage 2), to which stages 3-6 apply.
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
 | 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
 | 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input, move budget 3× the target) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
-| 6. Delivery | Packing (commuting reorder into ANF windows, repair, serialization), then unpacking with lattice refinement: every window resynthesized from its ANF alone, a window that does not resynthesize cut in two and both halves repacked and unpacked, the result concatenated and canonically reordered | `tdp_packing run`, then `tdp_unpacking run --refine` | `packing/deliverable.tdp4` (the packer's lattice), `unpacking/deliverable.tdp4` (the refined lattice, the shipped file), `unpacking/unpacked.mpmct1` |
+| 6. Delivery | Packing (commuting reorder into ANF windows, repair, serialization), then unpacking with lattice refinement: every window resynthesized from its ANF alone, a window that does not resynthesize cut in two and both halves repacked and unpacked, the result concatenated and canonically reordered | `tdp_packing run`, then `tdp_unpacking run --refine` | `unpacking/unpacked.mpmct1` (**the published circuit**, the TDP: the resynthesized windows concatenated in canonical order); internal: `packing/deliverable.tdp4` (the packer's lattice; the published object only under `delivery.anf_only`), `unpacking/deliverable.tdp4` (the refined lattice) |
 
 ```text
 C → sliced sandwich → embedded masking → DB mixing → split → crossing walk → packing → unpacking with refinement
        stage 1            stage 2          stage 3     stage 4    stage 5      stage 6 (delivery)
-                                                                         packing/deliverable.tdp4 → unpacking/deliverable.tdp4
-                                                                                                     unpacking/unpacked.mpmct1
+                                                                         packing/deliverable.tdp4 → unpacking/deliverable.tdp4 (internal)
+                                                                                                   → unpacking/unpacked.mpmct1 (the TDP, published)
 ```
 
 **Every stage after the first is optional** (`run.skip_stages`,
@@ -33,8 +34,10 @@ of the last stage that ran: with stage 2 skipped the sandwich itself goes on,
 with stage 4 skipped the crossing walk starts from the previous circuit with
 its own seed, with stage 3 skipped the split runs on the stage-2 circuit, and
 so on. Within stage 6, `delivery.anf_only` ends the stage after the packer's
-deliverable (no resynthesis). The final artifact is the last stage's output;
-`PIPELINE COMPLETE (stages 1-6): …` names it.
+deliverable (no resynthesis; the recipient then does the unpacking). The final
+artifact is the last stage's output; `PIPELINE COMPLETE (stages 1-6): …`
+names it: by default the circuit `unpacking/unpacked.mpmct1`, the published
+object of the pipeline (under `anf_only`, `packing/deliverable.tdp4`).
 
 Stage 6 was two stages, 6 (packing) and 7 (unpacking), until 2026-10-12
 (RC's decision: a window that does not resynthesize is a packing defect to
@@ -84,12 +87,15 @@ Further reading:
   the linkable-exposure metrics that the recommended configuration is chosen
   by.
 - [ANF_WINDOW_DELIVERY.md](ANF_WINDOW_DELIVERY.md): windowed ANF packing, its
-  threat model, and the deliverable format.
+  threat model (the `anf_only` one: the adversary holds the window ANFs), and
+  the deliverable format.
 - [notes/stubborn_windows_20261012.md](notes/stubborn_windows_20261012.md):
   the measured basis of the refinement policy (157 of 10,366 windows failed
   at n=64; they are ANF-dense tails, not a gate-structure class; 10× time
   rescues 15/102; bisection converges ~90 % per round and terminates; the
-  final assembly has 0 interior C values).
+  complete bisection assembly has 0 interior C values at its own cuts, the
+  seven-stage output with its 157 verbatim windows 5 of 936, the raw packed
+  circuit 0).
 - [notes/stage45_revival_20261011.md](notes/stage45_revival_20261011.md):
   stages 4 and 5 measured (the crossing output has no C value at any cut,
   but merged-window resynthesis at W=2000 still exposes 244/936 interior
@@ -129,9 +135,9 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml --dry-run
 cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
-The run ends with `[tdp_gen] PIPELINE COMPLETE (stages 1-6): <run>/unpacking/unpacked.mpmct1`
-(under `delivery.anf_only`: `<run>/packing/deliverable.tdp4`). A run
-directory holds:
+The run ends with `[tdp_gen] PIPELINE COMPLETE (stages 1-6): <run>/unpacking/unpacked.mpmct1`,
+the published circuit (under `delivery.anf_only`:
+`<run>/packing/deliverable.tdp4`). A run directory holds:
 
 | Stage | Files |
 | --- | --- |
@@ -140,15 +146,19 @@ directory holds:
 | 3. Database mixing | `db_mixing.mpmct1` (the mixer writes `db_mixing.mpmct1.tmp`, fsyncs it and renames it, so a kill or crash never leaves a truncated output under this name), `stage3.log`, `stage3.settings` (the resolved `FROZEN_FILTER` and the mixer's `stop_reason`), `stage3.recipe` (keyed completion marker: the schedule arguments, HMAC-SHA256 tags of `tdp.mpmct1` and of `db_mixing.mpmct1`, the stop reason; written only after an accepted stop) (and `db_mixing.leakage_repair.txt` with leakage repair). A resume skips stage 3 only when `stage3.recipe` matches; a missing or stale marker (an interrupted output, a changed stage-2 input or schedule) re-runs stage 3, which then needs the store. A run made before the marker existed is adopted without re-mixing when its `delivery.recipe` (or the seven-stage driver's `packing.recipe`) carries the tags of exactly these `tdp.mpmct1` and `db_mixing.mpmct1` bytes and `stage3.settings` records an accepted stop. A chain ended by the operator stop flag (`touch $RUN/stage3.stop`) is under-dosed: its output is moved to `db_mixing.stopped.mpmct1`, the run stops with exit 2 and no deliverable, and a resume re-runs stage 3 from scratch |
 | 4. Splitting | `split.mpmct1`, `split.state` (the resume point of stage 5), `stage4.log`, `stage4.recipe` (keyed completion marker); a split ended by `$RUN/stage4.stop` is kept as `split.stopped.mpmct1` |
 | 5. Crossing | `crossing.mpmct1`, `stage5.log`, `stage5.recipe` |
-| 6. Delivery | `packing/`: `deliverable.tdp4` (the packer's lattice), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds` (the repaired circuit and the lattice the refinement starts from), the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `unpacking/` (absent under `anf_only`): `deliverable.tdp4` (**the shipped file**: the refined lattice), `bounds.final`, `unpacked.mpmct1` (the resynthesized circuit, canonical order), `windows.tsv`, `rounds.tsv`, `unpacking.report`, `unpacking.log`, the per-round `bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the packer's; private, they regenerate the circuit); `stage6.log` (both sub-steps, a separator line between them); `delivery.recipe` (keyed completion marker); a failed sub-step leaves `delivery.failed` (`exit=<code>`, `step=packing\|unpacking`; the managed driver then reports that code's meaning for that binary, and no other failure is labelled as stage 6's); `NOT_RECOMMENDED` next to the final output after an allowed failure |
+| 6. Delivery | `packing/`: `deliverable.tdp4` (the packer's lattice; the published object only under `anf_only`), `deliverable.bin` (its raw body), `packed_G512.mpmct1(.bounds)`, `rep512.mpmct1`, `rep512.bounds` (the repaired circuit and the lattice the refinement starts from), the last C-view scan `rep512.{exposure,allcuts,wit}.tsv` + `rep512.cview.log`, the oracle-format reports `pack_G512.txt`, `repair512.log`, `anf_rep512.txt`, `link_rep512.txt`, and `packing.report`; `unpacking/` (absent under `anf_only`): `unpacked.mpmct1` (**the published circuit**: the resynthesized windows, canonical order), `deliverable.tdp4` (the refined lattice: the internal ANF form the circuit was resynthesized from, kept for auditing and parity), `bounds.final`, `windows.tsv`, `rounds.tsv`, `unpacking.report`, `unpacking.log`, the per-round `bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the packer's; internal: they carry the lattice and the window ANFs); `stage6.log` (both sub-steps, a separator line between them); `delivery.recipe` (keyed completion marker); a failed sub-step leaves `delivery.failed` (`exit=<code>`, `step=packing\|unpacking`; the managed driver then reports that code's meaning for that binary, and no other failure is labelled as stage 6's); `NOT_RECOMMENDED` next to the final output after an allowed failure |
 | Run | `tdp_command.conf` (recipe manifest), `tdp_gen.log`, the private `SEEDS` |
 
-Only `unpacking/deliverable.tdp4` ships: the refined lattice of windows
-with, for each window, the ANF of the permutation it applies (under
-`anf_only`, `packing/deliverable.tdp4`). The two reports may be published.
-Everything except the two `deliverable.tdp4` and the two reports is private
-(the per-round containers and bounds included): the circuits regenerate or
-expose $C$, and `SEEDS` regenerates everything.
+Only the circuit `unpacking/unpacked.mpmct1` ships: the canonical-order
+concatenation of the resynthesized windows, the TDP (under `anf_only`,
+`packing/deliverable.tdp4`: the window ANFs, which the recipient unpacks
+itself). Everything else is secret or a secret intermediate: the two
+`deliverable.tdp4` and the per-round containers and bounds (the packer's
+windowed form that the unpacking sub-step resynthesizes from, kept for
+auditing and parity; they carry the lattice and the window ANFs), the packed
+and repaired circuits and the stage 1-5 circuits (they regenerate or expose
+$C$), `SEEDS` (it regenerates everything), the logs and the two reports. The
+reports hold only counts and parameters, but they are not part of the TDP.
 
 ## Where a run starts
 
@@ -338,7 +348,7 @@ Any non-default value is recorded as `packing_params=custom`.
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `delivery.anf_only` | bool, `false` | `true` ends stage 6 after the packer's deliverable: no resynthesis, no refinement, no `unpacking/`; `tdp_unpacking` is not needed. The four-stage validation chain. |
+| `delivery.anf_only` | bool, `false` | `true` ends stage 6 after the packer's deliverable: no resynthesis, no refinement, no `unpacking/`; `tdp_unpacking` is not needed. `packing/deliverable.tdp4` is then the published object (the recipient does the unpacking, and the adversary sees the window ANFs: the four-stage pipeline's threat model). The four-stage validation chain. |
 | `delivery.time_limit` | number, `30` | Synthesis wall-clock limit per window per round, seconds, in `(0, 86400]`. A window that hits it keeps the best converged restart (`deadline_hits` in the report) or fails the round; the output then depends on timing. |
 | `delivery.restarts` | integer, `16` | Synthesis restarts per window, `1..1000` ("less optimized" = fewer, e.g. 2). |
 | `delivery.beam` | integer, `6` | Lookahead width of the search, `1..1000`. |
@@ -628,33 +638,53 @@ output is unchanged by its presence.
 
 ## Stage 6: delivery
 
-Delivery turns the mixed circuit into the deliverable and shows that the
-deliverable unpacks. It is one stage of two sub-steps (RC, 2026-10-12;
-[DELIVERY_STAGE.md](DELIVERY_STAGE.md)): the packer emits the circuit as ANF
-windows on a lattice of cuts, and the unpacking sub-step resynthesizes every
-window from its ANF alone, treating a window that does not resynthesize as a
-packing defect: the window is cut in two, both halves are repacked and
-unpacked, recursively, until every window unpacks (the size of a
-resynthesized window is irrelevant). The stage's shipped file is the
-deliverable on the refined lattice, `unpacking/deliverable.tdp4`; its
-resynthesized circuit is `unpacking/unpacked.mpmct1`. With
-`delivery.anf_only` the stage ends after the packer's
-`packing/deliverable.tdp4`.
+Delivery turns the mixed circuit into the published circuit, the TDP, by
+way of a windowed ANF form. It is one stage of two sub-steps (RC,
+2026-10-12; [DELIVERY_STAGE.md](DELIVERY_STAGE.md)): the packer emits the
+circuit as ANF windows on a lattice of cuts, and the unpacking sub-step
+resynthesizes every window from its ANF alone, treating a window that does
+not resynthesize as a packing defect: the window is cut in two, both halves
+are repacked and unpacked, recursively, until every window unpacks (the size
+of a resynthesized window is irrelevant). The stage's output, and the
+pipeline's published object, is the resynthesized circuit
+`unpacking/unpacked.mpmct1`: the converged windows concatenated in lattice
+order and put into the canonical commuting gate order. The windowed ANF
+deliverables, `packing/deliverable.tdp4` (the packer's lattice, round 0) and
+`unpacking/deliverable.tdp4` (the refined lattice), are an internal
+representation: the packer's windowed form that the unpacking sub-step
+resynthesizes from, kept for auditing and parity. Only under
+`delivery.anf_only`, where the stage ends after the packer's
+`packing/deliverable.tdp4`, is that ANF file the published object: the
+recipient then does the unpacking itself.
 
-**What the adversary sees.** Exactly the shipped file: the refined lattice
-of windows and, for each window, the ANF of the permutation it applies.
-Nothing else ships: not $C$, not the sandwich or the masked circuit of
-stages 1-2, not the mixed, split or crossed circuits of stages 3-5, not the
-packer's gate order, not the resynthesized circuit. From the ANFs the
-adversary can derive the wire state at every window boundary (on inputs of
-its choice), compose adjacent windows into wider ones, and resynthesize any
-window or merged window into a circuit of its own; it cannot see how the
-shipped function was spelled inside a window. Measured: merging and
-resynthesizing uniform W=2000 windows of the n=64 crossing output recovers
-244 of 936 interior $C$ values (241 with a 10× time budget), while the raw
-circuit exposes none at any cut; stages 4 and 5 do not close this leak; the
-refinement's exposure-aware cuts are chosen so that no interior $C$ value is
-affine at a new cut, each one re-scanned
+**What the adversary sees.** A circuit, nothing else:
+`unpacking/unpacked.mpmct1`. Not $C$, not the sandwich or the masked circuit
+of stages 1-2, not the mixed, split or crossed circuits of stages 3-5, not
+the packer's gate order, not the window lattice, not the window ANFs. It can
+cut the circuit anywhere, compute the function of any segment, compose
+segments and resynthesize them into circuits of its own; it is never handed
+the lattice or the ANFs, and it does not see how a window was spelled before
+resynthesis: the packer's spelling is gone, and what it holds is the
+synthesizer's spelling. The measurements that model this adversary are the
+all-cuts C-view census of the resynthesized circuit and the uniform
+re-cut-and-resynthesize experiments, which re-cut the circuit uniformly and
+never use the delivered lattice. Measured at n=64: at its own cuts the
+unpacked circuit of the seven-stage run (157 windows left verbatim) exposes
+5 of 936 interior $C$ values, the raw packed circuit 0 and the complete
+bisection assembly of the same run 0; merging and resynthesizing uniform
+W=2000 windows of the crossing output recovers 244 of 936 interior $C$
+values (241 with a 10× time budget; the canonical reorder changes these
+counts by under 2 %), while the raw crossing circuit exposes none at any
+cut; stages 4 and 5 do not close this leak. What windowing buys in this
+mode is not the absence of interior cuts (the resynthesized windows have
+them: the synthesizer's gates) but the separation guarantee: the packer's
+and the mixer's spelling never ships, every window is re-spelled from its
+function alone, and the refinement's exposure-aware cuts are chosen so that
+no interior $C$ value is affine at a new cut, each one re-scanned. Under
+`anf_only` the older framing applies: the adversary holds the window ANFs,
+hence the wire state at every window boundary (on inputs of its choice); it
+can compose adjacent windows into wider ones and resynthesize any window or
+merged window, and a window has no interior cuts
 ([notes/stubborn_windows_20261012.md](notes/stubborn_windows_20261012.md),
 [notes/stage45_revival_20261011.md](notes/stage45_revival_20261011.md)).
 
@@ -663,7 +693,7 @@ affine at a new cut, each one re-scanned
 The packer reorders its input (the last circuit produced: `crossing.mpmct1`
 by default, `db_mixing.mpmct1` under `run.skip_stages = [4, 5]`) along
 commutations so that values are born and consumed inside one window, cuts
-the order into windows of at most G gates, and publishes each window as its
+the order into windows of at most G gates, and emits each window as its
 sparse algebraic normal form (ANF). The packer's order repair
 (`stages::packing::repair`, the port of
 `scripts/windowed_delivery/waist/order_repair.py` in its patched version)
@@ -717,12 +747,13 @@ the same ceiling; a window above it is exit 6 (`anf_dump_eval.py` emits at
 2^30; every window the repair leaves fitting emits identically).
 
 **`packing/deliverable.tdp4`** is the packer's deliverable: the stage's
-output only under `anf_only`; otherwise the refinement's starting point
-(round 0), not the shipped file. It is a 48-byte header (`LMTDPANF`,
-version, source and state wires, layout, window count, body length, CRC-32
-of the body and of the header) followed by the unchanged `anf_dump_eval.py`
-body, which is also kept as `deliverable.bin` (a private intermediate).
-`tdp_packing decode --format container` validates it; the shipped
+output, and the published object, only under `anf_only`; otherwise the
+refinement's starting point (round 0), an internal record. It is a 48-byte
+header (`LMTDPANF`, version, source and state wires, layout, window count,
+body length, CRC-32 of the body and of the header) followed by the unchanged
+`anf_dump_eval.py` body, which is also kept as `deliverable.bin` (a secret
+intermediate).
+`tdp_packing decode --format container` validates it; the refined
 `unpacking/deliverable.tdp4` has the same format.
 
 **Exit codes** (also printed by the driver with their meaning):
@@ -741,8 +772,9 @@ body, which is also kept as `deliverable.bin` (a private intermediate).
 Exits 5 and 6 are deliberate departures from the oracle on failure paths
 only: the oracle would ship such a circuit silently.
 
-**`packing.report`** (flat `key=value`, publishable: counts and parameters
-only, no seeds and no hash of a private input) records the status, every
+**`packing.report`** (flat `key=value`; an internal record, not part of
+the TDP: counts and parameters only, no seeds and no hash of a secret input)
+records the status, every
 parameter, the pack/repair/emit counters, the linkability census (L2/M2) and
 the timings.
 
@@ -753,9 +785,11 @@ chain.
 
 ### Unpacking with lattice refinement (the second sub-step)
 
-Unpacking is what a recipient of the deliverable does to obtain a circuit
-again, and the refinement makes sure that it succeeds for every window. The
-driver runs, right after the packer (skipped under `delivery.anf_only`),
+Unpacking resynthesizes a circuit from the windowed ANF form (under
+`delivery.anf_only` this is what the recipient of the deliverable does
+itself), and the refinement makes sure that it succeeds for every window; its
+output is the published circuit. The driver runs, right after the packer
+(skipped under `delivery.anf_only`),
 
 ```bash
 tdp_unpacking run --deliverable packing/deliverable.tdp4 --packed packing/rep512.mpmct1 \
@@ -789,15 +823,16 @@ First six-stage run (n=16, 2026-10-12, `port_runs/six_n16b`, made at
 `move_budget_factor = 2`): 18 min end to end; delivery 3 rounds, 678 → 696
 windows, 18 clean cuts, 0 unclean cuts, 0 verbatim, every check ok.
 
-It writes into `unpacking/`: `deliverable.tdp4` (the refined lattice: **the
-shipped file**), `bounds.final` (its cuts), `unpacked.mpmct1` (the state
-width in the header, canonical order), `windows.tsv` (one row per window of
-the final lattice with its round and status), `rounds.tsv` (per round:
-pending, converged, failed, split, seconds), `unpacking.report`
+It writes into `unpacking/`: `unpacked.mpmct1` (**the published circuit**:
+the state width in the header, canonical order), `deliverable.tdp4` (the
+refined lattice: the internal ANF form the circuit was resynthesized from,
+kept for auditing and parity), `bounds.final` (its cuts), `windows.tsv` (one
+row per window of the final lattice with its round and status), `rounds.tsv`
+(per round: pending, converged, failed, split, seconds), `unpacking.report`
 (`status=ok|verbatim_used`, `rounds`, `windows_initial`, `windows_final`,
 `splits`, `unclean_cuts`, `over_budget`, `verbatim`, the gate counts and
 ratio, every check), `unpacking.log` and the per-round `bounds.<r>` /
-`deliverable.<r>.tdp4` (round 0 = the packer's; private); the driver appends its output to `stage6.log`
+`deliverable.<r>.tdp4` (round 0 = the packer's; internal); the driver appends its output to `stage6.log`
 after a separator line. Before anything is committed every converged window
 is checked exactly and by sampling, the refined deliverable passes the
 packer's final check at every cut and evaluates equal to the packed circuit,

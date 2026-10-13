@@ -52,6 +52,13 @@ Delivery path (post stage 3), with the Rust counterpart:
   (`docs/DELIVERY_STAGE.md` §3). It is the one script here that is maintained,
   not frozen.
 
+What ships: in a default six-stage run, the circuit `unpacking/unpacked.mpmct1`
+(the canonical-order concatenation of the resynthesized windows). The ANF
+containers (`packing/deliverable.tdp4`, the refined `unpacking/deliverable.tdp4`)
+are internal records of the packer's windowed form, kept for auditing and
+parity; only under `delivery.anf_only` is `packing/deliverable.tdp4` itself the
+published object (`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief").
+
 Censuses / attacks: `boundary_cluster.py`, `waist/link_census.py` (linkable
 values, sightings, froth), `waist/mult_census.py`, `wire_balance.py`, plus
 the diagnostic scripts in `waist/` (leak tracing, C structure, births).

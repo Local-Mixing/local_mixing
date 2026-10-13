@@ -21,7 +21,10 @@ output, in the chain this document measured):
 3. deliver each window as the canonical vector ANF of its touched wires
    as polynomials over its input wires.
 
-The delivered artifact is a sequence of window ANFs. Nothing else ships.
+The packer's artifact is a sequence of window ANFs. Under `delivery.anf_only`
+it is what ships, and nothing else; in the default six-stage pipeline it is an
+internal representation from which the unpacking sub-step resynthesizes the
+published circuit `unpacking/unpacked.mpmct1` (§2).
 
 *(Adopted 2026-10-07 as the stage after mixing. Since 2026-10-11 stages 4
 (splitting) and 5 (crossing) precede it in the default chain and the packer
@@ -32,19 +35,28 @@ stage-3 input survives as `run.skip_stages = [4, 5]`: `docs/tdp_pipeline.md`,
 
 ## 2. Why this erases more than the move system can
 
-What the adversary sees is exactly the shipped file: the (refined) lattice
-of windows and, for each window, the ANF of the permutation it applies.
-Nothing else ships: not C, not the sandwich or the masked circuit of stages
-1-2, not the mixed, split or crossed circuits of stages 3-5, not the
-packer's gate order, not the resynthesized circuit. From the ANFs the
-adversary can derive the wire state at every window boundary (on inputs of
-its choice), compose adjacent windows into wider ones, and resynthesize any
-window or merged window into a circuit of its own; it cannot see how the
-shipped function was spelled inside a window. Every exposure metric in the
-2026-10 program (per-value visibility, t\*, reader law, closure law)
-therefore quantifies over *cuts of the delivered spelling*. A window has no
-interior cuts, so a reference value is exposed only if it is **alive across
-a window boundary** — its carrier span must straddle the cut. Consequences:
+What the adversary sees in the default six-stage pipeline is a circuit and
+nothing else: `unpacking/unpacked.mpmct1`, the canonical-order concatenation
+of the resynthesized windows. Nothing else ships: not C, not the sandwich or
+the masked circuit of stages 1-2, not the mixed, split or crossed circuits of
+stages 3-5, not the packer's gate order, not the window lattice, not the
+window ANFs. The adversary can cut that circuit anywhere, compute the
+function of any segment, compose segments and resynthesize them into
+circuits of its own; it is never handed the lattice or the ANFs and does not
+see how a window was spelled before resynthesis (the packer's spelling is
+gone; it holds the synthesizer's). Under `delivery.anf_only`, the chain this
+document measured, the adversary holds the packer's artifact instead: the
+lattice of windows and, for each window, the ANF of the permutation it
+applies. From the ANFs it can derive the wire state at every window boundary
+(on inputs of its choice), compose adjacent windows into wider ones, and
+resynthesize any window or merged window into a circuit of its own; it
+cannot see how the function was spelled inside a window. Every exposure
+metric in the 2026-10 program (per-value visibility, t\*, reader law,
+closure law) was measured on that artifact and therefore quantifies over
+*cuts of the delivered spelling*. There a window has no interior cuts, so a
+reference value is exposed only if it is **alive across a window boundary**
+— its carrier span must straddle the cut. Consequences (for the ANF
+artifact):
 
 - **Read values become hideable.** The reader law (≥1 reader ⇒ ~100%
   visible) presumed a cut between every pair of gates. If a value's
@@ -59,13 +71,23 @@ a window boundary** — its carrier span must straddle the cut. Consequences:
   stage-2 vocabulary signatures all vanish inside windows.
 - **What remains exposed at the lattice** is exactly: (a) values alive at
   boundaries, (b) the boundary-value equality-linkage graph, (c) the
-  outputs, (d) the lattice itself. Not bounded by the lattice: what
-  merging adjacent windows and resynthesizing recovers — 244 of 936
-  interior C values at W=2000 on the n=64 crossing output (241 with 10×
-  the time), against 0 for the raw circuit at any cut; stages 4 and 5 do
-  not close it, and the refinement re-scans each exposure-aware cut
-  (`docs/notes/stubborn_windows_20261012.md`,
-  `docs/notes/stage45_revival_20261011.md`).
+  outputs, (d) the lattice itself.
+
+For the published circuit of the default pipeline the argument changes: the
+resynthesized windows have interior cuts again (the synthesizer's gates), so
+the lattice bounds nothing; what windowing buys there is that the packer's
+and the mixer's spelling never ship and every window is re-spelled from its
+function alone (the separation guarantee, `docs/DELIVERY_STAGE.md`). The
+measured residue: the all-cuts C-view census of the resynthesized circuit
+(at n=64 the unpacked circuit, resynthesized at the delivered lattice,
+exposes 5 of 936 interior C values at its own cuts; the raw packed circuit
+0) and the uniform re-cut-and-resynthesize experiments, which never use the
+delivered lattice — merging and resynthesizing adjacent windows recovers 244
+of 936 interior C values at W=2000 on the n=64 crossing output (241 with 10×
+the time; canonical reorder changes it by ≤ 2%), against 0 for the raw
+circuit at any cut; stages 4 and 5 do not close it, and the refinement
+re-scans each exposure-aware cut (`docs/notes/stubborn_windows_20261012.md`,
+`docs/notes/stage45_revival_20261011.md`).
 
 ## 3. Established facts (all measured on the TDP run, reference =
 stage-2 circuit, full-resolution cuts, function checks 256/256)
@@ -204,7 +226,9 @@ relying on the packer's reorder to rediscover locality.
   (judged by text metrics, per the stage-3 ledger).
 - **Stage 6, delivery (window packing, then unpacking with lattice
   refinement)**: cut deletion — where anything is
-  observable at all; plus canonical within-window respelling.
+  observable at all; plus canonical within-window respelling (the ANF
+  artifact); for the published circuit, the re-spelling of every window
+  from its function alone.
 - **Ends (sandwich/slicing)**: exposure complexity of survivors (the
   t\*-spectrum belongs to the ends; unchanged by this program).
 
@@ -243,7 +267,8 @@ carrier migration (preset L8). The original plan:
 - Mask strength: upgrade prototype masks to chained band carriers;
   quantify against the approximate/nonlinear-predictor flank (open
   thread #1 of the exposure program).
-- Boundary randomization policy (boundaries are new visible structure).
+- Boundary randomization policy (boundaries are new visible structure in
+  the ANF artifact).
 - Window width vs re-synthesis — decided 2026-10-12: every window is
   resynthesized by the unpacking sub-step of stage 6, and a window that
   does not resynthesize is cut in two and repacked

@@ -25,21 +25,31 @@ specification:
 > reorders the gates in the canonical order (per commuting gates), and
 > outputs.
 
-Stage 7 is what a recipient of the deliverable does to obtain a circuit again.
-Its output `unpacked.mpmct1` computes exactly the deliverable's function (the
-same state width, inputs on wires `0..n`, the answer on `n..2n` on the zero
-slice); its gate order carries no window boundary.
+Stage 7 turns the packer's windowed ANF form back into a circuit. In the
+default mode it runs inside the pipeline and its output is the published
+object; under `delivery.anf_only` the recipient of the ANF deliverable
+performs it. Its output `unpacked.mpmct1` computes exactly the deliverable's
+function (the same state width, inputs on wires `0..n`, the answer on `n..2n`
+on the zero slice); its gate order carries no window boundary.
 
-A recipient, or an adversary, holds exactly the shipped file: the lattice of
-windows and, for each window, the ANF of the permutation it applies. Nothing
-else ships: not C, not the circuits of stages 1-5, not the packed gates
-`rep<G>.mpmct1`, not the resynthesized circuit. From the ANFs the holder can
-derive the wire state at every window boundary on inputs of its choice, compose
-adjacent windows and resynthesize any window into a circuit of its own; it
-cannot see how the function was spelled inside a window
-(`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief"). `unpacked.mpmct1`
-is such a resynthesis, made in the secret-holding environment as a check of the
-deliverable, and is private.
+What ships is `unpacked.mpmct1`: a circuit, nothing else. A recipient, or an
+adversary, holds the canonical-order concatenation of the resynthesized
+windows. It does not hold the lattice or the window ANFs (`deliverable.tdp4`
+is an internal record of the windowed form the circuit was resynthesized from,
+kept for auditing and parity), nor C, the circuits of stages 1-5 or the packed
+gates `rep<G>.mpmct1`. It can cut the circuit anywhere, compute the function
+of any segment, compose segments and resynthesize them into circuits of its
+own; it does not see how a window was spelled before resynthesis: the packer's
+spelling is gone and the spelling it holds is the synthesizer's (the
+separation guarantee of §2). Measured: at n = 64 the unpacked circuit exposes
+5 of 936 interior C values at its own cuts (the raw packed circuit 0), and
+uniform W=2000 re-cutting and resynthesis of the crossing output recovers 244
+of 936 (`docs/notes/stubborn_windows_20261012.md`; `docs/DELIVERY_STAGE.md`
+§2). Under `delivery.anf_only` the published object is `packing/deliverable.tdp4`
+and the older framing applies: the holder has the lattice and, for each
+window, the ANF of the permutation it applies, derives from them the wire
+state at every window boundary on inputs of its choice, and a window has no
+interior cuts (`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief").
 
 ## 2. Algorithm
 
@@ -142,9 +152,9 @@ run are removed first)
 
 | file | content |
 |---|---|
-| `unpacked.mpmct1` | the canonical circuit; header wire count = the deliverable's state width; `mpmct1` text (`t comp k c p ...`) |
+| `unpacked.mpmct1` | the canonical circuit (the shipped file in the default mode); header wire count = the deliverable's state width; `mpmct1` text (`t comp k c p ...`) |
 | `windows.tsv` | one row per window: the `anf_synth` contract columns `idx orig_lo orig_hi orig_gates syn_gates changed_wires input_vars monomials max_degree status seconds syn_offset` (`orig_*` = −1 without `--packed`; `syn_offset` = the window's offset in the concatenation **before** canonical reordering), then `synth_status pre_postopt_gates steps note tag_greedy … tag_back universe width exact_budget restarts_used deadline_hit` |
-| `unpacking.report` | `key=value`, publishable: no seed value, no hash of a private input (only the public deliverable's xxh3); windows / synthesized / fallback / deadline_hits / verify_fail / exact_overflow, `gates_in` (sum of the packed windows, `unknown` without `--packed`), `gates_out`, `gates_pre_postopt`, `gates_canonical`, `ratio`, gates by move type, seconds quantiles, restarts used, every check's result, `time.*`, `status=ok\|fallback_used` |
+| `unpacking.report` | `key=value`; counts and parameters only (no seed value, no hash of a secret input; the deliverable is identified by its xxh3), an internal record that is not part of the TDP; windows / synthesized / fallback / deadline_hits / verify_fail / exact_overflow, `gates_in` (sum of the packed windows, `unknown` without `--packed`), `gates_out`, `gates_pre_postopt`, `gates_canonical`, `ratio`, gates by move type, seconds quantiles, restarts used, every check's result, `time.*`, `status=ok\|fallback_used` |
 | `unpacking.log` | the progress lines (every 50th window and every fallback) and the summary line, also printed on stdout |
 
 ## 5. Checks (any failure is exit 4; nothing is renamed)
@@ -284,8 +294,9 @@ The loop of `docs/DELIVERY_STAGE.md` §2, in process:
 Outputs (in `--out-dir`; stale ones of an earlier run removed first): per round
 `bounds.<r>` and `deliverable.<r>.tdp4` (round 0 = the inputs, re-encoded), then,
 via `*.tmp` after every check passed: `deliverable.tdp4` + `bounds.final` (the
-refined lattice), `unpacked.mpmct1` (every window's gates in final-lattice order,
-canonical order), `windows.tsv` (columns `idx lo hi round orig_gates syn_gates status
+refined lattice: the refined deliverable, an internal record), `unpacked.mpmct1`
+(every window's gates in final-lattice order, canonical order: the shipped
+circuit), `windows.tsv` (columns `idx lo hi round orig_gates syn_gates status
 synth_status seconds monomials changed_wires input_vars max_degree` first — a
 verbatim row has round −1, status `verbatim`, the reason as `synth_status`, zeros —
 then the §4 columns from `syn_offset` on), `rounds.tsv` (`round pending converged

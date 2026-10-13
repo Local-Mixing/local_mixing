@@ -30,20 +30,34 @@ list: `docs/local_mixing_history.md`.
 
 ## 2. What the adversary sees, and what we measure
 
-The adversary holds exactly the shipped file: the refined lattice of windows
-and, for each window, the ANF of the permutation it applies. Nothing else
-ships: not C, not the sandwich or the masked circuit of stages 1-2, not the
-mixed, split or crossed circuits of stages 3-5, not the packer's gate order,
-not the resynthesized circuit. From the ANFs the adversary can derive the
-wire state at every window boundary (on inputs of its choice), compose
-adjacent windows into wider ones, and resynthesize any window or merged
-window into a circuit of its own; it cannot see how the shipped function was
-spelled inside a window. The metrics below are the boundary metrics: they
-are computed at every cut of the **boundary lattice** of the final artifact
-(no cut sampling). The merged-window resynthesis adversary is measured
-separately: 244 of 936 interior C values at W=2000 on the n=64 crossing
-output (241 with 10× the time), 0 for the raw circuit at any cut; stages 4
-and 5 do not close it (`docs/notes/stubborn_windows_20261012.md`,
+This document measures the four-stage chain (`delivery.anf_only`), whose
+shipped file is the packer's deliverable: the lattice of windows and, for
+each window, the ANF of the permutation it applies. Nothing else ships
+there: not C, not the sandwich or the masked circuit of stages 1-2, not the
+mixed circuit of stage 3, not the packer's gate order. From the ANFs the
+adversary can derive the wire state at every window boundary (on inputs of
+its choice), compose adjacent windows into wider ones, and resynthesize any
+window or merged window into a circuit of its own; it cannot see how the
+shipped function was spelled inside a window. The metrics below are the
+boundary metrics: they are computed at every cut of the **boundary lattice**
+of that artifact (no cut sampling).
+
+In the default six-stage pipeline the published object is instead the
+circuit `unpacking/unpacked.mpmct1`, the canonical-order concatenation of
+the windows resynthesized by the unpacking sub-step; the adversary holds that
+circuit and nothing else (not the lattice, not the ANFs, not the circuits of
+stages 1-5, not the packer's gate order), can cut it anywhere, compute the
+function of any segment, compose segments and resynthesize them, and never
+sees how a window was spelled before resynthesis. The boundary metrics then
+describe the internal refined deliverable rather than the published object;
+that adversary is measured by the all-cuts C-view census of the
+resynthesized circuit (at n=64 the unpacked circuit, resynthesized at the
+delivered lattice, exposes 5 of 936 interior C values at its own cuts; the
+raw packed circuit 0) and by uniform re-cut-and-resynthesize experiments,
+which never use the delivered lattice: 244 of 936 interior C values at
+W=2000 on the n=64 crossing output (241 with 10× the time; canonical
+reorder changes it by ≤ 2%), 0 for the raw circuit at any cut; stages 4 and
+5 do not close it (`docs/notes/stubborn_windows_20261012.md`,
 `docs/notes/stage45_revival_20261011.md`).
 
 **C-view (hiding C).** For every value computed by a gate of C, the smallest

@@ -57,26 +57,37 @@ Outputs (in the stage directory):
 
 | file | content |
 |---|---|
-| `deliverable.tdp4` | D_final, the container on the refined lattice: **the shipped file**; `bounds.final` its bounds (one cut per line; private) |
-| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the `tdp_unpacking` canonical order); header = state width. The circuit a recipient obtains from the deliverable; private |
+| `deliverable.tdp4` | D_final, the container on the refined lattice (the refined deliverable): the windowed ANF form the circuit was resynthesized from, an internal record kept for auditing and parity, not published; `bounds.final` its bounds (one cut per line; secret intermediate) |
+| `unpacked.mpmct1` | concatenation of every window's converged gates in lattice order, then `xgate_canonicalize` (the `tdp_unpacking` canonical order); header = state width. **The shipped file**: the circuit is the published object of the pipeline (the TDP) |
 | `windows.tsv` | one row per window of the final lattice: `idx lo hi round orig_gates syn_gates status synth_status seconds monomials changed_wires input_vars max_degree` |
 | `rounds.tsv` | per round: pending, converged, failed, split, seconds (header `round pending converged failed split seconds`). Unclean cuts are not a column: the per-round count is in the log's round line and the total is `unclean_cuts` in the report |
 | `delivery.report` (Python) / `unpacking.report` (Rust: the `tdp_unpacking` report keys of `docs/STAGE7_UNPACKING.md` §4 plus these) | `key=value`: `rounds`, `windows_initial`, `windows_final`, `splits`, `unclean_cuts`, `over_budget`, `verbatim`, `gates_packed` (Rust: `gates_in`), `gates_out`, `ratio`, every check, `status=ok|verbatim_used` |
 
 With `anf_only` the stage stops after D_0 (= the packer's deliverable, `packing/deliverable.tdp4`, then the
-stage's output; with `run.skip_stages = [4, 5]` this is the validated four-stage chain) and writes no circuit.
+stage's output and the published object, which the recipient unpacks; with `run.skip_stages = [4, 5]` this is
+the validated four-stage chain) and writes no circuit.
 
-What ships is `deliverable.tdp4` alone. The adversary holds exactly that file, the refined lattice of windows
-and, for each window, the ANF of the permutation it applies, and nothing else: not C, not the circuits of
-stages 1-5, not `rep<G>.mpmct1` or the packer's gate order, not `unpacked.mpmct1`. From the ANFs it can derive
-the wire state at every window boundary on inputs of its choice, compose adjacent windows into wider ones and
-resynthesize any window or merged window into a circuit of its own; it cannot see how the shipped function
-was spelled inside a window (`docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief"). Measured: merging and
-resynthesizing uniform W=2000 windows of the n=64 crossing output recovers 244 of 936 interior C values (241
-with a 10× time budget), while the raw circuit exposes none at any cut, and stages 4 and 5 do not close this
-leak; that is why every cut this loop adds is exposure-aware and re-scanned (`check.new_cuts`, §4;
-`docs/notes/stubborn_windows_20261012.md`, `docs/notes/stage45_revival_20261011.md`). The reports
-`delivery.report` / `unpacking.report` hold counts and parameters only and may be published.
+What ships is `unpacked.mpmct1` alone: the circuit, the canonical-order concatenation of the resynthesized
+windows. The adversary holds exactly that circuit and nothing else: not C, not the circuits of stages 1-5, not
+`rep<G>.mpmct1` or the packer's gate order, not the lattice (`bounds.final`) and not the window ANFs
+(`deliverable.tdp4`, the internal record of the windowed form the circuit was resynthesized from). It can cut
+the circuit anywhere, compute the function of any segment, compose segments and resynthesize them into circuits
+of its own; what it never sees is how a window was spelled before resynthesis: the packer's (and the mixer's)
+spelling is gone, every window was re-spelled from its function alone (the synthesizer's separation guarantee,
+`docs/STAGE7_UNPACKING.md` §2), and the spelling it holds is the synthesizer's, whose gates are interior cuts
+of the window. The measurements that model this adversary are the all-cuts C-view census of the resynthesized
+circuit (at n=64 the unpacked circuit exposes 5 of 936 interior C values at its own cuts, the raw packed
+circuit 0) and the uniform re-cut-and-resynthesize experiments, which re-cut the circuit uniformly and never
+use the delivered lattice: merging and resynthesizing uniform W=2000 windows of the n=64 crossing output
+recovers 244 of 936 interior C values (241 with a 10× time budget; canonical reorder changes the count by
+≤ 2%), while the raw circuit exposes none at any cut, and stages 4 and 5 do not close this leak; that is why
+every cut this loop adds is exposure-aware and re-scanned (`check.new_cuts`, §4;
+`docs/notes/stubborn_windows_20261012.md`, `docs/notes/stage45_revival_20261011.md`). Under `anf_only` the
+published object is the window ANFs on the packer's lattice and the older framing applies: the adversary holds
+the lattice and, for each window, the ANF of the permutation it applies, derives from them the wire state at
+every window boundary on inputs of its choice, and a window has no interior cuts (the four-stage pipeline's
+threat model; `docs/TDP_PIPELINE_REFERENCE.md`, "Threat model in brief"). The reports `delivery.report` /
+`unpacking.report` hold counts and parameters only; they are internal records, not part of the TDP.
 
 Checks before the outputs are committed (any failure is fatal, nothing renamed):
 
@@ -91,7 +102,7 @@ Parameters (`[delivery]` in the config; CLI of the binaries in §4):
 
 | key | default | meaning |
 |---|---|---|
-| `anf_only` | false | stop after the packer's deliverable |
+| `anf_only` | false | stop after the packer's deliverable, which is then the published object (no circuit is written; the recipient does the unpacking) |
 | `time_limit` | 30 | seconds per window per round |
 | `restarts` | 16 | synthesizer restarts; "less optimized" = fewer restarts, e.g. 2 |
 | `beam` | 6 | |
@@ -127,7 +138,8 @@ canon` or the Python fallback), (5) runs the checks. It is the oracle for the Ru
   re-emission (`packing::serialize::encode_window` of the packer's `window_anf` emission, spliced
   into the container with window count, body bytes and CRCs recomputed), assembly, canonical
   order, checks, outputs as in §2. Per round it writes `bounds.<r>` and `deliverable.<r>.tdp4`
-  (round 0 = the inputs), at the end `deliverable.tdp4`, `bounds.final`, `unpacked.mpmct1`,
+  (round 0 = the inputs), at the end `deliverable.tdp4` and `bounds.final` (the refined deliverable, an
+  internal record), `unpacked.mpmct1` (the shipped circuit),
   `windows.tsv`, `rounds.tsv`, `unpacking.log` and `unpacking.report` (the `tdp_unpacking` report of `docs/STAGE7_UNPACKING.md` §4 with
   `refine=1 rounds windows_initial windows_final splits unclean_cuts over_budget verbatim` and
   `status=ok|verbatim_used`). A pending window is synthesized with its index in the current
