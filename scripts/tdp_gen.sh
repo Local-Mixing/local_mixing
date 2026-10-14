@@ -25,11 +25,12 @@
 #        window resynthesized from its ANF alone, a window that does not
 #        resynthesize cut in two and both halves repacked and unpacked (up to
 #        --delivery-max-rounds rounds), the result concatenated and
-#        canonically reordered -> unpacking/deliverable.tdp4 (THE SHIPPED
-#        FILE: the refined lattice of windows, each as the ANF of the
-#        permutation it applies; nothing else ships) + unpacking/unpacked.mpmct1
-#        (private). --delivery-anf-only ends the stage after the packer's
-#        deliverable.
+#        canonically reordered -> unpacking/unpacked.mpmct1 (THE PUBLISHED
+#        CIRCUIT, the TDP; nothing else leaves the run) + unpacking/
+#        deliverable.tdp4 (internal: the refined lattice of windows as ANFs,
+#        what the circuit was resynthesized from). --delivery-anf-only ends
+#        the stage after the packer's deliverable, which is then the published
+#        object and is unpacked by the recipient.
 #
 # DEFAULTS of stages 1-3 and the packer reproduce scripts/windowed_delivery/
 # waist/val_chain.sh CONFIG=L8 as run for the chosen validation runs vL64a/b,
