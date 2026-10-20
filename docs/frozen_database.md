@@ -285,3 +285,51 @@ offline work; compiling the tools alone does not produce the database.
 | [`db_gen/regular.rs`](../db_gen/regular.rs) | Regular generation, merging, and LMDB export. |
 | [`db_gen/frozen_build.rs`](../db_gen/frozen_build.rs) | Shared frozen writer and source comparison. |
 | [`db_gen/bin/frozen_filters_build.rs`](../db_gen/bin/frozen_filters_build.rs) | Building and validating filters from frozen keys. |
+
+## Hashes of the current database (as of 2026-10-20)
+
+To verify the integrity of the downloaded database, check their MD5 (provided by the object storage server). The expected hashes are in [`hashes-frozen-db.csv`](hashes-frozen-db.csv).
+
+```powershell
+cd path-to-hashes;
+$expected = @{};
+Get-Content 'hashes-frozen-db.csv' -Encoding UTF8 |
+  ConvertFrom-Csv | ForEach-Object {
+    $expected[$_.Name] = $_.Hash;
+};
+
+cd path-to/frozen_m1_m11;
+$acquired = Get-ChildItem * -File | Get-FileHash -Algorithm MD5;
+# ^^^ This takes a long time.
+
+$mismatches = $acquired | ForEach-Object {
+  $path = 'frozen_m1_m11/' + (Split-Path ($_.Path) -Leaf);
+  $actual = $_.Hash;
+  If ($expected[$path] -ne $actual)
+  {
+    [pscustomobject]@{
+      'Path' = $path;
+      'Expected' = $expected[$path];
+      'Actual' = $actual
+    };
+  }
+};
+If ($mismatches.Count -ne 0)
+{
+  Write-Warning "There are hash mismatches.`n$($mismatches | Format-Table | Out-String)";
+}
+```
+
+Interestingly, `filters.bin` has 3 disagreeing hashes:
+
+- The web portal shows `"8d1a904a04c05e30f30303e03b4f9d89"` (with quotes!). This is also what `openstack object show frozen-db-container frozen_m1_m11/filters.bin` returns.
+- The API below returns `d41d8cd98f00b204e9800998ecf8427e` (it also returns incorrect length, perhaps metadata length?).
+- The downloaded file is `523ecdc7fe757bef4fe8b0192e374055` (I downloaded it twice).
+
+The expected hashes are acquired as follows:
+
+```powershell
+$container = 'frozen-db-container';
+$data = openstack object list --format json --long --all $container | ConvertFrom-Json;
+$data | Select-Object Name, Hash | ConvertTo-Csv -NoTypeInformation | Set-Content 'hashes-frozen-db.csv';
+```
