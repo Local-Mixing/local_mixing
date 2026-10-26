@@ -113,3 +113,26 @@ fn drift_window_parses_like_the_historical_inline_reader() {
         assert!((0..100).all(|gi| !(gi >= lo && gi < hi)), "{bad}");
     }
 }
+
+#[test]
+fn source_construction_env_defaults_to_random_and_rejects_unknown_values() {
+    // TDP_SOURCE_CONSTRUCTION: unset or `random` -> Random, `balanced` ->
+    // Balanced, anything else (including empty) is an error naming the
+    // variable.
+    assert_eq!(
+        parse_source_construction(None).unwrap(),
+        SourceConstruction::Random
+    );
+    assert_eq!(
+        parse_source_construction(Some("random")).unwrap(),
+        SourceConstruction::Random
+    );
+    assert_eq!(
+        parse_source_construction(Some("balanced")).unwrap(),
+        SourceConstruction::Balanced
+    );
+    for bad in ["", "Balanced", "RANDOM", "uniform", " balanced"] {
+        let e = parse_source_construction(Some(bad)).unwrap_err();
+        assert!(e.contains("TDP_SOURCE_CONSTRUCTION"), "{bad:?}: {e}");
+    }
+}

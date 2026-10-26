@@ -73,3 +73,79 @@ fn getrandbit_is_top_bit() {
     let tops: Vec<bool> = (0..8).map(|_| r.genrand_u32() >> 31 == 1).collect();
     assert_eq!(bits, tops);
 }
+
+#[test]
+fn cpython_float_and_choice_primitives_golden() {
+    // random(), _randbelow(n), choice(range(64)), randrange(2) and
+    // choices(population, weights=...) recorded with CPython 3.9.6 (the
+    // draw sequences of these methods are unchanged through 3.12). Seed
+    // 20261020091 keys the generator with two 32-bit words; the first
+    // getrandbits(32) words pin that seeding.
+    struct Golden {
+        seed: u64,
+        words: [u32; 4],
+        random: [f64; 3],
+        randbelow: [u64; 7],
+        choice64: [usize; 6],
+        randrange2: [usize; 16],
+        choices: [u32; 12],
+        uniform: [u32; 12],
+    }
+    const RANDBELOW_ARGS: [u64; 7] = [2, 7, 64, 1000, 100_000, 1, 4_294_967_297];
+    for g in [
+        Golden {
+            seed: 5,
+            words: [2_675_342_405, 1_097_127_993, 3_185_950_873, 1_539_898_300],
+            random: [0.6229016948897019, 0.7417869892607294, 0.7951935655656966],
+            randbelow: [1, 5, 45, 814, 90_498, 0, 3_609_267_711],
+            choice64: [32, 45, 3, 59, 31, 6],
+            randrange2: [1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0],
+            choices: [10, 20, 20, 40, 20, 40, 10, 10, 40, 10, 40, 10],
+            uniform: [1, 2, 2, 2, 2, 2, 0, 1, 2, 1, 2, 0],
+        },
+        Golden {
+            seed: 20_261_020_091,
+            words: [1_625_566_369, 1_683_346_776, 1_917_009_253, 3_057_331_068],
+            random: [0.37848166668366423, 0.44633850240588446, 0.7409618758812494],
+            randbelow: [1, 3, 57, 728, 97_119, 0, 2_912_959_170],
+            choice64: [48, 50, 57, 37, 54, 59],
+            randrange2: [1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1],
+            choices: [10, 10, 20, 10, 20, 10, 40, 10, 20, 10, 10, 20],
+            uniform: [1, 1, 2, 0, 2, 1, 2, 0, 2, 1, 1, 2],
+        },
+    ] {
+        let seed = g.seed;
+        let mut r = PyRandom::new(seed);
+        let words: Vec<u32> = (0..4).map(|_| r.getrandbits_u64(32) as u32).collect();
+        assert_eq!(words, g.words, "seed {seed}: getrandbits(32)");
+
+        let mut r = PyRandom::new(seed);
+        let random: Vec<f64> = (0..3).map(|_| r.random()).collect();
+        assert_eq!(random, g.random, "seed {seed}: random()");
+
+        let mut r = PyRandom::new(seed);
+        let randbelow: Vec<u64> = RANDBELOW_ARGS.iter().map(|&n| r.randbelow(n)).collect();
+        assert_eq!(randbelow, g.randbelow, "seed {seed}: _randbelow");
+
+        let mut r = PyRandom::new(seed);
+        let population: Vec<usize> = (0..64).collect();
+        let choice: Vec<usize> = (0..6).map(|_| r.choice(&population)).collect();
+        assert_eq!(choice, g.choice64, "seed {seed}: choice");
+
+        let mut r = PyRandom::new(seed);
+        let randrange: Vec<usize> = (0..16).map(|_| r.randrange(2)).collect();
+        assert_eq!(randrange, g.randrange2, "seed {seed}: randrange(2)");
+
+        let mut r = PyRandom::new(seed);
+        let choices: Vec<u32> = (0..12)
+            .map(|_| r.choices_one(&[10, 20, 30, 40], &[100, 20, 1, 20]))
+            .collect();
+        assert_eq!(choices, g.choices, "seed {seed}: choices(weights)");
+
+        let mut r = PyRandom::new(seed);
+        let uniform: Vec<u32> = (0..12)
+            .map(|_| r.choices_one(&[0, 1, 2], &[1, 1, 1]))
+            .collect();
+        assert_eq!(uniform, g.uniform, "seed {seed}: choices(uniform weights)");
+    }
+}

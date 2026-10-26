@@ -3,7 +3,7 @@ use crate::stages::preprocessing::embedded_masking::{
     EmbeddedMaskingExecution, EmbeddedMaskingParams,
 };
 use crate::stages::preprocessing::verify::verify_payload;
-use crate::stages::sandwich::{construct_seeded_sandwich, prepare_source};
+use crate::stages::sandwich::{SourceConstruction, construct_seeded_sandwich, prepare_source};
 use rand::{SeedableRng, rngs::StdRng};
 
 // Stable structural digest of seeded CLI mpmct1 artifacts. Every
@@ -38,7 +38,7 @@ fn managed_and_raw_presets_preserve_seeded_generator_artifacts() {
         (SandwichVariant::Classic, true, 0xfa07015544e3de02),
         (SandwichVariant::Balanced, false, 0xcc27675ed50a51d6),
     ] {
-        let source = prepare_source(6, 3, 41, None).unwrap();
+        let source = prepare_source(6, 3, 41, None, SourceConstruction::Random).unwrap();
         let sandwich = construct_seeded_sandwich(&source, 6, 3, 6, variant, 47);
         let options = PreprocessingParams::EmbeddedMasking {
             params: if band_only {
@@ -72,7 +72,7 @@ fn managed_and_raw_presets_preserve_seeded_generator_artifacts() {
 
 #[test]
 fn nonlinear_sandwich_preserves_all_logical_outputs_without_a_reverse_port_contract() {
-    let source = prepare_source(6, 3, 41, None).unwrap();
+    let source = prepare_source(6, 3, 41, None, SourceConstruction::Random).unwrap();
     let sandwich = construct_seeded_sandwich(&source, 6, 3, 6, SandwichVariant::Classic, 47);
     let mut rng = StdRng::seed_from_u64(43 ^ 0x6AD6_E75E);
     let output = preprocess_sandwich(
@@ -114,7 +114,7 @@ fn managed_preprocessing_shuffling_preserves_classic_and_balanced_ports() {
     let n = 6;
     for seed in [43, 53] {
         for variant in [SandwichVariant::Classic, SandwichVariant::Balanced] {
-            let source = prepare_source(n, 3, 41, None).unwrap();
+            let source = prepare_source(n, 3, 41, None, SourceConstruction::Random).unwrap();
             let sandwich = construct_seeded_sandwich(&source, n, 3, 6, variant, 47);
             let make_output = |segments, return_home| {
                 let options = PreprocessingParams::EmbeddedMasking {
@@ -208,7 +208,7 @@ fn managed_preprocessing_shuffling_preserves_classic_and_balanced_ports() {
 
 #[test]
 fn managed_preprocessing_accepts_persistent_migration() {
-    let source = prepare_source(6, 3, 41, None).unwrap();
+    let source = prepare_source(6, 3, 41, None, SourceConstruction::Random).unwrap();
     let sandwich = construct_seeded_sandwich(&source, 6, 3, 6, SandwichVariant::Classic, 47);
     let options = PreprocessingParams::EmbeddedMasking {
         params: EmbeddedMaskingParams {

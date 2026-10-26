@@ -59,17 +59,64 @@ pub fn sandwich_default_m(n: usize) -> usize {
     ((n as f64) * l * l).round().max(n as f64) as usize
 }
 
+/// How stage 1 draws the secret source circuit C when none is supplied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SourceConstruction {
+    /// `m` uniformly random g57 gates ([`crate::circuit::random_circuit`])
+    /// from the fastrand stream seeded with the source seed.
+    #[default]
+    Random,
+    /// RC's balanced C ([`super::balanced_source`]): every completed internal
+    /// value is read exactly twice as a control, no value more than twice,
+    /// and targets always have the minimum write count; drawn from a
+    /// CPython-exact `random.Random(seed)` stream.
+    Balanced,
+}
+
+impl SourceConstruction {
+    /// Parse the configuration spelling.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "random" => Some(Self::Random),
+            "balanced" => Some(Self::Balanced),
+            _ => None,
+        }
+    }
+
+    /// The canonical spelling, for logs and provenance lines.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Random => "random",
+            Self::Balanced => "balanced",
+        }
+    }
+
+    pub fn is_balanced(self) -> bool {
+        self == Self::Balanced
+    }
+}
+
 /// Resolve a generated or supplied G57 source before building the sandwich.
-/// Reseeding even for supplied sources preserves historical RNG behavior.
+///
+/// The fastrand stream is reseeded first on EVERY path (historical behavior,
+/// kept so the random path stays byte-identical): the random construction
+/// then draws C from it, while a supplied source and the balanced
+/// construction leave it freshly seeded and unconsumed — the balanced
+/// builder draws from its own CPython-exact stream keyed by the same `seed`.
+/// A supplied source cannot be combined with the balanced construction.
 pub fn prepare_source(
     n: usize,
     gate_count: usize,
     seed: u64,
     supplied: Option<CircuitSeq>,
+    construction: SourceConstruction,
 ) -> Result<CircuitSeq, String> {
     fastrand::seed(seed);
-    match supplied {
-        Some(source) => {
+    match (supplied, construction) {
+        (Some(_), SourceConstruction::Balanced) => {
+            Err("source.path and the balanced construction are exclusive".into())
+        }
+        (Some(source), SourceConstruction::Random) => {
             if source.gates.is_empty() {
                 return Err("decoded to an empty circuit".into());
             }
@@ -85,7 +132,8 @@ pub fn prepare_source(
             }
             Ok(source)
         }
-        None => Ok(crate::circuit::random_circuit(n, gate_count)),
+        (None, SourceConstruction::Random) => Ok(crate::circuit::random_circuit(n, gate_count)),
+        (None, SourceConstruction::Balanced) => super::balanced_source(n, gate_count, seed),
     }
 }
 
