@@ -5,26 +5,36 @@ of a circuit with equivalent ones, while preserving the function we want to
 compute. TDP is the current end-to-end pipeline. It has six stages: it
 constructs a sliced sandwich (1), applies preprocessing, i.e. gadgetization
 (2), mixes with the frozen database (3), splits the remaining complemented
-gates (4), runs the crossing walk (5), and delivers the result (6): packs it
-into a windowed ANF form, then unpacks it again by resynthesizing every
-window from its ANF, splitting and repacking any window that does not
-resynthesize, into one canonically ordered circuit, the published TDP
-(`docs/DELIVERY_STAGE.md`; the windowed form, the refined deliverable, is an
-internal record kept for auditing). Every stage after the first is optional.
+gates (4), runs the crossing walk (5), and delivers the result (6). Stage 6
+runs by default as the adaptive, C-aware resynthesis (`docs/ADAPTIVE_STAGE.md`):
+round after round the circuit is cut into large blocks whose boundaries avoid
+every cut at which an internal value of the secret circuit is recoverable,
+every block is resynthesized from its function alone, and the smaller,
+not-leakier candidates are kept until the size plateaus; the smallest round
+output in canonical gate order is the published TDP. The windowed delivery
+(`delivery.mode = "windowed"`: pack into ANF windows, unpack by
+resynthesizing every window, split and repack what does not resynthesize;
+`docs/DELIVERY_STAGE.md`) remains as the other mode. The source circuit is
+random or balanced (`source.construction`), and stage 2 is embedded masking
+or the three-mask compute (`preprocessing.mode = "three-mask"`,
+`docs/THREE_MASK_STAGE2.md`). Every stage after the first is optional.
 The `tdp_gen` driver runs all six by default and ends with
-`unpacking/unpacked.mpmct1` (the published circuit; `unpacking/deliverable.tdp4`
-is its internal ANF form); the defaults of
-stages 1-3 and the packer reproduce the chosen validation runs
+`adaptive/final.mpmct1` (the published circuit); the defaults of
+stages 1-3 and the windowed packer reproduce the chosen validation runs
 (`docs/STAGE4_RUST_DESIGN.md`; `run.skip_stages = [4, 5]` with
-`delivery.anf_only = true` is that four-stage chain). The packer is the Rust
-binary `tdp_packing`; the Python prototypes under
-[`scripts/windowed_delivery/`](scripts/windowed_delivery/) are its oracle.
-The unpacking sub-step is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`). The
-[TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the stages; the
-full reference for all six stages is
-[TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md). Everything
-described here is on `main` (2026-10-12); retired components and the
-earlier pipelines are recorded in
+`delivery.mode = "windowed"` and `delivery.anf_only = true` is that
+four-stage chain). The adaptive stage is the Rust binary `tdp_adaptive`;
+the packer is `tdp_packing`, whose Python prototypes under
+[`scripts/windowed_delivery/`](scripts/windowed_delivery/) are its oracle,
+and the unpacking sub-step is `tdp_unpacking` (`docs/STAGE7_UNPACKING.md`).
+The [TDP Pipeline](docs/tdp_pipeline.md) guide explains how to run the
+stages; a first-time reader starts with
+[PIPELINE_INTRODUCTION.md](docs/PIPELINE_INTRODUCTION.md); the full
+reference for all six stages is
+[TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md); what this
+release changed is in [PIPELINE_V2_CHANGES.md](docs/PIPELINE_V2_CHANGES.md).
+Everything described here is on `main` (2026-10-26); retired components and
+the earlier pipelines are recorded in
 [Local Mixing History](docs/local_mixing_history.md).
 
 ## Setup
@@ -72,8 +82,9 @@ cargo run --release --locked -- tdp_gen --config configs/local.toml
 ```
 
 The dry run resolves and validates the recipe without creating a run or
-starting the stages. A normal fresh run builds the four stage executables
-(`gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing`, `tdp_unpacking`),
+starting the stages. A normal fresh run builds the five stage executables
+(`gen_sandwich_gadget`, `circuit_mixer`, `tdp_adaptive`, `tdp_packing`,
+`tdp_unpacking`),
 plus `hmap_affine` (`--features security-tools`, a separate cargo build) for
 the report-only stage-2 span check, and writes a timestamped directory under
 `runs/`. Database files are separate
@@ -85,11 +96,13 @@ other wire counts need `source.gates` or `source.gates_rule = "formula"`,
 i.e. $\mathrm{round}(n\log_2(n)^2)$). In general $C$ may use any reversible
 gate with up to two controls (NOT, CNOT, Toffoli with either control
 polarity); the engine takes it in the g57 form (`a ^= x ∨ ¬y`, which
-expresses that class) through `source.path`, or generates a random $C$.
-What the pipeline then mixes is not $C$ itself but a specific circuit
-structure built around it: the sliced sandwich on $2n$ wires (stage 1) and
-the embedded-masking construction on $4n$ wires (stage 2). To supply your
-own $C$ in the g57 form, edit `[source]`:
+expresses that class) through `source.path`, or generates $C$: uniformly
+random, or RC's balanced construction (`source.construction = "balanced"`,
+every internal value read exactly twice). What the pipeline then mixes is
+not $C$ itself but a specific circuit structure built around it: the sliced
+sandwich on $2n$ wires (stage 1) and the masked construction on $4n$ wires
+(stage 2: embedded masking, or the three-mask compute). To supply your own
+$C$ in the g57 form, edit `[source]`:
 
 ```toml
 [source]
@@ -103,21 +116,32 @@ count. Without `source.path`, `source.gates` overrides the generated size.
 
 The settings we usually change are:
 
-- `preprocessing.preset`: `"L8"` (default; persistent carrier migration,
+- `source.construction`: `"random"` (default) or `"balanced"`.
+- `preprocessing.mode`: `"embedded-masking"` (default) with
+  `preprocessing.preset` `"L8"` (default; persistent carrier migration,
   premask, seed avoidance and bounded chains, the recommended configuration),
-  `"A"` (the same without chains) or `"custom"` (every knob explicit).
-  `preprocessing.mode = "nonlinear291"` is also supported, without a preset.
+  `"A"` (the same without chains) or `"custom"` (every knob explicit);
+  `"three-mask"` (the three-mask compute inside the L8 outer blocks, knobs
+  in `[three_mask]`, defaults = the campaign configuration "modified / v2");
+  or `"nonlinear291"`, without a preset.
 - `db_mixing.schedule`: `"validated"` (default; profile `2,2,2,2,2`) or
   `"custom"` with explicit growth, hold and size factor.
-- `[packing]`: the packing sub-step of stage 6; the defaults are the validated ones.
 - `[crossing]`: stage 5 (`target_size_factor` 2, `width_penalty_base` 3,
   `width_penalty_threshold` 1, `size_tolerance_divisor` 25,
   `move_budget_factor` 3 or `move_attempts`).
-- `[delivery]`: `anf_only` (stop after the packer's deliverable, which is then
-  the published object), `time_limit`
-  30 s, `restarts` 16, `beam` 6, `max_rounds` 16.
-- `run.skip_stages`: any of 2..6; `[4, 5]` with `delivery.anf_only = true` is
-  the validated four-stage chain.
+- `delivery.mode`: `"adaptive"` (default) or `"windowed"`.
+- `[adaptive]`: stage 6 in its adaptive mode: `max_rounds` 0 (until the
+  plateau), `stop_fraction` 0.02, `seeds_per_block` 2, `time_limit` 60 s per
+  block (scaled by block size), `restarts` 16, `beam` 6, `term_cap` 131072,
+  `max_block_gates` 65536, `segments` 16, `avoid_radius` 64,
+  `refinement_levels` 2, `min_refine_gates` 128, `census_batches` 96,
+  `accept` `"smaller-not-leakier"`, `canonical_order` true.
+- `[packing]` and `[delivery]` (windowed mode only): the packing sub-step's
+  validated defaults; `anf_only` (stop after the packer's deliverable, which
+  is then the published object), `time_limit` 30 s, `restarts` 16, `beam` 6,
+  `max_rounds` 16.
+- `run.skip_stages`: any of 2..6; `[4, 5]` with `delivery.mode = "windowed"`
+  and `delivery.anf_only = true` is the validated four-stage chain.
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.
@@ -137,18 +161,20 @@ test without a database, clear the DB paths and set
 | 3. Database mixing | `db_mixing.mpmct1` |
 | 4. Splitting | `split.mpmct1`, `split.state` |
 | 5. Crossing | `crossing.mpmct1` |
-| 6. Delivery | `unpacking/unpacked.mpmct1` (**the published circuit**: the resynthesized windows, canonical order); internal: `packing/deliverable.tdp4` (the packer's lattice), `packing/packing.report` and the other intermediates in `packing/`, `unpacking/deliverable.tdp4` (the refined lattice, the ANF form the circuit was resynthesized from), `unpacking/unpacking.report`; under `delivery.anf_only` the stage ends at `packing/deliverable.tdp4`, which is then the published object |
+| 6. Delivery (adaptive, default) | `adaptive/final.mpmct1` (**the published circuit**: the smallest round output in canonical order); internal: `adaptive/round<r>/` (the censuses, partitions, candidates and output of every round), `adaptive/adaptive.report`, `adaptive/boundary.txt` |
+| 6. Delivery (windowed) | `unpacking/unpacked.mpmct1` (the published circuit in this mode: the resynthesized windows, canonical order); internal: `packing/deliverable.tdp4` (the packer's lattice), `packing/packing.report` and the other intermediates in `packing/`, `unpacking/deliverable.tdp4` (the refined lattice, the ANF form the circuit was resynthesized from), `unpacking/unpacking.report`; under `delivery.anf_only` the stage ends at `packing/deliverable.tdp4`, which is then the published object |
 
-Only the circuit `unpacking/unpacked.mpmct1` ships: the canonical-order
-concatenation of the resynthesized windows (under `delivery.anf_only`,
-`packing/deliverable.tdp4`, and the recipient does the unpacking). Nothing
-else ships (not $C$, not the stage-1 to stage-5 circuits, not the packer's
-gate order, not the window lattice or the window ANFs: the two
+Only the published circuit ships: `adaptive/final.mpmct1` (windowed mode:
+`unpacking/unpacked.mpmct1`, the canonical-order concatenation of the
+resynthesized windows; under `delivery.anf_only`, `packing/deliverable.tdp4`,
+and the recipient does the unpacking). Nothing else ships (not $C$, not the
+stage-1 to stage-5 circuits, not the rounds' censuses and partitions, not the
+packer's gate order, not the window lattice or the window ANFs: the two
 `deliverable.tdp4` are internal records kept for auditing and parity); the
-two reports hold only counts and parameters but are not part of the TDP, and
+reports hold only counts and parameters but are not part of the TDP, and
 every other file in the run directory is secret.
 `tdp_gen.log` records overall progress; `stage12.log`, `stage3.log`,
-`stage4.log`, `stage5.log` and `stage6.log` (both delivery sub-steps) hold
+`stage4.log`, `stage5.log` and `stage6.log` (stage 6, whichever mode) hold
 stage output. The
 [TDP Pipeline](docs/tdp_pipeline.md) explains these steps and where to find
 their code.
@@ -216,8 +242,9 @@ slice contract.
 [`src/programs/`](src/programs/) contains each stage executable's `main.rs`
 alongside its argument handling and artifact I/O. `gen_sandwich_gadget` runs
 stages 1-2, `circuit_mixer` stages 3 (DB mixing), 4 (splitting) and 5 (the
-crossing walk), `tdp_packing` and `tdp_unpacking` the two sub-steps of stage
-6; `tdp_gen` is the complete managed pipeline command.
+crossing walk), `tdp_adaptive` stage 6 in its adaptive mode, `tdp_packing`
+and `tdp_unpacking` the two sub-steps of its windowed mode; `tdp_gen` is the
+complete managed pipeline command.
 The benchmark launchers live directly under `benchmarks/`. Python's
 `__pycache__/` directories are generated locally and ignored by Git.
 [Polynomial Canonicalization](docs/polynomial_canonicalization.md) explains
