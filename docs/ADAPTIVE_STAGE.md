@@ -153,14 +153,41 @@ the resilience campaigns; the exposure is still measured). The binary reads
 no environment variables; the seed comes from `--seed-file` (the driver
 passes `/dev/fd/3`) and is never printed.
 
-Outputs in `--out-dir`: `boundary.txt`, `round<r>/` (`input_census/`,
-`partition/`, the candidates' censuses, `bounds.out`, `output.mpmct1`,
-`result.report`), `progress.txt`, `final.mpmct1`, `adaptive.report`,
-`adaptive.log`. `adaptive.report` is flat `key=value`: `status`, `rounds`,
-`stop_reason`, `input_gates`, `final_gates`, the per-round gate counts,
-blocks and picks, the final circuit's exposure (deeper and all-internal,
-direct and affine, discovery and validated) and every check. No seed, no
-hash of $C$ or of a secret intermediate appears in it.
+Outputs in `--out-dir`:
+
+```text
+boundary.txt                     C's birth classification (cached across runs)
+round<r>/input_census/           the round's input census (reloaded when its content stamp matches)
+round<r>/partition/              the plan: bounds, blocks.tsv, summary
+round<r>/synth0/, refine<L>/     per (seed slot, budget) synthesis rows (.tsv) and gates (.mpmct1 cache)
+round<r>/candidate_s<k>_census/  the census of seed k's candidate assembly (smaller-not-leakier)
+round<r>/output_census/          the census of the round's output
+round<r>/output.mpmct1           the round's output (non-final rounds pruned at the end unless --keep-round-circuits)
+round<r>/bounds.out              the output's interior block cuts, one per line
+round<r>/result.report           the round's completion record (a round with it is reloaded, never recomputed)
+progress.txt                     per-round gate counts and deeper births, rewritten after every round
+final_census/                    the census of the published circuit
+final.mpmct1                     the published circuit
+adaptive.report                  the completion record
+adaptive.log                     every progress line, appended across resumes
+```
+
+`adaptive.report` is flat `key=value`: `adaptive_report=1`, `status`,
+`tool`, the input paths and `n`, `width`, `input_gates`, `final_gates`,
+`final_round` (a round number, or `input` when no round shrank), `rounds`,
+`stop_reason`, `plateau`, every parameter as `param.<name>`
+(`seed_source` names where the seed came from, never its value),
+`boundary.{internal,excluded,deeper}`, per round
+`round.<r>.{input_gates,output_gates,blocks,initial_blocks,synthesized_blocks,picks_orig,picks_seed,rejected_leakier,rejected_growing,deeper_affine,deeper_direct,reloaded,seconds}`,
+the leakage of the stage input and of the published circuit
+(`stage5_leakage.*`, `final_leakage.*`:
+`{discovery,validated}.{direct,affine}.{all_internal_births,deeper_births,cut_exposure_fraction}`
+and `audit_passed`), the checks `check.equiv_canonical`,
+`check.zero_slice`, `check.payload_contract` (`ok(N)` or `skipped`) and
+`seconds`. `round<r>/result.report` holds the same per-round keys in full
+(`refinement.<L>.*`, `picks.*`, `coverage.*`, `leakage_in.*`,
+`leakage_out.*`, `equivalence_samples`, `output_boundaries`). No seed, no
+hash of $C$ or of a secret intermediate appears in any report.
 
 Exit codes (the driver prints them with their meaning and `step=adaptive`
 in `delivery.failed`): 0 finished, 2 usage or parameter error, 3 input
