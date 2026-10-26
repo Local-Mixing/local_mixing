@@ -211,3 +211,35 @@ fn params_validate() {
     };
     assert!(p.validate().is_err());
 }
+
+#[test]
+fn compose_time_limit_is_separate_from_the_synth_budget() {
+    let mut rng = Rng::new(21);
+    let block = random_block(10, 40, 8, &mut rng);
+    // a vanishing synthesizer budget never makes the COMPOSITION time out:
+    // the composition runs under params.compose_time_limit (300 s)
+    let r = synthesize_block(&block, 10, &quick(1), 0.001, 1, 0);
+    assert_ne!(r.synth_status, "compose_timeout");
+    assert!(r.monomials > 0, "the block was composed");
+    // and the synthesizer's own budget is the block budget
+    let r = synthesize_block(&block, 10, &quick(1), 60.0, 1, 0);
+    assert_eq!(r.status, BlockStatus::Ok, "{} {}", r.synth_status, r.note);
+    let p = BlockParams {
+        compose_time_limit: 0.0,
+        ..Default::default()
+    };
+    assert!(p.validate().is_err());
+    assert_eq!(
+        BlockParams::default().compose_time_limit,
+        DEFAULT_COMPOSE_TIME_LIMIT
+    );
+}
+
+#[test]
+fn crashed_block_is_a_failure_kept_verbatim() {
+    let r = BlockResult::crashed();
+    assert_eq!(r.status, BlockStatus::Failed("crash"));
+    assert_eq!(r.synth_status, "crash");
+    assert!(r.gates.is_none());
+    assert!(r.note.contains("panicked"));
+}

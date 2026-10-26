@@ -432,3 +432,87 @@ fn reload_round_needs_no_circuit() {
     assert_eq!(reload_round(&dir, 4, 11, &log).unwrap_err().exit_code(), 3);
     let _ = fs::remove_dir_all(dir);
 }
+
+/// A tiny circuit over 8 wires whose source C lives on wires 0..4.
+fn tiny_circuit() -> Vec<XGate> {
+    (0..12)
+        .map(|i| XGate::cnot(4 + (i % 4) as u16, (i % 3) as u16))
+        .collect()
+}
+
+#[test]
+fn plan_reload_needs_a_complete_plan() {
+    let dir = scratch();
+    let params = RoundParams::default();
+    let source = sample_source();
+    let ctx = RoundContext {
+        source: &source,
+        width: 8,
+        stage_seed: 1,
+        params: &params,
+    };
+    let input = tiny_circuit();
+    let pdir = dir.join("partition");
+    fs::create_dir_all(&pdir).unwrap();
+    // `bounds` alone (a kill before summary.txt) is not a reusable plan
+    write_text_atomic(&pdir.join("bounds"), "5\n").unwrap();
+    let lines = std::sync::Mutex::new(Vec::<String>::new());
+    let log = |s: &str| lines.lock().unwrap().push(s.to_string());
+    let empty = Census::empty(input.len(), 8);
+    let b = load_or_plan(&ctx, &input, &empty, &[], &pdir, &log).unwrap();
+    assert!(
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|l| !l.contains("reloaded"))
+    );
+    assert!(pdir.join("summary.txt").is_file() && pdir.join("blocks.tsv").is_file());
+    assert_eq!(planner::read_bounds(&pdir.join("bounds")).unwrap(), b);
+    // now complete: reloaded
+    let b2 = load_or_plan(&ctx, &input, &empty, &[], &pdir, &log).unwrap();
+    assert_eq!(b2, b);
+    assert!(
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("plan reloaded"))
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn candidate_census_is_discovery_only_and_stamped() {
+    let dir = scratch();
+    let params = RoundParams {
+        census_batches: 4,
+        ..Default::default()
+    };
+    let source = sample_source();
+    let ctx = RoundContext {
+        source: &source,
+        width: 8,
+        stage_seed: 1,
+        params: &params,
+    };
+    let input = tiny_circuit();
+    let cdir = dir.join("candidate_s0_census");
+    let log = |_: &str| {};
+    let c = load_or_census(&ctx, &input, &cdir, false, &log).unwrap();
+    assert_eq!(c.audit.random_inputs, 0, "no audit on a discovery census");
+    assert!(c.affine.iter().chain(&c.direct).all(|iv| !iv.validated));
+    let stamp = fs::read_to_string(cdir.join("circuit.xxh3")).unwrap();
+    assert!(stamp.trim().ends_with(" discovery"), "{stamp}");
+    // an audited request does not reuse a discovery census ...
+    let a = load_or_census(&ctx, &input, &cdir, true, &log).unwrap();
+    let stamp = fs::read_to_string(cdir.join("circuit.xxh3")).unwrap();
+    assert!(stamp.trim().ends_with(" audited"), "{stamp}");
+    assert!(a.audit.random_inputs > 0 || (a.affine.is_empty() && a.direct.is_empty()));
+    // ... while a discovery request reuses an audited one
+    let lines = std::sync::Mutex::new(Vec::<String>::new());
+    let log2 = |s: &str| lines.lock().unwrap().push(s.to_string());
+    let _ = load_or_census(&ctx, &input, &cdir, false, &log2).unwrap();
+    assert!(lines.lock().unwrap().iter().any(|l| l.contains("reloaded")));
+    let _ = fs::remove_dir_all(dir);
+}

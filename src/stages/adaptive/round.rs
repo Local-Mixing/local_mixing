@@ -643,7 +643,17 @@ fn synth_group(
     let rows: Vec<BlockRow> = blocks
         .par_iter()
         .map(|&(lo, hi)| {
-            let res = synthesize_block(&input[lo..hi], ctx.width, &ctx.params.block, tl, seed, lo);
+            // a panic inside the synthesizer is the block's failure, not
+            // the round's (the prototype kept a crashing window verbatim)
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                synthesize_block(&input[lo..hi], ctx.width, &ctx.params.block, tl, seed, lo)
+            }))
+            .unwrap_or_else(|_| {
+                log(&format!(
+                    "round {r}: seed {k} block [{lo},{hi}): the synthesizer PANICKED; block kept verbatim"
+                ));
+                BlockResult::crashed()
+            });
             let row = BlockRow::of(lo, hi, tl, res);
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if !row.is_ok() || d.is_multiple_of(10) || d == total {
@@ -726,17 +736,29 @@ pub fn gates_digest(gates: &[XGate]) -> u128 {
 const DIGEST_FILE: &str = "circuit.xxh3";
 
 /// The census of `circuit` at `dir`: reloaded when the directory holds a
-/// census of exactly this circuit, computed and written otherwise.
+/// census of exactly this circuit (the stamp, written last, names the
+/// circuit and whether the census was audited; an audited census serves a
+/// discovery request, never the reverse), computed and written otherwise.
+/// `audited` = `census::census` (with the fresh-input audit, for the input
+/// and output censuses), else `census::discover` (the per-seed candidate
+/// assemblies, whose `interior_sets` use the discovery intervals).
 pub fn load_or_census(
     ctx: &RoundContext<'_>,
     circuit: &[XGate],
     dir: &Path,
+    audited: bool,
     log: Log<'_>,
 ) -> Result<Census, AdaptiveError> {
     let digest = format!("{:032x}", gates_digest(circuit));
     let stamp = dir.join(DIGEST_FILE);
+    let mode = if audited { "audited" } else { "discovery" };
+    let stamp_ok = |s: String| {
+        let mut f = s.split_whitespace();
+        f.next() == Some(digest.as_str())
+            && matches!(f.next(), Some(m) if m == mode || m == "audited")
+    };
     if dir.is_dir()
-        && fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == digest)
+        && fs::read_to_string(&stamp).is_ok_and(stamp_ok)
         && let Ok(c) = census::read_dir(dir)
         && c.gates == circuit.len()
     {
@@ -748,22 +770,28 @@ pub fn load_or_census(
         return Ok(c);
     }
     let t0 = Instant::now();
-    let c = census::census(ctx.source, circuit, ctx.width, ctx.params.census_batches);
+    let c = if audited {
+        census::census(ctx.source, circuit, ctx.width, ctx.params.census_batches)
+    } else {
+        census::discover(ctx.source, circuit, ctx.width, ctx.params.census_batches)
+    };
     if dir.exists() {
         fs::remove_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
     }
     fs::create_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
     census::write_dir(&c, dir).map_err(|e| AdaptiveError::io(dir, e))?;
-    write_text_atomic(&stamp, &format!("{digest}\n"))?;
+    write_text_atomic(&stamp, &format!("{digest} {mode}\n"))?;
     log(&format!(
-        "census of {} gates: {} affine, {} direct intervals, audit {} ({:.1}s) -> {}",
+        "census of {} gates: {} affine, {} direct intervals, {} ({:.1}s) -> {}",
         circuit.len(),
         c.affine.len(),
         c.direct.len(),
-        if c.audit.all_passed() {
-            "passed"
+        if !audited {
+            "discovery only"
+        } else if c.audit.all_passed() {
+            "audit passed"
         } else {
-            "FAILED"
+            "audit FAILED"
         },
         t0.elapsed().as_secs_f64(),
         dir.display()
@@ -771,7 +799,8 @@ pub fn load_or_census(
     Ok(c)
 }
 
-/// The planned interior cuts: reloaded from `dir/bounds` when present.
+/// The planned interior cuts: reloaded from `dir/bounds` when the plan is
+/// complete (`dir/summary.txt`, which `write_plan` writes last, exists).
 fn load_or_plan(
     ctx: &RoundContext<'_>,
     input: &[XGate],
@@ -783,6 +812,7 @@ fn load_or_plan(
     let m = input.len();
     let bf = dir.join("bounds");
     if bf.is_file()
+        && dir.join("summary.txt").is_file()
         && let Ok(b) = planner::read_bounds(&bf)
         && valid_bounds(&b, m)
     {
@@ -810,14 +840,6 @@ fn load_or_plan(
     }
     fs::create_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
     planner::write_plan(&plan, dir).map_err(|e| AdaptiveError::io(dir, e))?;
-    if !bf.is_file() {
-        // the planner's own layout did not include `bounds`: keep our copy
-        let mut s = String::new();
-        for b in &plan.bounds {
-            let _ = writeln!(s, "{b}");
-        }
-        write_text_atomic(&bf, &s)?;
-    }
     log(&format!(
         "plan: {} blocks ({} seams, {} single-gate exceptions) in {:.1}s",
         plan.bounds.len() + 1,
@@ -932,7 +954,7 @@ pub fn run_round(
     ));
 
     // ---- input census and plan
-    let cin = load_or_census(ctx, input, &out_dir.join("input_census"), log)?;
+    let cin = load_or_census(ctx, input, &out_dir.join("input_census"), true, log)?;
     let empty;
     let pcensus: &Census = if p.blind {
         empty = Census::empty(m, width);
@@ -1053,6 +1075,7 @@ pub fn run_round(
                 ctx,
                 &cand,
                 &out_dir.join(format!("candidate_s{k}_census")),
+                false,
                 log,
             )?;
             drop(cand);
@@ -1105,7 +1128,7 @@ pub fn run_round(
         )));
     }
     let equivalence_samples = p.equiv_batches * 1024;
-    let cout = load_or_census(ctx, &output, &out_dir.join("output_census"), log)?;
+    let cout = load_or_census(ctx, &output, &out_dir.join("output_census"), true, log)?;
     let leakage_in = Leakage::of(&cin, ctx.source);
     let leakage_out = Leakage::of(&cout, ctx.source);
     let output_boundaries: Vec<usize> = oedges[1..oedges.len() - 1].to_vec();
@@ -1220,6 +1243,7 @@ pub fn round_report(res: &RoundResult, ctx: &RoundContext<'_>, width: usize) -> 
     let _ = writeln!(s, "param.time_limit={}", p.base_time_limit);
     let _ = writeln!(s, "param.restarts={}", p.block.synth.restarts);
     let _ = writeln!(s, "param.beam={}", p.block.synth.beam);
+    let _ = writeln!(s, "param.compose_time_limit={}", p.block.compose_time_limit);
     let _ = writeln!(s, "param.term_cap={}", p.plan.term_cap);
     let _ = writeln!(s, "param.max_block_gates={}", p.plan.max_block_gates);
     let _ = writeln!(s, "param.segments={}", p.plan.segments);
