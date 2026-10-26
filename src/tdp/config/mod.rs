@@ -417,6 +417,7 @@ impl SourceConstruction {
 pub(crate) struct ThreeMaskConfig {
     /// 0 = auto: the larger of 2n and 128, rounded up to a multiple of 16.
     pub(crate) band_wires: u64,
+    /// 0 = auto: banks of 16 wires (`band_wires / 16`, the design's geometry).
     pub(crate) banks: u64,
     pub(crate) retire_budget: u64,
     pub(crate) max_retiring: u64,
@@ -435,7 +436,7 @@ impl Default for ThreeMaskConfig {
     fn default() -> Self {
         ThreeMaskConfig {
             band_wires: 0,
-            banks: 8,
+            banks: 0,
             retire_budget: 2,
             max_retiring: 0,
             rotation: 1,

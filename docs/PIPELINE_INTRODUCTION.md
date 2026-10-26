@@ -211,7 +211,8 @@ compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_
   cubic monomial in three band coordinates; a mask is a stored triple of
   band indices, not a register, and cubic labels are unique across roles.
 - The band (`band_wires = 0` = the larger of 2n and 128, rounded up to a
-  multiple of 16; 8 banks by default) rotates its banks through **serving**
+  multiple of 16; `banks = 0` = banks of 16 wires: 8 at n = 64, 16 at
+  n = 128, the design's geometry) rotates its banks through **serving**
   (supplying mask coordinates, never written), **retiring** (drained of
   references) and **growing** (freely rewritten by 8 nonlinear growth gates
   per fire) phases, so masks are a renewable supply.

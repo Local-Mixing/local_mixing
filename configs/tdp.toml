@@ -85,7 +85,8 @@ preset = "L8"  # "L8" (recommended), "A" (no bounded chains) or "custom"
 # defaults are the campaign configuration "three-mask modified / v2" (random
 # helpers, unique cover). Any key here is an error under another mode.
 # band_wires = 0  # integer; 0 = auto: the larger of 2n and 128, rounded up to a multiple of 16
-# banks = 8  retire_budget = 2  max_retiring = 0  rotation = 1  maturity = 2  visit_sweeps = 2
+# banks = 0  # integer; 0 = auto: banks of 16 wires (8 at n=64, 16 at n=128); else even, at least 4
+# retire_budget = 2  max_retiring = 0  rotation = 1  maturity = 2  visit_sweeps = 2
 # growth = 8  warmup = 4  segments = 6  mask_count = 3
 # random_helpers = true  unique_cover = true  # false = the generator's "as-is" variant
 

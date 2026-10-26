@@ -79,7 +79,7 @@ lowers the reads-weighted exposure, at the cost of a larger exposed count
   the `THREE_MASK_*` knobs, refuses `EMBEDDED_MASKING_*` in this mode, runs
   `verify_payload` as before.
 * Config: `[three_mask]` (13 keys, defaults = the v2 configuration:
-  `band_wires 0 (auto)`, `banks 8`, `retire_budget 2`, `max_retiring 0`,
+  `band_wires 0 (auto)`, `banks 0 (auto: 16-wire banks)`, `retire_budget 2`, `max_retiring 0`,
   `rotation 1`, `maturity 2`, `visit_sweeps 2`, `growth 8`, `warmup 4`,
   `segments 6`, `mask_count 3`, `random_helpers true`, `unique_cover true`);
   flags `--three-mask-*`; manifest keys `three_mask_params`, `three_mask_*`,

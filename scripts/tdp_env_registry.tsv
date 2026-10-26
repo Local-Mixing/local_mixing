@@ -21,7 +21,7 @@ SANDWICH_VARIANT	exact	driver	classic
 TDP_SOURCE_C	exact	driver	-
 TDP_SOURCE_CONSTRUCTION	exact	driver	random
 THREE_MASK_BAND_WIRES	exact	recipe	0
-THREE_MASK_BANKS	exact	recipe	8
+THREE_MASK_BANKS	exact	recipe	0
 THREE_MASK_RETIRE_BUDGET	exact	recipe	2
 THREE_MASK_MAX_RETIRING	exact	recipe	0
 THREE_MASK_ROTATION	exact	recipe	1

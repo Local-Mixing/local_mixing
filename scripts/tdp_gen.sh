@@ -117,7 +117,7 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     three-mask only (defaults = the campaign configuration "three-mask modified / v2";
     the outer blocks are preset L8):
     --three-mask-band-wires R     [0 = auto: max(2n, 128) rounded up to a multiple of 16]
-    --three-mask-banks B          [8; even, >= 4]
+    --three-mask-banks B          [0 = auto: banks of 16 wires; else even, >= 4]
     --three-mask-retire-budget K  [2]
     --three-mask-max-retiring K   [0 = auto; else < banks/2]
     --three-mask-rotation I       [1]
@@ -479,7 +479,7 @@ declare -A EFF=()
 GEN_ENV=()
 # ---- three-mask knobs (--preprocessing-mode three-mask only; defaults = the
 # campaign configuration "three-mask modified / v2"; the outer blocks are L8) ----
-declare -A TM_BASE=([band-wires]=0 [banks]=8 [retire-budget]=2 [max-retiring]=0 [rotation]=1 [maturity]=2
+declare -A TM_BASE=([band-wires]=0 [banks]=0 [retire-budget]=2 [max-retiring]=0 [rotation]=1 [maturity]=2
   [visit-sweeps]=2 [growth]=8 [warmup]=4 [segments]=6 [mask-count]=3 [random-helpers]=1 [unique-cover]=1)
 declare -A TM_VAR=([band-wires]=THREE_MASK_BAND_WIRES [banks]=THREE_MASK_BANKS [retire-budget]=THREE_MASK_RETIRE_BUDGET
   [max-retiring]=THREE_MASK_MAX_RETIRING [rotation]=THREE_MASK_ROTATION [maturity]=THREE_MASK_MATURITY
@@ -500,7 +500,7 @@ if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
   if [ "$PREPROCESSING_MODE" = three-mask ]; then
     tv() { echo "${TM[$1]:-${TM_BASE[$1]}}"; }
     TM_EFF[band-wires]=$(bounded_uint --three-mask-band-wires "$(tv band-wires)" 0 65536)
-    TM_EFF[banks]=$(bounded_uint --three-mask-banks "$(tv banks)" 4 4096)
+    TM_EFF[banks]=$(bounded_uint --three-mask-banks "$(tv banks)" 0 4096)
     TM_EFF[retire-budget]=$(bounded_uint --three-mask-retire-budget "$(tv retire-budget)" 1 1000)
     TM_EFF[max-retiring]=$(bounded_uint --three-mask-max-retiring "$(tv max-retiring)" 0 4096)
     TM_EFF[rotation]=$(bounded_uint --three-mask-rotation "$(tv rotation)" 0 1000000)
@@ -515,8 +515,9 @@ if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
     r=${TM_EFF[band-wires]}
     [ "$r" -eq 0 ] || { [ "$r" -ge 64 ] && [ $((r % 16)) -eq 0 ]; } ||
       fatal "--three-mask-band-wires must be 0 (auto) or at least 64 and a multiple of 16"
-    [ $((TM_EFF[banks] % 2)) -eq 0 ] || fatal "--three-mask-banks must be even"
-    [ "${TM_EFF[max-retiring]}" -eq 0 ] || [ "${TM_EFF[max-retiring]}" -lt $((TM_EFF[banks] / 2)) ] ||
+    [ "${TM_EFF[banks]}" -eq 0 ] || { [ "${TM_EFF[banks]}" -ge 4 ] && [ $((TM_EFF[banks] % 2)) -eq 0 ]; } ||
+      fatal "--three-mask-banks must be 0 (auto: banks of 16 wires) or even and at least 4"
+    [ "${TM_EFF[max-retiring]}" -eq 0 ] || [ "${TM_EFF[banks]}" -eq 0 ] || [ "${TM_EFF[max-retiring]}" -lt $((TM_EFF[banks] / 2)) ] ||
       fatal "--three-mask-max-retiring must be 0 (auto) or less than half the bank count"
     for k in "${TM_ORDER[@]}"; do
       [ "${TM_EFF[$k]}" = "${TM_BASE[$k]}" ] || GEN_ENV+=("${TM_VAR[$k]}=${TM_EFF[$k]}")

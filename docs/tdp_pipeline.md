@@ -348,7 +348,7 @@ defaults below are the campaign configuration "three-mask modified / v2"
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `three_mask.band_wires` | integer, `0` | Band width; `0` = auto: the larger of $2n$ and 128, rounded up to a multiple of 16 (a 64-wire band cannot host 64 data roles with three masks each). Else at least 64 and a multiple of 16. When it exceeds $2n$ the extra wires get a reversible XOR ingress from the seeded $2n$-wire prefix. |
-| `three_mask.banks` | integer, `8` | Band banks, even, at least 4; the bank size `band_wires / banks` must be even and at least 8. |
+| `three_mask.banks` | integer, `0` | Band banks; `0` = auto: banks of 16 wires (`band_wires / 16`: 8 at n=64, 16 at n=128, the design's geometry), else even and at least 4 with an even bank size of at least 8. |
 | `three_mask.retire_budget` | integer, `2` | Mask replacements per fire that drain retiring banks. |
 | `three_mask.max_retiring` | integer, `0` | Banks retiring at once; `0` = auto (half the banks minus one), else below half the banks. |
 | `three_mask.rotation`, `three_mask.maturity` | integers, `1`, `2` | Promotion check interval (fires; 0 = never) and the growth sweeps a bank needs before promotion. |

@@ -118,7 +118,7 @@ pub(crate) const ENV_REGISTRY: &[EnvEntry] = &[
     exact("TDP_SOURCE_CONSTRUCTION", Driver, "random"),
     // stage 2 (gen_sandwich_gadget, three-mask mode): the [three_mask] knobs
     exact("THREE_MASK_BAND_WIRES", Recipe, "0"),
-    exact("THREE_MASK_BANKS", Recipe, "8"),
+    exact("THREE_MASK_BANKS", Recipe, "0"),
     exact("THREE_MASK_RETIRE_BUDGET", Recipe, "2"),
     exact("THREE_MASK_MAX_RETIRING", Recipe, "0"),
     exact("THREE_MASK_ROTATION", Recipe, "1"),

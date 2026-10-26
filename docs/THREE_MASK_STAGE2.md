@@ -29,7 +29,8 @@ helpers, or a non-restoring chain of 2k-3 gates with `discard_fire_helpers`,
 which leaves garbage only in reference-free growing-bank wires).
 
 **The band.** $r$ band wires (`band_wires`: $\max(2n, 128)$ rounded up to a
-multiple of 16 by default) are divided into `banks` banks (8). Half the
+multiple of 16 by default) are divided into `banks` banks (auto: banks of
+16 wires, 8 at n=64 and 16 at n=128, the design's geometry). Half the
 banks start *serving* (their wires may be mask operands); the others are
 *growing*: between fires they are rewritten by random two-control Toffolis
 whose controls lie in the other half of the same bank, or, with

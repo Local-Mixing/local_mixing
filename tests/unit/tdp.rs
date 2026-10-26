@@ -454,7 +454,7 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "preprocessing.mode = \"three-mask\"\nthree_mask.band_wires = 72",
         "preprocessing.mode = \"three-mask\"\nthree_mask.banks = 7",
         "preprocessing.mode = \"three-mask\"\nthree_mask.banks = 2",
-        "preprocessing.mode = \"three-mask\"\nthree_mask.max_retiring = 4",
+        "preprocessing.mode = \"three-mask\"\nthree_mask.banks = 8\nthree_mask.max_retiring = 4",
         "preprocessing.mode = \"three-mask\"\nthree_mask.mask_count = 4",
         "preprocessing.mode = \"three-mask\"\nthree_mask.random_helpers = 1",
     ] {
@@ -2037,7 +2037,7 @@ fn three_mask_table_follows_its_mode() {
     assert!(m.contains("\npreprocessing_mode=three-mask\npreprocessing_preset=none\n"));
     assert!(
         m.contains(
-            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=8\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_outer_blocks=L8\n"
+            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_outer_blocks=L8\n"
         ),
         "{m}"
     );

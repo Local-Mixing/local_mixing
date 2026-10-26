@@ -241,7 +241,7 @@ where
     };
     let three_mask = ThreeMaskConfig {
         band_wires: tm_u64("three_mask_band_wires", tm.band_wires, 0, 65_536)?,
-        banks: tm_u64("three_mask_banks", tm.banks, 4, 4096)?,
+        banks: tm_u64("three_mask_banks", tm.banks, 0, 4096)?,
         retire_budget: tm_u64("three_mask_retire_budget", tm.retire_budget, 1, 1000)?,
         max_retiring: tm_u64("three_mask_max_retiring", tm.max_retiring, 0, 4096)?,
         rotation: tm_u64("three_mask_rotation", tm.rotation, 0, 1_000_000)?,
@@ -263,10 +263,17 @@ where
                 "must be 0 (auto) or at least 64 and a multiple of 16",
             ));
         }
-        if three_mask.banks % 2 != 0 {
-            return Err(config_error(raw, "three_mask_banks", "must be even"));
+        if three_mask.banks != 0 && (three_mask.banks < 4 || three_mask.banks % 2 != 0) {
+            return Err(config_error(
+                raw,
+                "three_mask_banks",
+                "must be 0 (auto: banks of 16 wires) or even and at least 4",
+            ));
         }
-        if three_mask.max_retiring != 0 && three_mask.max_retiring >= three_mask.banks / 2 {
+        if three_mask.max_retiring != 0
+            && three_mask.banks != 0
+            && three_mask.max_retiring >= three_mask.banks / 2
+        {
             return Err(config_error(
                 raw,
                 "three_mask_max_retiring",

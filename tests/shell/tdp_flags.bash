@@ -70,7 +70,7 @@ reject 'unknown argument' --preprocessing-mode three-mask --three-mask-invented 
 reject 'requires an argument' --preprocessing-mode three-mask --three-mask-banks
 for value in 48 72 abc; do reject 'band-wires' --preprocessing-mode three-mask --three-mask-band-wires "$value"; done
 for value in 2 7; do reject 'banks' --preprocessing-mode three-mask --three-mask-banks "$value"; done
-reject 'max-retiring' --preprocessing-mode three-mask --three-mask-max-retiring 4
+reject 'max-retiring' --preprocessing-mode three-mask --three-mask-banks 8 --three-mask-max-retiring 4
 for value in 0 4; do reject 'mask-count' --preprocessing-mode three-mask --three-mask-mask-count "$value"; done
 reject 'random-helpers' --preprocessing-mode three-mask --three-mask-random-helpers 2
 # the source construction
@@ -180,7 +180,7 @@ run_case custom-l8 "${C[@]}" --preprocessing-shuffling-segments 8 --preprocessin
 run_case custom-home "${C[@]}" --preprocessing-shuffling-segments 0008 --preprocessing-shuffling-return-home true
 run_case nonlinear291 --preprocessing-mode nonlinear291
 run_case three-mask --preprocessing-mode three-mask
-run_case three-mask-knobs --preprocessing-mode three-mask --three-mask-band-wires 0256 --three-mask-unique-cover 0 --three-mask-max-retiring 3
+run_case three-mask-knobs --preprocessing-mode three-mask --three-mask-band-wires 0256 --three-mask-unique-cover 0 --three-mask-banks 8 --three-mask-max-retiring 3
 run_case balanced --source-construction balanced
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -202,7 +202,7 @@ expected = {
     'custom-home': ({'EMBEDDED_MASKING_SHUFFLING': '8'}, 'custom'),
     'nonlinear291': ({}, 'none'),
     'three-mask': ({}, 'none'),
-    'three-mask-knobs': ({'THREE_MASK_BAND_WIRES': '256', 'THREE_MASK_UNIQUE_COVER': '0', 'THREE_MASK_MAX_RETIRING': '3'}, 'none'),
+    'three-mask-knobs': ({'THREE_MASK_BAND_WIRES': '256', 'THREE_MASK_UNIQUE_COVER': '0', 'THREE_MASK_BANKS': '8', 'THREE_MASK_MAX_RETIRING': '3'}, 'none'),
     'balanced': (L8, 'L8'),
 }
 for name, (env, preset) in expected.items():
@@ -226,7 +226,7 @@ for name, (env, preset) in expected.items():
     assert f'preprocessing_preset={preset}\n' in recipe, recipe
     assert f"source_construction={'balanced' if name == 'balanced' else 'random'}\n" in recipe, recipe
     if mode == 'three-mask':
-        assert 'three_mask_banks=8\n' in recipe and 'three_mask_outer_blocks=L8\n' in recipe, recipe
+        assert f"three_mask_banks={'8' if 'knobs' in name else '0'}\n" in recipe and 'three_mask_outer_blocks=L8\n' in recipe, recipe
         assert f"three_mask_band_wires={'256' if 'knobs' in name else '0'}\n" in recipe, recipe
         assert 'preprocessing_mask_pair_wires' not in recipe, recipe
     else:
