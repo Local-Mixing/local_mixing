@@ -2,13 +2,14 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 12;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 13;
 /// The managed binaries, fingerprinted in the manifest and built for fresh runs.
-pub(crate) const PRODUCTION_BINARIES: [&str; 4] = [
+pub(crate) const PRODUCTION_BINARIES: [&str; 5] = [
     "gen_sandwich_gadget",
     "circuit_mixer",
     "tdp_packing",
     "tdp_unpacking",
+    "tdp_adaptive",
 ];
 /// The report-only binary behind val_chain.sh's stage-2 span check
 /// (`hmap_affine --exposure ... SPAN_INTERSECT`, $RUN/stage2_span.*). Built
@@ -284,9 +285,11 @@ pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) 
         && resolved_frozen_filter(config) == "1"
         && !config.qc_enabled
         && config.packing.is_default()
+        && config.source_construction == SourceConstruction::Random
         // the recipe's stages, not the lifecycle stop point: a stop before
         // stage 4 must not pin a run whose recipe includes stages 4-6
         && [4, 5].iter().all(|k| config.skip_stages.contains(k))
+        && config.delivery.mode == DeliveryMode::Windowed
         && config.delivery.anf_only;
     match (matches_chain, config.preset) {
         (true, Preset::L8) => "val_chain-L8-20261007",
@@ -327,6 +330,7 @@ pub(crate) fn recipe_manifest(
         },
     );
     kv("source_path", &path_or_unset(&config.source_path));
+    kv("source_construction", config.source_construction.name());
     kv("sandwich_variant", "classic");
     kv(
         "preprocessing_mode",
@@ -338,6 +342,20 @@ pub(crate) fn recipe_manifest(
             kv(&format!("preprocessing_{key}"), &value);
         }
         kv("preprocessing_quadratic_fire", "1");
+    }
+    if config.preprocessing_mode == PreprocessingMode::ThreeMask {
+        kv(
+            "three_mask_params",
+            if config.three_mask.is_default() {
+                "default"
+            } else {
+                "custom"
+            },
+        );
+        for (key, _, value, _) in config.three_mask.fields() {
+            kv(&format!("three_mask_{key}"), &value);
+        }
+        kv("three_mask_outer_blocks", "L8");
     }
     kv("gadget_seed_rule", "gen");
     match &config.schedule {
@@ -422,6 +440,7 @@ pub(crate) fn recipe_manifest(
         &p.allow_over_budget.to_string(),
     );
     let dl = &config.delivery;
+    kv("delivery_mode", dl.mode.name());
     kv(
         "delivery_params",
         if dl.is_default() { "default" } else { "custom" },
@@ -431,6 +450,32 @@ pub(crate) fn recipe_manifest(
     kv("delivery_restarts", &dl.restarts.to_string());
     kv("delivery_beam", &dl.beam.to_string());
     kv("delivery_max_rounds", &dl.max_rounds.to_string());
+    let ad = &config.adaptive;
+    kv(
+        "adaptive_params",
+        if ad.is_default() { "default" } else { "custom" },
+    );
+    kv("adaptive_max_rounds", &ad.max_rounds.to_string());
+    kv("adaptive_stop_fraction", &ad.stop_fraction);
+    kv("adaptive_seeds_per_block", &ad.seeds_per_block.to_string());
+    kv("adaptive_time_limit", &ad.time_limit);
+    kv("adaptive_restarts", &ad.restarts.to_string());
+    kv("adaptive_beam", &ad.beam.to_string());
+    kv("adaptive_term_cap", &ad.term_cap.to_string());
+    kv("adaptive_max_block_gates", &ad.max_block_gates.to_string());
+    kv("adaptive_segments", &ad.segments.to_string());
+    kv("adaptive_avoid_radius", &ad.avoid_radius.to_string());
+    kv(
+        "adaptive_refinement_levels",
+        &ad.refinement_levels.to_string(),
+    );
+    kv(
+        "adaptive_min_refine_gates",
+        &ad.min_refine_gates.to_string(),
+    );
+    kv("adaptive_census_batches", &ad.census_batches.to_string());
+    kv("adaptive_accept", &ad.accept);
+    kv("adaptive_canonical_order", &ad.canonical_order.to_string());
     kv("seed_record", "SEEDS");
     kv(
         "seed_source",
@@ -472,7 +517,10 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=12") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=13") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=12") => Err(TdpError::config(
+            "recipe v12 run (the six-stage driver whose only stage 6 was the windowed delivery): resume with the checkout that created it (recipe v13 added the adaptive stage 6, the three-mask stage 2 and the balanced source); the original run is unchanged",
+        )),
         Some("tdp_command_recipe=11") => Err(TdpError::config(
             "recipe v11 run (the seven-stage driver): resume with the checkout that created it (recipe v12 merged stages 6 and 7 into the delivery stage: packing, then unpacking with lattice refinement); the original run is unchanged",
         )),
@@ -483,7 +531,7 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
             "recipe v9 run: resume with the checkout that created it (recipe v10 changed the defaults to the chosen L8 runs and added stage 4); the original run is unchanged",
         )),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v12 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v13 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

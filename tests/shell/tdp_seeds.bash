@@ -16,7 +16,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export TDP_BIN_DIR="$tmp/bin" TDP_GEN_ALLOW_EMPTY_STORE=1
 mkdir -p "$TDP_BIN_DIR"
-for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$root/tests/shell/lib/tdp_mock.py" "$TDP_BIN_DIR/$b"; done
+for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking tdp_adaptive; do ln -s "$root/tests/shell/lib/tdp_mock.py" "$TDP_BIN_DIR/$b"; done
 drive() { # RUNDIR ARGS...
   local d=$1; shift
   bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$d" "$@"
@@ -75,12 +75,12 @@ for c in calls:
         else:
             assert a[a.index("--seed") + 1] == want and not (seeds - {want}) & set(a), a
             assert "--seed" not in raw and raw[raw.index("--seed-file") + 1] == "/dev/fd/3", raw
-    elif c["name"] == "tdp_unpacking":
+    elif c["name"] in ("tdp_unpacking", "tdp_adaptive"):
         assert a[a.index("--seed") + 1] == unpack and not (seeds - {unpack}) & set(a), a
         assert "--seed" not in raw and raw[raw.index("--seed-file") + 1] == "/dev/fd/3", raw
     else:
         assert not seeds & set(a), c
-assert names.count("circuit_mixer") == 3 and "tdp_unpacking" in names, names
+assert names.count("circuit_mixer") == 3 and "tdp_adaptive" in names and "tdp_unpacking" not in names, names
 PY
 # the cross seed is used when stage 5 starts from a circuit file (stage 4 skipped)
 drive "$tmp/r1x" --run-skip-stages 4 > /dev/null 2>&1
@@ -120,7 +120,7 @@ grep -q '"--seed", "2525"' "$tmp/e5.calls"
 grep -q '^split_seed=2323$' "$tmp/e5/SEEDS"
 # legacy and malformed inputs
 printf '42\n' > "$tmp/v1"; chmod 600 "$tmp/v1"
-expect_fail 'seed file format 1 holds one seed; recipe v12 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
+expect_fail 'seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x2" -s 42
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x3" --calibration-seed 42
 chmod 644 "$sf"; expect_fail 'chmod 600' "$tmp/x4" --seed-file "$sf"; chmod 600 "$sf"

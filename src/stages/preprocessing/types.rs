@@ -8,6 +8,9 @@ use crate::circuit::Circuit;
 pub enum PreprocessingMode {
     #[default]
     EmbeddedMasking,
+    /// The three-mask compute (x_i = d_i + three cubic band monomials)
+    /// inside the embedded-masking outer blocks.
+    ThreeMask,
     Nonlinear291,
 }
 
@@ -15,6 +18,7 @@ impl PreprocessingMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "embedded-masking" => Some(Self::EmbeddedMasking),
+            "three-mask" => Some(Self::ThreeMask),
             "nonlinear291" => Some(Self::Nonlinear291),
             _ => None,
         }
@@ -23,6 +27,7 @@ impl PreprocessingMode {
     pub fn canonical_name(self) -> &'static str {
         match self {
             Self::EmbeddedMasking => "embedded-masking",
+            Self::ThreeMask => "three-mask",
             Self::Nonlinear291 => "nonlinear291",
         }
     }

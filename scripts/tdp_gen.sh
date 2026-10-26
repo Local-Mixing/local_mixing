@@ -7,8 +7,11 @@
 # default runs all six):
 #   1+2  gen_sandwich_gadget: sliced sandwich S of a secret source C (any
 #        reversible gates with up to two controls, taken in the g57 form
-#        a ^= x OR NOT y through --source-path, or generated), then embedded
-#        masking (preset L8 by default; A = no bounded chains) or nonlinear291.
+#        a ^= x OR NOT y through --source-path, or generated: uniformly random
+#        or, with --source-construction balanced, RC's balanced construction),
+#        then embedded masking (preset L8 by default; A = no bounded chains),
+#        the three-mask compute inside the L8 outer blocks (--preprocessing-mode
+#        three-mask, knobs --three-mask-*) or nonlinear291.
 #        The later stages mix this structure built around C, not C itself.
 #        Skipping stage 2 hands the sandwich itself (tdp.mpmct1.sandwich.mpmct1)
 #        to the next stage.
@@ -18,8 +21,18 @@
 #        into plain conjunctions, joined to distant brackets (archive flags)
 #   5    circuit_mixer crossing walk (resumes split.state when stage 4 ran):
 #        target = round(G * factor), temperature target/divisor, 3*target moves
-#   6    delivery (RC, 2026-10-12: the former stages 6 packing and 7 unpacking
-#        as ONE stage): tdp_packing run (pack G=512, the order repair, which
+#   6    delivery, in one of two modes (--delivery-mode):
+#        adaptive (DEFAULT since recipe v13): tdp_adaptive run = the C-aware
+#        adaptive resynthesis (docs/ADAPTIVE_STAGE.md): the stage-5 circuit is
+#        resynthesized in large variable-length blocks whose boundaries avoid
+#        cuts where an internal value of C is recoverable, two synthesizer
+#        seeds per block, the smaller-and-not-leakier candidate kept, round
+#        after round until two consecutive rounds compress jointly by less
+#        than --adaptive-stop-fraction (or --adaptive-max-rounds rounds), the
+#        smallest round output canonically reordered -> adaptive/final.mpmct1
+#        (THE PUBLISHED CIRCUIT).
+#        windowed (recipe v12's stage 6; RC, 2026-10-12: the former stages 6
+#        packing and 7 unpacking as ONE stage): tdp_packing run (pack G=512, the order repair, which
 #        runs in every packing run, ANF serialization with budget 65536) ->
 #        packing/deliverable.tdp4; then tdp_unpacking run --refine: every
 #        window resynthesized from its ANF alone, a window that does not
@@ -83,7 +96,10 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                            formula (round(n·log2(n)^2); prints UNVALIDATED SIZE)
   --source-path PATH       load C in the g57 form (any gates with <= 2 controls) instead
                            of generating it; needs --source-gates
-  --preprocessing-mode M   embedded-masking (default) or nonlinear291
+  --source-construction C  random (default) or balanced (RC's construction: every
+                           internal value of C read exactly twice); exclusive with
+                           --source-path
+  --preprocessing-mode M   embedded-masking (default), three-mask or nonlinear291
   --preprocessing-preset P L8 (default) | A | custom (embedded-masking only).
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
                            CHAIN=2 CHAIN_LEN=8; A = L8 without the chains
@@ -98,6 +114,21 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --preprocessing-seed-avoid-c1 0|1      [0]
     --preprocessing-chain K                [0; 0 = off, 0..64]
     --preprocessing-chain-len L            [0; 0..1000000]
+    three-mask only (defaults = the campaign configuration "three-mask modified / v2";
+    the outer blocks are preset L8):
+    --three-mask-band-wires R     [0 = auto: max(2n, 128) rounded up to a multiple of 16]
+    --three-mask-banks B          [8; even, >= 4]
+    --three-mask-retire-budget K  [2]
+    --three-mask-max-retiring K   [0 = auto; else < banks/2]
+    --three-mask-rotation I       [1]
+    --three-mask-maturity S       [2]
+    --three-mask-visit-sweeps S   [2]
+    --three-mask-growth G         [8]
+    --three-mask-warmup S         [4]
+    --three-mask-segments S       [6]
+    --three-mask-mask-count K     [3; 1..3]
+    --three-mask-random-helpers 0|1  [1]
+    --three-mask-unique-cover 0|1    [1]
   --db-mixing-schedule S   validated (default: profile 2,2,2,2,2, moves int(4·G·1.3))
                            or custom:
     --db-mixing-growth-work-units G        [3]  profile n0
@@ -127,6 +158,27 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --crossing-move-budget-factor F   move budget = round(F * target), F in (0, 1000]     [3]
   --crossing-move-attempts M        absolute move budget instead of the factor (exclusive)
                                     (either is added to the resumed split counter)
+  --delivery-mode M                 adaptive (default) or windowed
+    adaptive only:
+    --adaptive-max-rounds N         rounds at most; 0 = until the size plateaus  [0]
+    --adaptive-stop-fraction F      end of mixing when two consecutive rounds compress
+                                    jointly by less than F, in [0, 1)          [0.02]
+    --adaptive-seeds-per-block K    synthesizer seeds per block (1..16)         [2]
+    --adaptive-time-limit S         synthesis wall limit per block of <= 1000 gates,
+                                    seconds (x2 up to 4000 gates, x4 above)    [60]
+    --adaptive-restarts R           synthesis restarts per block                [16]
+    --adaptive-beam B               synthesis lookahead width                   [6]
+    --adaptive-term-cap T           ANF terms at an eligible block endpoint     [131072]
+    --adaptive-max-block-gates G    longest block                               [65536]
+    --adaptive-segments S           planner segments (parallel)                 [16]
+    --adaptive-avoid-radius D       cuts within D of the previous round's boundaries
+                                    are penalized (0 = off)                    [64]
+    --adaptive-refinement-levels L  split levels for blocks that do not synthesize [2]
+    --adaptive-min-refine-gates G   shortest block that is split                [128]
+    --adaptive-census-batches B     exposure census inputs = 64 B               [96]
+    --adaptive-accept A             smaller-not-leakier (default) or smaller
+    --adaptive-no-canonical-order   publish the assembly as is (no canonical gate order)
+    windowed only (--packing-* above and):
   --delivery-anf-only               stage 6 ends after the packer's deliverable
                                     (no resynthesis, no lattice refinement)
   --delivery-time-limit S           synthesis wall limit per window per round, seconds [30]
@@ -144,8 +196,9 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
 env (inputs only; every other output-affecting variable is refused):
   FROZEN_DB_DIR       the regular frozen store (required for stage 3)
   TDP_GEN_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
-  TDP_BIN_DIR         directory with gen_sandwich_gadget, circuit_mixer, tdp_packing,
-                      tdp_unpacking (not needed under --delivery-anf-only)
+  TDP_BIN_DIR         directory with gen_sandwich_gadget, circuit_mixer and, for stage 6,
+                      tdp_adaptive (adaptive mode) or tdp_packing + tdp_unpacking
+                      (windowed mode; tdp_unpacking not needed under --delivery-anf-only)
                       [default: repository target/release]
 EOF
   exit "${1:-1}"
@@ -191,9 +244,14 @@ if [ "${#refused[@]}" -gt 0 ]; then
   fatal "$list are not honoured by the managed recipe; unset them (use flags/config)"
 fi
 
-N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""
+N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""; SOURCE_CONSTRUCTION=random
 PREPROCESSING_MODE=embedded-masking; PRESET=""
 declare -A KNOB=()
+declare -A TM=()
+DELIV_MODE=adaptive
+AD_MAX_ROUNDS=0; AD_STOP_FRACTION=0.02; AD_SEEDS=2; AD_TIME_LIMIT=60; AD_RESTARTS=16; AD_BEAM=6
+AD_TERM_CAP=131072; AD_MAX_BLOCK_GATES=65536; AD_SEGMENTS=16; AD_AVOID_RADIUS=64; AD_REFINEMENT_LEVELS=2
+AD_MIN_REFINE_GATES=128; AD_CENSUS_BATCHES=96; AD_ACCEPT=smaller-not-leakier; AD_CANON=1
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
 STOP_AFTER=6; FORCE_FROM=99; SKIP_LIST=""
 XR=2; XB=3; XC=1; XTDIV=25; XMF=3; XMOVES=""
@@ -206,6 +264,7 @@ PACK_SPLIT_BUDGET=65536; PACK_FIX_ITERATIONS=4; PACK_FALLBACK_ITERATIONS=4; PACK
 PACK_ALLOW_FLOOR=0; PACK_ALLOW_BUDGET=0
 declare -A SEEN=()
 KNOB_FLAGS=" --preprocessing-mask-pair-wires --preprocessing-max-open-masks --preprocessing-min-open-masks --preprocessing-balanced-masks --preprocessing-shuffling-segments --preprocessing-shuffling-return-home --preprocessing-premask --preprocessing-seed-avoid-c1 --preprocessing-chain --preprocessing-chain-len "
+TM_FLAGS=" --three-mask-band-wires --three-mask-banks --three-mask-retire-budget --three-mask-max-retiring --three-mask-rotation --three-mask-maturity --three-mask-visit-sweeps --three-mask-growth --three-mask-warmup --three-mask-segments --three-mask-mask-count --three-mask-random-helpers --three-mask-unique-cover "
 while [ $# -gt 0 ]; do
   case "$1" in
     -n) set -- --source-wires "${@:2}" ;;
@@ -240,7 +299,7 @@ while [ $# -gt 0 ]; do
       SEEN[$1]=1 ;;
   esac
   case "$1" in
-    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget|--delivery-anf-only) ;;
+    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget|--delivery-anf-only|--adaptive-no-canonical-order) ;;
     --*)
       if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then fatal "$1 requires an argument"; fi ;;
   esac
@@ -252,7 +311,11 @@ while [ $# -gt 0 ]; do
     --source-gates) MCD=$2; shift 2 ;;
     --source-gates-rule) MCD_RULE=$2; shift 2 ;;
     --source-path) SOURCE_PATH=$2; shift 2 ;;
+    --source-construction) SOURCE_CONSTRUCTION=$2; shift 2 ;;
     --preprocessing-mode) PREPROCESSING_MODE=$2; shift 2 ;;
+    --three-mask-*)
+      [[ $TM_FLAGS == *" $1 "* ]] || fatal "unknown argument $1"
+      TM[${1#--three-mask-}]=$2; shift 2 ;;
     --preprocessing-preset) PRESET=$2; shift 2 ;;
     --preprocessing-*)
       [[ $KNOB_FLAGS == *" $1 "* ]] || fatal "unknown argument $1"
@@ -281,6 +344,22 @@ while [ $# -gt 0 ]; do
     --crossing-size-tolerance-divisor) XTDIV=$2; shift 2 ;;
     --crossing-move-attempts) XMOVES=$2; shift 2 ;;
     --crossing-move-budget-factor) XMF=$2; shift 2 ;;
+    --delivery-mode) DELIV_MODE=$2; shift 2 ;;
+    --adaptive-max-rounds) AD_MAX_ROUNDS=$2; shift 2 ;;
+    --adaptive-stop-fraction) AD_STOP_FRACTION=$2; shift 2 ;;
+    --adaptive-seeds-per-block) AD_SEEDS=$2; shift 2 ;;
+    --adaptive-time-limit) AD_TIME_LIMIT=$2; shift 2 ;;
+    --adaptive-restarts) AD_RESTARTS=$2; shift 2 ;;
+    --adaptive-beam) AD_BEAM=$2; shift 2 ;;
+    --adaptive-term-cap) AD_TERM_CAP=$2; shift 2 ;;
+    --adaptive-max-block-gates) AD_MAX_BLOCK_GATES=$2; shift 2 ;;
+    --adaptive-segments) AD_SEGMENTS=$2; shift 2 ;;
+    --adaptive-avoid-radius) AD_AVOID_RADIUS=$2; shift 2 ;;
+    --adaptive-refinement-levels) AD_REFINEMENT_LEVELS=$2; shift 2 ;;
+    --adaptive-min-refine-gates) AD_MIN_REFINE_GATES=$2; shift 2 ;;
+    --adaptive-census-batches) AD_CENSUS_BATCHES=$2; shift 2 ;;
+    --adaptive-accept) AD_ACCEPT=$2; shift 2 ;;
+    --adaptive-no-canonical-order) AD_CANON=0; shift ;;
     --delivery-anf-only) DELIV_ANF_ONLY=1; shift ;;
     --delivery-time-limit) DELIV_TIME_LIMIT=$2; shift 2 ;;
     --delivery-restarts) DELIV_RESTARTS=$2; shift 2 ;;
@@ -334,9 +413,11 @@ N=$(bounded_uint --source-wires "$N" 3 4095)
 case "$PREPROCESSING_MODE" in
   product-2223|2223|nonlinear193)
     fatal "$PREPROCESSING_MODE is retired from new TDP runs; resume saved runs with the checkout that created them" ;;
-  nonlinear291|embedded-masking) ;;
-  *) fatal "--preprocessing-mode must be embedded-masking or nonlinear291" ;;
+  nonlinear291|embedded-masking|three-mask) ;;
+  *) fatal "--preprocessing-mode must be embedded-masking, three-mask or nonlinear291" ;;
 esac
+case "$SOURCE_CONSTRUCTION" in random|balanced) ;; *) fatal "--source-construction must be random or balanced" ;; esac
+case "$DELIV_MODE" in adaptive|windowed) ;; *) fatal "--delivery-mode must be adaptive or windowed" ;; esac
 STOP_AFTER=$(bounded_uint --run-stop-after-stage "$STOP_AFTER" 2 6)
 [ "$FORCE_FROM" = 99 ] || FORCE_FROM=$(bounded_uint --run-rerun-from-stage "$FORCE_FROM" 2 6)
 # ---- optional stages (every stage after the first; 6 = delivery, the last) ----
@@ -350,8 +431,11 @@ if [ -n "$SKIP_LIST" ]; then
   done
 fi
 stage_on() { [ "$1" -le "$STOP_AFTER" ] && [[ $SKIP != *",$1,"* ]]; }
-# the unpacking sub-step of stage 6 runs unless --delivery-anf-only
-unpacking_on() { stage_on 6 && [ "$DELIV_ANF_ONLY" = 0 ]; }
+# stage 6 in its adaptive mode, or in its windowed mode (whose unpacking
+# sub-step runs unless --delivery-anf-only)
+adaptive_on() { stage_on 6 && [ "$DELIV_MODE" = adaptive ]; }
+packing_on() { stage_on 6 && [ "$DELIV_MODE" = windowed ]; }
+unpacking_on() { packing_on && [ "$DELIV_ANF_ONLY" = 0 ]; }
 PIECES=$(bounded_uint --parallel-pieces "$PIECES" 1 64)
 if [ -n "$MIN_BLOCK_SIZE" ]; then
   [ "$PIECES_SET" -eq 0 ] || fatal "--parallel-target-piece-gates is mutually exclusive with --parallel-pieces (including 1)"
@@ -393,11 +477,51 @@ KNOB_ORDER=(mask-pair-wires max-open-masks min-open-masks balanced-masks shuffli
   shuffling-return-home premask seed-avoid-c1 chain chain-len)
 declare -A EFF=()
 GEN_ENV=()
-if [ "$PREPROCESSING_MODE" = nonlinear291 ]; then
+# ---- three-mask knobs (--preprocessing-mode three-mask only; defaults = the
+# campaign configuration "three-mask modified / v2"; the outer blocks are L8) ----
+declare -A TM_BASE=([band-wires]=0 [banks]=8 [retire-budget]=2 [max-retiring]=0 [rotation]=1 [maturity]=2
+  [visit-sweeps]=2 [growth]=8 [warmup]=4 [segments]=6 [mask-count]=3 [random-helpers]=1 [unique-cover]=1)
+declare -A TM_VAR=([band-wires]=THREE_MASK_BAND_WIRES [banks]=THREE_MASK_BANKS [retire-budget]=THREE_MASK_RETIRE_BUDGET
+  [max-retiring]=THREE_MASK_MAX_RETIRING [rotation]=THREE_MASK_ROTATION [maturity]=THREE_MASK_MATURITY
+  [visit-sweeps]=THREE_MASK_VISIT_SWEEPS [growth]=THREE_MASK_GROWTH [warmup]=THREE_MASK_WARMUP
+  [segments]=THREE_MASK_SEGMENTS [mask-count]=THREE_MASK_MASK_COUNT [random-helpers]=THREE_MASK_RANDOM_HELPERS
+  [unique-cover]=THREE_MASK_UNIQUE_COVER)
+TM_ORDER=(band-wires banks retire-budget max-retiring rotation maturity visit-sweeps growth warmup segments
+  mask-count random-helpers unique-cover)
+declare -A TM_EFF=()
+if [ "$PREPROCESSING_MODE" != three-mask ] && [ "${#TM[@]}" -gt 0 ]; then
+  for k in "${!TM[@]}"; do fatal "--three-mask-$k is only valid with --preprocessing-mode three-mask"; done
+fi
+if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
   [ -z "$PRESET" ] || fatal "--preprocessing-preset applies only to embedded-masking"
   [ "${#KNOB[@]}" -eq 0 ] ||
     fatal "preprocessing mask and shuffling controls are only valid with --preprocessing-mode embedded-masking"
   PRESET=none
+  if [ "$PREPROCESSING_MODE" = three-mask ]; then
+    tv() { echo "${TM[$1]:-${TM_BASE[$1]}}"; }
+    TM_EFF[band-wires]=$(bounded_uint --three-mask-band-wires "$(tv band-wires)" 0 65536)
+    TM_EFF[banks]=$(bounded_uint --three-mask-banks "$(tv banks)" 4 4096)
+    TM_EFF[retire-budget]=$(bounded_uint --three-mask-retire-budget "$(tv retire-budget)" 1 1000)
+    TM_EFF[max-retiring]=$(bounded_uint --three-mask-max-retiring "$(tv max-retiring)" 0 4096)
+    TM_EFF[rotation]=$(bounded_uint --three-mask-rotation "$(tv rotation)" 0 1000000)
+    TM_EFF[maturity]=$(bounded_uint --three-mask-maturity "$(tv maturity)" 0 1000000)
+    TM_EFF[visit-sweeps]=$(bounded_uint --three-mask-visit-sweeps "$(tv visit-sweeps)" 1 1000000)
+    TM_EFF[growth]=$(bounded_uint --three-mask-growth "$(tv growth)" 0 1000000)
+    TM_EFF[warmup]=$(bounded_uint --three-mask-warmup "$(tv warmup)" 0 1000000)
+    TM_EFF[segments]=$(bounded_uint --three-mask-segments "$(tv segments)" 0 1000000)
+    TM_EFF[mask-count]=$(bounded_uint --three-mask-mask-count "$(tv mask-count)" 1 3)
+    TM_EFF[random-helpers]=$(bounded_uint --three-mask-random-helpers "$(tv random-helpers)" 0 1)
+    TM_EFF[unique-cover]=$(bounded_uint --three-mask-unique-cover "$(tv unique-cover)" 0 1)
+    r=${TM_EFF[band-wires]}
+    [ "$r" -eq 0 ] || { [ "$r" -ge 64 ] && [ $((r % 16)) -eq 0 ]; } ||
+      fatal "--three-mask-band-wires must be 0 (auto) or at least 64 and a multiple of 16"
+    [ $((TM_EFF[banks] % 2)) -eq 0 ] || fatal "--three-mask-banks must be even"
+    [ "${TM_EFF[max-retiring]}" -eq 0 ] || [ "${TM_EFF[max-retiring]}" -lt $((TM_EFF[banks] / 2)) ] ||
+      fatal "--three-mask-max-retiring must be 0 (auto) or less than half the bank count"
+    for k in "${TM_ORDER[@]}"; do
+      [ "${TM_EFF[$k]}" = "${TM_BASE[$k]}" ] || GEN_ENV+=("${TM_VAR[$k]}=${TM_EFF[$k]}")
+    done
+  fi
 else
   PRESET=${PRESET:-L8}
   case "$PRESET" in
@@ -467,7 +591,59 @@ if [ -n "$XMOVES" ] && [ "${SEEN[--crossing-move-budget-factor]+x}" = x ]; then
   fatal "--crossing-move-attempts (an absolute budget) and --crossing-move-budget-factor are exclusive"
 fi
 
-# ---- stage-6 (delivery) unpacking sub-step parameters ----
+# ---- stage-6 (delivery): the mode decides which parameter family applies ----
+WINDOWED_FLAGS=(--delivery-anf-only --delivery-time-limit --delivery-restarts --delivery-beam --delivery-max-rounds
+  --packing-window-gates --packing-interval-cap --packing-monomial-budget --packing-span-cap --packing-split-budget
+  --packing-fix-iterations --packing-fallback-iterations --packing-anf-cap-semantics --packing-allow-floor-miss
+  --packing-allow-over-budget)
+ADAPTIVE_FLAGS=(--adaptive-max-rounds --adaptive-stop-fraction --adaptive-seeds-per-block --adaptive-time-limit
+  --adaptive-restarts --adaptive-beam --adaptive-term-cap --adaptive-max-block-gates --adaptive-segments
+  --adaptive-avoid-radius --adaptive-refinement-levels --adaptive-min-refine-gates --adaptive-census-batches
+  --adaptive-accept --adaptive-no-canonical-order)
+if [ "$DELIV_MODE" = adaptive ]; then
+  for f in "${WINDOWED_FLAGS[@]}"; do
+    [ "${SEEN[$f]+x}" != x ] || fatal "$f applies only to --delivery-mode windowed (the adaptive mode's parameters are --adaptive-*)"
+  done
+else
+  for f in "${ADAPTIVE_FLAGS[@]}"; do
+    [ "${SEEN[$f]+x}" != x ] || fatal "$f applies only to --delivery-mode adaptive"
+  done
+fi
+# ---- stage-6 (delivery, adaptive mode) parameters ----
+AD_MAX_ROUNDS=$(bounded_uint --adaptive-max-rounds "$AD_MAX_ROUNDS" 0 1000)
+AD_STOP_FRACTION=$(bounded_number --adaptive-stop-fraction "$AD_STOP_FRACTION" 0 0.999999 0) || exit 2
+AD_SEEDS=$(bounded_uint --adaptive-seeds-per-block "$AD_SEEDS" 1 16)
+AD_TIME_LIMIT=$(bounded_number --adaptive-time-limit "$AD_TIME_LIMIT" 0 86400 1) || exit 2
+AD_RESTARTS=$(bounded_uint --adaptive-restarts "$AD_RESTARTS" 1 1000)
+AD_BEAM=$(bounded_uint --adaptive-beam "$AD_BEAM" 1 1000)
+AD_TERM_CAP=$(bounded_uint --adaptive-term-cap "$AD_TERM_CAP" 64 16777216)
+AD_MAX_BLOCK_GATES=$(bounded_uint --adaptive-max-block-gates "$AD_MAX_BLOCK_GATES" 2 100000000)
+AD_SEGMENTS=$(bounded_uint --adaptive-segments "$AD_SEGMENTS" 1 1024)
+AD_AVOID_RADIUS=$(bounded_uint --adaptive-avoid-radius "$AD_AVOID_RADIUS" 0 1000000)
+AD_REFINEMENT_LEVELS=$(bounded_uint --adaptive-refinement-levels "$AD_REFINEMENT_LEVELS" 0 16)
+AD_MIN_REFINE_GATES=$(bounded_uint --adaptive-min-refine-gates "$AD_MIN_REFINE_GATES" 1 100000000)
+AD_CENSUS_BATCHES=$(bounded_uint --adaptive-census-batches "$AD_CENSUS_BATCHES" 1 4096)
+case "$AD_ACCEPT" in smaller-not-leakier|smaller) ;; *) fatal "--adaptive-accept must be smaller-not-leakier or smaller" ;; esac
+# the binary's knobs only when not at their defaults (the marker records the list)
+ADFLAGS=()
+afl() { [ "$2" = "$3" ] || ADFLAGS+=("$1" "$2"); }
+afl --max-rounds "$AD_MAX_ROUNDS" 0
+afl --stop-fraction "$AD_STOP_FRACTION" 0.02
+afl --seeds-per-block "$AD_SEEDS" 2
+afl --time-limit "$AD_TIME_LIMIT" 60
+afl --restarts "$AD_RESTARTS" 16
+afl --beam "$AD_BEAM" 6
+afl --term-cap "$AD_TERM_CAP" 131072
+afl --max-block-gates "$AD_MAX_BLOCK_GATES" 65536
+afl --segments "$AD_SEGMENTS" 16
+afl --avoid-radius "$AD_AVOID_RADIUS" 64
+afl --refinement-levels "$AD_REFINEMENT_LEVELS" 2
+afl --min-refine-gates "$AD_MIN_REFINE_GATES" 128
+afl --census-batches "$AD_CENSUS_BATCHES" 96
+afl --accept "$AD_ACCEPT" smaller-not-leakier
+[ "$AD_CANON" = 1 ] || ADFLAGS+=(--no-canonical-order)
+
+# ---- stage-6 (delivery, windowed mode) unpacking sub-step parameters ----
 DELIV_TIME_LIMIT=$(bounded_number --delivery-time-limit "$DELIV_TIME_LIMIT" 0 86400 1) || exit 2
 DELIV_RESTARTS=$(bounded_uint --delivery-restarts "$DELIV_RESTARTS" 1 1000)
 DELIV_BEAM=$(bounded_uint --delivery-beam "$DELIV_BEAM" 1 1000)
@@ -491,7 +667,7 @@ PACK_SPLIT_BUDGET=$(bounded_uint --packing-split-budget "$PACK_SPLIT_BUDGET" 1 2
 PACK_FIX_ITERATIONS=$(bounded_uint --packing-fix-iterations "$PACK_FIX_ITERATIONS" 0 1000)
 PACK_FALLBACK_ITERATIONS=$(bounded_uint --packing-fallback-iterations "$PACK_FALLBACK_ITERATIONS" 0 1000)
 case "$PACK_CAP_SEM" in cpython39|canonical) ;; *) fatal "--packing-anf-cap-semantics must be cpython39 or canonical" ;; esac
-! stage_on 6 || [ "$N" -le 256 ] || fatal "stage 6 (delivery) supports source wires up to 256"
+! stage_on 6 || [ "$N" -le 256 ] || fatal "stage 6 (delivery, adaptive or windowed) supports source wires up to 256"
 PACKFLAGS=()
 pf() { [ "$2" = "$3" ] || PACKFLAGS+=("$1" "$2"); }
 pf --window-gates "$PACK_WINDOW_GATES" 512
@@ -509,6 +685,7 @@ pf --anf-cap-semantics "$PACK_CAP_SEM" cpython39
 if [ -n "$SOURCE_PATH" ]; then
   [ -s "$SOURCE_PATH" ] || fatal "--source-path $SOURCE_PATH is not a readable file"
   [ -n "$MCD" ] || fatal "--source-path needs --source-gates (its gate count)"
+  [ "$SOURCE_CONSTRUCTION" = random ] || fatal "--source-path and --source-construction balanced are exclusive"
   SOURCE_PATH=$(cd "$(dirname "$SOURCE_PATH")" && pwd)/$(basename "$SOURCE_PATH")
 fi
 case "$MCD_RULE" in validated|formula) ;; *) fatal "--source-gates-rule must be validated or formula" ;; esac
@@ -545,7 +722,8 @@ done
 
 BIN=${TDP_BIN_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/target/release}
 need=(gen_sandwich_gadget circuit_mixer)
-! stage_on 6 || need+=(tdp_packing)
+! adaptive_on || need+=(tdp_adaptive)
+! packing_on || need+=(tdp_packing)
 ! unpacking_on || need+=(tdp_unpacking)
 for b in "${need[@]}"; do
   [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first" >&2; exit 1; }
@@ -611,7 +789,7 @@ read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX EXPL_SPLIT EXPL_CROSS EXPL_U
   [ $((8#$mode & 8#077)) -eq 0 ] || fatal "--seed-file $f must not be accessible by group/other (chmod 600)"
   mapfile -t lines < "$f"
   if [ "${#lines[@]}" -eq 1 ] && [[ ${lines[0]} =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
-    fatal "seed file format 1 holds one seed; recipe v12 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
+    fatal "seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
   fi
   EXPL_GEN=""; EXPL_MIX=""; EXPL_SPLIT=""; EXPL_CROSS=""; EXPL_UNPACK=""
   for l in "${lines[@]}"; do
@@ -685,14 +863,19 @@ sha_of() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv
 
 # ---- stage-2 identity marker (tdp_stage12_recipe=7) ----
 STAGE12_RECIPE=(
-  "tdp_stage12_recipe=7"
+  "tdp_stage12_recipe=8"
   "gen_binary_sha256=$(sha_of "$BIN/gen_sandwich_gadget")"
   "sandwich_variant=classic"
+  "source_construction=$SOURCE_CONSTRUCTION"
   "preprocessing_mode=$PREPROCESSING_MODE"
   "preprocessing_preset=$PRESET"
 )
 if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
   for k in "${KNOB_ORDER[@]}"; do STAGE12_RECIPE+=("preprocessing_${k//-/_}=${EFF[$k]}"); done
+fi
+if [ "$PREPROCESSING_MODE" = three-mask ]; then
+  for k in "${TM_ORDER[@]}"; do STAGE12_RECIPE+=("three_mask_${k//-/_}=${TM_EFF[$k]}"); done
+  STAGE12_RECIPE+=("three_mask_outer_blocks=L8")
 fi
 gen_env_text=$(printf '%s,' ${GEN_ENV[@]+"${GEN_ENV[@]}"}); gen_env_text=${gen_env_text%,}
 STAGE12_RECIPE+=(
@@ -716,7 +899,7 @@ if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
 fi
 
 size_note=""; [ "$MCD_RULE" != formula ] || size_note=" UNVALIDATED SIZE"
-note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) s=$S_SL slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION"
+note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) source=$SOURCE_CONSTRUCTION s=$S_SL slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION delivery=$DELIV_MODE"
 note "seeds: $SEED_SRC (values never printed)"
 for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache sizes are set by the driver (exact memo caches; stage-3 bytes matched the reference runs under the built-in sizes)"; done
 
@@ -724,6 +907,7 @@ for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache siz
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   RECIPE_ENV=(${GEN_ENV[@]+"${GEN_ENV[@]}"})
   [ -z "$SOURCE_PATH" ] || RECIPE_ENV+=(TDP_SOURCE_C="$SOURCE_PATH")
+  [ "$SOURCE_CONSTRUCTION" = random ] || RECIPE_ENV+=(TDP_SOURCE_CONSTRUCTION="$SOURCE_CONSTRUCTION")
   # val_chain.sh's argv, except that the three seeds (all = the gen seed) arrive
   # as @/dev/fd/N here-strings: a seed on argv is visible in ps to every local
   # user, and the gen seed regenerates C. gen prints them as "(file)".
@@ -1060,7 +1244,99 @@ else
 fi
 stop_here 5
 
-# ---- stage 6: delivery = tdp_packing run (windowed ANF delivery), then
+# ---- stage 6: delivery ----
+# One stage, one completion marker (delivery.recipe), one log (stage6.log),
+# one failure marker (delivery.failed: exit=<rc> and step=adaptive|packing|unpacking).
+adaptive_exit_meaning() {
+  case "$1" in
+    2) echo "usage or parameter error" ;; 3) echo "input error" ;;
+    4) echo "verification or synthesis failure" ;; 7) echo "I/O error writing outputs" ;;
+    8) echo "internal invariant violated" ;; 101) echo "panic" ;; *) echo "unknown exit code" ;;
+  esac
+}
+MARKER=$RUN/delivery.recipe; FAILED=$RUN/delivery.failed
+if [ "$DELIV_MODE" = adaptive ]; then
+# ---- adaptive mode: tdp_adaptive run (the C-aware adaptive resynthesis,
+# docs/ADAPTIVE_STAGE.md). Its outputs live in adaptive/: the per-round
+# directories (resumable: a completed round is reloaded, not recomputed),
+# boundary.txt, progress.txt, final.mpmct1 (THE PUBLISHED CIRCUIT),
+# adaptive.report and adaptive.log. An interrupted attempt of the same recipe
+# (adaptive/attempt.recipe = the expected marker text) resumes; any other
+# rerun starts afresh.
+ADAPT_DIR=$RUN/adaptive; FINAL_DIR=$ADAPT_DIR; FINAL=$ADAPT_DIR/final.mpmct1
+if stage_on 6; then
+expected_marker() {
+  echo "delivery_recipe=2"
+  echo "delivery_mode=adaptive"
+  echo "tdp_adaptive_sha256=$(sha_of "$BIN/tdp_adaptive")"
+  echo "adaptive_params=${ADFLAGS[*]:-default}"
+  mac --seed unpack
+  mac stage2="$STAGE2_INPUT" stage3="$CUR" source_c="$GADGET.source_c.g57" sandwich="$GADGET.sandwich.mpmct1"
+}
+DELIV_OUTPUTS=(final="$FINAL")
+stage6_done=0
+if [ "$FORCE_FROM" -gt 6 ] && [ -s "$MARKER" ]; then
+  exp=$(expected_marker)
+  nexp=$(printf '%s\n' "$exp" | wc -l | tr -d ' ')
+  if [ -s "$FINAL" ] && [ "$(head -n "$nexp" "$MARKER")" = "$exp" ] &&
+     [ "$(sed -n "$((nexp + 1))p" "$MARKER")" = "$(mac "${DELIV_OUTPUTS[@]}")" ]; then
+    stage6_done=1
+    note "stage 6: $FINAL matches its completion marker, skipping"
+  else
+    note "stage 6: completion marker does not match inputs/parameters/binaries/outputs; re-running stage 6"
+  fi
+fi
+if [ "$stage6_done" -eq 0 ]; then
+  rm -f "$MARKER" "$FAILED"
+  ATTEMPT=$ADAPT_DIR/attempt.recipe
+  if [ "$FORCE_FROM" -le 6 ] || [ ! -s "$ATTEMPT" ] || [ "$(cat "$ATTEMPT")" != "$(expected_marker)" ]; then
+    rm -rf "$ADAPT_DIR" "$RUN/stage6.log"
+    mkdir -p "$ADAPT_DIR"
+    expected_marker > "$ATTEMPT"
+  else
+    note "stage 6 (adaptive): resuming the interrupted attempt in $ADAPT_DIR (completed rounds are kept)"
+  fi
+  THREADFLAGS=(); [ -z "$THREADS" ] || THREADFLAGS=(--threads "$THREADS")
+  note "stage 6 (delivery, adaptive): tdp_adaptive run on $(basename "$CUR") (max rounds $AD_MAX_ROUNDS, stop fraction $AD_STOP_FRACTION, $AD_SEEDS seeds per block, time limit $AD_TIME_LIMIT s${ADFLAGS[*]:+; flags ${ADFLAGS[*]}})"
+  RECIPE_ENV=()
+  set +e
+  stage_exec "$BIN/tdp_adaptive" run --input "$CUR" --source-c "$GADGET.source_c.g57" --n "$N" \
+      --sandwich "$GADGET.sandwich.mpmct1" --out-dir "$ADAPT_DIR" --seed-file /dev/fd/3 \
+      ${ADFLAGS[@]+"${ADFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} 3<<< "$UNPACK_SEED" \
+      >> "$RUN/stage6.log" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    printf 'exit=%s\nstep=adaptive\n' "$rc" > "$FAILED"
+    wait_side
+    note "stage 6 FAILED: adaptive exit $rc ($(adaptive_exit_meaning "$rc")); see $RUN/stage6.log"
+    exit "$rc"
+  fi
+  for f in "$ADAPT_DIR/adaptive.report" "$FINAL"; do
+    [ -s "$f" ] || fatal "tdp_adaptive exited 0 but did not write $f (docs/ADAPTIVE_STAGE.md); see $RUN/stage6.log"
+  done
+  astatus=$(sed -n 's/^status=//p' "$ADAPT_DIR/adaptive.report")
+  [ -n "$astatus" ] || fatal "$ADAPT_DIR/adaptive.report has no status= line; see $RUN/stage6.log"
+  arounds=$(sed -n 's/^rounds=//p' "$ADAPT_DIR/adaptive.report")
+  areason=$(sed -n 's/^stop_reason=//p' "$ADAPT_DIR/adaptive.report")
+  { expected_marker; mac "${DELIV_OUTPUTS[@]}"
+    printf 'status=%s\nadaptive_status=%s\nrounds=%s\nstop_reason=%s\n' "$astatus" "$astatus" "$arounds" "$areason"; } > "$MARKER.tmp"
+  mv "$MARKER.tmp" "$MARKER"
+  rm -f "$ATTEMPT"
+  note "stage 6 done (adaptive): $FINAL $(gates_of "$FINAL") gates after $arounds rounds ($areason)"
+fi
+status=$(sed -n 's/^status=//p' "$MARKER")
+rm -f "$ADAPT_DIR/NOT_RECOMMENDED"
+if [ "$status" != ok ]; then
+  grep -E '^(status|adaptive_status)=' "$MARKER" > "$FINAL_DIR/NOT_RECOMMENDED"
+  note "stage 6 FINISHED WITH AN ALLOWED FAILURE (status=$status): $FINAL is NOT a recommended deliverable"
+fi
+CUR=$FINAL; RAN="$RAN,6"
+else
+  note "stage 6: SKIPPED"
+fi
+else
+# ---- windowed mode: tdp_packing run (windowed ANF delivery), then
 # tdp_unpacking run --refine (resynthesis with lattice refinement) ----
 # One stage, one completion marker (delivery.recipe), one log (stage6.log,
 # the two sub-steps appended with a separator), one failure marker
@@ -1068,7 +1344,7 @@ stop_here 5
 # outputs stay in packing/ (rep<G>.* is what the parity tooling reads), the
 # refine sub-step's in unpacking/: deliverable.tdp4 (the refined lattice),
 # bounds.final, unpacked.mpmct1, windows.tsv, rounds.tsv, unpacking.report.
-PACK_DIR=$RUN/packing; UNPACK_DIR=$RUN/unpacking; MARKER=$RUN/delivery.recipe; FAILED=$RUN/delivery.failed
+PACK_DIR=$RUN/packing; UNPACK_DIR=$RUN/unpacking
 # the repaired circuit the packer writes, named by its window size (rep<G>.*): the lattice the refinement starts from
 PACKED=$PACK_DIR/rep$PACK_WINDOW_GATES.mpmct1; PACKED_BOUNDS=$PACK_DIR/rep$PACK_WINDOW_GATES.bounds
 packing_exit_meaning() {
@@ -1193,6 +1469,7 @@ fi
 CUR=$FINAL; RAN="$RAN,6"
 else
   note "stage 6: SKIPPED"
+fi
 fi
 wait_side
 if stage_on 6 && [ -e "$FINAL_DIR/NOT_RECOMMENDED" ]; then

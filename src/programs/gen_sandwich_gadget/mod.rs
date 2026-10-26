@@ -443,6 +443,10 @@ pub fn run() {
             }
             (output.circuit, output.guarded)
         }
+        PreprocessingMode::ThreeMask => {
+            // the three-mask compute is wired in by the stage-2 port
+            panic!("three-mask preprocessing is not available in this build")
+        }
         PreprocessingMode::Nonlinear291 => {
             let output = preprocess_sandwich(
                 &sandwich,

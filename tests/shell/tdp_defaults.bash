@@ -15,7 +15,7 @@
 #       repair.sh TAG 512 N and anf_dump_eval.py; the managed stage 6 is
 #       `tdp_packing run` with every parameter at its default and no
 #       unpacking sub-step (the managed driver runs with --run-skip-stages 4,5
-#       --delivery-anf-only: the oracle chain's stages).
+#       --delivery-mode windowed --delivery-anf-only: the oracle chain's stages).
 # Plus: G with 4*G*1.3 having a fractional part >= .5 (int, not round), the
 # n=64/128 default sizes, n=32 without size (fatal), and one case per
 # forbidden variable exported in the caller (fatal, naming it).
@@ -55,7 +55,7 @@ rewrite "$VC" "bash \$W/repair.sh" "\$W/repair.sh" 1
 rewrite "$VC" "python3 \$W/anf_dump_eval.py" "\$W/anf_dump_eval.py" 1
 # ---- the managed side's mocks ----
 BIN=$tmp/bin; mkdir -p "$BIN"
-for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$MOCK" "$BIN/$b"; done
+for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking tdp_adaptive; do ln -s "$MOCK" "$BIN/$b"; done
 
 seedfile() { # FILE GEN MIX
   printf 'gen_seed=%s\nmix_seed=%s\n' "$2" "$3" > "$1"; chmod 600 "$1"
@@ -72,10 +72,10 @@ run_pair() { # LABEL N MC CFG GATES GEN MIX [managed size flags...]
   local sf=$tmp/$label.seeds; seedfile "$sf" "$gs" "$ms"
   mkdir -p "$tmp/m"; printf 'gen_gates=%s\n' "$gates" > "$tmp/m/$label.mock"
   local preset=(); [ "$cfg" = A ] && preset=(--preprocessing-preset A)
-  # --run-skip-stages 4,5 --delivery-anf-only: the oracle chain has four stages
+  # --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only: the oracle chain has four stages
   env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" FROZEN_DB_DIR="$STORE" \
     bash "$root/scripts/tdp_gen.sh" --source-wires "$n" --run-directory "$tmp/m/$label" \
-      --seed-file "$sf" --run-skip-stages 4,5 --delivery-anf-only ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
+      --seed-file "$sf" --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
     { cat "$tmp/$label.m.log" >&2; exit 1; }
 }
 python_compare() { # LABEL N MANAGED_CALLS
@@ -197,15 +197,15 @@ want = ["--input", "tdp.mpmct1", "--output", "db_mixing.mpmct1", "--tdp", "--db-
         "--seed", "67890"]
 assert c == want, c
 PY
-# the Rust driver (when built): same transcript from a v4 TOML holding only
-# n, the store, the seeds, run.skip_stages = [4, 5] and delivery.anf_only
+# the Rust driver (when built): same transcript from a v5 TOML holding only
+# n, the store, the seeds, run.skip_stages = [4, 5], delivery.mode = "windowed" and delivery.anf_only
 # (preset A only for d64A), for every documented default path: L8 and A at
 # n=64, the n=128 validated size, against the same oracle transcripts as the
 # bash driver
 if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
   host=$(rustc -vV | sed -n 's/^host: //p')
   RT=$tmp/rtarget/$host/release; mkdir -p "$RT"
-  for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$MOCK" "$RT/$b"; done
+  for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking tdp_adaptive; do ln -s "$MOCK" "$RT/$b"; done
   # the fake store has no tables: validate_frozen_store would refuse it, so give it the files
   : > "$STORE/tables.bin"; echo x > "$STORE/tables.bin"
   for i in $(seq 0 255); do printf 'x' > "$STORE/shard_$(printf %02x "$i").frz"; done
@@ -215,7 +215,7 @@ if [ -n "${LOCAL_MIXING_BIN:-}" ] && [ -x "$LOCAL_MIXING_BIN" ]; then
     printf 'gen_gates=%s\n' "$gates" > "$run.mock"
     local preset=""; [ "$cfg" = A ] && preset='preset = "A"'
     cat > "$run.toml" <<TOML
-config_version = 4
+config_version = 5
 [run]
 directory = "$run"
 build_directory = "$tmp/rtarget"
@@ -228,6 +228,7 @@ regular_dir = "$STORE"
 [preprocessing]
 $preset
 [delivery]
+mode = "windowed"
 anf_only = true
 [calibration]
 enabled = true

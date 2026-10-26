@@ -41,6 +41,15 @@ where
     validate_path_separation(&run_dir, &build_target_dir, frozen_db.path.as_deref())?;
 
     let preprocessing_mode = parse_preprocessing_mode(raw)?;
+    let source_construction = match raw.value("source_construction").unwrap_or("random") {
+        value => SourceConstruction::parse(value).ok_or_else(|| {
+            config_error(
+                raw,
+                "source_construction",
+                &format!("expected \"random\" or \"balanced\"; got {value:?}"),
+            )
+        })?,
+    };
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
         .value("calibration_seed_file")
@@ -70,6 +79,13 @@ where
     let source_path = raw
         .value("source_path")
         .map(|value| resolve_path(repo_root, Path::new(value)));
+    if source_path.is_some() && source_construction != SourceConstruction::Random {
+        return Err(config_error(
+            raw,
+            "source_construction",
+            "a supplied source.path is exclusive with the balanced construction (remove one)",
+        ));
+    }
     if let Some(path) = &source_path {
         let bytes =
             fs::read(path).map_err(|e| format!("cannot read source {}: {e}", path.display()))?;
@@ -107,19 +123,22 @@ where
         .copied()
         .filter(|key| raw.value(key).is_some())
         .collect();
-    let (preset, knobs) = if preprocessing_mode == PreprocessingMode::Nonlinear291 {
+    let (preset, knobs) = if preprocessing_mode != PreprocessingMode::EmbeddedMasking {
+        let mode = preprocessing_mode.canonical_name();
         if raw.value("preset").is_some() {
             return Err(config_error(
                 raw,
                 "preset",
-                "applies only to embedded-masking; remove it for nonlinear291",
+                &format!("applies only to embedded-masking; remove it for {mode}"),
             ));
         }
         if let Some(key) = present.first() {
             return Err(config_error(
                 raw,
                 key,
-                "preprocessing mask controls apply only to embedded-masking; omit them for nonlinear291",
+                &format!(
+                    "preprocessing mask controls apply only to embedded-masking; omit them for {mode}"
+                ),
             ));
         }
         (Preset::None, Stage2Knobs::BASE)
@@ -186,6 +205,75 @@ where
             }
         }
     };
+    // [three_mask]: only under preprocessing.mode = "three-mask"
+    const THREE_MASK_KEYS: [&str; 13] = [
+        "three_mask_band_wires",
+        "three_mask_banks",
+        "three_mask_retire_budget",
+        "three_mask_max_retiring",
+        "three_mask_rotation",
+        "three_mask_maturity",
+        "three_mask_visit_sweeps",
+        "three_mask_growth",
+        "three_mask_warmup",
+        "three_mask_segments",
+        "three_mask_mask_count",
+        "three_mask_random_helpers",
+        "three_mask_unique_cover",
+    ];
+    if preprocessing_mode != PreprocessingMode::ThreeMask
+        && let Some(key) = THREE_MASK_KEYS
+            .iter()
+            .copied()
+            .find(|key| raw.value(key).is_some())
+    {
+        return Err(config_error(
+            raw,
+            key,
+            "applies only to preprocessing.mode = \"three-mask\"",
+        ));
+    }
+    let tm = ThreeMaskConfig::default();
+    let tm_u64 = |key: &str, default: u64, min: u64, max: u64| -> Result<u64, String> {
+        Ok(parse_optional_u64(raw, key, min, max)?
+            .map(|v| v.parse::<u64>().expect("validated"))
+            .unwrap_or(default))
+    };
+    let three_mask = ThreeMaskConfig {
+        band_wires: tm_u64("three_mask_band_wires", tm.band_wires, 0, 65_536)?,
+        banks: tm_u64("three_mask_banks", tm.banks, 4, 4096)?,
+        retire_budget: tm_u64("three_mask_retire_budget", tm.retire_budget, 1, 1000)?,
+        max_retiring: tm_u64("three_mask_max_retiring", tm.max_retiring, 0, 4096)?,
+        rotation: tm_u64("three_mask_rotation", tm.rotation, 0, 1_000_000)?,
+        maturity: tm_u64("three_mask_maturity", tm.maturity, 0, 1_000_000)?,
+        visit_sweeps: tm_u64("three_mask_visit_sweeps", tm.visit_sweeps, 1, 1_000_000)?,
+        growth: tm_u64("three_mask_growth", tm.growth, 0, 1_000_000)?,
+        warmup: tm_u64("three_mask_warmup", tm.warmup, 0, 1_000_000)?,
+        segments: tm_u64("three_mask_segments", tm.segments, 0, 1_000_000)?,
+        mask_count: tm_u64("three_mask_mask_count", tm.mask_count, 1, 3)?,
+        random_helpers: parse_bool(raw, "three_mask_random_helpers", tm.random_helpers)?,
+        unique_cover: parse_bool(raw, "three_mask_unique_cover", tm.unique_cover)?,
+    };
+    if preprocessing_mode == PreprocessingMode::ThreeMask {
+        let r = three_mask.band_wires;
+        if r != 0 && (r < 64 || r % 16 != 0) {
+            return Err(config_error(
+                raw,
+                "three_mask_band_wires",
+                "must be 0 (auto) or at least 64 and a multiple of 16",
+            ));
+        }
+        if three_mask.banks % 2 != 0 {
+            return Err(config_error(raw, "three_mask_banks", "must be even"));
+        }
+        if three_mask.max_retiring != 0 && three_mask.max_retiring >= three_mask.banks / 2 {
+            return Err(config_error(
+                raw,
+                "three_mask_max_retiring",
+                "must be 0 (auto) or less than half the bank count",
+            ));
+        }
+    }
     let qc_enabled = parse_bool(raw, "qc_enabled", false)?;
     let qc_seed = parse_optional_u64(raw, "qc_seed", 0, u64::MAX)?
         .unwrap_or_else(|| "20803".into())
@@ -378,7 +466,7 @@ where
         return Err(config_error(
             raw,
             "n",
-            "stage 6 (delivery) supports source.wires up to 256; stop before stage 6 or skip it for larger n",
+            "stage 6 (delivery, adaptive or windowed) supports source.wires up to 256; stop before stage 6 or skip it for larger n",
         ));
     }
     // Refuse up front what stage 6 would refuse only after stages 1-5 ran.
@@ -425,9 +513,134 @@ where
             "an absolute move budget is exclusive with `crossing.move_budget_factor`",
         ));
     }
-    // [delivery] (the unpacking sub-step of stage 6)
+    // [delivery]: the mode, then the windowed mode's unpacking sub-step
     let dd = DeliveryConfig::default();
+    let delivery_mode = match raw.value("delivery_mode").unwrap_or("adaptive") {
+        value => DeliveryMode::parse(value).ok_or_else(|| {
+            config_error(
+                raw,
+                "delivery_mode",
+                &format!("expected \"adaptive\" or \"windowed\"; got {value:?}"),
+            )
+        })?,
+    };
+    const WINDOWED_KEYS: [&str; 15] = [
+        "delivery_anf_only",
+        "delivery_time_limit",
+        "delivery_restarts",
+        "delivery_beam",
+        "delivery_max_rounds",
+        "packing_window_gates",
+        "packing_interval_cap",
+        "packing_monomial_budget",
+        "packing_span_cap",
+        "packing_split_budget",
+        "packing_fix_iterations",
+        "packing_fallback_iterations",
+        "packing_anf_cap_semantics",
+        "packing_allow_floor_miss",
+        "packing_allow_over_budget",
+    ];
+    const ADAPTIVE_KEYS: [&str; 15] = [
+        "adaptive_max_rounds",
+        "adaptive_stop_fraction",
+        "adaptive_seeds_per_block",
+        "adaptive_time_limit",
+        "adaptive_restarts",
+        "adaptive_beam",
+        "adaptive_term_cap",
+        "adaptive_max_block_gates",
+        "adaptive_segments",
+        "adaptive_avoid_radius",
+        "adaptive_refinement_levels",
+        "adaptive_min_refine_gates",
+        "adaptive_census_batches",
+        "adaptive_accept",
+        "adaptive_canonical_order",
+    ];
+    if delivery_mode == DeliveryMode::Adaptive
+        && let Some(key) = WINDOWED_KEYS
+            .iter()
+            .copied()
+            .find(|key| raw.value(key).is_some())
+    {
+        return Err(config_error(
+            raw,
+            key,
+            "applies only to delivery.mode = \"windowed\" (the adaptive mode's parameters are [adaptive])",
+        ));
+    }
+    if delivery_mode == DeliveryMode::Windowed
+        && let Some(key) = ADAPTIVE_KEYS
+            .iter()
+            .copied()
+            .find(|key| raw.value(key).is_some())
+    {
+        return Err(config_error(
+            raw,
+            key,
+            "applies only to delivery.mode = \"adaptive\"",
+        ));
+    }
+    let ad = AdaptiveConfig::default();
+    let ad_u64 = |key: &str, default: u64, min: u64, max: u64| -> Result<u64, String> {
+        Ok(parse_optional_u64(raw, key, min, max)?
+            .map(|v| v.parse::<u64>().expect("validated"))
+            .unwrap_or(default))
+    };
+    let adaptive = AdaptiveConfig {
+        max_rounds: ad_u64("adaptive_max_rounds", ad.max_rounds, 0, 1000)?,
+        stop_fraction: parse_optional_f64(
+            raw,
+            "adaptive_stop_fraction",
+            |value| (0.0..1.0).contains(&value),
+            "must be in [0, 1)",
+        )?
+        .unwrap_or(ad.stop_fraction),
+        seeds_per_block: ad_u64("adaptive_seeds_per_block", ad.seeds_per_block, 1, 16)?,
+        time_limit: parse_optional_f64(
+            raw,
+            "adaptive_time_limit",
+            |value| value > 0.0 && value <= 86_400.0,
+            "must be in (0, 86400]",
+        )?
+        .unwrap_or(ad.time_limit),
+        restarts: ad_u64("adaptive_restarts", ad.restarts, 1, 1000)?,
+        beam: ad_u64("adaptive_beam", ad.beam, 1, 1000)?,
+        term_cap: ad_u64("adaptive_term_cap", ad.term_cap, 64, 16_777_216)?,
+        max_block_gates: ad_u64(
+            "adaptive_max_block_gates",
+            ad.max_block_gates,
+            2,
+            100_000_000,
+        )?,
+        segments: ad_u64("adaptive_segments", ad.segments, 1, 1024)?,
+        avoid_radius: ad_u64("adaptive_avoid_radius", ad.avoid_radius, 0, 1_000_000)?,
+        refinement_levels: ad_u64("adaptive_refinement_levels", ad.refinement_levels, 0, 16)?,
+        min_refine_gates: ad_u64(
+            "adaptive_min_refine_gates",
+            ad.min_refine_gates,
+            1,
+            100_000_000,
+        )?,
+        census_batches: ad_u64("adaptive_census_batches", ad.census_batches, 1, 4096)?,
+        accept: match raw
+            .value("adaptive_accept")
+            .unwrap_or("smaller-not-leakier")
+        {
+            v @ ("smaller-not-leakier" | "smaller") => v.to_string(),
+            other => {
+                return Err(config_error(
+                    raw,
+                    "adaptive_accept",
+                    &format!("expected \"smaller-not-leakier\" or \"smaller\"; got {other:?}"),
+                ));
+            }
+        },
+        canonical_order: parse_bool(raw, "adaptive_canonical_order", ad.canonical_order)?,
+    };
     let delivery = DeliveryConfig {
+        mode: delivery_mode,
         anf_only: parse_bool(raw, "delivery_anf_only", dd.anf_only)?,
         time_limit: parse_optional_f64(
             raw,
@@ -540,6 +753,8 @@ where
         adopt_existing_run,
         frozen_db,
         preprocessing_mode,
+        three_mask,
+        source_construction,
         calibration_only,
         seeds,
         mcd,
@@ -548,6 +763,7 @@ where
         packing,
         crossing,
         delivery,
+        adaptive,
         threads,
         stop_after,
         force_from,
@@ -742,7 +958,7 @@ pub(crate) fn read_seed_file(path: &Path) -> Result<ExplicitSeeds, String> {
 pub(crate) fn parse_seed_text(contents: &str) -> Result<ExplicitSeeds, String> {
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
     if lines.len() == 1 && lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
-        return Err("seed file format 1 holds one seed; recipe v12 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
+        return Err("seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
     }
     const LINES: &str = "only gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=";
     let mut gen_seed = None;

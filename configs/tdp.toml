@@ -6,37 +6,44 @@
 # Full explanations and shell-flag mapping: docs/tdp_pipeline.md.
 #
 # Six stages: 1 sandwich + 2 preprocessing (one step), 3 db_mixing,
-# 4 splitting, 5 crossing walk, 6 delivery = packing (windowed ANF delivery)
-# then unpacking with lattice refinement (every window resynthesized from its
-# ANF alone; a window that does not resynthesize is cut in two and both halves
-# repacked and unpacked; canonical gate order). Every stage after the first is
-# optional (run.skip_stages); the default runs all six and ends with
-# unpacking/unpacked.mpmct1 (the published circuit, the TDP: the resynthesized
-# windows in canonical order; nothing else ships). unpacking/deliverable.tdp4
-# (the refined lattice of window ANFs) is an internal record, the form the
-# circuit was resynthesized from; an ANF file is the published object only
-# under delivery.anf_only (then packing/deliverable.tdp4, and the recipient
-# does the unpacking).
+# 4 splitting, 5 crossing walk, 6 delivery. Stage 6 has two modes
+# (delivery.mode): "adaptive" (the default since recipe v13): the C-aware
+# adaptive resynthesis of the stage-5 circuit in large variable-length blocks
+# whose boundaries avoid cuts where an internal value of C is recoverable,
+# repeated round after round until the size plateaus, the smallest round
+# output canonically reordered -> adaptive/final.mpmct1 (the published
+# circuit, the TDP); "windowed" (recipe v12's stage 6): packing (windowed ANF
+# delivery) then unpacking with lattice refinement -> unpacking/unpacked.mpmct1
+# (or, under delivery.anf_only, the ANF deliverable packing/deliverable.tdp4,
+# which the recipient unpacks). Every stage after the first is optional
+# (run.skip_stages); the default runs all six.
+#
+# Stage 2 has three constructions (preprocessing.mode): "embedded-masking"
+# (the default, preset L8), "three-mask" (the three-mask compute inside the
+# L8 outer blocks, knobs in [three_mask]; the default knobs are the campaign
+# configuration "three-mask modified / v2") and "nonlinear291". The source C
+# is uniformly random or, with source.construction = "balanced", RC's
+# balanced construction (every internal value read exactly twice).
 #
 # Defaults of stages 1-3 and the packer reproduce val_chain.sh CONFIG=L8 as
 # run for vL64a/b, vL128a/b (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset
 # L8, stage-3 schedule `validated` (profile 2,2,2,2,2, serial), packing G=512
 # / split budget 65536; source.gates defaults to 1000 (n=64) / 3000 (n=128);
-# skip_stages = [4, 5] with delivery.anf_only = true is that four-stage chain
-# exactly. Stages 4 and 5 use the archive-era driver's flags (ea2e516f). No
-# stage-2 or stage-3 knob is set here: a preset or schedule field next to
-# `L8` / `validated` is an error, so an old template cannot silently produce
-# a hybrid recipe.
-config_version = 4  # required TOML schema version (distinct from the saved recipe v12)
+# skip_stages = [4, 5] with delivery.mode = "windowed" and delivery.anf_only
+# = true is that four-stage chain exactly. Stages 4 and 5 use the archive-era
+# driver's flags (ea2e516f). No stage-2 or stage-3 knob is set here: a preset
+# or schedule field next to `L8` / `validated` is an error, so an old
+# template cannot silently produce a hybrid recipe.
+config_version = 5  # required TOML schema version (distinct from the saved recipe v13)
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
-build_binaries = true  # bool; build gen_sandwich_gadget, circuit_mixer, tdp_packing and tdp_unpacking for fresh runs
+build_binaries = true  # bool; build gen_sandwich_gadget, circuit_mixer, tdp_adaptive, tdp_packing and tdp_unpacking for fresh runs
 # build_directory = "target"  # string; default CARGO_TARGET_DIR, otherwise target
 # skip_stages = [4, 5]  # integers in 2..6; stages not run [none]
 # stop_after_stage = 6  # integer 2..6 [6]; steps 1 and 2 run together
 # rerun_from_stage = 3  # integer 2..6; redo this stage and every later reached stage
-# threads = 8  # integer 1..1024; pins RAYON_NUM_THREADS and the --threads of both stage-6 binaries
+# threads = 8  # integer 1..1024; pins RAYON_NUM_THREADS and the --threads of the stage-6 binaries
 
 [source]
 # The secret circuit C. In general C may use any reversible gate with up to
@@ -50,6 +57,8 @@ wires = 128  # integer 3..4095 (stage 6: at most 256); logical wires of C
 #               other wire counts need gates or gates_rule = "formula"
 # gates_rule = "formula"  # "validated" (default) or "formula" = round(n*log2(n)^2), UNVALIDATED
 # path = "circuits/source.g57"  # string; load a nonempty C in the g57 form (a CSPRNG-generated C for production)
+# construction = "random"  # "random" (default) or "balanced": RC's balanced C (every internal value
+#                          # read exactly twice as a control, write counts within 1); exclusive with path
 
 [database]
 # regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
@@ -60,13 +69,25 @@ lookup_miss_filter = "auto"  # "auto", "on", or "off"
 allow_no_database_for_tests = false  # bool; true requires clearing the DB path/env
 
 [preprocessing]
-mode = "embedded-masking"  # "embedded-masking" or "nonlinear291"
+mode = "embedded-masking"  # "embedded-masking", "three-mask" or "nonlinear291"
 preset = "L8"  # "L8" (recommended), "A" (no bounded chains) or "custom"
 # preset = "custom" requires ALL of:
 # mask_pair_wires = 2  shuffling_segments = 8  premask = true  chain = 2
 # max_open_masks = 3   shuffling_return_home = false  seed_avoid_c1 = true  chain_len = 8
 # min_open_masks = 2   balanced_masks = true
-# nonlinear291: remove preset and every knob.
+# three-mask and nonlinear291: remove preset and every knob.
+
+[three_mask]
+# Stage 2 in its three-mask mode (preprocessing.mode = "three-mask"): the
+# three-mask compute (x_i = d_i + three cubic band monomials, banks of band
+# wires in serving/retiring/growing phases, dirty-helper chains, differential
+# cubic refresh, persistent migration) inside the L8 outer blocks. The
+# defaults are the campaign configuration "three-mask modified / v2" (random
+# helpers, unique cover). Any key here is an error under another mode.
+# band_wires = 0  # integer; 0 = auto: the larger of 2n and 128, rounded up to a multiple of 16
+# banks = 8  retire_budget = 2  max_retiring = 0  rotation = 1  maturity = 2  visit_sweeps = 2
+# growth = 8  warmup = 4  segments = 6  mask_count = 3
+# random_helpers = true  unique_cover = true  # false = the generator's "as-is" variant
 
 [db_mixing]
 schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) or "custom"
@@ -85,19 +106,24 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 # Stage 4 (splitting) has no settings: it runs the archive-era flags to exhaustion.
 
 [packing]
-# Stage 6, the packing sub-step (tdp_packing run: pack, the order repair,
-# which runs in every packing run and is not optional, serialization):
+# Stage 6 in its WINDOWED mode only (delivery.mode = "windowed"), the packing
+# sub-step (tdp_packing run: pack, the order repair, which runs in every
+# packing run and is not optional, serialization):
 # window_gates = 512  interval_cap = 512  monomial_budget = 24576  span_cap = 3000
 # split_budget = 65536  fix_iterations = 4  fallback_iterations = 4
 # anf_cap_semantics = "cpython39"  # "canonical" deviates from the oracle
 # allow_floor_miss = false  allow_over_budget = false  # true finishes with a NOT_RECOMMENDED output
 
 [delivery]
-# Stage 6, the unpacking sub-step (tdp_unpacking run --refine; docs/DELIVERY_STAGE.md):
-# every delivered window resynthesized from its ANF alone; a window that does
-# not resynthesize is cut in two (exposure-aware) and both halves are repacked
-# and unpacked, round after round. (config_version 3's [unpacking] table is
-# refused: its allow_fallback is gone, the refinement replaces the fallback.)
+# mode = "adaptive"  # "adaptive" (default; parameters in [adaptive]) or "windowed"
+#                    # (parameters: [packing] and the keys below)
+# The windowed mode's unpacking sub-step (tdp_unpacking run --refine;
+# docs/DELIVERY_STAGE.md): every delivered window resynthesized from its ANF
+# alone; a window that does not resynthesize is cut in two (exposure-aware)
+# and both halves are repacked and unpacked, round after round. Any of these
+# keys is an error under the adaptive mode. (config_version 3's [unpacking]
+# table is refused: its allow_fallback is gone, the refinement replaces the
+# fallback.)
 # anf_only = false  # bool; true ends the stage after the packer's deliverable
 #                   # (packing/deliverable.tdp4 is then the published object; no
 #                   # resynthesis, no unpacked.mpmct1; the recipient unpacks)
@@ -108,6 +134,33 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 #                  # reaches 1-gate pieces in 10); a window still failing after
 #                  # the last round is emitted verbatim and counted (status=verbatim_used,
 #                  # reported as NOT recommended, not fatal)
+
+[adaptive]
+# Stage 6 in its ADAPTIVE mode (tdp_adaptive run; docs/ADAPTIVE_STAGE.md):
+# every round plans large blocks (exact ANF composition up to term_cap terms
+# at an endpoint, at most max_block_gates gates, segments planned in
+# parallel) with boundaries away from cuts where an internal value of C is
+# affinely recoverable (and away from the previous round's boundaries within
+# avoid_radius), synthesizes every block with seeds_per_block synthesizer
+# seeds under a size-scaled budget (time_limit s up to 1000 gates, x2 up to
+# 4000, x4 above), splits blocks that do not synthesize (refinement_levels
+# levels, never below min_refine_gates gates), keeps per block the smallest
+# candidate that is not leakier than the original (accept), checks the
+# assembly and measures its exposure (census_batches x 64 honest inputs).
+# The run ends when two consecutive rounds compress jointly by less than
+# stop_fraction, after two rounds without decrease, or after max_rounds
+# rounds (0 = until the plateau); the smallest round output, canonically
+# reordered (canonical_order), is adaptive/final.mpmct1. Any key here is an
+# error under the windowed mode.
+# max_rounds = 0  # integer 0..1000; 0 = until the size plateaus
+# stop_fraction = 0.02  # number in [0, 1)
+# seeds_per_block = 2  # integer 1..16
+# time_limit = 60  # number in (0, 86400]: seconds per block of at most 1000 gates
+# restarts = 16  beam = 6  # the synthesizer's restarts and lookahead width
+# term_cap = 131072  max_block_gates = 65536  segments = 16  avoid_radius = 64
+# refinement_levels = 2  min_refine_gates = 128  census_batches = 96
+# accept = "smaller-not-leakier"  # or "smaller" (size only)
+# canonical_order = true  # bool; false publishes the assembly as is
 
 [parallel]
 # pieces = 4  # integer 1..64; default 1 (serial); changes stage-3 bytes (not the validated recipe)
@@ -125,7 +178,7 @@ enabled = false  # bool; sampled gate-wise audit and equivalent DB repair after 
 enabled = false  # bool; mark this run as calibration-only and permit an explicit seed file
 # seed_file = "/private/path/seeds"  # string; requires enabled=true
 # File: <=256 bytes, private (chmod 600); two required lines and three optional
-# ones (split_seed=, cross_seed=, unpack_seed= = the stage-6 delivery seed;
+# ones (split_seed=, cross_seed=, unpack_seed= = the stage-6 seed, in both modes;
 # drawn fresh when absent)
 #   gen_seed=<0..9223372036854775792>
 #   mix_seed=<0..9223372036854775792>

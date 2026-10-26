@@ -16,7 +16,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export TDP_BIN_DIR="$tmp/bin" TDP_GEN_ALLOW_EMPTY_STORE=1
 mkdir -p "$TDP_BIN_DIR"
-for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do ln -s "$root/tests/shell/lib/tdp_mock.py" "$TDP_BIN_DIR/$b"; done
+for b in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking tdp_adaptive; do ln -s "$root/tests/shell/lib/tdp_mock.py" "$TDP_BIN_DIR/$b"; done
 R=$tmp/run
 no_complete() { # LOG: fails if the log claims PIPELINE COMPLETE
   if grep -q 'PIPELINE COMPLETE' "$1"; then echo "PIPELINE COMPLETE in $1" >&2; exit 1; fi
@@ -25,9 +25,10 @@ failed_marker() { # STEP RC: delivery.failed names the sub-step and its exit cod
   [ "$(cat "$R/delivery.failed")" = "$(printf 'exit=%s\nstep=%s' "$2" "$1")" ]
 }
 # The first part runs the four-stage chain (stages 4 and 5 skipped, stage 6
-# ending after the packer's deliverable): stage 6's marker, reruns, exits and
-# allowed failures, and stage 3's marker.
-FOUR=(--run-skip-stages 4,5 --delivery-anf-only)
+# in its windowed mode ending after the packer's deliverable): stage 6's
+# marker, reruns, exits and allowed failures, and stage 3's marker. The last
+# part runs stage 6 in its adaptive mode (the default).
+FOUR=(--run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only)
 drive() { bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$R" ${FOUR[@]+"${FOUR[@]}"} "$@"; }
 count() { python3 -I -c "import json,sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l)['name']==sys.argv[2] and (len(sys.argv)<4 or json.loads(l)['args'][0]==sys.argv[3])))" "$R.calls" "$@"; }
 drive > "$tmp/1.log" 2>&1
@@ -154,7 +155,7 @@ grep -q 'no matching completion marker' "$tmp/m6.log"
 
 # ---- the optional stages 4 and 5, and the full delivery stage: markers, chaining and reruns ----
 R=$tmp/six
-FOUR=()
+FOUR=(--delivery-mode windowed)
 drive > "$tmp/v1.log" 2>&1
 grep -q 'PIPELINE COMPLETE (stages 1-6): .*/unpacking/unpacked.mpmct1' "$tmp/v1.log"
 [ "$(count circuit_mixer)" = 3 ]
@@ -285,4 +286,94 @@ grep -q 'stage 6: completion marker does not match' "$tmp/x3.log"
 [ "$(count tdp_unpacking run)" = 1 ]
 test ! -e "$R/unpacking"
 grep -q '^anf_only=1$' "$R/delivery.recipe"
+
+# ---- stage 6 in its adaptive mode (the default): marker, resume, parameter
+# change, tampered output, interrupted attempt, failures, allowed failure ----
+R=$tmp/adaptive
+FOUR=()
+drive > "$tmp/w1.log" 2>&1
+grep -q 'PIPELINE COMPLETE (stages 1-6): .*/adaptive/final.mpmct1' "$tmp/w1.log"
+[ "$(count tdp_adaptive run)" = 1 ]
+[ "$(count tdp_packing run)" = 0 ]
+for f in adaptive/final.mpmct1 adaptive/adaptive.report delivery.recipe stage6.log; do test -s "$R/$f"; done
+test ! -e "$R/adaptive/attempt.recipe"
+for line in '^delivery_recipe=2$' '^delivery_mode=adaptive$' '^tdp_adaptive_sha256=' '^adaptive_params=default$' \
+            '^seed_mac.unpack=' '^mac.stage2=' '^mac.stage3=' '^mac.source_c=' '^mac.sandwich=' '^mac.final=' \
+            '^status=ok$' '^adaptive_status=ok$' '^rounds=1$' '^stop_reason=two consecutive rounds without size decrease$'; do
+  grep -q "$line" "$R/delivery.recipe" || { echo "delivery.recipe lacks $line" >&2; cat "$R/delivery.recipe" >&2; exit 1; }
+done
+if grep -q 'tdp_packing_sha256' "$R/delivery.recipe"; then echo "adaptive marker names tdp_packing" >&2; exit 1; fi
+# the binary's argv: the inputs, the sandwich, the seed from a descriptor, no knob at its default
+python3 -I - "$R.calls" <<'PY'
+import json, sys
+c = [json.loads(l) for l in open(sys.argv[1]) if '"tdp_adaptive"' in l][-1]
+a = [x.rsplit('/', 1)[-1] for x in c['args']]; raw = c['argv']
+assert a[:3] == ['run', '--input', 'crossing.mpmct1'], a
+assert a[a.index('--source-c') + 1] == 'tdp.mpmct1.source_c.g57' and a[a.index('--sandwich') + 1] == 'tdp.mpmct1.sandwich.mpmct1', a
+assert a[a.index('--out-dir') + 1] == 'adaptive' and a[a.index('--n') + 1] == '4', a
+assert '--seed' not in raw and raw[raw.index('--seed-file') + 1] == '/dev/fd/3', raw
+assert not any(x.startswith(('--max-rounds', '--stop-fraction', '--time-limit', '--threads')) for x in a), a
+PY
+# an unchanged resume skips stage 6
+drive > "$tmp/w2.log" 2>&1
+grep -q 'stage 6: .* matches its completion marker, skipping' "$tmp/w2.log"
+[ "$(count tdp_adaptive run)" = 1 ]
+# a changed adaptive parameter re-runs stage 6 afresh, and the knob reaches the binary
+drive --adaptive-max-rounds 3 --adaptive-time-limit 30 > "$tmp/w3.log" 2>&1
+grep -q 'stage 6: completion marker does not match' "$tmp/w3.log"
+[ "$(count tdp_adaptive run)" = 2 ]
+grep -q '^adaptive_params=--max-rounds 3 --time-limit 30$' "$R/delivery.recipe"
+grep -q -- '"--max-rounds", "3"' <(tail -1 "$R.calls")
+# a tampered final circuit re-runs stage 6
+printf 'x' >> "$R/adaptive/final.mpmct1"
+drive --adaptive-max-rounds 3 --adaptive-time-limit 30 > "$tmp/w4.log" 2>&1
+grep -q 'stage 6: completion marker does not match' "$tmp/w4.log"
+[ "$(count tdp_adaptive run)" = 3 ]
+# an interrupted attempt of the same recipe (no marker, the attempt record
+# present) resumes in place: completed rounds are kept; another recipe or an
+# explicit rerun starts afresh
+head -n 9 "$R/delivery.recipe" > "$R/adaptive/attempt.recipe"
+rm "$R/delivery.recipe"; : > "$R/adaptive/round1/sentinel"
+drive --adaptive-max-rounds 3 --adaptive-time-limit 30 > "$tmp/w5.log" 2>&1
+grep -q 'stage 6 (adaptive): resuming the interrupted attempt' "$tmp/w5.log"
+test -e "$R/adaptive/round1/sentinel"
+test ! -e "$R/adaptive/attempt.recipe"
+[ "$(count tdp_adaptive run)" = 4 ]
+head -n 9 "$R/delivery.recipe" > "$R/adaptive/attempt.recipe"
+rm "$R/delivery.recipe"
+drive --adaptive-max-rounds 2 --adaptive-time-limit 30 > "$tmp/w6.log" 2>&1
+if grep -q 'resuming the interrupted attempt' "$tmp/w6.log"; then echo "a changed recipe resumed the attempt" >&2; exit 1; fi
+test ! -e "$R/adaptive/round1/sentinel"
+[ "$(count tdp_adaptive run)" = 5 ]
+: > "$R/adaptive/round1/sentinel"
+drive --adaptive-max-rounds 2 --adaptive-time-limit 30 --run-rerun-from-stage 6 > "$tmp/w7.log" 2>&1
+test ! -e "$R/adaptive/round1/sentinel"
+[ "$(count tdp_adaptive run)" = 6 ]
+# adaptive exits are reported with their meanings and the delivery.failed marker
+for rc in 3 4 7; do
+  printf 'adaptive_exit=%s\n' "$rc" > "$R.mock"
+  set +e; drive --run-rerun-from-stage 6 > "$tmp/x$rc.log" 2>&1; got=$?; set -e
+  [ "$got" = "$rc" ] || { cat "$tmp/x$rc.log" >&2; exit 1; }
+  case $rc in 3) m='input error' ;; 4) m='verification or synthesis failure' ;; 7) m='I/O error writing outputs' ;; esac
+  grep -q "stage 6 FAILED: adaptive exit $rc ($m)" "$tmp/x$rc.log"
+  no_complete "$tmp/x$rc.log"
+  test ! -e "$R/delivery.recipe"
+  failed_marker adaptive "$rc"
+done
+rm -f "$R.mock"
+drive > "$tmp/x0.log" 2>&1
+grep -q 'PIPELINE COMPLETE (stages 1-6)' "$tmp/x0.log"
+test ! -e "$R/delivery.failed"
+test ! -e "$R/adaptive/attempt.recipe"
+# a status other than ok is an allowed failure: NOT_RECOMMENDED next to the final circuit
+printf 'adaptive_status=unchecked\n' > "$R.mock"
+drive --run-rerun-from-stage 6 > "$tmp/x9.log" 2>&1
+grep -q 'ALLOWED FAILURE (status=unchecked)' "$tmp/x9.log"
+no_complete "$tmp/x9.log"
+test -e "$R/adaptive/NOT_RECOMMENDED"
+grep -q '^adaptive_status=unchecked$' "$R/adaptive/NOT_RECOMMENDED"
+rm -f "$R.mock"
+drive --run-rerun-from-stage 6 > "$tmp/x10.log" 2>&1
+grep -q 'PIPELINE COMPLETE (stages 1-6)' "$tmp/x10.log"
+test ! -e "$R/adaptive/NOT_RECOMMENDED"
 echo 'TDP stage resume shell tests passed'

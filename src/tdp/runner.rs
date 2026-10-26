@@ -179,21 +179,33 @@ pub(crate) fn run_inner(sub: &ArgMatches) -> Result<(), TdpError> {
                     error.message
                 );
             }
+            Some((failed, DeliveryStep::Adaptive)) if failed == code => {
+                let meaning = adaptive_exit_meaning(code);
+                error.message = format!(
+                    "{} (stage 6 delivery, tdp_adaptive run: {meaning})",
+                    error.message
+                );
+            }
             _ => {}
         }
         return Err(error);
     }
     let stages = config.stages_text();
     // The stage's final output and the NOT_RECOMMENDED marker next to it:
-    // the packer's deliverable under anf_only, else the refined deliverable
-    // and the resynthesized circuit in unpacking/.
-    let last_dir = config.run_dir.join(if config.unpacking_on() {
+    // adaptive/final.mpmct1 in the adaptive mode; in the windowed mode the
+    // packer's deliverable under anf_only, else the refined deliverable and
+    // the resynthesized circuit in unpacking/.
+    let last_dir = config.run_dir.join(if config.adaptive_on() {
+        "adaptive"
+    } else if config.unpacking_on() {
         "unpacking"
     } else {
         "packing"
     });
     let not_recommended = config.stage_on(6) && last_dir.join("NOT_RECOMMENDED").exists();
-    let last = if config.unpacking_on() {
+    let last = if config.adaptive_on() {
+        Some(last_dir.join("final.mpmct1"))
+    } else if config.unpacking_on() {
         Some(last_dir.join("unpacked.mpmct1"))
     } else if config.stage_on(6) {
         Some(last_dir.join("deliverable.tdp4"))
@@ -220,11 +232,34 @@ pub(crate) fn unpacking_exit_meaning(code: i32) -> &'static str {
     crate::stages::unpacking::types::Stage7Error::meaning(code)
 }
 
+/// `tdp_adaptive` exit codes (stage 6 in its adaptive mode;
+/// docs/ADAPTIVE_STAGE.md): the binary's own table.
+pub(crate) fn adaptive_exit_meaning(code: i32) -> &'static str {
+    ADAPTIVE_EXIT_CODES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, m)| *m)
+        .unwrap_or("unknown exit code")
+}
+
+/// `tdp_adaptive`'s exit table as the drivers report it (checked against
+/// the binary's own table by `exit_code_tables_agree`).
+pub(crate) const ADAPTIVE_EXIT_CODES: [(i32, &str); 7] = [
+    (0, "finished"),
+    (2, "usage or parameter error"),
+    (3, "input error"),
+    (4, "verification or synthesis failure"),
+    (7, "I/O error writing outputs"),
+    (8, "internal invariant violated"),
+    (101, "panic"),
+];
+
 /// Which sub-step of the delivery stage failed (`step=` in `delivery.failed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeliveryStep {
     Packing,
     Unpacking,
+    Adaptive,
 }
 
 /// The oldest bash scripts/tdp_gen.sh runs under. Associative arrays and
@@ -330,6 +365,7 @@ pub(crate) fn stage_failure(marker: &Path) -> Option<(i32, DeliveryStep)> {
     {
         Some("packing") => DeliveryStep::Packing,
         Some("unpacking") => DeliveryStep::Unpacking,
+        Some("adaptive") => DeliveryStep::Adaptive,
         _ => return None,
     };
     Some((code, step))
@@ -582,7 +618,7 @@ pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), Tdp
                 ));
             }
         }
-        PreprocessingMode::Nonlinear291 => {}
+        PreprocessingMode::ThreeMask | PreprocessingMode::Nonlinear291 => {}
     }
     Ok(())
 }
@@ -650,6 +686,19 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
             }
         }
     }
+    if config.preprocessing_mode == PreprocessingMode::ThreeMask {
+        for (_, flag, value, default) in config.three_mask.fields() {
+            if value != default {
+                push(&format!("--three-mask-{flag}"), value);
+            }
+        }
+    }
+    if config.source_construction != SourceConstruction::Random {
+        push(
+            "--source-construction",
+            config.source_construction.name().to_owned(),
+        );
+    }
     match config.mcd_rule {
         SourceGatesRule::Validated => {}
         SourceGatesRule::Explicit => push("--mcd", config.mcd.to_string()),
@@ -698,7 +747,15 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         args.push(OsString::from(flag));
         args.push(OsString::from(value));
     };
+    if config.delivery.mode != DeliveryMode::Adaptive {
+        push("--delivery-mode", config.delivery.mode.name().to_owned());
+    }
     for (flag, value, default) in config.delivery.flags() {
+        if value != default {
+            push(flag, value);
+        }
+    }
+    for (flag, value, default) in config.adaptive.flags() {
         if value != default {
             push(flag, value);
         }
@@ -749,6 +806,9 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     }
     if config.delivery.anf_only {
         args.push(OsString::from("--delivery-anf-only"));
+    }
+    if !config.adaptive.canonical_order {
+        args.push(OsString::from("--adaptive-no-canonical-order"));
     }
     args
 }
@@ -836,7 +896,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         }
     );
     println!(
-        "[tdp_gen] stage 1-2: source.gates={} ({}{}) preset={}",
+        "[tdp_gen] stage 1-2: source.gates={} ({}{}) source.construction={} preset={}",
         config.mcd,
         config.mcd_rule.name(),
         if config.mcd_rule == SourceGatesRule::Formula {
@@ -844,8 +904,21 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         } else {
             ""
         },
+        config.source_construction.name(),
         config.preset.name()
     );
+    if config.preprocessing_mode == PreprocessingMode::ThreeMask {
+        println!(
+            "[tdp_gen] three-mask (stage 2): {}",
+            config
+                .three_mask
+                .fields()
+                .iter()
+                .map(|(key, _, value, _)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
     match &config.schedule {
         Schedule::Validated => println!(
             "[tdp_gen] db_mixing (stage 3): schedule validated (profile 2,2,2,2,2, moves int(G*2*2*1.3))"
@@ -876,8 +949,34 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             .collect::<Vec<_>>()
             .join(" ")
     );
+    if config.delivery.mode == DeliveryMode::Adaptive {
+        let a = &config.adaptive;
+        println!(
+            "[tdp_gen] delivery (stage 6): adaptive C-aware resynthesis: max_rounds={} stop_fraction={} seeds_per_block={} time_limit={} restarts={} beam={} term_cap={} max_block_gates={} segments={} avoid_radius={} refinement_levels={} min_refine_gates={} census_batches={} accept={} canonical_order={}",
+            if a.max_rounds == 0 {
+                "plateau".to_owned()
+            } else {
+                a.max_rounds.to_string()
+            },
+            a.stop_fraction,
+            a.seeds_per_block,
+            a.time_limit,
+            a.restarts,
+            a.beam,
+            a.term_cap,
+            a.max_block_gates,
+            a.segments,
+            a.avoid_radius,
+            a.refinement_levels,
+            a.min_refine_gates,
+            a.census_batches,
+            a.accept,
+            a.canonical_order
+        );
+        return print_resolved_tail(config, binary_dir);
+    }
     println!(
-        "[tdp_gen] delivery (stage 6): {}",
+        "[tdp_gen] delivery (stage 6, windowed): {}",
         if config.delivery.anf_only {
             "anf_only=true (the packer's deliverable; no resynthesis)".to_owned()
         } else {
@@ -917,6 +1016,11 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
                 .join(" ")
         }
     );
+    print_resolved_tail(config, binary_dir)
+}
+
+/// The lifecycle lines of [`print_resolved`] (after the stage-6 lines).
+fn print_resolved_tail(config: &ResolvedConfig, binary_dir: &Path) {
     if let Some(size) = &config.min_block_size {
         println!(
             "[tdp_gen] stage 3: automatic pieces target_piece_gates={} threads={}",

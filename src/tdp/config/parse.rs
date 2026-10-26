@@ -22,9 +22,9 @@ pub(crate) fn parse_preprocessing_mode(raw: &RawConfig) -> Result<PreprocessingM
     }
     let message = match value {
         "product-2223" | "2223" | "nonlinear193" => format!(
-            "{value} has been retired from TDP; preprocessing.mode must be embedded-masking or nonlinear291"
+            "{value} has been retired from TDP; preprocessing.mode must be embedded-masking, three-mask or nonlinear291"
         ),
-        other => format!("expected embedded-masking or nonlinear291; got {other:?}"),
+        other => format!("expected embedded-masking, three-mask or nonlinear291; got {other:?}"),
     };
     Err(config_error(raw, "preprocessing_mode", &message))
 }
@@ -76,6 +76,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "source.gates_rule",
         "source.gates_rule",
         "source_gates_rule",
+        "string",
+    ),
+    (
+        "source.construction",
+        "source.construction",
+        "source_construction",
         "string",
     ),
     (
@@ -346,6 +352,170 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "integer",
     ),
     (
+        "three_mask.band_wires",
+        "three_mask.band_wires",
+        "three_mask_band_wires",
+        "integer",
+    ),
+    (
+        "three_mask.banks",
+        "three_mask.banks",
+        "three_mask_banks",
+        "integer",
+    ),
+    (
+        "three_mask.retire_budget",
+        "three_mask.retire_budget",
+        "three_mask_retire_budget",
+        "integer",
+    ),
+    (
+        "three_mask.max_retiring",
+        "three_mask.max_retiring",
+        "three_mask_max_retiring",
+        "integer",
+    ),
+    (
+        "three_mask.rotation",
+        "three_mask.rotation",
+        "three_mask_rotation",
+        "integer",
+    ),
+    (
+        "three_mask.maturity",
+        "three_mask.maturity",
+        "three_mask_maturity",
+        "integer",
+    ),
+    (
+        "three_mask.visit_sweeps",
+        "three_mask.visit_sweeps",
+        "three_mask_visit_sweeps",
+        "integer",
+    ),
+    (
+        "three_mask.growth",
+        "three_mask.growth",
+        "three_mask_growth",
+        "integer",
+    ),
+    (
+        "three_mask.warmup",
+        "three_mask.warmup",
+        "three_mask_warmup",
+        "integer",
+    ),
+    (
+        "three_mask.segments",
+        "three_mask.segments",
+        "three_mask_segments",
+        "integer",
+    ),
+    (
+        "three_mask.mask_count",
+        "three_mask.mask_count",
+        "three_mask_mask_count",
+        "integer",
+    ),
+    (
+        "three_mask.random_helpers",
+        "three_mask.random_helpers",
+        "three_mask_random_helpers",
+        "bool",
+    ),
+    (
+        "three_mask.unique_cover",
+        "three_mask.unique_cover",
+        "three_mask_unique_cover",
+        "bool",
+    ),
+    ("delivery.mode", "delivery.mode", "delivery_mode", "string"),
+    (
+        "adaptive.max_rounds",
+        "adaptive.max_rounds",
+        "adaptive_max_rounds",
+        "integer",
+    ),
+    (
+        "adaptive.stop_fraction",
+        "adaptive.stop_fraction",
+        "adaptive_stop_fraction",
+        "number",
+    ),
+    (
+        "adaptive.seeds_per_block",
+        "adaptive.seeds_per_block",
+        "adaptive_seeds_per_block",
+        "integer",
+    ),
+    (
+        "adaptive.time_limit",
+        "adaptive.time_limit",
+        "adaptive_time_limit",
+        "number",
+    ),
+    (
+        "adaptive.restarts",
+        "adaptive.restarts",
+        "adaptive_restarts",
+        "integer",
+    ),
+    ("adaptive.beam", "adaptive.beam", "adaptive_beam", "integer"),
+    (
+        "adaptive.term_cap",
+        "adaptive.term_cap",
+        "adaptive_term_cap",
+        "integer",
+    ),
+    (
+        "adaptive.max_block_gates",
+        "adaptive.max_block_gates",
+        "adaptive_max_block_gates",
+        "integer",
+    ),
+    (
+        "adaptive.segments",
+        "adaptive.segments",
+        "adaptive_segments",
+        "integer",
+    ),
+    (
+        "adaptive.avoid_radius",
+        "adaptive.avoid_radius",
+        "adaptive_avoid_radius",
+        "integer",
+    ),
+    (
+        "adaptive.refinement_levels",
+        "adaptive.refinement_levels",
+        "adaptive_refinement_levels",
+        "integer",
+    ),
+    (
+        "adaptive.min_refine_gates",
+        "adaptive.min_refine_gates",
+        "adaptive_min_refine_gates",
+        "integer",
+    ),
+    (
+        "adaptive.census_batches",
+        "adaptive.census_batches",
+        "adaptive_census_batches",
+        "integer",
+    ),
+    (
+        "adaptive.accept",
+        "adaptive.accept",
+        "adaptive_accept",
+        "string",
+    ),
+    (
+        "adaptive.canonical_order",
+        "adaptive.canonical_order",
+        "adaptive_canonical_order",
+        "bool",
+    ),
+    (
         "calibration.enabled",
         "calibration.enabled",
         "calibration_only",
@@ -366,6 +536,9 @@ pub(crate) const CONFIG_V2_MIGRATION: &str = "config_version 2 is the four-stage
 /// The migration message for a config_version 3 file (the seven-stage driver:
 /// separate packing and unpacking stages).
 pub(crate) const CONFIG_V3_MIGRATION: &str = "config_version 3 is the seven-stage recipe (v11); stages 6 (packing) and 7 (unpacking) are now ONE stage 6, delivery (RC, 2026-10-12): tdp_packing run, then tdp_unpacking run --refine, which splits and repacks every window that does not resynthesize. Set config_version = 4; move [unpacking] time_limit/restarts/beam to [delivery] (plus max_rounds; allow_fallback is gone: a window that does not resynthesize is split, not emitted verbatim); run.skip_stages is 2..6 and the four-stage chain is run.skip_stages = [4, 5] with delivery.anf_only = true. See docs/tdp_pipeline.md.";
+/// The migration message for a config_version 4 file (the six-stage driver
+/// whose only stage 6 was the windowed delivery).
+pub(crate) const CONFIG_V4_MIGRATION: &str = "config_version 4 is the recipe whose only stage 6 was the windowed delivery (packing, then unpacking with lattice refinement; recipe v12). Recipe v13 makes stage 6 the ADAPTIVE C-aware resynthesis by default (delivery.mode = \"adaptive\", parameters in [adaptive]), adds the three-mask stage 2 (preprocessing.mode = \"three-mask\", parameters in [three_mask]) and the balanced source (source.construction = \"balanced\"). Set config_version = 5; to keep the windowed delivery set delivery.mode = \"windowed\" (the four-stage chain is run.skip_stages = [4, 5], delivery.mode = \"windowed\", delivery.anf_only = true). See docs/tdp_pipeline.md.";
 /// The message for a `[unpacking]` table (config_version 3's).
 pub(crate) const UNPACKING_SECTION_MOVED: &str = "[unpacking] moved to [delivery] (config_version 4: stages 6 and 7 are one delivery stage): unpacking.time_limit/restarts/beam are delivery.time_limit/restarts/beam, delivery.max_rounds bounds the lattice refinement, and unpacking.allow_fallback is gone (a window that does not resynthesize is split and repacked). See docs/tdp_pipeline.md.";
 
@@ -382,11 +555,12 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
         .get("config_version")
         .and_then(toml_edit::Item::as_integer)
     {
-        Some(4) => {}
+        Some(5) => {}
+        Some(4) => return Err(CONFIG_V4_MIGRATION.into()),
         Some(3) => return Err(CONFIG_V3_MIGRATION.into()),
         Some(2) => return Err(CONFIG_V2_MIGRATION.into()),
         Some(1) => return Err(CONFIG_V1_MIGRATION.into()),
-        _ => return Err("config_version must be the integer 4".into()),
+        _ => return Err("config_version must be the integer 5".into()),
     }
     let mut raw = RawConfig::default();
     for (section, item) in doc.iter() {
@@ -460,6 +634,8 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
                 "packing",
                 "crossing",
                 "delivery",
+                "three_mask",
+                "adaptive",
             ]
             .contains(&section)
         {

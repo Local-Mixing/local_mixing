@@ -15,7 +15,7 @@ trap 'rm -rf "$tmp"' EXIT
 export TDP_BIN_DIR="$tmp/bin" TDP_GEN_ALLOW_EMPTY_STORE=1
 unset FROZEN_DB_DIR
 mkdir -p "$TDP_BIN_DIR"
-for binary in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking; do
+for binary in gen_sandwich_gadget circuit_mixer tdp_packing tdp_unpacking tdp_adaptive; do
   ln -s "$root/tests/shell/lib/tdp_mock.py" "$TDP_BIN_DIR/$binary"
 done
 reject() {
@@ -60,7 +60,7 @@ run_case() {
     { cat "$tmp/$mode.log" >&2; exit 1; }
 }
 # the four-stage chain (stages 4 and 5 skipped, stage 6 ending after the packer's deliverable) ...
-FOUR=(--run-skip-stages 4,5 --delivery-anf-only)
+FOUR=(--run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only)
 run_case auto "${FOUR[@]}" --parallel-target-piece-gates 0002 --parallel-threads 3
 run_case auto_default "${FOUR[@]}" --parallel-target-piece-gates 2
 run_case fixed "${FOUR[@]}" --parallel-pieces 0004 --parallel-threads 0003
@@ -71,10 +71,13 @@ run_case stop3 --run-stop-after-stage 3
 # the stage-5 move budget: round(factor * target) by default, factor 3
 run_case budget --crossing-move-budget-factor 1.5 --run-stop-after-stage 5
 run_case budget_default --run-stop-after-stage 5
-# ... and the full six-stage chain, with every stage-5/6 knob set
+# ... and the full six-stage chain in the windowed mode, with every stage-5/6 knob set
 run_case six --crossing-target-size-factor 2.5 --crossing-width-penalty-base 4 --crossing-width-penalty-threshold 2 \
-  --crossing-size-tolerance-divisor 20 --crossing-move-attempts 1234 --delivery-time-limit 12.5 --delivery-restarts 3 \
-  --delivery-beam 2 --delivery-max-rounds 5 --threads 2 --packing-window-gates 256
+  --crossing-size-tolerance-divisor 20 --crossing-move-attempts 1234 --delivery-mode windowed --delivery-time-limit 12.5 \
+  --delivery-restarts 3 --delivery-beam 2 --delivery-max-rounds 5 --threads 2 --packing-window-gates 256
+# ... and in the adaptive mode (the default), with its knobs set
+run_case adaptive --crossing-target-size-factor 2.5 --threads 2 --adaptive-max-rounds 4 --adaptive-seeds-per-block 1 \
+  --adaptive-stop-fraction 0.01 --adaptive-accept smaller --adaptive-no-canonical-order
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -159,6 +162,24 @@ for f in ('split.mpmct1', 'split.state', 'crossing.mpmct1', 'stage4.recipe', 'st
     assert (root / 'six' / f).is_file(), f
 # one stage log: the packer's output, a separator, the unpacking sub-step's
 assert '---- unpacking: tdp_unpacking run --refine --max-rounds 5' in (root / 'six' / 'stage6.log').read_text()
+# the adaptive chain: tdp_adaptive after stage 5, its inputs, knobs and threads; no packer
+calls = [json.loads(l) for l in (root / 'adaptive.calls').read_text().splitlines()]
+names = [c['name'] for c in calls if not (c['name'] == 'tdp_packing' and c['args'][0] != 'run')]
+assert names == ['gen_sandwich_gadget', 'circuit_mixer', 'circuit_mixer', 'circuit_mixer', 'tdp_adaptive'], names
+ad = base(next(c['args'] for c in calls if c['name'] == 'tdp_adaptive'))
+assert ad[:3] == ['run', '--input', 'crossing.mpmct1'], ad
+assert ad[ad.index('--source-c') + 1] == 'tdp.mpmct1.source_c.g57' and ad[ad.index('--sandwich') + 1] == 'tdp.mpmct1.sandwich.mpmct1', ad
+assert ad[ad.index('--n') + 1] == '4' and ad[ad.index('--out-dir') + 1] == 'adaptive', ad
+for flag, value in (('--max-rounds', '4'), ('--seeds-per-block', '1'), ('--stop-fraction', '0.01'), ('--accept', 'smaller'), ('--threads', '2')):
+    assert ad[ad.index(flag) + 1] == value, (flag, ad)
+assert '--no-canonical-order' in ad and '--time-limit' not in ad and '--restarts' not in ad, ad
+log = (root / 'adaptive' / 'tdp_gen.log').read_text()
+assert 'PIPELINE COMPLETE (stages 1-6)' in log and log.rstrip().endswith('adaptive/final.mpmct1'), log
+for f in ('crossing.mpmct1', 'stage5.recipe', 'delivery.recipe', 'stage6.log', 'adaptive/final.mpmct1', 'adaptive/adaptive.report'):
+    assert (root / 'adaptive' / f).is_file(), f
+assert not (root / 'adaptive' / 'packing').exists() and not (root / 'adaptive' / 'unpacking').exists()
+marker = (root / 'adaptive' / 'delivery.recipe').read_text()
+assert 'delivery_mode=adaptive\n' in marker and 'adaptive_params=--max-rounds 4 --stop-fraction 0.01 --seeds-per-block 1 --accept smaller --no-canonical-order\n' in marker, marker
 PY
 # Continuation must recognize every saved artifact and avoid another call.
 rm "$tmp/canonical.calls"
@@ -167,7 +188,7 @@ test ! -e "$tmp/canonical.calls"
 grep -q 'matches its completion marker, skipping' "$tmp/canonical.log"
 # ... while dropping the skip list (and anf_only) resumes the same run with
 # stages 4-5 added and stage 6 re-run in full (its recipe changed)
-run_case canonical --parallel-target-piece-gates 2 --parallel-threads 3 --db-mixing-schedule custom --db-mixing-target-size-factor 2 --db-mixing-hold-work-units 27
+run_case canonical --delivery-mode windowed --parallel-target-piece-gates 2 --parallel-threads 3 --db-mixing-schedule custom --db-mixing-target-size-factor 2 --db-mixing-hold-work-units 27
 grep -q 'stage 3: .* matches its completion marker, skipping' "$tmp/canonical.log"
 grep -q 'PIPELINE COMPLETE (stages 1-6)' "$tmp/canonical.log"
 python3 -I -c "import json,sys; names=[json.loads(l)['name'] for l in open(sys.argv[1])]; assert names == ['circuit_mixer', 'circuit_mixer', 'tdp_packing', 'tdp_unpacking'], names" "$tmp/canonical.calls"

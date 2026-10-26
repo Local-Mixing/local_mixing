@@ -297,6 +297,9 @@ impl PackingConfig {
 /// `[packing]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeliveryConfig {
+    /// Adaptive (the default) or windowed; the fields below apply to the
+    /// windowed mode only (the adaptive mode's are `[adaptive]`).
+    pub(crate) mode: DeliveryMode,
     /// Stop the stage after the packer's deliverable: no resynthesis, no
     /// lattice refinement, no `unpacked.mpmct1`.
     pub(crate) anf_only: bool,
@@ -313,6 +316,7 @@ pub(crate) struct DeliveryConfig {
 impl Default for DeliveryConfig {
     fn default() -> Self {
         DeliveryConfig {
+            mode: DeliveryMode::Adaptive,
             anf_only: false,
             time_limit: "30".into(),
             restarts: 16,
@@ -349,6 +353,319 @@ impl DeliveryConfig {
 
     pub(crate) fn is_default(&self) -> bool {
         *self == DeliveryConfig::default()
+    }
+}
+
+/// How stage 6 (delivery) is run: the adaptive C-aware resynthesis (the
+/// default since recipe v13) or the windowed packing + unpacking with
+/// lattice refinement (recipe v12's only stage 6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DeliveryMode {
+    #[default]
+    Adaptive,
+    Windowed,
+}
+
+impl DeliveryMode {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "adaptive" => Some(Self::Adaptive),
+            "windowed" => Some(Self::Windowed),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Adaptive => "adaptive",
+            Self::Windowed => "windowed",
+        }
+    }
+}
+
+/// How the source C is drawn when `source.path` is unset: uniformly random
+/// g57 gates, or RC's balanced construction (every internal value read
+/// exactly twice).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SourceConstruction {
+    #[default]
+    Random,
+    Balanced,
+}
+
+impl SourceConstruction {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "random" => Some(Self::Random),
+            "balanced" => Some(Self::Balanced),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Random => "random",
+            Self::Balanced => "balanced",
+        }
+    }
+}
+
+/// `[three_mask]`: the knobs of the three-mask stage-2 compute
+/// (`preprocessing.mode = "three-mask"`). The defaults are the campaign
+/// configuration "three-mask modified / v2" (random helpers, unique cover).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThreeMaskConfig {
+    /// 0 = auto: the larger of 2n and 128, rounded up to a multiple of 16.
+    pub(crate) band_wires: u64,
+    pub(crate) banks: u64,
+    pub(crate) retire_budget: u64,
+    pub(crate) max_retiring: u64,
+    pub(crate) rotation: u64,
+    pub(crate) maturity: u64,
+    pub(crate) visit_sweeps: u64,
+    pub(crate) growth: u64,
+    pub(crate) warmup: u64,
+    pub(crate) segments: u64,
+    pub(crate) mask_count: u64,
+    pub(crate) random_helpers: bool,
+    pub(crate) unique_cover: bool,
+}
+
+impl Default for ThreeMaskConfig {
+    fn default() -> Self {
+        ThreeMaskConfig {
+            band_wires: 0,
+            banks: 8,
+            retire_budget: 2,
+            max_retiring: 0,
+            rotation: 1,
+            maturity: 2,
+            visit_sweeps: 2,
+            growth: 8,
+            warmup: 4,
+            segments: 6,
+            mask_count: 3,
+            random_helpers: true,
+            unique_cover: true,
+        }
+    }
+}
+
+impl ThreeMaskConfig {
+    /// `(config key, script flag suffix, value, default)` in the manifest order.
+    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String, String); 13] {
+        let d = ThreeMaskConfig::default();
+        let b = |v: bool| u8::from(v).to_string();
+        [
+            (
+                "band_wires",
+                "band-wires",
+                self.band_wires.to_string(),
+                d.band_wires.to_string(),
+            ),
+            (
+                "banks",
+                "banks",
+                self.banks.to_string(),
+                d.banks.to_string(),
+            ),
+            (
+                "retire_budget",
+                "retire-budget",
+                self.retire_budget.to_string(),
+                d.retire_budget.to_string(),
+            ),
+            (
+                "max_retiring",
+                "max-retiring",
+                self.max_retiring.to_string(),
+                d.max_retiring.to_string(),
+            ),
+            (
+                "rotation",
+                "rotation",
+                self.rotation.to_string(),
+                d.rotation.to_string(),
+            ),
+            (
+                "maturity",
+                "maturity",
+                self.maturity.to_string(),
+                d.maturity.to_string(),
+            ),
+            (
+                "visit_sweeps",
+                "visit-sweeps",
+                self.visit_sweeps.to_string(),
+                d.visit_sweeps.to_string(),
+            ),
+            (
+                "growth",
+                "growth",
+                self.growth.to_string(),
+                d.growth.to_string(),
+            ),
+            (
+                "warmup",
+                "warmup",
+                self.warmup.to_string(),
+                d.warmup.to_string(),
+            ),
+            (
+                "segments",
+                "segments",
+                self.segments.to_string(),
+                d.segments.to_string(),
+            ),
+            (
+                "mask_count",
+                "mask-count",
+                self.mask_count.to_string(),
+                d.mask_count.to_string(),
+            ),
+            (
+                "random_helpers",
+                "random-helpers",
+                b(self.random_helpers),
+                b(d.random_helpers),
+            ),
+            (
+                "unique_cover",
+                "unique-cover",
+                b(self.unique_cover),
+                b(d.unique_cover),
+            ),
+        ]
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == ThreeMaskConfig::default()
+    }
+}
+
+/// `[adaptive]`: stage 6 in its adaptive mode (`tdp_adaptive run`,
+/// docs/ADAPTIVE_STAGE.md). The defaults are the server prototype's policy
+/// (variant v2, 2 % two-round stop rule).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdaptiveConfig {
+    /// Rounds to run at most; 0 = until the size plateaus.
+    pub(crate) max_rounds: u64,
+    /// End of mixing when two consecutive rounds compress jointly by less
+    /// than this fraction (a normalized number in [0, 1)).
+    pub(crate) stop_fraction: String,
+    pub(crate) seeds_per_block: u64,
+    /// Synthesis wall limit per block, seconds, for blocks of at most 1000
+    /// gates (x2 up to 4000 gates, x4 above).
+    pub(crate) time_limit: String,
+    pub(crate) restarts: u64,
+    pub(crate) beam: u64,
+    pub(crate) term_cap: u64,
+    pub(crate) max_block_gates: u64,
+    pub(crate) segments: u64,
+    pub(crate) avoid_radius: u64,
+    pub(crate) refinement_levels: u64,
+    pub(crate) min_refine_gates: u64,
+    pub(crate) census_batches: u64,
+    /// `smaller-not-leakier` (v2) or `smaller`.
+    pub(crate) accept: String,
+    pub(crate) canonical_order: bool,
+}
+
+impl Default for AdaptiveConfig {
+    fn default() -> Self {
+        AdaptiveConfig {
+            max_rounds: 0,
+            stop_fraction: "0.02".into(),
+            seeds_per_block: 2,
+            time_limit: "60".into(),
+            restarts: 16,
+            beam: 6,
+            term_cap: 131_072,
+            max_block_gates: 65_536,
+            segments: 16,
+            avoid_radius: 64,
+            refinement_levels: 2,
+            min_refine_gates: 128,
+            census_batches: 96,
+            accept: "smaller-not-leakier".into(),
+            canonical_order: true,
+        }
+    }
+}
+
+impl AdaptiveConfig {
+    /// `(script flag, value, default)` for the value parameters
+    /// (`canonical_order` is the switch `--adaptive-no-canonical-order`).
+    pub(crate) fn flags(&self) -> Vec<(&'static str, String, String)> {
+        let d = AdaptiveConfig::default();
+        vec![
+            (
+                "--adaptive-max-rounds",
+                self.max_rounds.to_string(),
+                d.max_rounds.to_string(),
+            ),
+            (
+                "--adaptive-stop-fraction",
+                self.stop_fraction.clone(),
+                d.stop_fraction,
+            ),
+            (
+                "--adaptive-seeds-per-block",
+                self.seeds_per_block.to_string(),
+                d.seeds_per_block.to_string(),
+            ),
+            (
+                "--adaptive-time-limit",
+                self.time_limit.clone(),
+                d.time_limit,
+            ),
+            (
+                "--adaptive-restarts",
+                self.restarts.to_string(),
+                d.restarts.to_string(),
+            ),
+            ("--adaptive-beam", self.beam.to_string(), d.beam.to_string()),
+            (
+                "--adaptive-term-cap",
+                self.term_cap.to_string(),
+                d.term_cap.to_string(),
+            ),
+            (
+                "--adaptive-max-block-gates",
+                self.max_block_gates.to_string(),
+                d.max_block_gates.to_string(),
+            ),
+            (
+                "--adaptive-segments",
+                self.segments.to_string(),
+                d.segments.to_string(),
+            ),
+            (
+                "--adaptive-avoid-radius",
+                self.avoid_radius.to_string(),
+                d.avoid_radius.to_string(),
+            ),
+            (
+                "--adaptive-refinement-levels",
+                self.refinement_levels.to_string(),
+                d.refinement_levels.to_string(),
+            ),
+            (
+                "--adaptive-min-refine-gates",
+                self.min_refine_gates.to_string(),
+                d.min_refine_gates.to_string(),
+            ),
+            (
+                "--adaptive-census-batches",
+                self.census_batches.to_string(),
+                d.census_batches.to_string(),
+            ),
+            ("--adaptive-accept", self.accept.clone(), d.accept),
+        ]
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == AdaptiveConfig::default()
     }
 }
 
@@ -439,6 +756,11 @@ pub(crate) struct ResolvedConfig {
     pub(crate) adopt_existing_run: bool,
     pub(crate) frozen_db: SourcedPath,
     pub(crate) preprocessing_mode: PreprocessingMode,
+    /// `[three_mask]` (its defaults when the mode is not three-mask).
+    pub(crate) three_mask: ThreeMaskConfig,
+    /// `source.construction` (random unless `balanced`; irrelevant with a
+    /// supplied `source.path`).
+    pub(crate) source_construction: SourceConstruction,
     pub(crate) calibration_only: bool,
     pub(crate) seeds: SeedPlan,
     /// The resolved |C| = |D| and how it was chosen.
@@ -448,6 +770,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) packing: PackingConfig,
     pub(crate) crossing: CrossingConfig,
     pub(crate) delivery: DeliveryConfig,
+    /// `[adaptive]` (its defaults under the windowed mode).
+    pub(crate) adaptive: AdaptiveConfig,
     pub(crate) threads: Option<String>,
     pub(crate) stop_after: Option<String>,
     pub(crate) force_from: Option<String>,
@@ -462,8 +786,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) piece_threads: Option<String>,
 }
 
-/// Stage 6, delivery (packing, then unpacking with lattice refinement), is
-/// the last stage.
+/// Stage 6, delivery (adaptive resynthesis, or packing then unpacking with
+/// lattice refinement), is the last stage.
 pub(crate) const LAST_STAGE: u64 = 6;
 
 impl ResolvedConfig {
@@ -480,10 +804,20 @@ impl ResolvedConfig {
         k <= self.stop_after_stage() && !self.skip_stages.contains(&k)
     }
 
-    /// Whether the delivery stage runs its unpacking sub-step (stage 6 on
-    /// and not `delivery.anf_only`).
+    /// Whether stage 6 runs in its adaptive mode.
+    pub(crate) fn adaptive_on(&self) -> bool {
+        self.stage_on(6) && self.delivery.mode == DeliveryMode::Adaptive
+    }
+
+    /// Whether stage 6 runs the windowed packing sub-step.
+    pub(crate) fn packing_on(&self) -> bool {
+        self.stage_on(6) && self.delivery.mode == DeliveryMode::Windowed
+    }
+
+    /// Whether the windowed delivery runs its unpacking sub-step (stage 6
+    /// on, windowed, and not `delivery.anf_only`).
     pub(crate) fn unpacking_on(&self) -> bool {
-        self.stage_on(6) && !self.delivery.anf_only
+        self.packing_on() && !self.delivery.anf_only
     }
 
     /// The stages that run, as the driver prints them: "1-6", "1-3,6", ...
