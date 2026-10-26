@@ -182,3 +182,26 @@ anf_only = true              # the four-stage chain, as before (windowed mode on
 Everything else in a v4 recipe is valid unchanged. A run directory made by
 the v12 driver is refused (resume it with that checkout); start a fresh
 `run.directory` with the new driver.
+
+## 8. Validation runs of this release (2026-10-26, this Mac, 18 threads)
+
+Both runs used the managed driver with fresh CSPRNG seeds, the local
+`frozen_m1_m11` store for stage 3 and small adaptive caps (`term_cap 8192`,
+`max_block_gates 2048`, `time_limit 10`, `segments 4`, `census_batches 16`)
+so that they finish in minutes; the numbers are a plumbing check, not a
+measurement of the production policy.
+
+| run | recipe | stage sizes (gates) | stage 6 | checks |
+| --- | --- | --- | --- | --- |
+| `v2_n16_full` | n=16, \|C\|=64, `source.construction = "balanced"`, `preprocessing.mode = "three-mask"`, all stages, `adaptive.max_rounds = 2` | stage 2 48,139 (sandwich 272); stage 3 110,045; stage 4 200,442; stage 5 371,703 | round 1 → 308,431 (523 blocks, 282 synthesized), round 2 → 269,368 (349 blocks, 177 synthesized; 2 candidates rejected as leakier, 351 as growing); `stop_reason=round cap`; deeper exposure 0 direct / 0 affine in the input and in the published circuit | `equiv_canonical ok(8192)`, `zero_slice ok(4096)`, `payload_contract ok(16692)`; 822 s for stage 6 |
+| `v2_n16_skip345` | n=16, \|C\|=64, random C, embedded masking L8, `run.skip_stages = [3, 4, 5]`, `adaptive.max_rounds = 1` | stage 2 66,494 | round 1 → 34,086 (39 blocks, 24 synthesized; 26 rejected as leakier, 4 as growing); deeper exposure 0 / 0 | all three ok; 27 s |
+
+Both runs wrote `delivery.recipe` (`delivery_recipe=2`, `delivery_mode=adaptive`),
+`stage12.recipe` with `source_construction=` and the three-mask knobs, and
+ended with `PIPELINE COMPLETE (stages …): …/adaptive/final.mpmct1`. The
+unit suite (550 tests), the integration suites (packing against its oracle
+fixtures, unpacking, the three-mask parity against the campaign generator,
+the balanced-C reference hash, `tdp_adaptive` end to end with resume) and
+the five mock-based shell tests of the driver pass on the release branch.
+No n=64 run of the production policy has been made with this build yet;
+the server campaigns of October 2026 ran the prototypes this code ports.
