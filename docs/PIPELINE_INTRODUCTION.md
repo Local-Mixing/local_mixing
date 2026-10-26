@@ -37,27 +37,25 @@ output   junk             | C(x)  (answer)    | junk
 ```
 
 The **honest slice** (also "zero slice" or "public slice") is the set of
-inputs with x on wires 0..n and zeros everywhere else. Only there is the
+inputs with x on wires 0..n and zeros everywhere else; only there is the
 circuit asked to reproduce C, and only the middle n output bits are the
-answer. The permutation is reversible on every 4n-bit state; fixing the
-auxiliary inputs and projecting the outputs are part of the application
-contract, no gate forces an input onto the slice. For a preimage problem the
-target is an n-bit value t and the witness is an x with C(x) = t. Whoever
-knows C has the trapdoor: reverse C's gates on t. Knowing the full 4n-bit
-output of 𝒢 would also allow reversal, but the junk is not part of the
-target, and reversing the published gate list on the slice yields the random
-decoy D⁻¹, not C⁻¹ (section 3.1).
+answer. Fixing the auxiliary inputs and projecting the outputs are part of
+the application contract. For a preimage problem the target is an n-bit t
+and the witness an x with C(x) = t: whoever knows C reverses its gates on t,
+while reversing the published gate list on the slice yields the random decoy
+D⁻¹, not C⁻¹, and the junk outputs that would allow reversing 𝒢 are not
+part of the target (section 3.1).
 
 ### 1.2 What the adversary sees
 
 The adversary holds the published circuit and nothing else: not C, not the
-sandwich, the masked, mixed, split or crossed intermediate circuits, not the
-seeds, and none of the per-round outputs of stage 6. It can cut the circuit
-anywhere, compute the function of any segment, compose segments and
-resynthesize them into circuits of its own (`docs/tdp_pipeline.md`, "What
-the adversary sees"). The security question the pipeline is engineered and
-measured against is whether such rewriting lets the adversary recover
-internal values of C, and from them C's gates.
+intermediate circuits of stages 1-5, not the seeds, and none of the
+per-round outputs of stage 6. It can cut the circuit anywhere, compute the
+function of any segment, compose segments and resynthesize them into
+circuits of its own (`docs/tdp_pipeline.md`, "What the adversary sees").
+The question the pipeline is engineered and measured against is whether
+such rewriting lets the adversary recover internal values of C, and from
+them C's gates.
 
 ### 1.3 Exposure, the measured quantity
 
@@ -78,16 +76,14 @@ these, 60 are polynomials of degree at most two in the public inputs or
 outputs and are called **boundary** values; the remaining 876 **deeper**
 values are the ones that count (`docs/notes/stage2_stage6_campaign_20261021.md`).
 Counts are of births, not of independent bits, and are not an inversion
-probability; they are the quantity the pipeline is optimized on, together
-with two C-blind attack families (section 3.6).
+probability; they are the quantity the pipeline is optimized on.
 
-One fact drives the whole design: the raw outputs of stages 1-5 expose no
-deeper value at any cut (raw census 0/0 in every campaign arm), but any
-resynthesis, the adversary's or the pipeline's own, recreates some. An ANF
-synthesizer that re-implements a gate multiplying a C value needs that value
-in the clear, so exposure is a per-control-read phenomenon
-(`docs/notes/c_design_exposure_20261021.md` §1). Stage 6 is built around
-this (section 3.6).
+One fact drives the design: the raw outputs of stages 1-5 expose no deeper
+value at any cut (raw census 0/0 in every campaign arm), but any
+resynthesis, the adversary's or the pipeline's own, recreates some, because
+a synthesizer that re-implements a gate multiplying a C value needs that
+value in the clear (`docs/notes/c_design_exposure_20261021.md` §1). Stage 6
+is built around this (section 3.6).
 
 ## 2. The source circuit C
 
@@ -106,17 +102,17 @@ n = 128; any other width needs `source.gates` or `gates_rule = "formula"`
 Why a balanced C exists. In a random 1,000-gate C about 36 % of the births
 are never read as a control and stay hidden through every resynthesis, while
 253 births are read three times or more and were 62-97 % exposed after the
-baseline pipeline; each control read is roughly an independent chance of
-about 0.3 (affine) or 0.2 (direct) of being materialized by a synthesizer
-(`docs/notes/c_design_exposure_20261021.md` §1-2). The balanced C removes the
-hubs, so no exposed value serves more than two gates and half as many gates
-have both operands in the clear (248 against 462 under the baseline stage 2
-with RC's adaptive pass 1), at the price of a higher count of exposed births
-(455 against 319), because it also removes the unread values; the two
-objectives are duals, and within g57 circuits of this size redesigning C
-redistributes exposure rather than reducing it (§2-3 of the same note).
-Under the three-mask stage 2 with the adaptive v2 stage 6, every C tested
-(random, balanced, burst) gave 0 deeper exposures in the census (§5 there).
+baseline pipeline; each read is roughly an independent chance of about 0.3
+(affine) or 0.2 (direct) of being materialized
+(`docs/notes/c_design_exposure_20261021.md` §1-2). The balanced C removes
+the hubs, so no exposed value serves more than two gates and half as many
+gates have both operands in the clear (248 against 462 under the baseline
+stage 2, RC's adaptive pass 1), at the price of more exposed births (455
+against 319), because it also removes the unread values: the two objectives
+are duals, and within g57 circuits of this size redesigning C redistributes
+exposure rather than reducing it. Under the three-mask stage 2 with the
+adaptive v2 stage 6, every C tested gave 0 deeper exposures in the census
+(§3, §5 of the same note).
 
 ## 3. The six stages
 
@@ -189,25 +185,24 @@ else is junk (`docs/tdp_pipeline.md`, "Stage 2").
 
 **Embedded masking** (`preprocessing.mode = "embedded-masking"`, preset
 `L8`, the default). Each data wire carries two or three open balanced
-quadratic masks `M = 1 + y + x·y + z` over band wires x, y, z (an LGI: the
-pair `g57(w,x,y); CNOT(w,z)` opens it and the same pair closes it). A
+quadratic masks `M = 1 + y + x·y + z` over band wires x, y, z (the gate pair
+`g57(w,x,y); CNOT(w,z)` opens a mask and the same pair closes it). A
 sandwich gate is fired through the still-quadratic decodes of its operands
-("quadratic fire", product degree ≤ 4), the degree-3 and degree-4 terms
-being added with dirty-ancilla brackets of four and eight two-control gates
-that borrow a band wire and restore it; a temporary **fire cover** and a
+("quadratic fire", product degree ≤ 4), the cubic and quartic terms being
+added by dirty-ancilla brackets of four and eight two-control gates that
+borrow a band wire and restore it; a temporary **fire cover** and a
 persistent **straddle** mask opened mid-fire hide which gate fired; the band
 is refreshed by rerandomization bursts; and **persistent carrier migration**
 (dose 8) moves data roles across physical wires so that no wire class is
 recognizable (`docs/TDP_PIPELINE_REFERENCE.md` §2b.3, §2b.5, §2c;
-`docs/local_mixing_documentation.md`, "Embedded Masking"). Preset L8 sets
-`PREMASK` (mask every data wire before the first fire), `SEED_AVOID_C1` (no
-seed products on C's first-layer control pairs), bounded bracket chains
-(`CHAIN=2, CHAIN_LEN=8`) and persistent migration; these closed the
-first-layer "fringe" leaks and cut bracket rebirths
-(`docs/STAGE2_LINKABILITY.md` §3, §6). Every gate has at most two controls,
-the vocabulary the stage-3 store digests. Size: 0.777-0.779 M gates on 256
-wires at n = 64, 2.22-2.24 M on 512 wires at n = 128
-(`docs/TDP_PIPELINE_REFERENCE.md`, "Data flow").
+`docs/local_mixing_documentation.md`, "Embedded Masking"). Preset L8 adds
+`PREMASK` (every data wire masked before the first fire), `SEED_AVOID_C1`
+(no seed products on C's first-layer control pairs) and bounded bracket
+chains (`CHAIN=2, CHAIN_LEN=8`), which closed the first-layer "fringe" leaks
+and cut bracket rebirths (`docs/STAGE2_LINKABILITY.md` §3, §6). Every gate
+has at most two controls, the vocabulary the stage-3 store digests. Size:
+0.777-0.779 M gates on 256 wires at n = 64, 2.22-2.24 M on 512 wires at
+n = 128 (`docs/TDP_PIPELINE_REFERENCE.md`, "Data flow").
 
 **Three-mask compute** (`preprocessing.mode = "three-mask"`, knobs in
 `[three_mask]`; new in this release). The same outer blocks (opening guard,
@@ -217,27 +212,26 @@ compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_
 - Each data value is carried as `x_i = d_i + M_{i,1} + M_{i,2} + M_{i,3}`,
   where d_i is the physical carrier and each M_{i,j} = b_p·b_q·b_r is a
   cubic monomial in three band coordinates; a mask is a stored triple of
-  band indices, not a register, and cubic labels are kept unique across
-  roles.
+  band indices, not a register, and cubic labels are unique across roles.
 - The band (`band_wires = 0` = the larger of 2n and 128, rounded up to a
-  multiple of 16; 8 banks by default) is organized in banks that rotate
-  through **serving** (supplying mask coordinates, never written),
-  **retiring** (drained of references) and **growing** (freely rewritten by
-  8 nonlinear growth gates per fire) phases, so masks are a renewable supply.
+  multiple of 16; 8 banks by default) rotates its banks through **serving**
+  (supplying mask coordinates, never written), **retiring** (drained of
+  references) and **growing** (freely rewritten by 8 nonlinear growth gates
+  per fire) phases, so masks are a renewable supply.
 - A logical gate `x_t ^= x_u·x_v` is compiled without decoding its controls:
   `d_t ^= (d_u + S_u)(d_v + S_v)` expands to at most 16 products of up to six
   controls, each emitted as a non-restoring **dirty-helper chain** of 2k−3
-  Toffolis on helpers borrowed from a growing bank (a chain adds the product
-  regardless of the helper's old value; the helper is left dirty, which is
-  allowed because no live mask references it).
+  Toffolis on helpers borrowed from a growing bank (the chain adds the
+  product whatever the helper held, and the helper may stay dirty because no
+  live mask references it).
 - Per fire: a temporary cover mask is XORed into the target, the product
   units are emitted in shuffled order, the target's oldest persistent mask is
   replaced by a fresh one through the **differential cubic refresh**
   `abc + def = (a+d)bc + d(b+e)c + de(c+f)` (15 gates), the cover is
   removed, up to two idle roles are refreshed to drain the retiring bank,
   and the growth gates are emitted. A **persistent migration** pass (6
-  segments) then spreads target writes over physical carriers, and all masks
-  are XORed out at the end of the compute.
+  segments) spreads target writes over physical carriers, and all masks are
+  XORed out at the end of the compute.
 
 The defaults are the campaign configuration "three-mask modified / v2":
 `random_helpers = true` (helpers drawn from a shuffled pool per fire and
@@ -266,20 +260,19 @@ Purpose: un-invertible respelling, dilution and "digestion" of the stage-2
 vocabulary into the g57 form; it is not a hiding stage
 (`docs/TDP_PIPELINE_REFERENCE.md` §3). It runs `circuit_mixer --tdp
 --db-mixing --p-db 1.0` against the regular **frozen store** (`frozen_m1_m11`,
-a store of small g57 circuits keyed by the canonical form of their function;
-`database.regular_dir` or `FROZEN_DB_DIR`). One move: sample a window of a
-few gates (contiguous, or convex after moving commuting gates aside, at most
-12 gates), compute the canonical key of its function, look it up, splice in a
-randomly chosen stored spelling of the same function after verifying it, and
-push the new gates outward through the gates they commute with so that
-replacements overlap instead of sitting in blocks
-(`docs/local_mixing_documentation.md`, "Database mixing"). A size controller
-alternates growing (MIX) and shrinking (COMP) rounds; a rare g57 twist swaps
-two wire labels across a long window. The validated schedule is profile
-`2,2,2,2,2` with int(G·2·2·1.3) moves, G the stage-2 gate count; it doubles
-the circuit (ratio 2.04-2.13) and leaves it about 88 % g57 gates in about
-34 minutes at n = 64 (`docs/TDP_PIPELINE_REFERENCE.md` §3.8). Campaign
-sizes: 1.60 M (baseline) and 1.06 M (three-mask) gates.
+small g57 circuits keyed by the canonical form of their function;
+`database.regular_dir` or `FROZEN_DB_DIR`). One move: sample a window of at
+most 12 gates (contiguous, or convex after moving commuting gates aside),
+compute the canonical key of its function, look it up, splice in a randomly
+chosen stored spelling of the same function after verifying it, and push the
+new gates outward through the gates they commute with so that replacements
+overlap (`docs/local_mixing_documentation.md`, "Database mixing"). A size
+controller alternates growing (MIX) and shrinking (COMP) rounds; a rare g57
+twist swaps two wire labels across a long window. The validated schedule
+(profile `2,2,2,2,2`, int(G·2·2·1.3) moves for G stage-2 gates) doubles the
+circuit (ratio 2.04-2.13) and leaves it about 88 % g57 gates, in about 34
+minutes at n = 64 (`docs/TDP_PIPELINE_REFERENCE.md` §3.8). Campaign sizes:
+1.60 M (baseline) and 1.06 M (three-mask) gates.
 
 ### 3.4 Stage 4: splitting (optional)
 
@@ -320,10 +313,9 @@ windows recovers 244 of 936 interior C values at n = 64
 ### 3.6 Stage 6: delivery
 
 Purpose: produce the published circuit by re-spelling the mixed circuit from
-its function alone, so that neither the mixer's nor the packer's spelling
-ships, while controlling the exposure that re-spelling creates. Stage 6 reads
-C: it is a construction-time, C-informed procedure, not an attack, and it
-runs in the secret-holding environment like every other stage.
+its function alone, so that the mixer's spelling never ships, while
+controlling the exposure that re-spelling creates. Stage 6 reads C: it is a
+construction-time, C-informed procedure, not an attack.
 
 **Adaptive mode** (`delivery.mode = "adaptive"`, the default; binary
 `tdp_adaptive`, parameters in `[adaptive]`). Designed by RC
@@ -373,9 +365,8 @@ check against C and the sandwich payload contract in both directions
 Why v2 rather than boundary choice alone: in RC's matched experiment a
 round whose 3,370 boundaries were all proxy-free still exposed 319 internal
 births, because the proxies are created by the synthesizer inside the
-blocks; hence the exposure-aware acceptance. The sequential planner took
-2,153 s on 5.4 M gates and 2,935 of its 3,032 blocks stopped at the
-composition work limit, hence parallel segments; a second round pinned 20
+blocks, hence the exposure-aware acceptance; the sequential planner took
+2,153 s on 5.4 M gates, hence parallel segments; a second round pinned 20
 deeper values at boundaries re-planned on an exposed circuit, hence the
 avoidance radius; 25 % of blocks hit a fixed 60 s deadline, hence the
 size-scaled budget (review, findings 1-5).
@@ -396,16 +387,16 @@ master seed, arms differing only in stage 2:
 the v2 outputs is 1, a boundary value.) Stage 6 compresses the baseline
 8.3-fold and exposes half of C while doing so; it compresses the three-mask
 outputs only 1.3-1.5-fold and the v2 acceptance keeps their census at zero.
-The residual is real, though: the C-blind **narrow portfolio** (rewrites of
-125- and 250-gate windows) still recovers 157 deeper values at two or more
-locations (76 once) from the modified/v2 output and 264 (63) from the
-as-is/v2 output; C-blind resynthesis of the output to its own plateau raises
-its census to 6-9, a stage-3 remix followed by repacking to 19-39; and every
+A residual remains: the C-blind **narrow portfolio** (rewrites of 125- and
+250-gate windows) still recovers 157 deeper values at two or more locations
+(76 once) from the modified/v2 output and 264 (63) from the as-is/v2
+output; C-blind resynthesis of the output to its own plateau raises its
+census to 6-9, a stage-3 remix followed by repacking to 19-39; and every
 compression step, the defender's or the attacker's, raised exposure. The
-summary's recommendation is to judge stage 6 by exposure rather than size
-and to treat a plateau as the fixed attacker's result, not a floor. A
-related finding: the three-mask circuit without stage 3 was ANF-incompressible
-in stage 6 (pipeline-variants campaign of the same week).
+summary therefore recommends judging stage 6 by exposure rather than size
+and treating a plateau as the fixed attacker's result, not a floor. A
+related finding of the same week's pipeline-variants campaign: the
+three-mask circuit without stage 3 was ANF-incompressible in stage 6.
 
 **Windowed mode** (`delivery.mode = "windowed"`, the previous release's
 stage 6; `docs/DELIVERY_STAGE.md`). The packer (`tdp_packing run`,
@@ -414,13 +405,12 @@ born and consumed inside one window, cuts it into windows of at most 512
 gates, repairs boundary exposures of C's values and serializes each window
 as the canonical ANF of its permutation (`packing/deliverable.tdp4`); the
 unpacker (`tdp_unpacking run --refine`, `[delivery]`) resynthesizes every
-window from its ANF alone, cuts a window that fails in two at an
-exposure-aware cut and repacks and unpacks the halves for up to 16 rounds,
-and emits `unpacking/unpacked.mpmct1` in canonical order. With
-`delivery.anf_only = true` the stage ends after the packer's deliverable,
-which is then the published object and is unpacked by the recipient.
-Measured at n = 64: the unpacked circuit exposes 5 of 936 interior C values
-at its own cuts (`docs/DELIVERY_STAGE.md` §2).
+window from its ANF alone, bisects a window that fails at an exposure-aware
+cut for up to 16 rounds, and emits `unpacking/unpacked.mpmct1` in canonical
+order. With `delivery.anf_only = true` the packer's deliverable is the
+published object and the recipient unpacks it. Measured at n = 64: the
+unpacked circuit exposes 5 of 936 interior C values at its own cuts
+(`docs/DELIVERY_STAGE.md` §2).
 
 ## 4. What is published, what stays secret
 
@@ -441,12 +431,11 @@ Seeds: a fresh run draws five seeds (gen, mix, split, cross, unpack = the
 stage-6 seed) from the OS CSPRNG plus a 256-bit `run_key` into `$RUN/SEEDS`
 (mode 0600) before anything else is written. No seed is ever on a command
 line: the driver hands them to the stage binaries on inherited file
-descriptors, and the binaries print `(file)` in place of the value, so
-nothing appears in `ps`, in logs or in the manifest. Completion markers use
-HMAC-SHA256 keyed by `run_key`, never an unkeyed hash of a secret. A
-generated C is a function of at most 64 bits of seed; production deliverables
-should supply C through `source.path` (`docs/tdp_pipeline.md`, "Seeds and
-calibration").
+descriptors and the binaries print `(file)` in place of the value, so
+nothing appears in `ps`, the logs or the manifest; completion markers use
+HMAC-SHA256 keyed by `run_key`. A generated C is a function of at most 64
+bits of seed, so production deliverables should supply C through
+`source.path` (`docs/tdp_pipeline.md`, "Seeds and calibration").
 
 ## 5. Running it
 
@@ -501,16 +490,16 @@ adaptive attempt of the same recipe resumes with its completed rounds kept.
 Every stage binary starts from an empty environment plus an allow-list; an
 inherited variable that could change the output is a fatal error.
 
-Checks along the way: stage 2 verifies the payload forward and backward;
-stage 3 runs periodic global equivalence checks; stage 6 checks every round's
-assembly against its input, and the final circuit against C on the zero
-slice and against the sandwich payload contract in both directions. The run
-ends with `PIPELINE COMPLETE (stages 1-6): <run>/adaptive/final.mpmct1`, or
-with `PIPELINE FINISHED WITH AN ALLOWED FAILURE` and a `NOT_RECOMMENDED` file
+Checks: stage 2 verifies the payload forward and backward, stage 3 runs
+periodic global equivalence checks, and stage 6 checks every round's
+assembly against its input and the final circuit against C on the zero slice
+and against the sandwich payload contract in both directions. The run ends
+with `PIPELINE COMPLETE (stages 1-6): <run>/adaptive/final.mpmct1`, or with
+`PIPELINE FINISHED WITH AN ALLOWED FAILURE` and a `NOT_RECOMMENDED` file
 next to the output when `adaptive.report` records a status other than `ok`
-(a failed stage leaves `delivery.failed` with the exit code and step
-instead). The output to look at first is `adaptive.report`: the rounds, the
-stop reason and the exposure counts of the published circuit.
+(a failed stage leaves `delivery.failed` with the exit code and step). Read
+`adaptive.report` first: the rounds, the stop reason and the exposure counts
+of the published circuit.
 
 ## 6. Where to read more
 

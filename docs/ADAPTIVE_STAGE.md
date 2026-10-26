@@ -164,8 +164,9 @@ hash of $C$ or of a secret intermediate appears in it.
 
 Exit codes (the driver prints them with their meaning and `step=adaptive`
 in `delivery.failed`): 0 finished, 2 usage or parameter error, 3 input
-error, 4 verification or synthesis failure, 7 I/O error writing outputs,
-8 internal invariant violated, 101 panic.
+error, 4 verification failure (a block that does not synthesize is not an
+error: it stays as it was), 7 I/O error writing outputs, 8 internal
+invariant violated, 101 panic.
 
 ## 5. What was measured
 

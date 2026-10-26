@@ -235,24 +235,8 @@ pub(crate) fn unpacking_exit_meaning(code: i32) -> &'static str {
 /// `tdp_adaptive` exit codes (stage 6 in its adaptive mode;
 /// docs/ADAPTIVE_STAGE.md): the binary's own table.
 pub(crate) fn adaptive_exit_meaning(code: i32) -> &'static str {
-    ADAPTIVE_EXIT_CODES
-        .iter()
-        .find(|(c, _)| *c == code)
-        .map(|(_, m)| *m)
-        .unwrap_or("unknown exit code")
+    crate::stages::adaptive::round::AdaptiveError::meaning(code)
 }
-
-/// `tdp_adaptive`'s exit table as the drivers report it (checked against
-/// the binary's own table by `exit_code_tables_agree`).
-pub(crate) const ADAPTIVE_EXIT_CODES: [(i32, &str); 7] = [
-    (0, "finished"),
-    (2, "usage or parameter error"),
-    (3, "input error"),
-    (4, "verification or synthesis failure"),
-    (7, "I/O error writing outputs"),
-    (8, "internal invariant violated"),
-    (101, "panic"),
-];
 
 /// Which sub-step of the delivery stage failed (`step=` in `delivery.failed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

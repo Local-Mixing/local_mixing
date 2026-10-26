@@ -839,8 +839,8 @@ rewrites still find 100-160 repeated deeper values
 
 **Exit codes** of `tdp_adaptive` (the driver prints them with their meaning
 and `step=adaptive` in `delivery.failed`): 2 usage or parameter error, 3
-input error, 4 verification or synthesis failure, 7 I/O error writing
-outputs, 8 internal invariant violated, 101 panic. The completion marker
+input error, 4 verification failure, 7 I/O error writing outputs, 8
+internal invariant violated, 101 panic. The completion marker
 `delivery.recipe` holds `delivery_recipe=2`, `delivery_mode=adaptive`, the
 binary's hash, the non-default parameters, the keyed tags of the seed, the
 three inputs, the sandwich and `final.mpmct1`, then `status=`, `rounds=` and

@@ -354,7 +354,7 @@ for rc in 3 4 7; do
   printf 'adaptive_exit=%s\n' "$rc" > "$R.mock"
   set +e; drive --run-rerun-from-stage 6 > "$tmp/x$rc.log" 2>&1; got=$?; set -e
   [ "$got" = "$rc" ] || { cat "$tmp/x$rc.log" >&2; exit 1; }
-  case $rc in 3) m='input error' ;; 4) m='verification or synthesis failure' ;; 7) m='I/O error writing outputs' ;; esac
+  case $rc in 3) m='input error' ;; 4) m='verification failure' ;; 7) m='I/O error writing outputs' ;; esac
   grep -q "stage 6 FAILED: adaptive exit $rc ($m)" "$tmp/x$rc.log"
   no_complete "$tmp/x$rc.log"
   test ! -e "$R/delivery.recipe"

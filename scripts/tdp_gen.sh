@@ -1250,7 +1250,7 @@ stop_here 5
 adaptive_exit_meaning() {
   case "$1" in
     2) echo "usage or parameter error" ;; 3) echo "input error" ;;
-    4) echo "verification or synthesis failure" ;; 7) echo "I/O error writing outputs" ;;
+    4) echo "verification failure" ;; 7) echo "I/O error writing outputs" ;;
     8) echo "internal invariant violated" ;; 101) echo "panic" ;; *) echo "unknown exit code" ;;
   esac
 }

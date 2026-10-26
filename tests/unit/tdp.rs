@@ -1280,12 +1280,14 @@ fn exit_code_tables_agree() {
         assert_eq!(Stage7Error::meaning(*code), *meaning);
         assert_eq!(unpacking_exit_meaning(*code), *meaning);
     }
+    use crate::stages::adaptive::round::{AdaptiveError, EXIT_CODES as ADAPTIVE};
     let body = body_of("adaptive_exit_meaning() {");
-    for (code, meaning) in ADAPTIVE_EXIT_CODES.iter().filter(|(c, _)| *c != 0) {
+    for (code, meaning) in ADAPTIVE.iter().filter(|(c, _)| *c != 0) {
         assert!(
             body.contains(&format!("{code}) echo \"{meaning}\"")),
             "tdp_gen.sh adaptive_exit_meaning lacks exit {code} = {meaning}"
         );
+        assert_eq!(AdaptiveError::meaning(*code), *meaning);
         assert_eq!(adaptive_exit_meaning(*code), *meaning);
     }
 }
@@ -1997,10 +1999,7 @@ fn stage_meaning_needs_the_failure_marker() {
     assert_eq!(stage_failure(&marker), Some((4, DeliveryStep::Unpacking)));
     fs::write(&marker, "exit=4\nstep=adaptive\n").unwrap();
     assert_eq!(stage_failure(&marker), Some((4, DeliveryStep::Adaptive)));
-    assert_eq!(
-        adaptive_exit_meaning(4),
-        "verification or synthesis failure"
-    );
+    assert_eq!(adaptive_exit_meaning(4), "verification failure");
     fs::write(&marker, "exit=5\n").unwrap();
     assert_eq!(stage_failure(&marker), None, "no sub-step");
     fs::write(&marker, "exit=5\nstep=mixing\n").unwrap();
