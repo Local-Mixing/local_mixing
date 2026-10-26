@@ -583,6 +583,11 @@ pub(crate) fn validate_current_recipe(config: &ResolvedConfig) -> Result<(), Tdp
             }
         }
         PreprocessingMode::Nonlinear291 => {}
+        PreprocessingMode::ThreeMask => {
+            return Err(TdpError::config(
+                "preprocessing.mode three-mask is not wired into the managed TDP driver yet; run gen_sandwich_gadget directly",
+            ));
+        }
     }
     Ok(())
 }

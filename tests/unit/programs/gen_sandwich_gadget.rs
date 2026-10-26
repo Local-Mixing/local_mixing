@@ -60,6 +60,122 @@ fn embedded_masking_has_one_canonical_name() {
 }
 
 #[test]
+fn three_mask_is_supported() {
+    let mode = PreprocessingMode::parse("three-mask").unwrap();
+    assert_eq!(mode, PreprocessingMode::ThreeMask);
+    assert_eq!(mode.canonical_name(), "three-mask");
+    assert_eq!(PreprocessingMode::parse("three_mask"), None);
+}
+
+#[test]
+fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
+    let none = |_: &str| None;
+    let defaults = three_mask_params_from(19, none, &[]).unwrap();
+    let v2 = ThreeMaskParams::v2(19, 0);
+    assert_eq!(format!("{defaults:?}"), format!("{v2:?}"));
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+        }
+    };
+    let names = |pairs: &[(&str, &str)]| -> Vec<String> {
+        pairs.iter().map(|(k, _)| k.to_string()).collect()
+    };
+    let set: &[(&str, &str)] = &[
+        ("THREE_MASK_BAND_WIRES", "192"),
+        ("THREE_MASK_BANKS", "16"),
+        ("THREE_MASK_RETIRE_BUDGET", "4"),
+        ("THREE_MASK_MAX_RETIRING", "3"),
+        ("THREE_MASK_ROTATION", "2"),
+        ("THREE_MASK_MATURITY", "3"),
+        ("THREE_MASK_VISIT_SWEEPS", "1"),
+        ("THREE_MASK_GROWTH", "16"),
+        ("THREE_MASK_WARMUP", "2"),
+        ("THREE_MASK_SEGMENTS", "8"),
+        ("THREE_MASK_MASK_COUNT", "2"),
+        ("THREE_MASK_RANDOM_HELPERS", "0"),
+        ("THREE_MASK_UNIQUE_COVER", "false"),
+    ];
+    let p = three_mask_params_from(19, env(set), &names(set)).unwrap();
+    assert_eq!(
+        (
+            p.band_wires,
+            p.banks,
+            p.retirement_budget,
+            p.max_retiring,
+            p.rotation_interval,
+            p.maturity_sweeps,
+            p.growth_sweeps_per_visit,
+            p.growth_per_fire,
+            p.warmup_sweeps,
+            p.migration_segments,
+            p.mask_count
+        ),
+        (192, 16, 4, 3, 2, 3, 1, 16, 2, 8, 2)
+    );
+    assert!(!p.random_helpers && !p.unique_cover);
+    // Everything else stays at v2.
+    assert!(p.temporal_masks && p.cubic_chain && p.discard_fire_helpers && p.seed == 19);
+    for bad in [
+        &[("THREE_MASK_BANKS", "eight")][..],
+        &[("THREE_MASK_GROWTH", "-1")],
+        &[("THREE_MASK_BAND_WIRES", "")],
+        &[("THREE_MASK_RANDOM_HELPERS", "yes")],
+        &[("THREE_MASK_UNIQUE_COVER", "2")],
+    ] {
+        let bad: &'static [(&'static str, &'static str)] =
+            Box::leak(bad.to_vec().into_boxed_slice());
+        let error = three_mask_params_from(19, env(bad), &names(bad)).unwrap_err();
+        assert!(error.contains(bad[0].0), "{error}");
+    }
+    let typo = names(&[("THREE_MASK_BAND_WIRE", "128")]);
+    let error = three_mask_params_from(19, none, &typo).unwrap_err();
+    assert!(
+        error.contains("unknown three-mask control(s): THREE_MASK_BAND_WIRE"),
+        "{error}"
+    );
+}
+
+#[test]
+fn modes_refuse_each_others_controls() {
+    let names = |keys: &[&str]| -> Vec<String> { keys.iter().map(|k| k.to_string()).collect() };
+    assert!(
+        foreign_mode_controls(
+            PreprocessingMode::ThreeMask,
+            &names(&["PATH", "THREE_MASK_BANKS"])
+        )
+        .is_ok()
+    );
+    let error = foreign_mode_controls(
+        PreprocessingMode::ThreeMask,
+        &names(&[
+            "SLICE_GUARD_LEGACY",
+            "EMBEDDED_MASKING_SHUFFLING",
+            "EMBEDDED_MASKING_CHAIN",
+        ]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "three-mask fixes the outer blocks to preset L8; unset EMBEDDED_MASKING_CHAIN, EMBEDDED_MASKING_SHUFFLING, SLICE_GUARD_LEGACY"
+    );
+    for mode in [
+        PreprocessingMode::EmbeddedMasking,
+        PreprocessingMode::Nonlinear291,
+    ] {
+        assert!(foreign_mode_controls(mode, &names(&["EMBEDDED_MASKING_PREMASK"])).is_ok());
+        let error = foreign_mode_controls(mode, &names(&["THREE_MASK_BANKS"])).unwrap_err();
+        assert_eq!(
+            error,
+            "THREE_MASK_* controls require the three-mask mode; unset THREE_MASK_BANKS"
+        );
+    }
+}
+
+#[test]
 fn nonlinear291_is_supported() {
     assert_eq!(
         PreprocessingMode::parse("nonlinear291"),

@@ -240,6 +240,23 @@ impl EmbeddedMaskingParams {
         }
     }
 
+    /// Preset L8 of the managed TDP driver (`tdp_gen.sh` / `src/tdp`):
+    /// the managed recipe with pre-masking, the first-layer-aware band seed,
+    /// 2-wire chains of length 8 and persistent carrier migration in 8
+    /// segments. The three-mask stage-2 mode fixes its outer blocks (guards,
+    /// band seed and reseed) to this preset.
+    pub fn preset_l8(seed: u64, active_wires: usize) -> Self {
+        Self {
+            premask: true,
+            seed_avoid_c1: true,
+            chain_k: 2,
+            chain_len: 8,
+            shuffling_segments: 8,
+            shuffling_return_home: false,
+            ..Self::managed_tdp(seed, active_wires)
+        }
+    }
+
     /// Settled preset: K=2 (band wires per LGI -> 1 disjoint pair; affine- and
     /// deg-2-neutral across K, so smallest is best), R=n (auto), max_open=3.
     /// Rerand: auto STRADDLE bursts -- `m/(4k)` slots (~875, under the ~1024 knee)
@@ -1241,6 +1258,14 @@ pub fn preprocess_embedded_masking(
     preprocess_embedded_masking_with_execution(src, np, p, &EmbeddedMaskingExecution::default())
 }
 
+/// The band width the construction uses (`EmbeddedMaskingOutput::r_used`):
+/// `p.r`, or the sandwich width `np` when `p.r == 0` (auto). A closed form
+/// of the parameters, so the surrounding stage-2 blocks can be sized
+/// without running the compute.
+pub fn band_width(np: usize, p: &EmbeddedMaskingParams) -> usize {
+    if p.r == 0 { np } else { p.r }
+}
+
 /// Explicit comparison controls for retained linear-read and ancilla-pool studies.
 pub fn preprocess_embedded_masking_with_execution(
     src: &[XGate],
@@ -1254,7 +1279,7 @@ pub fn preprocess_embedded_masking_with_execution(
     );
     let k = p.k.max(2); // g57 1-cycle is a degenerate constant flip
     let lgi_debug = execution.lgi_debug;
-    let r = if p.r == 0 { np } else { p.r };
+    let r = band_width(np, p);
     // Band wires per LGI cycle: `K` rounded down to disjoint pairs (odd K wastes
     // a wire: K3 == K2), plus the balancing wire `z` when balanced.
     let lgi_k = (k - k % 2) + usize::from(p.balanced);
