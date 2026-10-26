@@ -412,13 +412,18 @@ fn random_circuit_intervals_agree_with_per_cut_elimination() {
 }
 
 /// `cargo test --release --lib adaptive::census -- --ignored --nocapture`
+///
+/// C's 2000 gates are embedded in the first ~8k gates of G (with copies
+/// and XORs into the ancillas), so a representative share of the births
+/// is exposed and the per-target work of the basis is exercised; a purely
+/// random G exposes almost nothing and measures only the linear updates.
 #[test]
 #[ignore = "timing: a 100k-gate census on 32 wires"]
 fn census_timing_100k_gates_32_wires() {
     let mut rng = StdRng::seed_from_u64(2026);
-    let (n, width, m) = (8usize, 32usize, 100_000usize);
-    let source = Source::new(random_gates(&mut rng, n as u16, 200), n, BTreeSet::new());
-    let g = random_gates(&mut rng, width as u16, m);
+    let (n, width, m) = (16usize, 32usize, 100_000usize);
+    let source = Source::new(random_gates(&mut rng, n as u16, 2000), n, BTreeSet::new());
+    let g = embedded_circuit(&mut rng, &source, width as u16, m);
     let t0 = std::time::Instant::now();
     let c = discover(&source, &g, width, DEFAULT_BATCHES);
     let discovery = t0.elapsed().as_secs_f64();
@@ -426,13 +431,20 @@ fn census_timing_100k_gates_32_wires() {
     let mut c2 = c.clone();
     let summary = audit(&source, &g, width, &mut c2.affine, &mut c2.direct);
     let auditing = t1.elapsed().as_secs_f64();
+    let lm = c2.metrics(&source, true);
     eprintln!(
-        "census 100k gates / 32 wires / |C| = 200: discovery {discovery:.2} s ({} affine, {} direct intervals), audit {auditing:.2} s ({} structured inputs, failed {}/{})",
+        "census 100k gates / 32 wires / |C| = 2000: discovery {discovery:.2} s ({} affine, {} direct intervals; {} / {} internal births affinely exposed), audit {auditing:.2} s ({} structured inputs, failed {}/{})",
         c.affine.len(),
         c.direct.len(),
+        lm.affine.all_internal_births,
+        source.internal.len(),
         summary.structured_inputs,
         summary.failed_affine,
         summary.failed_direct
     );
     assert!(summary.all_passed());
+    // The random gates on the low wires scramble C's state early, so only
+    // a few births stay exposed; the basis work per nonlinear gate (every
+    // unexposed target's residual) is paid either way.
+    assert!(lm.affine.all_internal_births >= 1);
 }
