@@ -165,6 +165,7 @@ fn final_report_lists_rounds_and_checks() {
         input_gates: 100,
         final_gates: 80,
         final_round: Some(1),
+        final_reloaded: false,
         rounds: vec![round],
         stop_reason: "round cap".into(),
         plateau: false,
@@ -176,6 +177,7 @@ fn final_report_lists_rounds_and_checks() {
         },
         checks: FinalChecks {
             equiv_canonical: Some(8192),
+            canonical_reloaded: false,
             zero_slice: 4096,
             payload_contract: None,
         },
@@ -200,6 +202,7 @@ fn final_report_lists_rounds_and_checks() {
         "check.equiv_canonical=ok(8192)",
         "check.zero_slice=ok(4096)",
         "check.payload_contract=skipped",
+        "final_reloaded=false",
         "final_leakage.validated.affine.deeper_births=0",
     ] {
         assert!(text.lines().any(|l| l == key), "missing {key} in\n{text}");

@@ -854,6 +854,47 @@ fn assemble<'b>(
 
 // ---------------------------------------------------------------- the round
 
+/// Round `r`'s result from `out_dir/result.report` when the round already
+/// completed (`Ok(None)` otherwise; nothing else is read, so a reloaded
+/// round needs no circuit). `input_gates` is what the round must have run
+/// on; a report of another round or input size is an input error.
+pub fn reload_round(
+    out_dir: &Path,
+    r: usize,
+    input_gates: usize,
+    log: Log<'_>,
+) -> Result<Option<RoundResult>, AdaptiveError> {
+    let report_path = out_dir.join("result.report");
+    if !report_path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&report_path).map_err(|e| AdaptiveError::io(&report_path, e))?;
+    let mut res = parse_round_report(&text)
+        .map_err(|e| AdaptiveError::Input(format!("{}: {e}", report_path.display())))?;
+    if res.round != r {
+        return Err(AdaptiveError::Input(format!(
+            "{}: holds round {}, expected round {r}",
+            report_path.display(),
+            res.round
+        )));
+    }
+    if res.input_gates != input_gates {
+        return Err(AdaptiveError::Input(format!(
+            "{}: round {r} ran on {} gates, the input now has {input_gates}",
+            report_path.display(),
+            res.input_gates
+        )));
+    }
+    res.reloaded = true;
+    log(&format!(
+        "round {r}: reloaded from {} ({} -> {} gates)",
+        report_path.display(),
+        res.input_gates,
+        res.output_gates
+    ));
+    Ok(Some(res))
+}
+
 /// Run (or reload) round `r` on `input` into `out_dir`.
 pub fn run_round(
     ctx: &RoundContext<'_>,
@@ -867,36 +908,10 @@ pub fn run_round(
     let p = ctx.params;
     p.validate().map_err(AdaptiveError::Usage)?;
     fs::create_dir_all(out_dir).map_err(|e| AdaptiveError::io(out_dir, e))?;
-    let report_path = out_dir.join("result.report");
-    if report_path.is_file() {
-        let text =
-            fs::read_to_string(&report_path).map_err(|e| AdaptiveError::io(&report_path, e))?;
-        let mut res = parse_round_report(&text)
-            .map_err(|e| AdaptiveError::Input(format!("{}: {e}", report_path.display())))?;
-        if res.round != r {
-            return Err(AdaptiveError::Input(format!(
-                "{}: holds round {}, expected round {r}",
-                report_path.display(),
-                res.round
-            )));
-        }
-        if res.input_gates != input.len() {
-            return Err(AdaptiveError::Input(format!(
-                "{}: round {r} ran on {} gates, the input now has {}",
-                report_path.display(),
-                res.input_gates,
-                input.len()
-            )));
-        }
-        res.reloaded = true;
-        log(&format!(
-            "round {r}: reloaded from {} ({} -> {} gates)",
-            report_path.display(),
-            res.input_gates,
-            res.output_gates
-        ));
+    if let Some(res) = reload_round(out_dir, r, input.len(), log)? {
         return Ok(res);
     }
+    let report_path = out_dir.join("result.report");
     let m = input.len();
     let width = ctx.width;
     if m == 0 {

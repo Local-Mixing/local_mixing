@@ -112,15 +112,13 @@ fn zero_slice(c: &[XGate], gates: &[XGate], n: usize, width: usize) {
     }
 }
 
-const SMALL_CAPS: [&str; 14] = [
+const SMALL_CAPS: [&str; 12] = [
     "--term-cap",
     "4096",
     "--max-block-gates",
     "400",
     "--time-limit",
     "5",
-    "--max-rounds",
-    "2",
     "--census-batches",
     "8",
     "--segments",
@@ -129,6 +127,12 @@ const SMALL_CAPS: [&str; 14] = [
     "4",
 ];
 
+/// Three runs on one out-dir: round 1 alone (`--max-rounds 1`), then
+/// `--max-rounds 2` (a PARTIAL resume: round 1 reloaded from its report,
+/// round 2 computed from round 1's kept output), then the same command
+/// again (a COMPLETED rerun: both rounds reloaded, the published
+/// `final.mpmct1` taken as the final circuit, nothing recomputed, the
+/// non-final round outputs having been pruned).
 #[test]
 fn run_resynthesizes_checks_and_resumes() {
     if std::env::var_os("TDP_ADAPTIVE_SKIP_SLOW").is_some() {
@@ -140,8 +144,7 @@ fn run_resynthesizes_checks_and_resumes() {
     let out = dir.join("out");
     let seed_file = dir.join("seed");
     fs::write(&seed_file, "20261026\n").unwrap();
-    let t0 = Instant::now();
-    let mut args = vec![
+    let base = vec![
         "run",
         "--input",
         p(&g),
@@ -158,8 +161,16 @@ fn run_resynthesizes_checks_and_resumes() {
         "--restarts",
         "4",
     ];
-    args.extend_from_slice(&SMALL_CAPS);
-    let o = adaptive(&args);
+    let mut args1 = base.clone();
+    args1.extend_from_slice(&SMALL_CAPS);
+    args1.extend_from_slice(&["--max-rounds", "1"]);
+    let mut args2 = base.clone();
+    args2.extend_from_slice(&SMALL_CAPS);
+    args2.extend_from_slice(&["--max-rounds", "2"]);
+
+    // ---- run A: round 1
+    let t0 = Instant::now();
+    let o = adaptive(&args1);
     let stdout = String::from_utf8_lossy(&o.stdout);
     let stderr = String::from_utf8_lossy(&o.stderr);
     assert!(
@@ -170,7 +181,7 @@ fn run_resynthesizes_checks_and_resumes() {
     let first = t0.elapsed().as_secs_f64();
     assert!(!stdout.contains("20261026"), "the seed leaked into stdout");
 
-    // ---- outputs
+    // ---- outputs of run A
     let report = fs::read_to_string(out.join("adaptive.report")).unwrap();
     assert!(
         !report.contains("20261026"),
@@ -181,9 +192,11 @@ fn run_resynthesizes_checks_and_resumes() {
     assert_eq!(kv(&report, "n"), "8");
     assert_eq!(kv(&report, "width"), "32");
     assert_eq!(kv(&report, "param.seed_source"), "file");
-    assert_eq!(kv(&report, "param.max_rounds"), "2");
-    let rounds: usize = kv(&report, "rounds").parse().unwrap();
-    assert!((1..=2).contains(&rounds), "rounds={rounds}");
+    assert_eq!(kv(&report, "param.max_rounds"), "1");
+    assert_eq!(kv(&report, "rounds"), "1");
+    assert_eq!(kv(&report, "round.1.reloaded"), "false");
+    assert_eq!(kv(&report, "final_reloaded"), "false");
+    assert_eq!(kv(&report, "stop_reason"), "round cap");
     let input_gates: usize = kv(&report, "input_gates").parse().unwrap();
     let final_gates: usize = kv(&report, "final_gates").parse().unwrap();
     assert!(final_gates <= input_gates);
@@ -224,7 +237,7 @@ fn run_resynthesizes_checks_and_resumes() {
     kv(&r1, "coverage.synthesized_blocks");
     kv(&r1, "leakage_out.validated.direct.deeper_births");
 
-    // ---- the published circuit, checked here
+    // ---- the published circuit of run A, checked here
     let (input, iw) = read_mpmct(p(&g)).unwrap();
     let (fin, fw) = read_mpmct(p(&out.join("final.mpmct1"))).unwrap();
     assert_eq!((iw, fw), (32, 32));
@@ -233,27 +246,83 @@ fn run_resynthesizes_checks_and_resumes() {
     let cg = read_g57_file(p(&c)).unwrap();
     zero_slice(&cg, &fin, 8, 32);
 
-    // ---- a second run on the same out-dir resumes (every round reloaded)
+    // ---- run B: a partial resume (round 1 reloaded, round 2 computed)
     let t1 = Instant::now();
-    let o = adaptive(&args);
+    let o = adaptive(&args2);
     let stdout2 = String::from_utf8_lossy(&o.stdout);
     assert!(
         o.status.success(),
-        "resume: {}",
+        "partial resume: exit {:?}\nstdout:\n{stdout2}\nstderr:\n{}",
+        o.status.code(),
         String::from_utf8_lossy(&o.stderr)
     );
     let second = t1.elapsed().as_secs_f64();
     let report2 = fs::read_to_string(out.join("adaptive.report")).unwrap();
-    assert_eq!(kv(&report2, "final_gates"), final_gates.to_string());
-    assert_eq!(kv(&report2, "rounds"), rounds.to_string());
+    assert_eq!(kv(&report2, "param.max_rounds"), "2");
+    assert_eq!(kv(&report2, "rounds"), "2");
     assert_eq!(kv(&report2, "round.1.reloaded"), "true");
-    assert!(stdout2.contains("reloaded"), "{stdout2}");
-    assert!(
-        second < first || second < 20.0,
-        "resume took {second:.1}s, the first run {first:.1}s"
+    assert_eq!(kv(&report2, "round.2.reloaded"), "false");
+    assert_eq!(kv(&report2, "final_reloaded"), "false");
+    assert_eq!(
+        kv(&report2, "round.1.output_gates"),
+        kv(&report, "round.1.output_gates")
     );
+    assert!(stdout2.contains("round 1: reloaded"), "{stdout2}");
+    assert!(kv(&report2, "check.equiv_canonical").starts_with("ok("));
+    assert!(kv(&report2, "check.zero_slice").starts_with("ok("));
+    assert!(kv(&report2, "check.payload_contract").starts_with("ok("));
+    let final2: usize = kv(&report2, "final_gates").parse().unwrap();
+    assert!(final2 <= final_gates, "round 2 never grows the result");
+    assert!(out.join("round2").join("result.report").is_file());
     let (fin2, _) = read_mpmct(p(&out.join("final.mpmct1"))).unwrap();
-    assert_eq!(fin2, fin, "the resumed run publishes the same circuit");
+    assert_eq!(fin2.len(), final2);
+    equivalent(&input, &fin2, 32, 4);
+    zero_slice(&cg, &fin2, 8, 32);
+    let final_round: usize = kv(&report2, "final_round").parse().unwrap();
+    assert!(
+        out.join(format!("round{final_round}"))
+            .join("output.mpmct1")
+            .is_file(),
+        "the final round's output is kept"
+    );
+
+    // ---- run C: the same command on the completed out-dir reruns from
+    // the reports alone (every round reloaded, final.mpmct1 taken as the
+    // final circuit, nothing recomputed, the same circuit republished)
+    let t2 = Instant::now();
+    let o = adaptive(&args2);
+    let stdout3 = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        o.status.success(),
+        "completed rerun: exit {:?}\nstdout:\n{stdout3}\nstderr:\n{}",
+        o.status.code(),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let third = t2.elapsed().as_secs_f64();
+    let report3 = fs::read_to_string(out.join("adaptive.report")).unwrap();
+    assert_eq!(kv(&report3, "rounds"), "2");
+    assert_eq!(kv(&report3, "round.1.reloaded"), "true");
+    assert_eq!(kv(&report3, "round.2.reloaded"), "true");
+    assert_eq!(kv(&report3, "final_reloaded"), "true");
+    assert_eq!(kv(&report3, "final_gates"), final2.to_string());
+    assert_eq!(kv(&report3, "final_round"), final_round.to_string());
+    assert_eq!(kv(&report3, "stop_reason"), kv(&report2, "stop_reason"));
+    assert_eq!(kv(&report3, "check.equiv_canonical"), "reloaded");
+    assert!(kv(&report3, "check.zero_slice").starts_with("ok("));
+    assert!(kv(&report3, "check.payload_contract").starts_with("ok("));
+    kv(&report3, "final_leakage.validated.affine.deeper_births");
+    assert!(stdout3.contains("final circuit reloaded"), "{stdout3}");
+    assert!(
+        third < second && third < first,
+        "completed rerun took {third:.1}s (partial resume {second:.1}s, round 1 {first:.1}s)"
+    );
+    let (fin3, _) = read_mpmct(p(&out.join("final.mpmct1"))).unwrap();
+    assert_eq!(fin3, fin2, "the rerun publishes the same circuit");
+    let progress = fs::read_to_string(out.join("progress.txt")).unwrap();
+    assert_eq!(kv(&progress, "rounds"), "2");
+    eprintln!(
+        "timing: round 1 {first:.1}s, partial resume {second:.1}s, completed rerun {third:.1}s"
+    );
 
     // ---- the stand-alone census
     let cdir = dir.join("census_out");
@@ -279,7 +348,7 @@ fn run_resynthesizes_checks_and_resumes() {
     );
     let cr = fs::read_to_string(cdir.join("census.report")).unwrap();
     assert_eq!(kv(&cr, "adaptive_census_report"), "1");
-    assert_eq!(kv(&cr, "gates"), final_gates.to_string());
+    assert_eq!(kv(&cr, "gates"), final2.to_string());
     kv(&cr, "leakage.validated.affine.deeper_births");
     kv(&cr, "leakage.audit_passed");
     assert!(cdir.join("census").is_dir());

@@ -405,3 +405,30 @@ fn params_validate() {
     };
     assert!(p.validate().is_err());
 }
+
+#[test]
+fn reload_round_needs_no_circuit() {
+    let dir = scratch();
+    let params = RoundParams::default();
+    let source = sample_source();
+    let ctx = RoundContext {
+        source: &source,
+        width: 16,
+        stage_seed: 1,
+        params: &params,
+    };
+    let log = |_: &str| {};
+    // nothing completed: None, and nothing else is read
+    assert!(reload_round(&dir, 1, 10, &log).unwrap().is_none());
+    let res = sample_result(4, 10, 7);
+    write_text_atomic(&dir.join("result.report"), &round_report(&res, &ctx, 16)).unwrap();
+    // the report alone suffices (no output.mpmct1, no census, no plan)
+    let back = reload_round(&dir, 4, 10, &log).unwrap().expect("reloaded");
+    assert!(back.reloaded);
+    assert!(back.output.is_none());
+    assert_eq!((back.input_gates, back.output_gates), (10, 7));
+    // another round number or input size: an input error (exit 3)
+    assert_eq!(reload_round(&dir, 5, 10, &log).unwrap_err().exit_code(), 3);
+    assert_eq!(reload_round(&dir, 4, 11, &log).unwrap_err().exit_code(), 3);
+    let _ = fs::remove_dir_all(dir);
+}
