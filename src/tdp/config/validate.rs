@@ -41,15 +41,14 @@ where
     validate_path_separation(&run_dir, &build_target_dir, frozen_db.path.as_deref())?;
 
     let preprocessing_mode = parse_preprocessing_mode(raw)?;
-    let source_construction = match raw.value("source_construction").unwrap_or("random") {
-        value => SourceConstruction::parse(value).ok_or_else(|| {
-            config_error(
-                raw,
-                "source_construction",
-                &format!("expected \"random\" or \"balanced\"; got {value:?}"),
-            )
-        })?,
-    };
+    let construction_value = raw.value("source_construction").unwrap_or("random");
+    let source_construction = SourceConstruction::parse(construction_value).ok_or_else(|| {
+        config_error(
+            raw,
+            "source_construction",
+            &format!("expected \"random\" or \"balanced\"; got {construction_value:?}"),
+        )
+    })?;
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
         .value("calibration_seed_file")
@@ -256,14 +255,14 @@ where
     };
     if preprocessing_mode == PreprocessingMode::ThreeMask {
         let r = three_mask.band_wires;
-        if r != 0 && (r < 64 || r % 16 != 0) {
+        if r != 0 && (r < 64 || !r.is_multiple_of(16)) {
             return Err(config_error(
                 raw,
                 "three_mask_band_wires",
                 "must be 0 (auto) or at least 64 and a multiple of 16",
             ));
         }
-        if three_mask.banks != 0 && (three_mask.banks < 4 || three_mask.banks % 2 != 0) {
+        if three_mask.banks != 0 && (three_mask.banks < 4 || !three_mask.banks.is_multiple_of(2)) {
             return Err(config_error(
                 raw,
                 "three_mask_banks",
@@ -522,15 +521,14 @@ where
     }
     // [delivery]: the mode, then the windowed mode's unpacking sub-step
     let dd = DeliveryConfig::default();
-    let delivery_mode = match raw.value("delivery_mode").unwrap_or("adaptive") {
-        value => DeliveryMode::parse(value).ok_or_else(|| {
-            config_error(
-                raw,
-                "delivery_mode",
-                &format!("expected \"adaptive\" or \"windowed\"; got {value:?}"),
-            )
-        })?,
-    };
+    let mode_value = raw.value("delivery_mode").unwrap_or("adaptive");
+    let delivery_mode = DeliveryMode::parse(mode_value).ok_or_else(|| {
+        config_error(
+            raw,
+            "delivery_mode",
+            &format!("expected \"adaptive\" or \"windowed\"; got {mode_value:?}"),
+        )
+    })?;
     const WINDOWED_KEYS: [&str; 15] = [
         "delivery_anf_only",
         "delivery_time_limit",
