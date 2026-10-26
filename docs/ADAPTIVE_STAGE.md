@@ -220,8 +220,15 @@ baseline's 351,744-gate blind plateau to 274,097 gates with small blocks and
 
 * The boundary classification (which births are public quadratic) accepts
   a degree-≤2 candidate that survives `probe_inputs` fresh inputs (8,192 by
-  default) without the prototype's SAT proof; the classification only steers
-  the "deeper" counts and the planner's first key.
+  default) without the prototype's SAT proof, so a birth the prototype's
+  solver left `unresolved` (and therefore counted as deeper) is excluded
+  here; the classification only steers the "deeper" counts and the
+  planner's first key.
+* The census audit draws its fresh and structured inputs over all $n$ input
+  wires (the prototype's script fixed 64), so at n = 128 it is stricter and
+  the validated counts can read lower than the prototype's; planning,
+  acceptance and the stop rules use the discovery intervals, as the
+  prototype did.
 * The synthesizer runs in process (one block per thread) instead of in
   separate processes under an address-space cap; the composition is bounded
   by `compose_cap` terms (8 × `term_cap`) instead.
