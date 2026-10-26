@@ -2,6 +2,7 @@
 //! Stage algorithms accept typed parameters and live under `stages`.
 pub mod circuit_mixer;
 pub mod gen_sandwich_gadget;
+pub mod tdp_adaptive;
 pub mod tdp_packing;
 pub mod tdp_unpacking;
 
