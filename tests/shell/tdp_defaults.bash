@@ -75,7 +75,7 @@ run_pair() { # LABEL N MC CFG GATES GEN MIX [managed size flags...]
   # --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only: the oracle chain has four stages
   env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" FROZEN_DB_DIR="$STORE" \
     bash "$root/scripts/tdp_gen.sh" --source-wires "$n" --run-directory "$tmp/m/$label" \
-      --seed-file "$sf" --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
+      --seed-file "$sf" --preprocessing-mode embedded-masking --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
     { cat "$tmp/$label.m.log" >&2; exit 1; }
 }
 python_compare() { # LABEL N MANAGED_CALLS
@@ -226,6 +226,7 @@ wires = $n
 [database]
 regular_dir = "$STORE"
 [preprocessing]
+mode = "embedded-masking"
 $preset
 [delivery]
 mode = "windowed"
@@ -253,7 +254,7 @@ else
 fi
 # n=32 has no validated size: fatal unless sized
 if env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" FROZEN_DB_DIR="$STORE" \
-     bash "$root/scripts/tdp_gen.sh" --source-wires 32 --run-directory "$tmp/m/n32" > "$tmp/n32.log" 2>&1; then
+     bash "$root/scripts/tdp_gen.sh" --source-wires 32 --preprocessing-mode embedded-masking --run-directory "$tmp/m/n32" > "$tmp/n32.log" 2>&1; then
   echo "n=32 without a size was accepted" >&2; exit 1
 fi
 grep -q 'no validated source size for n=32' "$tmp/n32.log"

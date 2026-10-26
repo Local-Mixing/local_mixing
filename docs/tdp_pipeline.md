@@ -18,7 +18,7 @@ three-mask compute inside the same outer blocks), to which stages 3-6 apply.
 | Stage | What it does | Runs as | Output |
 | --- | --- | --- | --- |
 | 1. Sandwich | Classic sliced sandwich around $C$ on $2n$ wires; $C$ random, balanced, or supplied | `gen_sandwich_gadget` (with stage 2) | `tdp.mpmct1.sandwich.mpmct1`, `tdp.mpmct1.source_c.g57` |
-| 2. Preprocessing | Embedded masking on $4n$ wires: masked fires, band, guards, persistent carrier migration (preset L8); or the three-mask compute (`preprocessing.mode = "three-mask"`: each value carried as $d_i$ plus three cubic band monomials, rotating band banks, dirty-helper chains, differential refresh, persistent migration) inside the same L8 outer blocks, on $2n + \max(2n, 128)$ wires | `gen_sandwich_gadget` | `tdp.mpmct1` |
+| 2. Preprocessing | The three-mask compute (the default, `preprocessing.mode = "three-mask"`: each value carried as $d_i$ plus three cubic band monomials, rotating band banks, dirty-helper chains, differential refresh, persistent migration) inside the embedded-masking L8 outer blocks, on $2n + \max(2n, 128)$ wires; or embedded masking on $4n$ wires (`"embedded-masking"`: masked fires, band, guards, persistent carrier migration, preset L8) | `gen_sandwich_gadget` | `tdp.mpmct1` |
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
 | 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
 | 5. Crossing | The directional crossing walk under a size thermostat (target 2× its input, move budget 3× the target) | `circuit_mixer --resume split.state --target-size …` | `crossing.mpmct1` |
@@ -26,7 +26,7 @@ three-mask compute inside the same outer blocks), to which stages 3-6 apply.
 | 6. Delivery, windowed mode (`delivery.mode = "windowed"`) | Packing (commuting reorder into ANF windows, repair, serialization), then unpacking with lattice refinement: every window resynthesized from its ANF alone, a window that does not resynthesize cut in two and both halves repacked and unpacked, the result concatenated and canonically reordered | `tdp_packing run`, then `tdp_unpacking run --refine` | `unpacking/unpacked.mpmct1` (the published circuit in this mode); internal: `packing/deliverable.tdp4` (the packer's lattice; the published object only under `delivery.anf_only`), `unpacking/deliverable.tdp4` (the refined lattice) |
 
 ```text
-C → sliced sandwich → embedded masking | three-mask → DB mixing → split → crossing walk → adaptive resynthesis
+C → sliced sandwich → three-mask | embedded masking → DB mixing → split → crossing walk → adaptive resynthesis
        stage 1               stage 2                   stage 3     stage 4    stage 5      stage 6 (delivery, default)
                                                                                            adaptive/round<r>/ (internal)
                                                                                            → adaptive/final.mpmct1 (the TDP, published)
@@ -64,12 +64,14 @@ table, `run.skip_stages` with a 7) is refused with a pointer; a `config_version
 = 4` recipe becomes a v5 one by setting `5` and, to keep the windowed
 delivery, `delivery.mode = "windowed"`.
 
-The managed `tdp_gen` command drives the stages. **The defaults of stages
-1-3 and the packer reproduce the chosen validation runs** (`val_chain.sh`
+The managed `tdp_gen` command drives the stages. **With
+`preprocessing.mode = "embedded-masking"` the defaults of stages 1-3 and the
+windowed packer reproduce the chosen validation runs** (`val_chain.sh`
 CONFIG=L8, runs vL64a/b and vL128a/b): a managed run that sets only
-`source.wires` (64 or 128), `run.skip_stages = [4, 5]` and `delivery.anf_only
-= true` produces, from the same seeds, byte-identical stage-2, stage-3,
-packed, repaired and deliverable artifacts. This is checked on the archived
+`source.wires` (64 or 128), that mode, `run.skip_stages = [4, 5]`,
+`delivery.mode = "windowed"` and `delivery.anf_only = true` produces, from
+the same seeds, byte-identical stage-2, stage-3, packed, repaired and
+deliverable artifacts. This is checked on the archived
 runs themselves (the historic anchor) and by a reproduction test against the
 reference script; see [docs/STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2
 and §12 (written when packing was stage 4; its stage numbers are the
@@ -140,8 +142,9 @@ For first-time setup and the circuit utilities, start with the
 TOML recipe (config v5), builds and fingerprints the five stage binaries,
 draws the seeds into the private `$RUN/SEEDS`, records a manifest (recipe
 v13), and resumes runs safely. Its defaults are the recommended
-configuration: a random $C$, stage-2 preset `L8`, stage-3 schedule
-`validated`, stages 4 and 5 on, and the adaptive stage 6 run to its plateau
+configuration: a random $C$, the three-mask stage 2 in its campaign
+configuration, stage-3 schedule `validated`, stages 4 and 5 on, and the
+adaptive stage 6 run to its plateau
 (two synthesizer seeds per block, 60/120/240 s per block by size, the 2 %
 two-round stop rule); the windowed mode keeps its defaults (the packer at G =
 512 with a 65,536-monomial split budget, the refinement at 30 s per window
@@ -241,8 +244,9 @@ invalid combinations are rejected before starting a run.
 
 **Presets, the schedule and the stage-6 mode are authoritative.** Under
 `preprocessing.preset = "L8"` or `"A"` every stage-2 knob field is an error,
-even when it equals the preset's value; `[three_mask]` keys are errors unless
-`preprocessing.mode = "three-mask"`; under `db_mixing.schedule =
+even when it equals the preset's value; under the default mode (three-mask)
+a preset or an embedded-masking knob is an error, and `[three_mask]` keys
+are errors unless `preprocessing.mode = "three-mask"`; under `db_mixing.schedule =
 "validated"` the schedule fields are errors; under `delivery.mode =
 "adaptive"` every `[packing]` key and every windowed `[delivery]` key is an
 error, and under `"windowed"` every `[adaptive]` key is. An old
@@ -315,8 +319,8 @@ that of `frozen_m1_m11`, and `FROZEN_FILTER=1` on a store without
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `preprocessing.mode` | string, `"embedded-masking"` | `"embedded-masking"`, `"three-mask"` (the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·(2\|C\| + 2s + n) + 29 wires: 3,677 at n=16, \|C\|=64), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
-| `preprocessing.preset` | string, `"L8"` | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
+| `preprocessing.mode` | string, `"three-mask"` | `"three-mask"` (the default: the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)), `"embedded-masking"` (preset L8 by default, the validated chain's stage 2) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·(2\|C\| + 2s + n) + 29 wires: 3,677 at n=16, \|C\|=64), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
+| `preprocessing.preset` | string, `"L8"` (embedded-masking only) | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
 | `preprocessing.mask_pair_wires` | integer, custom only | Band wires per mask, `2..64` (base 2). |
 | `preprocessing.max_open_masks` | integer, custom only | Open-mask cap, `2..64` (base 3). |
 | `preprocessing.min_open_masks` | integer, custom only | Minimum open masks, `1..63`, below `max_open_masks` (base 2). |
@@ -636,14 +640,14 @@ and audits the result). Read
 starting with `prepare_source`, `construct_seeded_sandwich`, and
 `sliced_sandwich_cnot`.
 
-## Stage 2: preprocessing (embedded masking or three-mask)
+## Stage 2: preprocessing (three-mask or embedded masking)
 
-We now hide each sandwich value behind a nonlinear mask. The default is
-embedded masking: one carrier and one band wire per sandwich value, taking
-us from $2n$ to $4n$ physical wires. The construction surrounds the masked
-computation with slice guards and input-derived band seed/reseed blocks.
-The three-mask mode (`preprocessing.mode = "three-mask"`) keeps those outer
-blocks and replaces the masked computation: every value is carried as its
+We now hide each sandwich value behind a nonlinear mask. Embedded masking
+(`preprocessing.mode = "embedded-masking"`) carries one carrier and one band
+wire per sandwich value, taking us from $2n$ to $4n$ physical wires, and
+surrounds the masked computation with slice guards and input-derived band
+seed/reseed blocks. The three-mask mode (`"three-mask"`, the default since
+recipe v13) keeps those outer blocks and replaces the masked computation: every value is carried as its
 data bit plus three cubic monomials of band wires, the band is organized in
 banks that rotate through serving, retiring and growing phases (a growing
 bank is rewritten by random Toffolis until it is promoted; a retiring bank

@@ -43,7 +43,7 @@ fn private_file(path: &Path, text: &str) {
     }
 }
 
-const ALL_CUSTOM: &str = "preprocessing.preset = \"custom\"\npreprocessing.mask_pair_wires = 2\npreprocessing.max_open_masks = 3\npreprocessing.min_open_masks = 2\npreprocessing.balanced_masks = true\npreprocessing.shuffling_segments = 8\npreprocessing.shuffling_return_home = false\npreprocessing.premask = true\npreprocessing.seed_avoid_c1 = true\npreprocessing.chain = 2\npreprocessing.chain_len = 8\n";
+const ALL_CUSTOM: &str = "preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"custom\"\npreprocessing.mask_pair_wires = 2\npreprocessing.max_open_masks = 3\npreprocessing.min_open_masks = 2\npreprocessing.balanced_masks = true\npreprocessing.shuffling_segments = 8\npreprocessing.shuffling_return_home = false\npreprocessing.premask = true\npreprocessing.seed_avoid_c1 = true\npreprocessing.chain = 2\npreprocessing.chain_len = 8\n";
 
 #[test]
 fn command_surface_parses() {
@@ -68,12 +68,9 @@ fn omitted_values_resolve_to_the_chosen_l8_runs() {
     assert!(resolved.generated_run_dir);
     assert!(resolved.run_dir.ends_with("runs/tdp_gen_n128_test-run"));
     assert!(resolved.build_release);
-    assert_eq!(
-        resolved.preprocessing_mode,
-        PreprocessingMode::EmbeddedMasking
-    );
-    assert_eq!(resolved.preset, Preset::L8);
-    assert_eq!(resolved.knobs, Stage2Knobs::L8);
+    assert_eq!(resolved.preprocessing_mode, PreprocessingMode::ThreeMask);
+    assert_eq!(resolved.preset, Preset::None);
+    assert!(resolved.three_mask.is_default());
     assert_eq!(resolved.schedule, Schedule::Validated);
     assert_eq!(
         (resolved.mcd, resolved.mcd_rule),
@@ -91,6 +88,15 @@ fn omitted_values_resolve_to_the_chosen_l8_runs() {
     let args = strings(&script_args(&resolved));
     assert!(
         args.windows(2)
+            .any(|w| w == ["--preprocessing-mode", "three-mask"])
+    );
+    assert!(!args.iter().any(|a| a == "--preprocessing-preset"));
+    // the embedded-masking chain is explicit: its preset L8 is the default there
+    let em = resolve_for_test(&parse("preprocessing.mode = \"embedded-masking\"")).unwrap();
+    assert_eq!((em.preset, em.knobs), (Preset::L8, Stage2Knobs::L8));
+    assert!(
+        strings(&script_args(&em))
+            .windows(2)
             .any(|w| w == ["--preprocessing-preset", "L8"])
     );
     // nothing else steers the recipe: no size, schedule, knob, packing,
@@ -447,8 +453,9 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "source.construction = \"tidy\"",
         "source.construction = \"balanced\"\nsource.path = \"circuits/source.g57\"",
         // [three_mask] only under its mode, and its geometry
-        "three_mask.banks = 8",
+        "preprocessing.mode = \"embedded-masking\"\nthree_mask.banks = 8",
         "preprocessing.mode = \"three-mask\"\npreprocessing.preset = \"L8\"",
+        "preprocessing.preset = \"L8\"",
         "preprocessing.mode = \"three-mask\"\npreprocessing.chain = 2",
         "preprocessing.mode = \"three-mask\"\nthree_mask.band_wires = 48",
         "preprocessing.mode = \"three-mask\"\nthree_mask.band_wires = 72",
@@ -629,11 +636,9 @@ fn all_seed_flags_redacted() {
 fn checked_in_toml_recipe_is_the_l8_default() {
     let parsed = parse_config(include_str!("../../configs/tdp.toml")).unwrap();
     let config = resolve_for_test(&parsed).unwrap();
-    assert_eq!(
-        config.preprocessing_mode,
-        PreprocessingMode::EmbeddedMasking
-    );
-    assert_eq!(config.preset, Preset::L8);
+    assert_eq!(config.preprocessing_mode, PreprocessingMode::ThreeMask);
+    assert_eq!(config.preset, Preset::None);
+    assert!(config.three_mask.is_default());
     assert_eq!(config.schedule, Schedule::Validated);
     assert_eq!((config.n, config.mcd), (128, 3000));
     assert_eq!(config.recipe_version, 13);
@@ -701,7 +706,7 @@ fn preset_field_conflict_rejected() {
             "chain_len = 8",
         ] {
             let error = resolve_body(&format!(
-                "preprocessing.preset = \"{preset}\"\npreprocessing.{field}"
+                "preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"{preset}\"\npreprocessing.{field}"
             ))
             .err()
             .unwrap();
@@ -712,10 +717,20 @@ fn preset_field_conflict_rejected() {
         }
     }
     // custom needs every knob
-    let error = resolve_body("preprocessing.preset = \"custom\"\npreprocessing.chain = 2")
-        .err()
-        .unwrap();
+    let error = resolve_body(
+        "preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"custom\"\npreprocessing.chain = 2",
+    )
+    .err()
+    .unwrap();
     assert!(error.contains("requires every stage-2 field"), "{error}");
+    // under the default mode (three-mask) a preset or knob is refused outright
+    let error = resolve_body("preprocessing.preset = \"L8\"").err().unwrap();
+    assert!(
+        error.contains("applies only to embedded-masking"),
+        "{error}"
+    );
+    let error = resolve_body("preprocessing.chain = 2").err().unwrap();
+    assert!(error.contains("apply only to embedded-masking"), "{error}");
     let custom = resolve_body(ALL_CUSTOM).unwrap();
     assert_eq!(custom.preset, Preset::Custom);
     assert_eq!(custom.knobs, Stage2Knobs::L8);
@@ -787,7 +802,8 @@ fn preset_rejected_for_nonlinear291() {
 
 #[test]
 fn preset_a_drops_chain() {
-    let a = resolve_body("preprocessing.preset = \"A\"").unwrap();
+    let a = resolve_body("preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"A\"")
+        .unwrap();
     assert_eq!(a.knobs, Stage2Knobs::A);
     assert_eq!((a.knobs.chain, a.knobs.chain_len), (0, 0));
     assert_eq!(
@@ -834,12 +850,12 @@ fn the_exact_default_manifest_text() {
         "tdp_command_recipe=13\npinned_recipe=none\nn=64\n",
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "source_construction=random\n",
-        "sandwich_variant=classic\npreprocessing_mode=embedded-masking\npreprocessing_preset=L8\n",
-        "preprocessing_mask_pair_wires=2\npreprocessing_max_open_masks=3\n",
-        "preprocessing_min_open_masks=2\npreprocessing_balanced_masks=1\n",
-        "preprocessing_shuffling_segments=8\npreprocessing_shuffling_return_home=0\n",
-        "preprocessing_premask=1\npreprocessing_seed_avoid_c1=1\n",
-        "preprocessing_chain=2\npreprocessing_chain_len=8\npreprocessing_quadratic_fire=1\n",
+        "sandwich_variant=classic\npreprocessing_mode=three-mask\npreprocessing_preset=none\n",
+        "three_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\n",
+        "three_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\n",
+        "three_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\n",
+        "three_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\n",
+        "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_outer_blocks=L8\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
         "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
@@ -1327,7 +1343,7 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     let reference = store_fingerprint(&store).unwrap();
     let pinned = |c: &ResolvedConfig| pinned_recipe_for_store(c, reference).to_owned();
     let six = resolve_body(&format!(
-        "source.wires = 64\ndatabase.regular_dir = {store:?}\n"
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\n"
     ))
     .unwrap();
     assert_eq!(
@@ -1337,13 +1353,19 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     );
     // stages 4 and 5 off but stage 6 resynthesizing: not the chain either
     let resynth = resolve_body(&format!(
-        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5]\n"
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\n"
     ))
     .unwrap();
     assert_eq!(pinned(&resynth), "none");
     let body = format!(
-        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
     );
+    // the default stage 2 (three-mask) is not the chain
+    let default_stage2 = resolve_body(&format!(
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
+    ))
+    .unwrap();
+    assert_eq!(pinned(&default_stage2), "none");
     let l8 = resolve_body(&body).unwrap();
     assert_eq!(pinned(&l8), "val_chain-L8-20261007");
     // the balanced source and the three-mask stage 2 are not the chain
@@ -1360,7 +1382,7 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     // stage 4 does not pin a six-stage recipe, and a stop at 3 keeps the
     // four-stage pin (so raising the stop point later resumes the same manifest)
     let six_stop3 = resolve_body(&format!(
-        "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.stop_after_stage = 3\n"
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.stop_after_stage = 3\n"
     ))
     .unwrap();
     assert_eq!(pinned(&six_stop3), "none");
@@ -2060,7 +2082,7 @@ fn three_mask_table_follows_its_mode() {
     assert!(m.contains("\nthree_mask_params=custom\nthree_mask_band_wires=256\n"));
     assert!(m.contains("\nthree_mask_random_helpers=0\n"));
     // the embedded-masking manifest carries no three-mask line
-    let em = resolve_for_test(&parse("")).unwrap();
+    let em = resolve_for_test(&parse("preprocessing.mode = \"embedded-masking\"")).unwrap();
     assert!(!recipe_manifest(&em, &[], 1).contains("three_mask"));
 }
 

@@ -15,14 +15,15 @@ output in canonical gate order is the published TDP. The windowed delivery
 (`delivery.mode = "windowed"`: pack into ANF windows, unpack by
 resynthesizing every window, split and repack what does not resynthesize;
 `docs/DELIVERY_STAGE.md`) remains as the other mode. The source circuit is
-random or balanced (`source.construction`), and stage 2 is embedded masking
-or the three-mask compute (`preprocessing.mode = "three-mask"`,
-`docs/THREE_MASK_STAGE2.md`). Every stage after the first is optional.
+random or balanced (`source.construction`), and stage 2 is the three-mask
+compute by default (`preprocessing.mode = "three-mask"`,
+`docs/THREE_MASK_STAGE2.md`) or embedded masking. Every stage after the first is optional.
 The `tdp_gen` driver runs all six by default and ends with
-`adaptive/final.mpmct1` (the published circuit); the defaults of
-stages 1-3 and the windowed packer reproduce the chosen validation runs
-(`docs/STAGE4_RUST_DESIGN.md`; `run.skip_stages = [4, 5]` with
-`delivery.mode = "windowed"` and `delivery.anf_only = true` is that
+`adaptive/final.mpmct1` (the published circuit); with
+`preprocessing.mode = "embedded-masking"` the defaults of stages 1-3 and the
+windowed packer reproduce the chosen validation runs
+(`docs/STAGE4_RUST_DESIGN.md`; that mode with `run.skip_stages = [4, 5]`,
+`delivery.mode = "windowed"` and `delivery.anf_only = true` is the
 four-stage chain). The adaptive stage is the Rust binary `tdp_adaptive`;
 the packer is `tdp_packing`, whose Python prototypes under
 [`scripts/windowed_delivery/`](scripts/windowed_delivery/) are its oracle,
@@ -101,7 +102,7 @@ random, or RC's balanced construction (`source.construction = "balanced"`,
 every internal value read exactly twice). What the pipeline then mixes is
 not $C$ itself but a specific circuit structure built around it: the sliced
 sandwich on $2n$ wires (stage 1) and the masked construction on $4n$ wires
-(stage 2: embedded masking, or the three-mask compute). To supply your own
+(stage 2: the three-mask compute, or embedded masking). To supply your own
 $C$ in the g57 form, edit `[source]`:
 
 ```toml
@@ -117,13 +118,13 @@ count. Without `source.path`, `source.gates` overrides the generated size.
 The settings we usually change are:
 
 - `source.construction`: `"random"` (default) or `"balanced"`.
-- `preprocessing.mode`: `"embedded-masking"` (default) with
-  `preprocessing.preset` `"L8"` (default; persistent carrier migration,
-  premask, seed avoidance and bounded chains, the recommended configuration),
-  `"A"` (the same without chains) or `"custom"` (every knob explicit);
-  `"three-mask"` (the three-mask compute inside the L8 outer blocks, knobs
-  in `[three_mask]`, defaults = the campaign configuration "modified / v2");
-  or `"nonlinear291"`, without a preset.
+- `preprocessing.mode`: `"three-mask"` (default: the three-mask compute
+  inside the L8 outer blocks, knobs in `[three_mask]`, defaults = the
+  campaign configuration "modified / v2"); `"embedded-masking"` with
+  `preprocessing.preset` `"L8"` (default there; persistent carrier
+  migration, premask, seed avoidance and bounded chains), `"A"` (the same
+  without chains) or `"custom"` (every knob explicit); or `"nonlinear291"`,
+  without a preset.
 - `db_mixing.schedule`: `"validated"` (default; profile `2,2,2,2,2`) or
   `"custom"` with explicit growth, hold and size factor.
 - `[crossing]`: stage 5 (`target_size_factor` 2, `width_penalty_base` 3,
@@ -140,8 +141,9 @@ The settings we usually change are:
   validated defaults; `anf_only` (stop after the packer's deliverable, which
   is then the published object), `time_limit` 30 s, `restarts` 16, `beam` 6,
   `max_rounds` 16.
-- `run.skip_stages`: any of 2..6; `[4, 5]` with `delivery.mode = "windowed"`
-  and `delivery.anf_only = true` is the validated four-stage chain.
+- `run.skip_stages`: any of 2..6; `[4, 5]` with `preprocessing.mode =
+  "embedded-masking"`, `delivery.mode = "windowed"` and `delivery.anf_only =
+  true` is the validated four-stage chain.
 - `parallel.pieces` or `parallel.target_piece_gates`: enable piecewise
   execution for stage 3. Choose one; omit both for serial execution.
   `parallel.threads` is available with piecewise execution.

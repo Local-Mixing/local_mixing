@@ -35,7 +35,7 @@ for cfg in L8 A; do
     "$BIN/gen_sandwich_gadget" "$ref/tdp.mpmct1" 16 32 32 64 1 320 "$GS" "$GS" "$GS" > "$ref/gen.log" 2>&1
   env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" \
     bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 32 --run-directory "$tmp/man_$cfg" \
-      --seed-file "$sf" --preprocessing-preset "$cfg" --run-stop-after-stage 2 > "$tmp/man_$cfg.log" 2>&1 ||
+      --seed-file "$sf" --preprocessing-mode embedded-masking --preprocessing-preset "$cfg" --run-stop-after-stage 2 > "$tmp/man_$cfg.log" 2>&1 ||
     { cat "$tmp/man_$cfg.log" >&2; exit 1; }
   for f in tdp.mpmct1 tdp.mpmct1.source_c.g57 tdp.mpmct1.sandwich.mpmct1; do
     cmp "$ref/$f" "$tmp/man_$cfg/$f" || { echo "stage-2 parity FAILED ($cfg): $f" >&2; exit 1; }

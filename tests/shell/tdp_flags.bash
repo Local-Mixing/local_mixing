@@ -34,17 +34,20 @@ for mode in unknown-mode embedded_masking EMBEDDED-MASKING; do
 done
 knobs=(mask-pair-wires max-open-masks min-open-masks balanced-masks shuffling-segments
        shuffling-return-home premask seed-avoid-c1 chain chain-len)
+E=(--preprocessing-mode embedded-masking)
 for k in "${knobs[@]}"; do
   flag=--preprocessing-$k
   reject 'requires an argument' "$flag"
   reject 'requires an argument' "$flag" ''
-  # presets are authoritative: any knob next to L8 (default) or A is fatal
-  reject "is set by preset L8" "$flag" 1
-  reject "is set by preset A" --preprocessing-preset A "$flag" 1
+  # presets are authoritative: any knob next to L8 (embedded masking's default) or A is fatal
+  reject "is set by preset L8" "${E[@]}" "$flag" 1
+  reject "is set by preset A" "${E[@]}" --preprocessing-preset A "$flag" 1
   reject 'only valid with --preprocessing-mode embedded-masking' --preprocessing-mode nonlinear291 "$flag" 2
-  reject 'must be' --preprocessing-preset custom "$flag" 999999999999999999999999999
+  # ... and under the default mode (three-mask) too
+  reject 'only valid with --preprocessing-mode embedded-masking' "$flag" 2
+  reject 'must be' "${E[@]}" --preprocessing-preset custom "$flag" 999999999999999999999999999
 done
-C=(--preprocessing-preset custom)
+C=(--preprocessing-mode embedded-masking --preprocessing-preset custom)
 for value in 0 1 65 2.5 abc; do reject 'mask-pair-wires' "${C[@]}" --preprocessing-mask-pair-wires "$value"; done
 for value in 0 1 65 abc; do reject 'max-open-masks' "${C[@]}" --preprocessing-max-open-masks "$value"; done
 for value in 0 64 abc; do reject 'min-open-masks' "${C[@]}" --preprocessing-min-open-masks "$value"; done
@@ -59,12 +62,13 @@ for value in 65 abc; do reject 'chain' "${C[@]}" --preprocessing-chain "$value";
 reject 'max-open-masks' "${C[@]}" --preprocessing-max-open-masks 2
 reject 'less than' "${C[@]}" --preprocessing-min-open-masks 4 --preprocessing-max-open-masks 3
 reject '2 \* N > K' "${C[@]}" --preprocessing-mask-pair-wires 8
-reject 'preset' --preprocessing-preset L9
+reject 'preset' "${E[@]}" --preprocessing-preset L9
 reject 'applies only to embedded-masking' --preprocessing-mode nonlinear291 --preprocessing-preset L8
+reject 'applies only to embedded-masking' --preprocessing-preset L8
 # the three-mask stage 2: its knobs only under its mode, no preset, no embedded-masking knob
 reject 'applies only to embedded-masking' --preprocessing-mode three-mask --preprocessing-preset L8
 reject 'only valid with --preprocessing-mode embedded-masking' --preprocessing-mode three-mask --preprocessing-chain 2
-reject 'only valid with --preprocessing-mode three-mask' --three-mask-banks 8
+reject 'only valid with --preprocessing-mode three-mask' "${E[@]}" --three-mask-banks 8
 reject 'only valid with --preprocessing-mode three-mask' --preprocessing-mode nonlinear291 --three-mask-growth 8
 reject 'unknown argument' --preprocessing-mode three-mask --three-mask-invented 1
 reject 'requires an argument' --preprocessing-mode three-mask --three-mask-banks
@@ -171,8 +175,9 @@ run_case() {
   fi
 }
 run_case defaults
-run_case preset-L8 --preprocessing-preset L8
-run_case preset-A --preprocessing-preset A
+run_case embedded "${E[@]}"
+run_case preset-L8 "${E[@]}" --preprocessing-preset L8
+run_case preset-A "${E[@]}" --preprocessing-preset A
 run_case custom-base "${C[@]}"
 run_case custom-masks "${C[@]}" --preprocessing-mask-pair-wires 0004 --preprocessing-max-open-masks 0004 --preprocessing-min-open-masks 0001 --preprocessing-balanced-masks 00
 run_case custom-narrow "${C[@]}" --preprocessing-max-open-masks 2 --preprocessing-min-open-masks 1
@@ -191,7 +196,8 @@ L8 = {'EMBEDDED_MASKING_SHUFFLING': '8', 'EMBEDDED_MASKING_SHUFFLING_RETURN_HOME
       'EMBEDDED_MASKING_CHAIN': '2', 'EMBEDDED_MASKING_CHAIN_LEN': '8'}
 A = {k: v for k, v in L8.items() if 'CHAIN' not in k}
 expected = {
-    'defaults': (L8, 'L8'),
+    'defaults': ({}, 'none'),
+    'embedded': (L8, 'L8'),
     'preset-L8': (L8, 'L8'),
     'preset-A': (A, 'A'),
     'custom-base': ({}, 'custom'),
@@ -203,7 +209,7 @@ expected = {
     'nonlinear291': ({}, 'none'),
     'three-mask': ({}, 'none'),
     'three-mask-knobs': ({'THREE_MASK_BAND_WIRES': '256', 'THREE_MASK_UNIQUE_COVER': '0', 'THREE_MASK_BANKS': '8', 'THREE_MASK_MAX_RETIRING': '3'}, 'none'),
-    'balanced': (L8, 'L8'),
+    'balanced': ({}, 'none'),
 }
 for name, (env, preset) in expected.items():
     calls = [json.loads(l) for l in (root / f'{name}.calls').read_text().splitlines()]
@@ -215,7 +221,7 @@ for name, (env, preset) in expected.items():
     # no other recipe variable reaches gen (the balanced construction travels as TDP_SOURCE_CONSTRUCTION)
     assert not any(k.startswith(('SANDWICH_', 'SLICE_GUARD', 'PROD_')) or k == 'TDP_SOURCE_C' for k in gen['env']), gen['env']
     assert gen['env'].get('TDP_SOURCE_CONSTRUCTION') == ('balanced' if name == 'balanced' else None), (name, gen['env'])
-    mode = 'nonlinear291' if name.startswith('nonlinear') else 'three-mask' if name.startswith('three-mask') else 'embedded-masking'
+    mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking' if name in ('embedded', 'preset-L8', 'preset-A') or name.startswith('custom') else 'three-mask'
     args = gen['args']
     assert args[1:] == ['4', '1', '1', '8', '1', '80'] + [args[7]] * 3 + ([mode] if mode != 'embedded-masking' else []), args
     # the seeds reach gen through descriptors, never on its argv
@@ -244,9 +250,9 @@ cmp "$tmp/original.recipe" "$tmp/defaults/stage12.recipe"
 # A changed stage-2 recipe must fail before regenerating or replacing its marker.
 # (each case replaces the base --source-gates 1, so a changed |C| reaches the
 # recipe comparison instead of the duplicate-flag check)
-for changed in "--source-gates 1 --preprocessing-mode nonlinear291" "--source-gates 1 --preprocessing-preset A" \
-               "--source-gates 1 --preprocessing-preset custom" "--source-gates 2" \
-               "--source-gates 1 --preprocessing-mode three-mask" "--source-gates 1 --source-construction balanced"; do
+for changed in "--source-gates 1 --preprocessing-mode nonlinear291" "--source-gates 1 --preprocessing-mode embedded-masking" \
+               "--source-gates 1 --preprocessing-mode embedded-masking --preprocessing-preset A" "--source-gates 2" \
+               "--source-gates 1 --three-mask-banks 8" "--source-gates 1 --source-construction balanced"; do
   # shellcheck disable=SC2086
   if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/defaults" --run-stop-after-stage 2 $changed >"$tmp/changed.log" 2>&1; then
     echo "changed preprocessing recipe unexpectedly resumed: $changed" >&2; exit 1

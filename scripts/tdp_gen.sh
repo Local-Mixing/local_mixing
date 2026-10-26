@@ -9,9 +9,10 @@
 #        reversible gates with up to two controls, taken in the g57 form
 #        a ^= x OR NOT y through --source-path, or generated: uniformly random
 #        or, with --source-construction balanced, RC's balanced construction),
-#        then embedded masking (preset L8 by default; A = no bounded chains),
-#        the three-mask compute inside the L8 outer blocks (--preprocessing-mode
-#        three-mask, knobs --three-mask-*) or nonlinear291.
+#        then the three-mask compute inside the L8 outer blocks (the DEFAULT
+#        since recipe v13; knobs --three-mask-*), embedded masking
+#        (--preprocessing-mode embedded-masking, preset L8 by default; A = no
+#        bounded chains) or nonlinear291.
 #        The later stages mix this structure built around C, not C itself.
 #        Skipping stage 2 hands the sandwich itself (tdp.mpmct1.sandwich.mpmct1)
 #        to the next stage.
@@ -45,12 +46,13 @@
 #        the stage after the packer's deliverable, which is then the published
 #        object and is unpacked by the recipient.
 #
-# DEFAULTS of stages 1-3 and the packer reproduce scripts/windowed_delivery/
-# waist/val_chain.sh CONFIG=L8 as run for the chosen validation runs vL64a/b,
-# vL128a/b: same gen argv and stage-2 environment, same mixer argv and
-# environment (serial), the same packer (bit-exact port of the Python
-# oracle); `--run-skip-stages 4,5 --delivery-anf-only` is that four-stage
-# chain exactly. Stages 4 and 5 run with the flags of the archive-era driver
+# With --preprocessing-mode embedded-masking the defaults of stages 1-3 and
+# the windowed packer reproduce scripts/windowed_delivery/waist/val_chain.sh
+# CONFIG=L8 as run for the chosen validation runs vL64a/b, vL128a/b: same gen
+# argv and stage-2 environment, same mixer argv and environment (serial), the
+# same packer (bit-exact port of the Python oracle); `--preprocessing-mode
+# embedded-masking --run-skip-stages 4,5 --delivery-mode windowed
+# --delivery-anf-only` is that four-stage chain exactly. Stages 4 and 5 run with the flags of the archive-era driver
 # (ea2e516f). Seeds are fresh CSPRNG draws kept in the private $RUN/SEEDS
 # (format 3: gen, mix, split, cross and unpack seeds; the unpack seed is the
 # delivery stage's); explicit seeds (--seed-file) are for calibration and
@@ -99,8 +101,9 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --source-construction C  random (default) or balanced (RC's construction: every
                            internal value of C read exactly twice); exclusive with
                            --source-path
-  --preprocessing-mode M   embedded-masking (default), three-mask or nonlinear291
-  --preprocessing-preset P L8 (default) | A | custom (embedded-masking only).
+  --preprocessing-mode M   three-mask (default), embedded-masking or nonlinear291
+  --preprocessing-preset P L8 (default) | A | custom (embedded-masking only; the three-mask
+                           default has no preset: its outer blocks are L8)
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
                            CHAIN=2 CHAIN_LEN=8; A = L8 without the chains
     custom only (defaults = gen's base parameters):
@@ -245,7 +248,7 @@ if [ "${#refused[@]}" -gt 0 ]; then
 fi
 
 N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""; SOURCE_CONSTRUCTION=random
-PREPROCESSING_MODE=embedded-masking; PRESET=""
+PREPROCESSING_MODE=three-mask; PRESET=""
 declare -A KNOB=()
 declare -A TM=()
 DELIV_MODE=adaptive

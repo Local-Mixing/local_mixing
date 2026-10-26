@@ -18,19 +18,20 @@
 # which the recipient unpacks). Every stage after the first is optional
 # (run.skip_stages); the default runs all six.
 #
-# Stage 2 has three constructions (preprocessing.mode): "embedded-masking"
-# (the default, preset L8), "three-mask" (the three-mask compute inside the
-# L8 outer blocks, knobs in [three_mask]; the default knobs are the campaign
-# configuration "three-mask modified / v2") and "nonlinear291". The source C
+# Stage 2 has three constructions (preprocessing.mode): "three-mask" (the
+# default: the three-mask compute inside the L8 outer blocks, knobs in
+# [three_mask]; the default knobs are the campaign configuration "three-mask
+# modified / v2"), "embedded-masking" (preset L8) and "nonlinear291". The source C
 # is uniformly random or, with source.construction = "balanced", RC's
 # balanced construction (every internal value read exactly twice).
 #
-# Defaults of stages 1-3 and the packer reproduce val_chain.sh CONFIG=L8 as
-# run for vL64a/b, vL128a/b (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset
-# L8, stage-3 schedule `validated` (profile 2,2,2,2,2, serial), packing G=512
-# / split budget 65536; source.gates defaults to 1000 (n=64) / 3000 (n=128);
-# skip_stages = [4, 5] with delivery.mode = "windowed" and delivery.anf_only
-# = true is that four-stage chain exactly. Stages 4 and 5 use the archive-era
+# With preprocessing.mode = "embedded-masking" the defaults of stages 1-3 and
+# the windowed packer reproduce val_chain.sh CONFIG=L8 as run for vL64a/b,
+# vL128a/b (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset L8, stage-3
+# schedule `validated` (profile 2,2,2,2,2, serial), packing G=512 / split
+# budget 65536; source.gates defaults to 1000 (n=64) / 3000 (n=128); that
+# mode with skip_stages = [4, 5], delivery.mode = "windowed" and
+# delivery.anf_only = true is the four-stage chain exactly. Stages 4 and 5 use the archive-era
 # driver's flags (ea2e516f). No stage-2 or stage-3 knob is set here: a preset
 # or schedule field next to `L8` / `validated` is an error, so an old
 # template cannot silently produce a hybrid recipe.
@@ -69,8 +70,8 @@ lookup_miss_filter = "auto"  # "auto", "on", or "off"
 allow_no_database_for_tests = false  # bool; true requires clearing the DB path/env
 
 [preprocessing]
-mode = "embedded-masking"  # "embedded-masking", "three-mask" or "nonlinear291"
-preset = "L8"  # "L8" (recommended), "A" (no bounded chains) or "custom"
+mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear291"
+# preset = "L8"  # embedded-masking only: "L8" (recommended), "A" (no bounded chains) or "custom"
 # preset = "custom" requires ALL of:
 # mask_pair_wires = 2  shuffling_segments = 8  premask = true  chain = 2
 # max_open_masks = 3   shuffling_return_home = false  seed_avoid_c1 = true  chain_len = 8

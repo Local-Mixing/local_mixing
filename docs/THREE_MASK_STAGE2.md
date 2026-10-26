@@ -1,7 +1,8 @@
 # Stage 2, three-mask mode
 
-`preprocessing.mode = "three-mask"` replaces the masked compute of embedded
-masking by RC's three-mask construction (design note
+`preprocessing.mode = "three-mask"`, the default stage 2 since recipe v13,
+replaces the masked compute of embedded masking by RC's three-mask
+construction (design note
 `stage2_three_mask_design.md`, 2026-10-20; review
 [notes/three_mask_review_20261021.md](notes/three_mask_review_20261021.md)),
 in the configuration the server campaigns of October 2026 ran as

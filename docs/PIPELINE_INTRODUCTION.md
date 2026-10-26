@@ -182,7 +182,7 @@ each) are the identity exactly when the band is zero. At the end, on input
 (`docs/tdp_pipeline.md`, "Stage 2").
 
 **Embedded masking** (`preprocessing.mode = "embedded-masking"`, preset
-`L8`, the default). Each data wire carries two or three open balanced
+`L8`; the default before recipe v13). Each data wire carries two or three open balanced
 quadratic masks `M = 1 + y + x·y + z` over band wires x, y, z (the gate pair
 `g57(w,x,y); CNOT(w,z)` opens a mask and the same pair closes it). A
 sandwich gate is fired through the still-quadratic decodes of its operands
@@ -202,7 +202,7 @@ gates on 256 wires at n = 64, 2.22-2.24 M on 512 wires at n = 128
 (`docs/TDP_PIPELINE_REFERENCE.md`, "Data flow").
 
 **Three-mask compute** (`preprocessing.mode = "three-mask"`, knobs in
-`[three_mask]`; new in this release). The same outer blocks (opening guard,
+`[three_mask]`; new in this release and its default stage 2). The same outer blocks (opening guard,
 band seed, band reseed, closing guard, preset L8) surround a different
 compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_design.md`):
 
@@ -450,7 +450,7 @@ mode) are rejected before a run starts. The settings a first user touches:
 | setting | meaning |
 | --- | --- |
 | `source.wires`, `source.gates`, `source.construction`, `source.path` | n (3..4095; at most 256 when stage 6 runs), |C|, random/balanced, or a supplied C |
-| `preprocessing.mode`, `preprocessing.preset`, `[three_mask]` | `embedded-masking` (preset `L8`) or `three-mask` with its knobs |
+| `preprocessing.mode`, `preprocessing.preset`, `[three_mask]` | `three-mask` (default) with its knobs, or `embedded-masking` (preset `L8`) |
 | `run.skip_stages`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | stages 2..6 not run; where to stop; what to redo; thread pin |
 | `database.regular_dir` | the frozen store (required when stage 3 runs) |
 | `db_mixing.schedule`, `[crossing]` | `validated` or `custom`; the stage-5 target, penalty, temperature and budget |

@@ -15,7 +15,7 @@ stages), and the adaptive, C-aware stage 6 v2 with an early-stop round cap.
 | | `main` (recipe v12) | this release (recipe v13) |
 | --- | --- | --- |
 | Source $C$ | random g57 gates, or supplied (`source.path`) | the same, plus `source.construction = "balanced"`: RC's balanced $C$ (every internal value read exactly twice), bit-exact with the campaign's Python builder |
-| Stage 2 | embedded masking (presets L8, A, custom) or nonlinear291 | the same, plus `preprocessing.mode = "three-mask"` with the `[three_mask]` table (defaults = the campaign's "three-mask modified / v2"); outer blocks fixed to L8 |
+| Stage 2 | embedded masking (presets L8, A, custom) or nonlinear291; default embedded masking L8 | `preprocessing.mode = "three-mask"` with the `[three_mask]` table (defaults = the campaign's "three-mask modified / v2"; outer blocks fixed to L8) is the DEFAULT (RC, 2026-10-26); embedded masking and nonlinear291 remain as before |
 | Stages 3, 4, 5 | unchanged; optional through `run.skip_stages` | unchanged; `run.skip_stages = [3]` and `[4, 5]` are exercised by the tests and documented (skipping 3 leaves stage 4 almost nothing to do) |
 | Stage 6 | windowed delivery: `tdp_packing run` + `tdp_unpacking run --refine` | `delivery.mode = "adaptive"` (default): `tdp_adaptive run`, the C-aware adaptive resynthesis v2 with the 2 % two-round stop rule and `adaptive.max_rounds` as an early stop; `"windowed"` keeps the previous stage 6 unchanged |
 | Published circuit | `unpacking/unpacked.mpmct1` | `adaptive/final.mpmct1` (windowed mode: as before) |
@@ -26,7 +26,7 @@ stages), and the adaptive, C-aware stage 6 v2 with an early-stop round cap.
 | Production binaries | 4 (`gen_sandwich_gadget`, `circuit_mixer`, `tdp_packing`, `tdp_unpacking`) | 5 (plus `tdp_adaptive`); all built and fingerprinted by `tdp_gen` |
 | Seeds | format 3 (gen, mix, split, cross, unpack) | unchanged; `unpack_seed` is the stage-6 seed in both modes (`tdp_adaptive` derives every round's and seed's synthesizer seed from it) |
 | Environment registry | `EMBEDDED_MASKING_*`, `TDP_SOURCE_C`, … | plus `TDP_SOURCE_CONSTRUCTION` (driver) and the thirteen `THREE_MASK_*` knobs (recipe; any other `THREE_MASK_*` forbidden) |
-| Validated chain pin (`pinned_recipe`) | skip 4,5 + `anf_only` + defaults | the same plus `delivery.mode = "windowed"` and `source.construction = "random"` |
+| Validated chain pin (`pinned_recipe`) | skip 4,5 + `anf_only` + defaults | the same plus explicit `preprocessing.mode = "embedded-masking"`, `delivery.mode = "windowed"` and `source.construction = "random"` |
 
 Nothing of the previous pipeline was removed: every stage, binary, format,
 oracle and test of `main` is still there; the embedded-masking, stage-3 and
@@ -78,7 +78,10 @@ lowers the reads-weighted exposure, at the cost of a larger exposed count
 * `gen_sandwich_gadget` accepts `three-mask` as its mode positional, reads
   the `THREE_MASK_*` knobs, refuses `EMBEDDED_MASKING_*` in this mode, runs
   `verify_payload` as before.
-* Config: `[three_mask]` (13 keys, defaults = the v2 configuration:
+* Config: `preprocessing.mode` now defaults to `"three-mask"` (a recipe that
+  wants embedded masking sets the mode explicitly; under three-mask a
+  `preprocessing.preset` or an embedded-masking knob is an error);
+  `[three_mask]` (13 keys, defaults = the v2 configuration:
   `band_wires 0 (auto)`, `banks 0 (auto: 16-wire banks)`, `retire_budget 2`, `max_retiring 0`,
   `rotation 1`, `maturity 2`, `visit_sweeps 2`, `growth 8`, `warmup 4`,
   `segments 6`, `mask_count 3`, `random_helpers true`, `unique_cover true`);
@@ -179,6 +182,9 @@ of rounds, as RC asked, with the smallest round output as its result.
 
 ```toml
 config_version = 5           # was 4
+[preprocessing]
+mode = "embedded-masking"    # add this line to keep embedded masking; the default is now three-mask
+preset = "L8"                # as before (embedded-masking only)
 [delivery]
 mode = "windowed"            # add this line to keep the previous stage 6; omit it for the adaptive stage 6
 anf_only = true              # the four-stage chain, as before (windowed mode only)

@@ -14,9 +14,7 @@ pub(crate) fn parse_config(document: &str) -> Result<RawConfig, String> {
 }
 
 pub(crate) fn parse_preprocessing_mode(raw: &RawConfig) -> Result<PreprocessingMode, String> {
-    let value = raw
-        .value("preprocessing_mode")
-        .unwrap_or("embedded-masking");
+    let value = raw.value("preprocessing_mode").unwrap_or("three-mask");
     if let Some(mode) = PreprocessingMode::parse(value) {
         return Ok(mode);
     }
