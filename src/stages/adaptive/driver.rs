@@ -10,10 +10,17 @@
 //! `max_rounds` ("capped"). The final circuit is the smallest round
 //! output, or the input when no round shrank.
 //!
-//! Resume: a round whose `result.report` exists is reloaded; its
-//! `output.mpmct1` is read only when a later round or the final needs it.
-//! `progress.txt` is rewritten after every round, `adaptive.log` is
-//! appended to.
+//! Resume: a round whose `result.report` exists is reloaded from the
+//! report alone; a round that must run reads the current circuit (the
+//! input, or the last shrinking round's `output.mpmct1`, which a partial
+//! run always still has). A COMPLETED run prunes the non-final round
+//! outputs and the synthesis caches (unless `keep_round_circuits`), so a
+//! rerun on a completed out-dir reloads every round, takes the published
+//! `final.mpmct1` as the final circuit (gate count checked against the
+//! final round's report), re-runs the zero-slice and payload checks on it
+//! and republishes it unchanged (`final_reloaded=true`,
+//! `check.equiv_canonical=reloaded`). `progress.txt` is rewritten after
+//! every round, `adaptive.log` is appended to.
 //!
 //! Output directory:
 //! ```text
@@ -28,7 +35,7 @@
 use super::boundary;
 use super::round::{
     AdaptiveError, Leakage, Log, RoundContext, RoundParams, RoundResult, leakage_kv,
-    load_or_census, path_str, read_bounds_file, run_round, write_text_atomic,
+    load_or_census, path_str, read_bounds_file, reload_round, run_round, write_text_atomic,
 };
 use super::synth::same_function;
 use super::types::Source;
@@ -134,6 +141,10 @@ pub struct BoundaryCounts {
 pub struct FinalChecks {
     /// Canonical circuit == un-ordered final (samples), when ordered.
     pub equiv_canonical: Option<usize>,
+    /// The final circuit was reloaded from `final.mpmct1` (already in
+    /// canonical order) and republished unchanged: the order check of
+    /// the run that wrote it stands (`check.equiv_canonical=reloaded`).
+    pub canonical_reloaded: bool,
     pub zero_slice: usize,
     /// Payload contract inputs (both directions), when a sandwich was given.
     pub payload_contract: Option<usize>,
@@ -145,6 +156,9 @@ pub struct FinalReport {
     pub final_gates: usize,
     /// The round whose output is published (`None`: the input).
     pub final_round: Option<usize>,
+    /// The final circuit came from `final.mpmct1` of a completed run (every
+    /// round reloaded, the round outputs pruned).
+    pub final_reloaded: bool,
     pub rounds: Vec<RoundResult>,
     pub stop_reason: String,
     pub plateau: bool,
@@ -322,6 +336,8 @@ struct Current {
     gates: Option<Vec<XGate>>,
     path: PathBuf,
     round: Option<usize>,
+    /// Gate count, known from the reports without reading the circuit.
+    count: usize,
 }
 
 impl Current {
@@ -603,11 +619,16 @@ pub fn final_report_text(
         leakage_kv(&mut s, "stage5_leakage", &first.leakage_in);
     }
     leakage_kv(&mut s, "final_leakage", &rep.final_leakage);
+    let _ = writeln!(s, "final_reloaded={}", rep.final_reloaded);
     let okn = |v: Option<usize>| v.map_or("skipped".to_string(), |x| format!("ok({x})"));
     let _ = writeln!(
         s,
         "check.equiv_canonical={}",
-        okn(rep.checks.equiv_canonical)
+        if rep.checks.canonical_reloaded {
+            "reloaded".to_string()
+        } else {
+            okn(rep.checks.equiv_canonical)
+        }
     );
     let _ = writeln!(s, "check.zero_slice=ok({})", rep.checks.zero_slice);
     let _ = writeln!(
@@ -734,6 +755,7 @@ pub fn run(
         gates: Some(gates),
         path: inputs.input.clone(),
         round: None,
+        count: input_gates,
     };
     let mut rounds: Vec<RoundResult> = Vec::new();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
@@ -747,8 +769,17 @@ pub fn run(
             break;
         }
         let rdir = inputs.out_dir.join(format!("round{r}"));
-        let g = current.load(width)?;
-        let mut res = run_round(&ctx, r, g, &prev_bounds, &rdir, say)?;
+        // a completed round is reloaded from its report alone; only a
+        // round that must run reads the current circuit (so a completed
+        // run, whose non-final round outputs are pruned, reruns from its
+        // reports)
+        let mut res = match reload_round(&rdir, r, current.count, say)? {
+            Some(res) => res,
+            None => {
+                let g = current.load(width)?;
+                run_round(&ctx, r, g, &prev_bounds, &rdir, say)?
+            }
+        };
         let output = res.output.take();
         pairs.push((res.input_gates, res.output_gates));
         let shrank = res.output_gates < res.input_gates;
@@ -759,6 +790,7 @@ pub fn run(
                 res.output_boundaries.clone()
             };
         }
+        let count = res.output_gates;
         rounds.push(res);
         write_text_atomic(
             &inputs.out_dir.join("progress.txt"),
@@ -769,6 +801,7 @@ pub fn run(
                 gates: output,
                 path: rdir.join("output.mpmct1"),
                 round: Some(r),
+                count,
             };
         }
         if let Some(reason) = stop_rule(&pairs, &mut stalled, params.stop_fraction) {
@@ -790,10 +823,59 @@ pub fn run(
 
     // ---- the final circuit and its checks
     let final_round = current.round;
-    let mut final_gates: Vec<XGate> = current.load(width)?.to_vec();
+    let fpath = inputs.out_dir.join("final.mpmct1");
+    // the final round's output is in memory (it ran here) or on disk (a
+    // partial run keeps every round output); a COMPLETED run has pruned
+    // nothing but the final round's, yet when that too is gone the
+    // published final.mpmct1 is the circuit (gate count checked against
+    // the round's report) and is republished unchanged
+    let (mut final_gates, final_reloaded): (Vec<XGate>, bool) = match current.gates.take() {
+        Some(g) => (g, false),
+        None if final_round.is_some() && fpath.is_file() => {
+            let (g, w) = read_mpmct(path_str(&fpath)?)
+                .map_err(|e| AdaptiveError::Input(format!("{}: {e}", fpath.display())))?;
+            if w == width && g.len() == current.count {
+                say(&format!(
+                    "final circuit reloaded from {} ({} gates, round {})",
+                    fpath.display(),
+                    g.len(),
+                    final_round.unwrap_or(0)
+                ));
+                (g, true)
+            } else if current.path.is_file() {
+                say(&format!(
+                    "{}: {} gates on {w} wires, round {} reported {} on {width}: stale, reading the round output",
+                    fpath.display(),
+                    g.len(),
+                    final_round.unwrap_or(0),
+                    current.count
+                ));
+                (current.load(width)?.to_vec(), false)
+            } else {
+                return Err(AdaptiveError::Input(format!(
+                    "{}: {} gates on {w} wires, round {} reported {} gates on {width} (stale final.mpmct1, and the round output is pruned)",
+                    fpath.display(),
+                    g.len(),
+                    final_round.unwrap_or(0),
+                    current.count
+                )));
+            }
+        }
+        None => (current.load(width)?.to_vec(), false),
+    };
     current.gates = None;
     let mut checks = FinalChecks::default();
-    if params.canonical_order {
+    if params.canonical_order && final_reloaded {
+        // the published circuit is already in canonical order; it is
+        // republished as read, so the order check of the run that wrote
+        // it stands
+        checks.canonical_reloaded = true;
+        say(&format!(
+            "canonical order: reloaded ({} gates, published by the run that wrote {})",
+            final_gates.len(),
+            fpath.display()
+        ));
+    } else if params.canonical_order {
         let t = Instant::now();
         let mut canon = final_gates.clone();
         xgate_canonicalize(&mut canon);
@@ -848,6 +930,7 @@ pub fn run(
         input_gates,
         final_gates: final_gates.len(),
         final_round,
+        final_reloaded,
         rounds,
         stop_reason,
         plateau,
@@ -856,7 +939,6 @@ pub fn run(
         checks,
         seconds: t0.elapsed().as_secs_f64(),
     };
-    let fpath = inputs.out_dir.join("final.mpmct1");
     write_mpmct_atomic(path_str(&fpath)?, &final_gates, width)
         .map_err(|e| AdaptiveError::io(&fpath, e))?;
     drop(final_gates);
