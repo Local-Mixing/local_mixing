@@ -120,7 +120,12 @@ larger blocks, the 2 % rule fired after two rounds).
   deviations from the server prototype: [ADAPTIVE_STAGE.md](ADAPTIVE_STAGE.md).
 * `tdp_adaptive` (new binary, `src/programs/tdp_adaptive/`): `run` and
   `census`; no environment reads; seed from `--seed-file`; exit codes 2, 3,
-  4, 7, 8, 101 like `tdp_unpacking`.
+  4, 7, 8, 101 like `tdp_unpacking`. Beyond the prototype: the input is
+  checked against $C$ and the sandwich before round 1 (fail fast), a
+  completed run resumes from its reports alone, a synthesizer panic is
+  isolated per block, every plan and cache file is written atomically, and
+  the final canonical reorder is applied only when it exposes no more deeper
+  values of $C$ than the final round's output (`canonical_order_applied`).
 * Config: `delivery.mode` (`"adaptive"` default | `"windowed"`), `[adaptive]`
   (15 keys: `max_rounds 0`, `stop_fraction 0.02`, `seeds_per_block 2`,
   `time_limit 60`, `restarts 16`, `beam 6`, `term_cap 131072`,

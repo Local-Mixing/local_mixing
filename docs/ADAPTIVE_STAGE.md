@@ -41,7 +41,12 @@ of `anf_synth`) and the C-view sampling of the packer
 ## 2. What a round does
 
 Input: the round's circuit $G$ (round 1: the stage-5 output, or the previous
-stage's output), the source $C$, the boundary classification.
+stage's output), the source $C$, the boundary classification. Before round
+1 the run checks the input itself on the zero slice against $C$ and, with
+`--sandwich`, against the payload contract (`check.input_zero_slice`,
+`check.input_payload_contract`), so a wrong `--n`, `--source-c` or
+`--sandwich` fails in seconds (exit 4), and refuses a census sample count
+too small for the circuit's width (exit 2).
 
 1. **Census** (`census::census`). Every cut of $G$ is scanned on
    `census_batches` × 64 honest inputs (6,144 by default; seed 20261016, the
@@ -76,8 +81,9 @@ stage's output), the source $C$, the boundary classification.
 3. **Synthesize** (`synth::synthesize_block`). Every block, for every one of
    `seeds_per_block` seeds (derived from the stage seed, the round and the
    seed index; never printed), in parallel over blocks: its ANF is composed
-   from its gates over the global wires (abort on `compose_cap` terms or the
-   deadline), remapped to the local universe (the variables occurring, the
+   from its gates over the global wires (abort on `compose_cap` terms or
+   after `--compose-time-limit` s, 300 by default, the prototype's
+   composition budget), remapped to the local universe (the variables occurring, the
    changed wires and an ancilla pool of 32 outside wires), synthesized by the
    bidirectional ANF search with `restarts` restarts, `beam` lookahead and a
    wall limit of `time_limit` s for blocks of at most 1,000 gates, ×2 up to
@@ -85,7 +91,8 @@ stage's output), the source $C$, the boundary classification.
    block on 2 × 1,024 random full states (every wire), the pairwise peephole
    pass is applied and re-checked. A block converges (`ok`) or fails
    (`compose_overflow`, `compose_timeout`, `stepcap`, `timeout`, `stalled`,
-   `verify-fail`).
+   `verify-fail`; a synthesizer panic is caught and becomes `crash`), and a
+   failed block stays as it was.
 4. **Refine.** A block longer than `min_refine_gates` that converged under
    no seed is cut in two at a cut of its middle half chosen by the input
    census (`planner::Profile::split`: fewest deeper, fewest internal, largest
@@ -93,7 +100,8 @@ stage's output), the source $C$, the boundary classification.
    synthesized; `refinement_levels` times.
 5. **Accept** (`accept = "smaller-not-leakier"`). For every seed the
    candidate assembly (its converged syntheses, the original block where it
-   failed) is written and censused; per block, among the original and the
+   failed) is censused (discovery only, as the prototype did; the input and
+   output censuses are audited); per block, among the original and the
    strictly smaller converged syntheses, the one that exposes the fewest
    deeper births at cuts strictly inside the block wins, size breaking
    ties; a synthesis that exposes more deeper births than the original is
@@ -122,7 +130,14 @@ Rounds continue while the circuit shrinks. The run ends (`stop_reason`):
 The **final circuit** is the smallest round output (the input when no round
 shrank). It is put into the canonical commuting gate order
 (`xgate_canonicalize`, `canonical_order = true`; checked equivalent on
-8 × 1,024 random full states), checked on the zero slice against $C$ (4,096
+8 × 1,024 random full states) under a guard: the reordered circuit is
+censused, and if its validated deeper exposure (affine or direct) exceeds
+the final round's, the un-reordered round output is published instead
+(`canonical_order_applied=false`, `canonical_order_reason=exposure
+increased (…)`; the reordered circuit's census is kept as
+`final_canonical_census/`), since the acceptance rule was evaluated on the
+round output's cut structure and a commuting reorder changes which values
+are simultaneously live. The published circuit is then checked on the zero slice against $C$ (4,096
 inputs: $x$ on wires $0..n$, zeros elsewhere, $C(x)$ on wires $n..2n$) and
 against the sandwich's payload contract in both directions (8,192 random
 plus the structured inputs of the prototype's `clean_payload`: forward, $x$
@@ -145,6 +160,7 @@ tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwi
     [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64]
     [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192]
     [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits]
+    [--compose-time-limit 300] [--compose-cap 1048576] [--ancilla-pool 32] [--equiv-batches 8] [--no-postopt]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96]
 ```
 
@@ -182,9 +198,11 @@ adaptive.log                     every progress line, appended across resumes
 the leakage of the stage input and of the published circuit
 (`stage5_leakage.*`, `final_leakage.*`:
 `{discovery,validated}.{direct,affine}.{all_internal_births,deeper_births,cut_exposure_fraction}`
-and `audit_passed`), the checks `check.equiv_canonical`,
-`check.zero_slice`, `check.payload_contract` (`ok(N)` or `skipped`) and
-`seconds`. `round<r>/result.report` holds the same per-round keys in full
+and `audit_passed`), the checks `check.input_zero_slice`,
+`check.input_payload_contract`, `check.equiv_canonical`,
+`check.zero_slice`, `check.payload_contract` (`ok(N)`, `skipped`, or
+`reloaded` for a completed run's rerun), `canonical_order_applied`,
+`canonical_order_reason`, `final_reloaded` and `seconds`. `round<r>/result.report` holds the same per-round keys in full
 (`refinement.<L>.*`, `picks.*`, `coverage.*`, `leakage_in.*`,
 `leakage_out.*`, `equivalence_samples`, `output_boundaries`). No seed, no
 hash of $C$ or of a secret intermediate appears in any report.
@@ -231,12 +249,20 @@ baseline's 351,744-gate blind plateau to 274,097 gates with small blocks and
   prototype did.
 * The synthesizer runs in process (one block per thread) instead of in
   separate processes under an address-space cap; the composition is bounded
-  by `compose_cap` terms (8 × `term_cap`) instead.
+  by `compose_cap` terms (8 × `term_cap`, where the prototype allowed 32×
+  for a product) and `--compose-time-limit` (300 s, the prototype's) instead;
+  a synthesizer panic is isolated per block (the prototype retried the
+  chunk and isolated the window).
 * The per-round and per-seed synthesizer seeds derive from the stage seed
   (the prototype used 1, 2, 3, …).
-* The final circuit is canonically reordered by default (the prototype
-  published the raw assembly; the census of the published circuit is taken
-  after the reorder).
+* The final circuit is canonically reordered by default under the exposure
+  guard above (the prototype published the raw assembly).
+* The input is checked against $C$ and the sandwich before round 1 (the
+  prototype ran `clean_payload` after every round); the candidate censuses
+  are discovery-only like the prototype's; cached syntheses and plans are
+  reused whatever the parameters (the managed driver starts afresh on any
+  parameter change through its attempt marker; a standalone rerun with
+  other knobs needs a fresh `--out-dir`).
 * The payload contract check against the sandwich is part of the run (the
   prototype ran it as a separate step), and the equivalence checks use the
   crate's lane evaluator.
