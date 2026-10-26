@@ -100,6 +100,10 @@ path = "src/programs/tdp_packing/main.rs"
 name = "tdp_unpacking"
 path = "src/programs/tdp_unpacking/main.rs"
 
+[[bin]]
+name = "tdp_adaptive"
+path = "src/programs/tdp_adaptive/main.rs"
+
 [[test]]
 name = "circuit_cli"
 path = "tests/integration/circuit_cli.rs"
@@ -120,6 +124,11 @@ path = "tests/integration/tdp_packing.rs"
 [[test]]
 name = "tdp_unpacking"
 path = "tests/integration/tdp_unpacking.rs"
+
+# Stage 6 adaptive: tdp_adaptive end to end on a gen-built stage-2 circuit.
+[[test]]
+name = "tdp_adaptive"
+path = "tests/integration/tdp_adaptive.rs"
 
 [[test]]
 name = "stage2_typed_params"
