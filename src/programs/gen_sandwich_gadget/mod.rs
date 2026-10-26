@@ -26,7 +26,10 @@
 //! (one decimal seed read from PATH, e.g. `@/dev/fd/3`) so its value stays off
 //! argv; the banner then prints `(file)` in its place (and for a seed that
 //! defaults to it). TDP_SOURCE_C optionally supplies C
-//! as a g57 circuit with matching dimensions. Source and sandwich artifacts
+//! as a g57 circuit with matching dimensions. TDP_SOURCE_CONSTRUCTION picks
+//! how a generated C is drawn: unset or `random` (uniform g57 gates), or
+//! `balanced` (RC's balanced C, every completed internal value read exactly
+//! twice; exclusive with TDP_SOURCE_C). Source and sandwich artifacts
 //! are written beside the output as .source_c.g57 and .sandwich.mpmct1.
 
 use crate::circuit::formats::write_mpmct;
@@ -37,10 +40,22 @@ use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
 use crate::stages::preprocessing::verify::verify_payload;
 use crate::stages::preprocessing::{PreprocessingMode, PreprocessingParams, preprocess_sandwich};
 use crate::stages::sandwich::{
-    SandwichVariant, construct_seeded_sandwich, prepare_source, sandwich_default_s,
+    SandwichVariant, SourceConstruction, audit_balanced, construct_seeded_sandwich, prepare_source,
+    sandwich_default_s,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+
+/// `TDP_SOURCE_CONSTRUCTION`: unset or `random` selects the uniformly random
+/// C, `balanced` RC's balanced C; any other value (including empty) is an
+/// error naming the variable.
+pub(crate) fn parse_source_construction(value: Option<&str>) -> Result<SourceConstruction, String> {
+    match value {
+        None => Ok(SourceConstruction::Random),
+        Some(v) => SourceConstruction::parse(v)
+            .ok_or_else(|| format!("TDP_SOURCE_CONSTRUCTION={v:?}: expected random or balanced")),
+    }
+}
 
 fn parse_shuffling_controls(
     mode: PreprocessingMode,
@@ -285,14 +300,24 @@ pub fn run() {
         std::env::var("EMBEDDED_MASKING_JIT").ok().as_deref(),
     )
     .unwrap_or_else(|error| panic!("invalid preprocessing settings: {error}"));
+    // How a generated C is drawn; only this adapter reads the variable.
+    let construction =
+        parse_source_construction(std::env::var("TDP_SOURCE_CONSTRUCTION").ok().as_deref())
+            .unwrap_or_else(|error| {
+                eprintln!("gen_sandwich_gadget: {error}");
+                std::process::exit(2)
+            });
 
+    // The driver pattern-matches the middle of this line: new fields go at
+    // the end only.
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={}",
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={} source_construction={}",
         shown(seed, seed_private),
         shown(gadget_seed, gadget_seed_private),
         shown(sandwich_seed, sandwich_seed_private),
         gadgetization_mode.canonical_name(),
-        variant.name()
+        variant.name(),
+        construction.name()
     );
 
     let source_path = std::env::var("TDP_SOURCE_C").ok();
@@ -301,7 +326,7 @@ pub fn run() {
             .unwrap_or_else(|error| panic!("TDP_SOURCE_C: cannot read {path}: {error}"));
         crate::circuit::CircuitSeq::from_bytes(&raw)
     });
-    let c = prepare_source(n, m_c, seed, supplied).unwrap_or_else(|error| {
+    let c = prepare_source(n, m_c, seed, supplied, construction).unwrap_or_else(|error| {
         panic!(
             "TDP_SOURCE_C: {} {error}",
             source_path.as_deref().unwrap_or("source")
@@ -312,6 +337,21 @@ pub fn run() {
             "[gen] source C LOADED from {path} ({} gates, {} wires)",
             c.gates.len(),
             c.max_wire() + 1
+        );
+    }
+    if construction.is_balanced() {
+        // The library audited C before returning it; the census is repeated
+        // here only to report its numbers.
+        let audit = audit_balanced(n, &c)
+            .unwrap_or_else(|error| panic!("balanced source C failed its audit: {error}"));
+        println!(
+            "[gen] source C: balanced construction ({} gates on {} wires, {} internal births each read exactly twice, max control fan-out {}, write spread {}, final write counts {:?})",
+            audit.gates,
+            audit.wires,
+            audit.internal_births,
+            audit.maximum_control_fanout,
+            audit.maximum_write_spread,
+            audit.final_writes
         );
     }
     // Also dump C in g57 format so hmap_affine can reconstruct against the

@@ -128,6 +128,95 @@ impl PyRandom {
     pub fn getrandbit(&mut self) -> bool {
         self.genrand_u32() >> 31 == 1
     }
+
+    /// `getrandbits(k)` for `0 < k <= 64` as one integer: the words of
+    /// [`Self::getrandbits_words`], least significant first.
+    pub fn getrandbits_u64(&mut self, k: usize) -> u64 {
+        assert!(k <= 64, "getrandbits_u64({k}) exceeds one u64");
+        self.getrandbits_words(k)
+            .iter()
+            .enumerate()
+            .fold(0u64, |acc, (i, &w)| acc | ((w as u64) << (32 * i)))
+    }
+
+    /// `random()`: the 53-bit double `(a * 2^26 + b) / 2^53` from
+    /// `a = genrand_u32() >> 5` and `b = genrand_u32() >> 6`
+    /// (`random_random` in `_randommodule.c`; the scaling by a power of two
+    /// is exact).
+    pub fn random(&mut self) -> f64 {
+        let a = (self.genrand_u32() >> 5) as f64;
+        let b = (self.genrand_u32() >> 6) as f64;
+        (a * 67_108_864.0 + b) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    /// `_randbelow(n)` (`_randbelow_with_getrandbits`, CPython 3.2+): draw
+    /// `getrandbits(n.bit_length())` until the value is below `n`; 0 for
+    /// `n == 0`.
+    pub fn randbelow(&mut self, n: u64) -> u64 {
+        if n == 0 {
+            return 0;
+        }
+        let k = (u64::BITS - n.leading_zeros()) as usize;
+        loop {
+            let r = self.getrandbits_u64(k);
+            if r < n {
+                return r;
+            }
+        }
+    }
+
+    /// `randrange(stop)` for `stop > 0`: one `_randbelow(stop)` draw.
+    pub fn randrange(&mut self, stop: usize) -> usize {
+        assert!(stop > 0, "randrange({stop}): empty range");
+        self.randbelow(stop as u64) as usize
+    }
+
+    /// `choice(seq)`: `seq[_randbelow(len(seq))]`.
+    pub fn choice<T: Copy>(&mut self, seq: &[T]) -> T {
+        assert!(!seq.is_empty(), "choice() from an empty sequence");
+        seq[self.randbelow(seq.len() as u64) as usize]
+    }
+
+    /// `choices(population, weights=weights)[0]` for integer weights:
+    /// cumulative weights by `itertools.accumulate`, `total = cum[-1] + 0.0`,
+    /// index `bisect.bisect(cum, random() * total, 0, len(population) - 1)`.
+    /// CPython compares the float against the int cumulative weights
+    /// exactly; converting them to `f64` is exact while they stay below
+    /// 2^53, which is asserted.
+    pub fn choices_one<T: Copy>(&mut self, population: &[T], weights: &[u64]) -> T {
+        assert_eq!(
+            population.len(),
+            weights.len(),
+            "choices(): the number of weights does not match the population"
+        );
+        let mut cum = Vec::with_capacity(weights.len());
+        let mut acc = 0u64;
+        for &w in weights {
+            acc += w;
+            cum.push(acc);
+        }
+        let total = *cum.last().expect("choices() from an empty population");
+        assert!(
+            total > 0,
+            "choices(): total of weights must be greater than zero"
+        );
+        assert!(
+            total < (1u64 << 53),
+            "choices(): cumulative weights exceed the exact f64 range"
+        );
+        let x = self.random() * (total as f64);
+        // bisect.bisect_right(cum, x, 0, len(population) - 1)
+        let (mut lo, mut hi) = (0usize, population.len() - 1);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if x < cum[mid] as f64 {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        population[lo]
+    }
 }
 
 #[cfg(test)]
