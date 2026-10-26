@@ -197,6 +197,14 @@ fn run_resynthesizes_checks_and_resumes() {
     assert_eq!(kv(&report, "round.1.reloaded"), "false");
     assert_eq!(kv(&report, "final_reloaded"), "false");
     assert_eq!(kv(&report, "stop_reason"), "round cap");
+    assert!(kv(&report, "check.input_zero_slice").starts_with("ok("));
+    assert!(kv(&report, "check.input_payload_contract").starts_with("ok("));
+    assert!(matches!(
+        kv(&report, "canonical_order_applied").as_str(),
+        "true" | "false"
+    ));
+    assert!(!kv(&report, "canonical_order_reason").is_empty());
+    assert_eq!(kv(&report, "param.compose_time_limit"), "300");
     let input_gates: usize = kv(&report, "input_gates").parse().unwrap();
     let final_gates: usize = kv(&report, "final_gates").parse().unwrap();
     assert!(final_gates <= input_gates);
@@ -308,6 +316,11 @@ fn run_resynthesizes_checks_and_resumes() {
     assert_eq!(kv(&report3, "final_round"), final_round.to_string());
     assert_eq!(kv(&report3, "stop_reason"), kv(&report2, "stop_reason"));
     assert_eq!(kv(&report3, "check.equiv_canonical"), "reloaded");
+    assert_eq!(
+        kv(&report3, "canonical_order_applied"),
+        kv(&report2, "canonical_order_applied")
+    );
+    assert!(kv(&report3, "check.input_zero_slice").starts_with("ok("));
     assert!(kv(&report3, "check.zero_slice").starts_with("ok("));
     assert!(kv(&report3, "check.payload_contract").starts_with("ok("));
     kv(&report3, "final_leakage.validated.affine.deeper_births");
@@ -493,5 +506,66 @@ fn usage_errors_exit_2() {
     let o = adaptive(&["help"]);
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stdout).contains("tdp_adaptive run"));
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Too few census batches for the width is a usage error (exit 2) before
+/// anything runs; a wrong `--n` (16 for an n = 8 circuit) fails the input's
+/// zero-slice check before any round runs: exit 4, in seconds.
+#[test]
+fn wrong_n_fails_fast_with_exit_4() {
+    let dir = scratch();
+    let (g, c, _s) = gen_fixture(&dir);
+    let out = dir.join("out");
+    let o = adaptive(&[
+        "run",
+        "--input",
+        p(&g),
+        "--source-c",
+        p(&c),
+        "--n",
+        "8",
+        "--out-dir",
+        p(&out),
+        "--threads",
+        "2",
+        "--census-batches",
+        "1",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{err}");
+    assert!(err.contains("census batches"), "{err}");
+    let t0 = Instant::now();
+    let o = adaptive(&[
+        "run",
+        "--input",
+        p(&g),
+        "--source-c",
+        p(&c),
+        "--n",
+        "16",
+        "--out-dir",
+        p(&out),
+        "--threads",
+        "2",
+        "--census-batches",
+        "4",
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(4), "{err}");
+    assert!(err.contains("does not satisfy the zero slice"), "{err}");
+    assert!(
+        err.contains("g.mpmct1"),
+        "the message names the input: {err}"
+    );
+    assert!(
+        !out.join("round1").join("result.report").exists(),
+        "no round ran"
+    );
+    assert!(
+        t0.elapsed().as_secs_f64() < 60.0,
+        "fail-fast took {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
     let _ = fs::remove_dir_all(dir);
 }

@@ -35,7 +35,7 @@ use rustc_hash::FxHashSet;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -654,16 +654,38 @@ impl Profile {
 // files
 // ---------------------------------------------------------------------------
 
+/// A file written to `<path>.tmp`, synced and renamed over `path`: a kill
+/// leaves the previous file or none, never a truncated one.
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .map_or("plan".into(), |n| n.to_string_lossy())
+    ));
+    let r = (|| {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    r
+}
+
 /// `bounds` (one cut per line), `blocks.tsv` (the prototype's columns) and
-/// `summary.txt` (`key=value` lines).
+/// `summary.txt` (`key=value` lines), each written atomically and
+/// `summary.txt` LAST: a reader that finds `summary.txt` finds a complete
+/// plan.
 pub fn write_plan(p: &Plan, dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
-    let mut b = BufWriter::new(fs::File::create(dir.join("bounds"))?);
+    let mut b: Vec<u8> = Vec::new();
     for x in &p.bounds {
         writeln!(b, "{x}")?;
     }
-    b.flush()?;
-    let mut r = BufWriter::new(fs::File::create(dir.join("blocks.tsv"))?);
+    write_file_atomic(&dir.join("bounds"), &b)?;
+    let mut r: Vec<u8> = Vec::new();
     writeln!(r, "{BLOCKS_HEADER}")?;
     for k in &p.blocks {
         writeln!(
@@ -680,8 +702,8 @@ pub fn write_plan(p: &Plan, dir: &Path) -> io::Result<()> {
             k.signed_clearance
         )?;
     }
-    r.flush()?;
-    let mut s = BufWriter::new(fs::File::create(dir.join("summary.txt"))?);
+    write_file_atomic(&dir.join("blocks.tsv"), &r)?;
+    let mut s: Vec<u8> = Vec::new();
     writeln!(s, "bounds={}", p.bounds.len())?;
     writeln!(s, "blocks={}", p.blocks.len())?;
     let seams = p
@@ -693,7 +715,7 @@ pub fn write_plan(p: &Plan, dir: &Path) -> io::Result<()> {
     writeln!(s, "seams={seams}")?;
     writeln!(s, "single_gate_exceptions={}", p.single_gate_exceptions)?;
     writeln!(s, "seconds={:?}", p.seconds)?;
-    s.flush()
+    write_file_atomic(&dir.join("summary.txt"), &s)
 }
 
 /// The cuts of a `bounds` file (one per line, blank lines ignored).

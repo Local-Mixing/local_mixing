@@ -176,8 +176,12 @@ fn final_report_lists_rounds_and_checks() {
             deeper: 3,
         },
         checks: FinalChecks {
+            input_zero_slice: 4096,
+            input_payload_contract: None,
             equiv_canonical: Some(8192),
             canonical_reloaded: false,
+            canonical_applied: Some(true),
+            canonical_reason: "ordered".into(),
             zero_slice: 4096,
             payload_contract: None,
         },
@@ -203,6 +207,11 @@ fn final_report_lists_rounds_and_checks() {
         "check.zero_slice=ok(4096)",
         "check.payload_contract=skipped",
         "final_reloaded=false",
+        "check.input_zero_slice=ok(4096)",
+        "check.input_payload_contract=skipped",
+        "canonical_order_applied=true",
+        "canonical_order_reason=ordered",
+        "param.compose_time_limit=300",
         "final_leakage.validated.affine.deeper_births=0",
     ] {
         assert!(text.lines().any(|l| l == key), "missing {key} in\n{text}");

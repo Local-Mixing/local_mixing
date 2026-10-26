@@ -17,8 +17,8 @@
 //!     [--census-batches 96] [--probe-inputs 8192]
 //!     [--accept smaller|smaller-not-leakier] [--blind]
 //!     [--no-canonical-order] [--keep-round-circuits] [--no-postopt]
-//!     [--ancilla-pool 32] [--compose-cap 1048576] [--equiv-batches 8]
-//!     [--label tdp]
+//!     [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300]
+//!     [--equiv-batches 8] [--label tdp]
 //!     Runs the rounds into DIR (resumable: completed rounds are reloaded),
 //!     publishes `final.mpmct1` after the canonical-order, zero-slice and
 //!     (with --sandwich) payload-contract checks, with `adaptive.report`
@@ -60,7 +60,7 @@ pub fn run() {
     std::process::exit(code);
 }
 
-const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--equiv-batches 8] [--label tdp]
+const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96] [--probe-inputs 8192] [--threads T] [--label tdp]
 tdp_adaptive help";
 
@@ -74,7 +74,7 @@ const SWITCHES: [&str; 5] = [
     "--help",
 ];
 
-const RUN_OPTIONS: [&str; 31] = [
+const RUN_OPTIONS: [&str; 32] = [
     "input",
     "source-c",
     "n",
@@ -104,6 +104,7 @@ const RUN_OPTIONS: [&str; 31] = [
     "no-postopt",
     "ancilla-pool",
     "compose-cap",
+    "compose-time-limit",
     "equiv-batches",
     "label",
 ];
@@ -258,6 +259,7 @@ fn params_of(a: &Args) -> Result<DriverParams, AdaptiveError> {
     r.block.postopt = !a.flag("no-postopt");
     r.block.ancilla_pool = a.usize_or("ancilla-pool", r.block.ancilla_pool)?;
     r.block.compose_cap = a.usize_or("compose-cap", r.block.compose_cap)?;
+    r.block.compose_time_limit = a.f64_or("compose-time-limit", r.block.compose_time_limit)?;
     r.plan.term_cap = a.usize_or("term-cap", r.plan.term_cap)?;
     r.plan.max_block_gates = a.usize_or("max-block-gates", r.plan.max_block_gates)?;
     r.plan.segments = a.usize_or("segments", r.plan.segments)?;

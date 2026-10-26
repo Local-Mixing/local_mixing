@@ -31,6 +31,8 @@ pub const DEFAULT_ANCILLA_POOL: usize = 32;
 pub const DEFAULT_COMPOSE_CAP: usize = 8 * 131_072;
 /// Batches of 1024 random full states per block check.
 pub const DEFAULT_VERIFY_BATCHES: usize = 2;
+/// Seconds for a block's composition (the prototype's `--compose-limit`).
+pub const DEFAULT_COMPOSE_TIME_LIMIT: f64 = 300.0;
 /// Seed of the sampled block checks (public, fixed; mixed with the block's
 /// index).
 pub const VERIFY_SEED: u64 = 20_261_026;
@@ -42,6 +44,9 @@ pub struct BlockParams {
     pub postopt: bool,
     pub ancilla_pool: usize,
     pub compose_cap: usize,
+    /// Seconds for the composition of a block (the prototype's
+    /// `--compose-limit`); the synthesizer's budget is separate.
+    pub compose_time_limit: f64,
     pub verify_batches: usize,
 }
 
@@ -55,6 +60,7 @@ impl Default for BlockParams {
             postopt: true,
             ancilla_pool: DEFAULT_ANCILLA_POOL,
             compose_cap: DEFAULT_COMPOSE_CAP,
+            compose_time_limit: DEFAULT_COMPOSE_TIME_LIMIT,
             verify_batches: DEFAULT_VERIFY_BATCHES,
         }
     }
@@ -68,6 +74,12 @@ impl BlockParams {
         }
         if self.compose_cap == 0 {
             return Err("compose cap must be positive".into());
+        }
+        if !(self.compose_time_limit > 0.0 && self.compose_time_limit.is_finite()) {
+            return Err(format!(
+                "compose time limit {}: must be a positive number of seconds",
+                self.compose_time_limit
+            ));
         }
         if self.verify_batches == 0 || self.verify_batches > 1024 {
             return Err(format!(
@@ -126,6 +138,14 @@ pub struct BlockResult {
 }
 
 impl BlockResult {
+    /// The synthesizer panicked on the block (caught by the round, which
+    /// keeps the block verbatim and continues).
+    pub fn crashed() -> BlockResult {
+        let mut r = BlockResult::failed("crash");
+        r.note = "the synthesizer panicked; block kept verbatim".into();
+        r
+    }
+
     fn failed(reason: &'static str) -> BlockResult {
         BlockResult {
             status: BlockStatus::Failed(reason),
@@ -455,8 +475,9 @@ fn mix(seed: u64, idx: u64) -> u64 {
 }
 
 /// Synthesize one block (`gates`, over a `width`-wide state) under
-/// `time_limit` seconds (the composition deadline, and the synthesizer's
-/// own budget; a non-positive value falls back to `params.synth.time_limit`).
+/// `time_limit` seconds of synthesizer budget (a non-positive value falls
+/// back to `params.synth.time_limit`); the composition runs under its own
+/// `params.compose_time_limit` first.
 /// `seed` seeds the synthesizer's tie-breaks only (never reported); `idx`
 /// keys the PRNG and the check seed (the caller passes the block's start
 /// gate).
@@ -484,7 +505,9 @@ pub fn synthesize_block(
         time_limit,
         ..params.synth.clone()
     };
-    let deadline = t0 + Duration::from_secs_f64(time_limit.max(0.01));
+    // the composition has its own budget (the prototype's --compose-limit);
+    // the synthesizer then gets the full block budget
+    let deadline = t0 + Duration::from_secs_f64(params.compose_time_limit.max(0.01));
     let composed = with_mono_width(
         width,
         Front {

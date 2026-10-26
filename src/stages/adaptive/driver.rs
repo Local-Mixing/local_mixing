@@ -35,10 +35,11 @@
 use super::boundary;
 use super::round::{
     AdaptiveError, Leakage, Log, RoundContext, RoundParams, RoundResult, leakage_kv,
-    load_or_census, path_str, read_bounds_file, reload_round, run_round, write_text_atomic,
+    load_or_census, parse_kv, path_str, read_bounds_file, reload_round, run_round,
+    write_text_atomic,
 };
 use super::synth::same_function;
-use super::types::Source;
+use super::types::{Census, Source};
 use crate::canonicalization::gate_order::xgate_canonicalize;
 use crate::circuit::formats::{read_g57_file, read_mpmct, write_mpmct_atomic};
 use crate::circuit::xgate::XGate;
@@ -139,12 +140,24 @@ pub struct BoundaryCounts {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChecks {
+    /// The INPUT circuit's zero slice against C (samples), checked before
+    /// round 1 so that a wrong `--n`/`--source-c` fails in seconds.
+    pub input_zero_slice: usize,
+    /// The INPUT circuit's payload contract (inputs), when a sandwich was
+    /// given.
+    pub input_payload_contract: Option<usize>,
     /// Canonical circuit == un-ordered final (samples), when ordered.
     pub equiv_canonical: Option<usize>,
     /// The final circuit was reloaded from `final.mpmct1` (already in
     /// canonical order) and republished unchanged: the order check of
     /// the run that wrote it stands (`check.equiv_canonical=reloaded`).
     pub canonical_reloaded: bool,
+    /// Whether the canonical order was published: `Some(false)` when the
+    /// reordered circuit exposed more deeper births (validated) than the
+    /// final round's output, or with `--no-canonical-order`; `None` when a
+    /// reloaded final's previous report does not say.
+    pub canonical_applied: Option<bool>,
+    pub canonical_reason: String,
     pub zero_slice: usize,
     /// Payload contract inputs (both directions), when a sandwich was given.
     pub payload_contract: Option<usize>,
@@ -555,6 +568,7 @@ pub fn final_report_text(
     let _ = writeln!(s, "param.postopt={}", p.block.postopt);
     let _ = writeln!(s, "param.ancilla_pool={}", p.block.ancilla_pool);
     let _ = writeln!(s, "param.compose_cap={}", p.block.compose_cap);
+    let _ = writeln!(s, "param.compose_time_limit={}", p.block.compose_time_limit);
     let _ = writeln!(s, "param.verify_batches={}", p.block.verify_batches);
     let _ = writeln!(s, "param.term_cap={}", p.plan.term_cap);
     let _ = writeln!(s, "param.max_block_gates={}", p.plan.max_block_gates);
@@ -623,6 +637,16 @@ pub fn final_report_text(
     let okn = |v: Option<usize>| v.map_or("skipped".to_string(), |x| format!("ok({x})"));
     let _ = writeln!(
         s,
+        "check.input_zero_slice=ok({})",
+        rep.checks.input_zero_slice
+    );
+    let _ = writeln!(
+        s,
+        "check.input_payload_contract={}",
+        okn(rep.checks.input_payload_contract)
+    );
+    let _ = writeln!(
+        s,
         "check.equiv_canonical={}",
         if rep.checks.canonical_reloaded {
             "reloaded".to_string()
@@ -630,6 +654,14 @@ pub fn final_report_text(
             okn(rep.checks.equiv_canonical)
         }
     );
+    let _ = writeln!(
+        s,
+        "canonical_order_applied={}",
+        rep.checks
+            .canonical_applied
+            .map_or("unknown".to_string(), |b| b.to_string())
+    );
+    let _ = writeln!(s, "canonical_order_reason={}", rep.checks.canonical_reason);
     let _ = writeln!(s, "check.zero_slice=ok({})", rep.checks.zero_slice);
     let _ = writeln!(
         s,
@@ -699,6 +731,15 @@ pub fn run(
     // ---- inputs
     let Loaded { gates, width, c } = load_inputs(&inputs.input, &inputs.source_c, inputs.n)?;
     let n = inputs.n;
+    // the census draws 64 inputs per batch and needs more than width + 128
+    // of them (a usage error here, not a panic after hours of synthesis)
+    if 64 * params.round.census_batches <= width + 128 {
+        return Err(AdaptiveError::Usage(format!(
+            "census batches {}: a {width}-wire circuit needs at least {}",
+            params.round.census_batches,
+            (width + 128) / 64 + 1
+        )));
+    }
     let sandwich = match &inputs.sandwich {
         Some(p) => {
             let (sg, sw) = read_mpmct(path_str(p)?)
@@ -747,6 +788,49 @@ pub fn run(
         width,
         stage_seed: inputs.seed,
         params: &params.round,
+    };
+
+    // ---- fail fast: the stage-5 circuit must satisfy its own contracts
+    // (a wrong --n, --source-c or --sandwich is caught here, in seconds,
+    // not after every round)
+    let input_zero_slice = check_zero_slice_gates(
+        &c,
+        &gates,
+        n,
+        width,
+        ZERO_SLICE_SAMPLES,
+        CHECK_SEED ^ 0x1A5A,
+    )
+    .map_err(|e| match e {
+        crate::stages::unpacking::Stage7Error::Verify(m) => AdaptiveError::Verify(format!(
+            "the stage-5 circuit {} does not satisfy the zero slice against C {} with n={n}: {m}",
+            inputs.input.display(),
+            inputs.source_c.display()
+        )),
+        other => other.into(),
+    })?;
+    say(&format!(
+        "input zero slice vs C: ok ({input_zero_slice} samples)"
+    ));
+    let input_payload_contract = match &sandwich {
+        Some((sg, sw)) => {
+            let k = payload_contract(sg, *sw, &gates, width, n).map_err(|e| match e {
+                AdaptiveError::Verify(m) => AdaptiveError::Verify(format!(
+                    "the stage-5 circuit {} does not satisfy the payload contract of the sandwich {}: {m}",
+                    inputs.input.display(),
+                    inputs
+                        .sandwich
+                        .as_ref()
+                        .map_or(String::new(), |p| p.display().to_string())
+                )),
+                other => other,
+            })?;
+            say(&format!(
+                "input payload contract vs the sandwich: ok ({k} inputs over both directions)"
+            ));
+            Some(k)
+        }
+        None => None,
     };
 
     // ---- rounds
@@ -864,18 +948,42 @@ pub fn run(
         None => (current.load(width)?.to_vec(), false),
     };
     current.gates = None;
-    let mut checks = FinalChecks::default();
-    if params.canonical_order && final_reloaded {
-        // the published circuit is already in canonical order; it is
-        // republished as read, so the order check of the run that wrote
-        // it stands
+    let mut checks = FinalChecks {
+        input_zero_slice,
+        input_payload_contract,
+        ..Default::default()
+    };
+    let final_census_dir = inputs.out_dir.join("final_census");
+    let mut final_census: Option<Census> = None;
+    if !params.canonical_order {
+        checks.canonical_applied = Some(false);
+        checks.canonical_reason = "disabled (--no-canonical-order)".into();
+    } else if final_reloaded {
+        // the published circuit is republished as read: the order check
+        // and the exposure guard of the run that wrote it stand (its
+        // report says whether the order was applied)
         checks.canonical_reloaded = true;
+        let prev = fs::read_to_string(inputs.out_dir.join("adaptive.report"))
+            .map(|t| parse_kv(&t))
+            .unwrap_or_default();
+        checks.canonical_applied = match prev.get("canonical_order_applied").map(String::as_str) {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        };
+        checks.canonical_reason = prev
+            .get("canonical_order_reason")
+            .cloned()
+            .unwrap_or_else(|| "reloaded".into());
         say(&format!(
-            "canonical order: reloaded ({} gates, published by the run that wrote {})",
+            "canonical order: reloaded ({} gates, published by the run that wrote {}; applied={})",
             final_gates.len(),
-            fpath.display()
+            fpath.display(),
+            checks
+                .canonical_applied
+                .map_or("unknown".to_string(), |b| b.to_string())
         ));
-    } else if params.canonical_order {
+    } else {
         let t = Instant::now();
         let mut canon = final_gates.clone();
         xgate_canonicalize(&mut canon);
@@ -891,13 +999,52 @@ pub fn run(
             ));
         }
         checks.equiv_canonical = Some(FINAL_EQUIV_BATCHES * 1024);
-        final_gates = canon;
         say(&format!(
             "canonical order: {} gates, equivalence ok ({} samples, {:.1}s)",
-            final_gates.len(),
+            canon.len(),
             FINAL_EQUIV_BATCHES * 1024,
             t.elapsed().as_secs_f64()
         ));
+        // the exposure guard: the acceptance judged the round output's cut
+        // structure, and reordering changes which values are simultaneously
+        // live; the reordered circuit may not expose more deeper births
+        // (validated) than the final round's output does
+        let cc = load_or_census(&ctx, &canon, &final_census_dir, true, say)?;
+        let cl = Leakage::of(&cc, &source);
+        let base: Option<&Leakage> = match final_round {
+            Some(r) => rounds.iter().find(|x| x.round == r).map(|x| &x.leakage_out),
+            None => rounds.first().map(|x| &x.leakage_in),
+        };
+        let (ca, cd) = (
+            cl.validated.affine.deeper_births,
+            cl.validated.direct.deeper_births,
+        );
+        let (ba, bd) = base.map_or((ca, cd), |b| {
+            (
+                b.validated.affine.deeper_births,
+                b.validated.direct.deeper_births,
+            )
+        });
+        if ca > ba || cd > bd {
+            checks.canonical_applied = Some(false);
+            checks.canonical_reason =
+                format!("exposure increased (deeper affine {ba} -> {ca}, direct {bd} -> {cd})");
+            say(&format!(
+                "canonical order NOT applied: {}; publishing the round output as assembled",
+                checks.canonical_reason
+            ));
+            // the reordered circuit's census stays on record next to the
+            // published one's
+            let keep = inputs.out_dir.join("final_canonical_census");
+            let _ = fs::remove_dir_all(&keep);
+            fs::rename(&final_census_dir, &keep).map_err(|e| AdaptiveError::io(&keep, e))?;
+        } else {
+            checks.canonical_applied = Some(true);
+            checks.canonical_reason =
+                format!("ordered (deeper affine {ba} -> {ca}, direct {bd} -> {cd})");
+            final_gates = canon;
+            final_census = Some(cc);
+        }
     }
     checks.zero_slice = check_zero_slice_gates(
         &c,
@@ -918,12 +1065,10 @@ pub fn run(
             "payload contract vs the sandwich: ok ({k} inputs over both directions)"
         ));
     }
-    let fc = load_or_census(
-        &ctx,
-        &final_gates,
-        &inputs.out_dir.join("final_census"),
-        say,
-    )?;
+    let fc = match final_census {
+        Some(c) => c,
+        None => load_or_census(&ctx, &final_gates, &final_census_dir, true, say)?,
+    };
     let final_leakage = Leakage::of(&fc, &source);
     drop(fc);
     let rep = FinalReport {
