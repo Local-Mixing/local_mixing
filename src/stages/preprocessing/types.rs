@@ -1,15 +1,16 @@
 //! Resolved stage-2 inputs and the public slice contract.
 
 use super::embedded_masking::{EmbeddedMaskingExecution, EmbeddedMaskingParams};
+use super::three_mask::{ThreeMaskParams, ThreeMaskStats};
 use crate::circuit::Circuit;
 
-/// The two supported choices for new TDP preprocessing.
+/// The supported choices for new TDP preprocessing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreprocessingMode {
     #[default]
     EmbeddedMasking,
-    /// The three-mask compute (x_i = d_i + three cubic band monomials)
-    /// inside the embedded-masking outer blocks.
+    /// The embedded-masking assembly (guards, band seed and reseed) around
+    /// the three-mask compute (`three_mask`).
     ThreeMask,
     Nonlinear291,
 }
@@ -44,6 +45,19 @@ pub enum PreprocessingParams {
         /// managed default (4) makes each seed block slice-guard-sized,
         /// reviving the pre-reorganization `emit_band_fill_nl_pivots_src`
         /// generator (pivot + 1..=7 linear sources + nonlinear products).
+        seed_fill_nl: usize,
+    },
+    /// The five-part assembly with the three-mask compute in the middle.
+    /// `outer` holds the parameters of the outer blocks (guards, band seed
+    /// and reseed), which are exactly those of the embedded-masking branch
+    /// for the same `outer`, `balanced_seed`, `seed_fill_nl` and guard RNG;
+    /// only `outer.seed`, `outer.r`, `outer.seed_avoid_c1` and
+    /// `outer.legacy_slice_guard` reach them. `params.band_wires` (0 = auto)
+    /// is the compute band; `params.seeded_band_wires` is overridden from it.
+    ThreeMask {
+        params: ThreeMaskParams,
+        outer: EmbeddedMaskingParams,
+        balanced_seed: bool,
         seed_fill_nl: usize,
     },
     Nonlinear291,
@@ -88,6 +102,40 @@ pub struct EmbeddedMaskingReport {
     pub jit_remasks: usize,
 }
 
+/// Measurements of the three-mask assembly: the outer blocks and the
+/// compute's own statistics (`ThreeMaskStats`).
+#[derive(Clone, Debug)]
+pub struct ThreeMaskReport {
+    /// Resolved compute band width (the circuit has `2n + band_wires` wires).
+    pub band_wires: usize,
+    /// Band prefix seeded by the outer blocks when `band_wires` exceeds it
+    /// (the compute's extra-wire ingress reads it); 0 when the whole band is
+    /// seeded.
+    pub seeded_band_wires: usize,
+    pub guard_gates: usize,
+    pub band_seed_gates: usize,
+    pub band_reseed_gates: usize,
+    /// Compute length after carrier migration.
+    pub compute_gates: usize,
+    pub before_migration: usize,
+    pub fire_core_gates: usize,
+    pub mask_gates: usize,
+    pub growth_gates: usize,
+    pub migration_gates: usize,
+    pub transfers: usize,
+    pub skipped_cuts: usize,
+    pub rotations: usize,
+    pub retired_banks: usize,
+    pub retiring_replacements: usize,
+    pub band_ingress_gates: usize,
+    pub promotion_stalls: usize,
+    pub local_mask_fallbacks: usize,
+    pub mask_rank_rejections: usize,
+    pub fire: super::three_mask::fire::FireStats,
+    /// The complete compute statistics the summary fields were taken from.
+    pub stats: ThreeMaskStats,
+}
+
 /// The low sandwich-width wires retain the logical layout. Auxiliary wires
 /// start at zero. With embedded masking's closing guard, only the sandwich's
 /// payload half is promised; nonlinear291 preserves every logical output wire.
@@ -97,4 +145,5 @@ pub struct PreprocessingOutput {
     /// Nonlinear291's ingress-only guard does not set this flag.
     pub guarded: bool,
     pub embedded_masking_report: Option<EmbeddedMaskingReport>,
+    pub three_mask_report: Option<ThreeMaskReport>,
 }

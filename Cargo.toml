@@ -134,6 +134,11 @@ path = "tests/integration/tdp_adaptive.rs"
 name = "stage2_typed_params"
 path = "tests/integration/stage2_typed_params.rs"
 
+# Three-mask stage 2 against the server generator's pinned digests.
+[[test]]
+name = "stage2_three_mask_parity"
+path = "tests/integration/stage2_three_mask_parity.rs"
+
 # hmap_affine --exposure (library C-view engine) against the pinned baseline.
 [[test]]
 name = "hmap_affine_exposure"

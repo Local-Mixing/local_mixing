@@ -21,6 +21,12 @@
 //! EMBEDDED_MASKING_SHUFFLING_RETURN_HOME flag defaults to true and is required
 //! when enabled here to preserve the sandwich's physical output ports.
 //!
+//! `three-mask` keeps the outer blocks (guards, band seed and reseed) fixed
+//! to preset L8 (any EMBEDDED_MASKING_* or SLICE_GUARD_LEGACY variable is an
+//! error) and runs RC's three-mask compute in the middle; its knobs are the
+//! THREE_MASK_* variables (`three_mask_params_from`), defaulting to the
+//! campaign's "modified / v2" configuration.
+//!
 //! `seed` fixes C (fastrand), `sandwich_seed` drives D, slicing and N-float,
 //! and `gadget_seed` drives gadgetization. Any seed may be given as `@PATH`
 //! (one decimal seed read from PATH, e.g. `@/dev/fd/3`) so its value stays off
@@ -37,6 +43,7 @@ use crate::stages::preprocessing::embedded_masking::{
     EmbeddedMaskingExecution, EmbeddedMaskingParams,
 };
 use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
+use crate::stages::preprocessing::three_mask::ThreeMaskParams;
 use crate::stages::preprocessing::verify::verify_payload;
 use crate::stages::preprocessing::{PreprocessingMode, PreprocessingParams, preprocess_sandwich};
 use crate::stages::sandwich::{
@@ -152,6 +159,114 @@ pub fn stage2_knobs_from_env(p: EmbeddedMaskingParams) -> EmbeddedMaskingParams 
     }
 }
 
+/// The three-mask compute knobs from their `THREE_MASK_*` environment names
+/// (unset = the v2 campaign configuration, `ThreeMaskParams::v2`). `var`
+/// supplies the lookup so the mapping is testable without the process
+/// environment. `THREE_MASK_BAND_WIRES` 0 = auto; the two flags take 0/1
+/// (or false/true). An unknown `THREE_MASK_*` name is an error.
+pub fn three_mask_params_from(
+    seed: u64,
+    var: impl Fn(&str) -> Option<String>,
+    present: &[String],
+) -> Result<ThreeMaskParams, String> {
+    const NUMBERS: [&str; 11] = [
+        "THREE_MASK_BAND_WIRES",
+        "THREE_MASK_BANKS",
+        "THREE_MASK_RETIRE_BUDGET",
+        "THREE_MASK_MAX_RETIRING",
+        "THREE_MASK_ROTATION",
+        "THREE_MASK_MATURITY",
+        "THREE_MASK_VISIT_SWEEPS",
+        "THREE_MASK_GROWTH",
+        "THREE_MASK_WARMUP",
+        "THREE_MASK_SEGMENTS",
+        "THREE_MASK_MASK_COUNT",
+    ];
+    const FLAGS: [&str; 2] = ["THREE_MASK_RANDOM_HELPERS", "THREE_MASK_UNIQUE_COVER"];
+    let mut unknown: Vec<&str> = present
+        .iter()
+        .map(String::as_str)
+        .filter(|key| {
+            key.starts_with("THREE_MASK_") && !NUMBERS.contains(key) && !FLAGS.contains(key)
+        })
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "unknown three-mask control(s): {}; the knobs are {} and {}",
+            unknown.join(", "),
+            NUMBERS.join(", "),
+            FLAGS.join(", ")
+        ));
+    }
+    let num = |key: &str, default: usize| -> Result<usize, String> {
+        match var(key) {
+            None => Ok(default),
+            Some(value) => value
+                .parse::<usize>()
+                .map_err(|_| format!("{key} must be a non-negative integer; got {value:?}")),
+        }
+    };
+    let flag = |key: &str, default: bool| -> Result<bool, String> {
+        match var(key).as_deref() {
+            None => Ok(default),
+            Some("0") | Some("false") => Ok(false),
+            Some("1") | Some("true") => Ok(true),
+            Some(value) => Err(format!("{key} must be 0, 1, false or true; got {value:?}")),
+        }
+    };
+    let base = ThreeMaskParams::v2(seed, 0);
+    Ok(ThreeMaskParams {
+        band_wires: num(NUMBERS[0], base.band_wires)?,
+        banks: num(NUMBERS[1], base.banks)?,
+        retirement_budget: num(NUMBERS[2], base.retirement_budget)?,
+        max_retiring: num(NUMBERS[3], base.max_retiring)?,
+        rotation_interval: num(NUMBERS[4], base.rotation_interval)?,
+        maturity_sweeps: num(NUMBERS[5], base.maturity_sweeps)?,
+        growth_sweeps_per_visit: num(NUMBERS[6], base.growth_sweeps_per_visit)?,
+        growth_per_fire: num(NUMBERS[7], base.growth_per_fire)?,
+        warmup_sweeps: num(NUMBERS[8], base.warmup_sweeps)?,
+        migration_segments: num(NUMBERS[9], base.migration_segments)?,
+        mask_count: num(NUMBERS[10], base.mask_count)?,
+        random_helpers: flag(FLAGS[0], base.random_helpers)?,
+        unique_cover: flag(FLAGS[1], base.unique_cover)?,
+        ..base
+    })
+}
+
+/// The environment names a mode does not accept: under `three-mask` every
+/// outer-block knob (`EMBEDDED_MASKING_*`, `SLICE_GUARD_LEGACY`), since the
+/// outer blocks are fixed to preset L8; under the other modes every
+/// `THREE_MASK_*` knob.
+pub fn foreign_mode_controls(mode: PreprocessingMode, present: &[String]) -> Result<(), String> {
+    let mut foreign: Vec<&str> = present
+        .iter()
+        .map(String::as_str)
+        .filter(|key| match mode {
+            PreprocessingMode::ThreeMask => {
+                key.starts_with("EMBEDDED_MASKING_") || *key == "SLICE_GUARD_LEGACY"
+            }
+            PreprocessingMode::EmbeddedMasking | PreprocessingMode::Nonlinear291 => {
+                key.starts_with("THREE_MASK_")
+            }
+        })
+        .collect();
+    foreign.sort_unstable();
+    if foreign.is_empty() {
+        return Ok(());
+    }
+    Err(match mode {
+        PreprocessingMode::ThreeMask => format!(
+            "three-mask fixes the outer blocks to preset L8; unset {}",
+            foreign.join(", ")
+        ),
+        _ => format!(
+            "THREE_MASK_* controls require the three-mask mode; unset {}",
+            foreign.join(", ")
+        ),
+    })
+}
+
 /// `lo:hi`; anything unparsable disables the drift everywhere (the empty
 /// window `(1, 0)`), as the historical inline parse did.
 pub(crate) fn parse_drift_window(w: &str) -> (usize, usize) {
@@ -239,7 +354,9 @@ pub fn run() {
         .map(PreprocessingMode::parse)
         .unwrap_or(Some(PreprocessingMode::default()))
         .unwrap_or_else(|| {
-            panic!("unknown preprocessing mode; expected embedded-masking or nonlinear291")
+            panic!(
+                "unknown preprocessing mode; expected embedded-masking, three-mask or nonlinear291"
+            )
         });
     // Chosen per run, never per build: the final positional argument, or
     // SANDWICH_VARIANT for callers that would otherwise have to spell out all
@@ -291,6 +408,20 @@ pub fn run() {
     }
 
     // Validate before writing the source or sandwich artifacts.
+    let env_names: Vec<String> = std::env::vars_os()
+        .filter_map(|(key, _)| key.into_string().ok())
+        .collect();
+    foreign_mode_controls(gadgetization_mode, &env_names).unwrap_or_else(|error| {
+        eprintln!("gen_sandwich_gadget: {error}");
+        std::process::exit(2)
+    });
+    let three_mask_params = (gadgetization_mode == PreprocessingMode::ThreeMask).then(|| {
+        three_mask_params_from(gadget_seed, |key| std::env::var(key).ok(), &env_names)
+            .unwrap_or_else(|error| {
+                eprintln!("gen_sandwich_gadget: {error}");
+                std::process::exit(2)
+            })
+    });
     let (shuffling_segments, shuffling_return_home, shuffling_jit_gap) = parse_shuffling_controls(
         gadgetization_mode,
         std::env::var("EMBEDDED_MASKING_SHUFFLING").ok().as_deref(),
@@ -484,8 +615,47 @@ pub fn run() {
             (output.circuit, output.guarded)
         }
         PreprocessingMode::ThreeMask => {
-            // the three-mask compute is wired in by the stage-2 port
-            panic!("three-mask preprocessing is not available in this build")
+            // The outer blocks are preset L8 (what the managed driver's
+            // EMBEDDED_MASKING_* variables set for that preset), so the
+            // result equals the server generator's assembly: L8 guards, band
+            // seed and reseed around the three-mask compute.
+            let options = PreprocessingParams::ThreeMask {
+                params: three_mask_params.expect("resolved for three-mask"),
+                outer: EmbeddedMaskingParams::preset_l8(gadget_seed, n),
+                balanced_seed: true,
+                seed_fill_nl: 4,
+            };
+            let output =
+                preprocess_sandwich(&sandwich, n, slice_gates, variant, &options, &mut rng)
+                    .unwrap_or_else(|error| panic!("three-mask preprocessing failed: {error}"));
+            let report = output
+                .three_mask_report
+                .as_ref()
+                .expect("three-mask preprocessing reports");
+            println!(
+                "[gen] three-mask: band={} wires (seeded prefix {}), compute {} gates = {} before migration ({} fire + {} mask + {} growth + {} ingress) + {} migration ({} transfers, {} skipped cuts); {} rotations, {} retired banks, {} retiring replacements, {} promotion stalls, {} local-mask fallbacks, {} mask-rank rejections; {} band-seed + {} band-reseed + {} slice-guard gates each side",
+                report.band_wires,
+                report.seeded_band_wires,
+                report.compute_gates,
+                report.before_migration,
+                report.fire_core_gates,
+                report.mask_gates,
+                report.growth_gates,
+                report.band_ingress_gates,
+                report.migration_gates,
+                report.transfers,
+                report.skipped_cuts,
+                report.rotations,
+                report.retired_banks,
+                report.retiring_replacements,
+                report.promotion_stalls,
+                report.local_mask_fallbacks,
+                report.mask_rank_rejections,
+                report.band_seed_gates,
+                report.band_reseed_gates,
+                report.guard_gates
+            );
+            (output.circuit, output.guarded)
         }
         PreprocessingMode::Nonlinear291 => {
             let output = preprocess_sandwich(
