@@ -77,31 +77,39 @@ struct CircuitPrg {
     circuit: CircuitSeq,
     counter: u256,
     operation_mode: OperationMode,
-    max_word_idx: u8,
-    word_index: u8,
-    current_state: u256,
+    wires: usize,
+    /// Low `partial_bits` of `partial` are keystream bits not yet returned.
+    partial: u256,
+    partial_bits: usize,
+}
+
+fn mask_bits(bits: usize) -> u256 {
+    assert!(bits <= 256, "circuit width exceeds 256 wires");
+    if bits == 256 {
+        u256::MAX
+    } else {
+        (u256::one() << bits) - 1
+    }
 }
 
 impl CircuitPrg {
-    fn new(circuit: CircuitSeq, operation_mode: OperationMode) -> Self {
-        let n = &circuit.max_wire() + 1;
-        let mut p = Self {
+    fn new(circuit: CircuitSeq, wires: usize, operation_mode: OperationMode) -> Self {
+        assert!(wires > 0, "circuit needs at least one wire");
+        Self {
             circuit,
-            // Random IV
-            counter: fastrand::u128(..).into(),
+            // Random IV in the low `wires` bits. Wider circuits keep the extra wires at 0.
+            counter: u256::from(fastrand::u128(..)) & mask_bits(wires),
             operation_mode,
-            max_word_idx: n.div_ceil(32) as u8,
-            word_index: 0,
-            current_state: 0.into(),
-        };
-        p.word_index = p.max_word_idx;
-        p
+            wires,
+            partial: 0.into(),
+            partial_bits: 0,
+        }
     }
 
-    fn next_state(&mut self) -> u256 {
-        let output = self.circuit.evaluate_256(self.counter);
+    fn next_block(&mut self) -> u256 {
+        let output = self.circuit.evaluate_256(self.counter) & mask_bits(self.wires);
         self.counter = match self.operation_mode {
-            OperationMode::Ctr => self.counter + 1,
+            OperationMode::Ctr => (self.counter + 1) & mask_bits(self.wires),
             OperationMode::Ofb => output,
         };
         output
@@ -110,14 +118,33 @@ impl CircuitPrg {
 
 impl Rng for CircuitPrg {
     fn next_u32(&mut self) -> u32 {
-        if self.word_index >= self.max_word_idx {
-            self.current_state = self.next_state();
-            self.word_index = 0;
-        }
+        // Pack successive n-bit blocks back-to-back. A block narrower than 32 bits
+        // spans words; a wider block fills several words, and a remainder stays buffered.
+        loop {
+            if self.partial_bits >= 32 {
+                let word = self.partial.low_u32();
+                self.partial >>= 32;
+                self.partial_bits -= 32;
+                return word;
+            }
 
-        let word = (self.current_state >> (32 * self.word_index)).low_u32();
-        self.word_index += 1;
-        word
+            let mut block = self.next_block();
+            let mut block_bits = self.wires;
+            let need = 32 - self.partial_bits;
+            if block_bits < need {
+                self.partial |= block << self.partial_bits;
+                self.partial_bits += block_bits;
+                continue;
+            }
+
+            let fill = block & ((u256::one() << need) - 1);
+            let word = (self.partial | (fill << self.partial_bits)).low_u32();
+            block >>= need;
+            block_bits -= need;
+            self.partial = block;
+            self.partial_bits = block_bits;
+            return word;
+        }
     }
 }
 
@@ -334,6 +361,24 @@ fn next_u256() -> u256 {
     u256::from_little_endian(&b)
 }
 
+/// Repeat the 64-bit pattern `Y` across the low `bits`.
+fn pattern_bits(bits: usize) -> u256 {
+    let y = u256::from(Y);
+    let mut out = u256::zero();
+    let mut at = 0;
+    while at < bits {
+        let take = (bits - at).min(64);
+        let chunk = if take == 64 {
+            y
+        } else {
+            y & ((u256::one() << take) - 1)
+        };
+        out |= chunk << at;
+        at += take;
+    }
+    out
+}
+
 fn random_ckt_brute(args: &Args) {
     use indicatif::ProgressBar;
 
@@ -357,48 +402,39 @@ fn random_ckt_brute(args: &Args) {
             .progress_chars("#>-"),
     );
 
-    let y256 = u256::from(Y);
-    let yy: u256 = if n > 128 { y256 << 64 | y256 } else { y256 };
+    assert!(n > 0 && n <= 256, "brute search supports 1..=256 wires");
+    let low_bits = n / 2;
+    let high_bits = n - low_bits;
+    let yy = pattern_bits(low_bits);
+    let out_mask = mask_bits(n);
 
     let r = (0..num_trials)
         .par_bridge()
         .map(|_| {
-            let v = next_u256();
-            let vv = if n > 128 { v } else { u256::from(v.low_u128()) };
+            let vv = next_u256() & mask_bits(high_bits);
             progress.inc(1);
-            let z = c.evaluate_256((vv << (n / 2)) | yy);
-            if n > 128 { z } else { u256::from(z.low_u128()) }
+            c.evaluate_256((vv << low_bits) | yy) & out_mask
         })
         .min()
         .unwrap();
 
     let mut cc = c.clone();
     cc.gates.reverse();
-    let pre = cc.evaluate_256(r);
+    let pre = cc.evaluate_256(r) & out_mask;
+    let zeros = r.leading_zeros() - (256 - n) as u32;
+    let hex_width = n.div_ceil(4);
 
-    let disp = if n > 128 {
-        format!(
-            "Min n={},m={} t={} {:?}: {:064x} => {:064x} ({} zeros)",
-            args.wires,
-            args.gates,
-            num_trials,
-            args.circuit_gen,
-            pre,
-            r,
-            r.leading_zeros()
-        )
-    } else {
-        format!(
-            "Min n={},m={} t={} {:?}: {:032x} => {:032x} ({} zeros)",
-            args.wires,
-            args.gates,
-            num_trials,
-            args.circuit_gen,
-            pre,
-            r,
-            r.leading_zeros() - 128
-        )
-    };
+    let disp = format!(
+        "Min n={},m={} t={} {:?}: {:0hex_width$x} => {:0hex_width$x} ({} zeros)",
+        args.wires,
+        args.gates,
+        num_trials,
+        args.circuit_gen,
+        pre,
+        r,
+        zeros,
+        hex_width = hex_width
+    );
 
     let mut file = File::create(format!(
         "ckt-out/n{}m{}-{:?}.txt",
@@ -445,21 +481,21 @@ fn main() {
             let mut rng = match gen_mode {
                 CircuitGenerationMode::Random => {
                     let circuit = random_circuit(wires, gates);
-                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::Balanced => {
                     let circuit = balanced_ckt_ord(wires, gates);
-                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::FanoutTwo => {
                     let circuit = fanout_two_ckt(wires, gates);
                     println!("{}", circuit.repr());
-                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::CMR22 => {
                     let circuit = cmr_ckt(wires, gates);
-                    println!("{}\nlen: {}", circuit.repr(), circuit.gates.len());
-                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                    println!("CMR len: {}", circuit.gates.len());
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::Aes => BlockPrg::Aes(AesPrg::new(operation_mode)),
             };
@@ -508,6 +544,101 @@ fn main() {
                 .map(|count| count.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keystream(
+        circuit: CircuitSeq,
+        wires: usize,
+        counter: u256,
+        mode: OperationMode,
+        words: usize,
+    ) -> Vec<u32> {
+        let mut prg = CircuitPrg {
+            circuit,
+            counter,
+            operation_mode: mode,
+            wires,
+            partial: 0.into(),
+            partial_bits: 0,
+        };
+        (0..words).map(|_| prg.next_u32()).collect()
+    }
+
+    /// Independent bit packer: low `wires` bits of each block, least-significant bit first.
+    fn oracle(
+        circuit: &CircuitSeq,
+        wires: usize,
+        mut counter: u256,
+        mode: OperationMode,
+        words: usize,
+    ) -> Vec<u32> {
+        let mask = mask_bits(wires);
+        let mut bits = Vec::with_capacity(words * 32);
+        while bits.len() < words * 32 {
+            let output = circuit.evaluate_256(counter) & mask;
+            counter = match mode {
+                OperationMode::Ctr => (counter + 1) & mask,
+                OperationMode::Ofb => output,
+            };
+            for b in 0..wires {
+                bits.push(((output >> b) & u256::one()).low_u32());
+            }
+        }
+        bits.chunks(32)
+            .take(words)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0u32, |acc, (i, bit)| acc | (bit << i))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sequential_blocks_pack_into_words() {
+        let samples = [
+            (4, u256::from(0u8), OperationMode::Ctr),
+            (12, u256::from(0xabcu16), OperationMode::Ctr),
+            (32, u256::from(0x1234_5678u32), OperationMode::Ctr),
+            (40, u256::from(7u8), OperationMode::Ofb),
+            (64, u256::from(u64::MAX), OperationMode::Ctr),
+            (128, u256::from(0x0123_4567_89ab_cdefu64), OperationMode::Ctr),
+            (
+                200,
+                (u256::one() << 180) | u256::from(0x1234u16),
+                OperationMode::Ofb,
+            ),
+        ];
+
+        for (wires, counter, mode) in samples {
+            let circuit = if wires >= 3 {
+                CircuitSeq {
+                    gates: vec![[0, 1, 2]],
+                }
+            } else {
+                CircuitSeq { gates: vec![] }
+            };
+            let got = keystream(circuit.clone(), wires, counter, mode, 24);
+            let expect = oracle(&circuit, wires, counter, mode, 24);
+            assert_eq!(got, expect, "wires={wires} mode={mode:?}");
+        }
+    }
+
+    #[test]
+    fn pattern_repeats_across_the_low_half() {
+        assert_eq!(pattern_bits(0), u256::zero());
+        assert_eq!(pattern_bits(32), u256::from(0x7654_3210u32));
+        assert_eq!(pattern_bits(64), u256::from(Y));
+        assert_eq!(
+            pattern_bits(128),
+            u256::from(Y) | (u256::from(Y) << 64)
         );
     }
 }

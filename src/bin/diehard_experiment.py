@@ -13,14 +13,32 @@ print(f"{test_lens = }")
 
 subprocess.run("mkdir -p out", shell=True)
 
-ckt = 'fanout-two'
+ckt_types = ['fanout-two', 'balanced', 'random', 'aes']
 mode = 'ofb'
+
+# cmr22 lengths with density = 5
+#
+# 27 => 405
+# 81 => 2160
+# 243 => 10125
 
 # for mode in ('ctr', 'ofb'):
     # for ckt in ('balanced', 'random'):
 
-n = 64
-# for n in (32, 64, 128, 256):
+n = 128
 for m in test_lens:
-    print(mode, ckt, m)
-    subprocess.run(TEST_PREFIX + f" -o {mode} -c {ckt} -m {m} -n {n} >> out/{mode}.{ckt}.n{n}.txt", shell = True)
+    for ckt in ckt_types:
+        print(mode, ckt, m)
+        subprocess.run(TEST_PREFIX + f" -o {mode} -c {ckt} -m {m} -n {n} >> out/{mode}.{ckt}.n{n}.txt", shell = True)
+
+# density 5
+cmr_lens = {
+    27: 405,
+    81: 2160,
+    243: 10125,
+}
+
+for n, m in cmr_lens.items():
+    for ckt in ckt_types + ['cmr22']:
+        print("[cmr-cmp]", mode, ckt, m)
+        subprocess.run(TEST_PREFIX + f" -o {mode} -c {ckt} -m {m} -n {n} >> out/{mode}.{ckt}.n{n}-cmr.txt", shell = True)
