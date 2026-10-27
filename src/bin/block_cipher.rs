@@ -489,7 +489,7 @@ fn main() {
                 }
                 CircuitGenerationMode::FanoutTwo => {
                     let circuit = fanout_two_ckt(wires, gates);
-                    println!("{}", circuit.repr());
+                    // println!("{}", circuit.repr());
                     BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::CMR22 => {
