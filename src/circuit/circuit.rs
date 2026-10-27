@@ -800,6 +800,7 @@ impl CircuitSeq {
     }
 
     pub fn perm(&self, n: usize) -> Permutation {
+        #[allow(non_snake_case)]
         let N = 1 << n;
         Permutation {
             data: (0..N).map(|i| self.evaluate(i)).collect(),

@@ -10,6 +10,7 @@ use local_mixing::circuit::CircuitSeq;
 use local_mixing::random::random_data::random_circuit;
 use primitive_types::U256 as u256;
 use rand::RngCore;
+use rand::seq::{IteratorRandom, SliceRandom};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -22,6 +23,8 @@ enum OperationMode {
 enum CircuitGenerationMode {
     Balanced,
     Random,
+    FanoutTwo,
+    CMR22,
     Aes,
 }
 
@@ -87,7 +90,7 @@ impl CircuitPrg {
             // Random IV
             counter: fastrand::u128(..).into(),
             operation_mode,
-            max_word_idx: (n / 32) as u8,
+            max_word_idx: n.div_ceil(32) as u8,
             word_index: 0,
             current_state: 0.into(),
         };
@@ -193,6 +196,108 @@ fn balanced_ckt_uniform(n: usize, m: usize) -> CircuitSeq {
     CircuitSeq { gates: c }
 }
 
+/// Generate a circuit where each active pin has fanout two.
+fn fanout_two_ckt(n: usize, m: usize) -> CircuitSeq {
+    assert_eq!(m % n, 0);
+
+    let all_wires = 0..m;
+
+    // build a simple automata
+    #[derive(PartialEq, Copy, Clone)]
+    enum WireStates {
+        Startup,
+        StartupOneCtrl,
+        StartupTwoCtrl,
+        Active,
+        OneCtrl,
+        TwoCtrl,
+    }
+
+    let mut ws = vec![WireStates::Startup; n];
+    let mut gates = Vec::with_capacity(m);
+
+    let mut rng = rand::rng();
+
+    // First round uses startup
+    for _ in all_wires {
+        // Next active pin chosen randomly from startup OR two-control pins
+        let active = ws
+            .iter()
+            .enumerate()
+            .filter(|&(_, &x)| x != WireStates::Active && x != WireStates::OneCtrl)
+            .map(|(i, _)| i)
+            .choose(&mut rng)
+            .expect("no eligible active wire");
+
+        // Next controls chosen from any state besides the two-control states
+        let [c1, c2] = <[usize; 2]>::try_from(
+            ws.iter()
+                .enumerate()
+                .filter(|&(i, &x)| {
+                    i != active && x != WireStates::StartupTwoCtrl && x != WireStates::TwoCtrl
+                })
+                .map(|(i, _)| i)
+                .choose_multiple(&mut rng, 2),
+        )
+        .expect("fewer than two eligible control wires");
+
+        ws[active] = WireStates::Active;
+        ws[c1] = match ws[c1] {
+            WireStates::Startup => WireStates::StartupOneCtrl,
+            WireStates::StartupOneCtrl => WireStates::StartupTwoCtrl,
+            WireStates::Active => WireStates::OneCtrl,
+            WireStates::OneCtrl => WireStates::TwoCtrl,
+            _ => panic!(),
+        };
+        ws[c2] = match ws[c2] {
+            WireStates::Startup => WireStates::StartupOneCtrl,
+            WireStates::StartupOneCtrl => WireStates::StartupTwoCtrl,
+            WireStates::Active => WireStates::OneCtrl,
+            WireStates::OneCtrl => WireStates::TwoCtrl,
+            _ => panic!(),
+        };
+
+        gates.push([active as u16, c1 as u16, c2 as u16]);
+    }
+
+    CircuitSeq { gates }
+}
+
+fn cmr_ckt(n: usize, m: usize) -> CircuitSeq {
+    let mut gates = Vec::with_capacity(m);
+
+    // wires = 3^q for some integer q
+    let levels = ((n as f64).log(3.0)).round() as u32;
+    assert_eq!(3u32.pow(levels), n as u32);
+
+    const DENSITY: u32 = 5;
+    let reps: u32 = levels;
+
+    let mut rng = rand::rng();
+
+    for _ in 0..reps {
+        for l in 0..levels {
+            for i in 0..3u32.pow(levels - l - 1) {
+                for j in 0..3u32.pow(l) {
+                    for _ in 0..DENSITY {
+                        let mut g = <[u16; 3]>::try_from(
+                            (0..=2)
+                                .map(|v| ((3 * i + v) * 3u32.pow(l) + j) as u16)
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap();
+                        g.shuffle(&mut rng);
+                        gates.push(g);
+                        println!(" gate {:?}", g);
+                    }
+                }
+            }
+        }
+    }
+
+    CircuitSeq { gates }
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
@@ -237,6 +342,8 @@ fn random_ckt_brute(args: &Args) {
     let c = match args.circuit_gen {
         CircuitGenerationMode::Random => random_circuit(n, args.gates),
         CircuitGenerationMode::Balanced => balanced_ckt_uniform(n, args.gates),
+        CircuitGenerationMode::FanoutTwo => fanout_two_ckt(n, args.gates),
+        CircuitGenerationMode::CMR22 => cmr_ckt(n, args.gates),
         CircuitGenerationMode::Aes => panic!("AES not supported."),
     };
 
@@ -344,6 +451,16 @@ fn main() {
                     let circuit = balanced_ckt_ord(wires, gates);
                     BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
                 }
+                CircuitGenerationMode::FanoutTwo => {
+                    let circuit = fanout_two_ckt(wires, gates);
+                    println!("{}", circuit.repr());
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                }
+                CircuitGenerationMode::CMR22 => {
+                    let circuit = cmr_ckt(wires, gates);
+                    println!("{}\nlen: {}", circuit.repr(), circuit.gates.len());
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                }
                 CircuitGenerationMode::Aes => BlockPrg::Aes(AesPrg::new(operation_mode)),
             };
             let results = [
@@ -370,6 +487,12 @@ fn main() {
                     skipped,
                     100.0 * (passed as f64) / ((total - skipped) as f64)
                 );
+            }
+
+            if failed < 16 {
+                for s in results.iter().filter(|r| !r.passed() && !r.skipped()) {
+                    println!(" f: {} [{}]", s.name, s.note.clone().unwrap());
+                }
             }
 
             failed
