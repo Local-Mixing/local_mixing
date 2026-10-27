@@ -351,7 +351,7 @@ defaults below are the campaign configuration "three-mask modified / v2"
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `three_mask.band_wires` | integer, `0` | Band width; `0` = auto: the larger of $2n$ and 128, rounded up to a multiple of 16 (a 64-wire band cannot host 64 data roles with three masks each). Else at least 64 and a multiple of 16. When it exceeds $2n$ the extra wires get a reversible XOR ingress from the seeded $2n$-wire prefix. |
+| `three_mask.band_wires` | integer, `0` | Band width; `0` = auto: the larger of $2n$ and 128, rounded up to a multiple of 32 (a 64-wire band cannot host 64 data roles with three masks each; a multiple of 32 keeps the auto bank count even). Else at least $2n$ (the band the outer blocks seed) and a multiple of 16 that the bank count divides into even banks of at least 8 wires (a multiple of 32 under `banks = 0`); when stage 6 runs, $2n + r \le 1024$. The resolved geometry is checked before the run starts. When it exceeds $2n$ the extra wires get a reversible XOR ingress from the seeded $2n$-wire prefix. |
 | `three_mask.banks` | integer, `0` | Band banks; `0` = auto: banks of 16 wires (`band_wires / 16`: 8 at n=64, 16 at n=128, the design's geometry), else even and at least 4 with an even bank size of at least 8. |
 | `three_mask.retire_budget` | integer, `2` | Mask replacements per fire that drain retiring banks. |
 | `three_mask.max_retiring` | integer, `0` | Banks retiring at once; `0` = auto (half the banks minus one), else below half the banks. |
@@ -437,12 +437,12 @@ server campaigns of October 2026 (variant "v2", 2 % two-round stop rule).
 | `adaptive.seeds_per_block` | integer, `2` | Synthesizer seeds per block, `1..16`; every seed's converged, strictly smaller synthesis is a candidate. |
 | `adaptive.time_limit` | number, `60` | Synthesis wall limit per block, seconds, for blocks of at most 1,000 gates; ×2 up to 4,000 gates, ×4 above (`(0, 86400]`). |
 | `adaptive.restarts`, `adaptive.beam` | integers, `16`, `6` | The synthesizer's restarts and lookahead width (`1..1000`). |
-| `adaptive.term_cap` | integer, `131072` | ANF terms at an eligible block endpoint (`64..2^24`); composition may peak at 8× while scanning. |
+| `adaptive.term_cap` | integer, `131072` | ANF terms at an eligible block endpoint (`64..2^24`, and at least the stage-2 circuit's width: a block's ANF has one term per wire before any gate); composition may peak at 8× while scanning. |
 | `adaptive.max_block_gates` | integer, `65536` | Longest block (`2..10^8`). |
 | `adaptive.segments` | integer, `16` | Planner segments, planned in parallel with seams at unexposed cuts (`1..1024`; 1 = the sequential planner). |
 | `adaptive.avoid_radius` | integer, `64` | Cuts within this distance of the previous round's boundaries are penalized (`0..10^6`; 0 = off), so every former boundary falls inside a block at least every other round. |
 | `adaptive.refinement_levels`, `adaptive.min_refine_gates` | integers, `2`, `128` | Split levels for a block that synthesizes under no seed (at an exposure-aware cut in its middle half), and the shortest block that is split. |
-| `adaptive.census_batches` | integer, `96` | Census discovery inputs = 64 × batches (`1..4096`). |
+| `adaptive.census_batches` | integer, `96` | Census discovery inputs = 64 × batches (`1..4096`; more than the stage-2 circuit's width + 128 inputs, so at least 11 at n = 128 with the auto band). Both limits are checked against the resolved width before the run starts. |
 | `adaptive.accept` | string, `"smaller-not-leakier"` | Per-block acceptance: `"smaller-not-leakier"` (the candidate assemblies are censused; a replacement must be strictly smaller and expose no more deeper values of $C$ inside the block than the original) or `"smaller"` (size only). |
 | `adaptive.canonical_order` | bool, `true` | Publish the smallest round output in the canonical commuting gate order (checked equivalent); `false` publishes the assembly as is. |
 

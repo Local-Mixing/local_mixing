@@ -740,6 +740,14 @@ pub fn run(
             (width + 128) / 64 + 1
         )));
     }
+    // the planner composes every block from the identity (one term per wire)
+    // and asserts its term limit covers the width: refuse up front instead
+    if params.round.plan.term_cap < width {
+        return Err(AdaptiveError::Usage(format!(
+            "term cap {}: a {width}-wire circuit needs at least {width}",
+            params.round.plan.term_cap
+        )));
+    }
     let sandwich = match &inputs.sandwich {
         Some(p) => {
             let (sg, sw) = read_mpmct(path_str(p)?)

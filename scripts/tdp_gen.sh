@@ -119,7 +119,7 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --preprocessing-chain-len L            [0; 0..1000000]
     three-mask only (defaults = the campaign configuration "three-mask modified / v2";
     the outer blocks are preset L8):
-    --three-mask-band-wires R     [0 = auto: max(2n, 128) rounded up to a multiple of 16]
+    --three-mask-band-wires R     [0 = auto: max(2n, 128) rounded up to a multiple of 32]
     --three-mask-banks B          [0 = auto: banks of 16 wires; else even, >= 4]
     --three-mask-retire-budget K  [2]
     --three-mask-max-retiring K   [0 = auto; else < banks/2]
@@ -520,6 +520,12 @@ if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
       fatal "--three-mask-band-wires must be 0 (auto) or at least 64 and a multiple of 16"
     [ "${TM_EFF[banks]}" -eq 0 ] || { [ "${TM_EFF[banks]}" -ge 4 ] && [ $((TM_EFF[banks] % 2)) -eq 0 ]; } ||
       fatal "--three-mask-banks must be 0 (auto: banks of 16 wires) or even and at least 4"
+    # the resolved geometry the compute requires (an even bank count, even banks of >= 8 wires)
+    [ "$r" -eq 0 ] || [ "${TM_EFF[banks]}" -ne 0 ] || [ $((r % 32)) -eq 0 ] ||
+      fatal "--three-mask-band-wires must be a multiple of 32 under --three-mask-banks 0 (auto: banks of 16 wires, an even count)"
+    [ "$r" -eq 0 ] || [ "${TM_EFF[banks]}" -eq 0 ] ||
+      { [ $((r % TM_EFF[banks])) -eq 0 ] && [ $((r / TM_EFF[banks])) -ge 8 ] && [ $(((r / TM_EFF[banks]) % 2)) -eq 0 ]; } ||
+      fatal "--three-mask-band-wires must divide into --three-mask-banks even banks of at least 8 wires"
     [ "${TM_EFF[max-retiring]}" -eq 0 ] || [ "${TM_EFF[banks]}" -eq 0 ] || [ "${TM_EFF[max-retiring]}" -lt $((TM_EFF[banks] / 2)) ] ||
       fatal "--three-mask-max-retiring must be 0 (auto) or less than half the bank count"
     for k in "${TM_ORDER[@]}"; do

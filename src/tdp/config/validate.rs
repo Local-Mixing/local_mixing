@@ -3,6 +3,9 @@ use super::*;
 use crate::stages::packing::types::{
     MAX_MONOMIAL_BUDGET, MAX_SPAN_CAP, MAX_STATE_WIRES as STAGE4_MAX_STATE_WIRES,
 };
+use crate::stages::preprocessing::three_mask::{
+    resolve_band_wires, resolve_banks, validate_geometry,
+};
 use crate::tdp::manifest::CURRENT_RECIPE_VERSION;
 
 pub(crate) fn resolve_config<F>(
@@ -277,6 +280,46 @@ where
                 raw,
                 "three_mask_max_retiring",
                 "must be 0 (auto) or less than half the bank count",
+            ));
+        }
+        // The geometry the compute will see, with the auto values resolved
+        // (the bank count must be even: a band of 144 wires in auto banks of
+        // 16 is refused here, not by stage 2).
+        let np = 2 * n;
+        let band = resolve_band_wires(np, r as usize);
+        let banks = resolve_banks(band, three_mask.banks as usize);
+        if band < np {
+            return Err(config_error(
+                raw,
+                "three_mask_band_wires",
+                &format!("must be at least 2n = {np}, the band the outer blocks seed (0 = auto)"),
+            ));
+        }
+        if np + band > 65_536 {
+            return Err(config_error(
+                raw,
+                "three_mask_band_wires",
+                &format!(
+                    "the stage-2 circuit would have {} wires; at most 65536",
+                    np + band
+                ),
+            ));
+        }
+        if let Err(error) = validate_geometry(band, banks, three_mask.max_retiring as usize) {
+            let key = if three_mask.banks == 0 {
+                "three_mask_band_wires"
+            } else {
+                "three_mask_banks"
+            };
+            let auto = if three_mask.banks == 0 {
+                "; with banks = 0 (auto: banks of 16 wires) the band must be a multiple of 32"
+            } else {
+                ""
+            };
+            return Err(config_error(
+                raw,
+                key,
+                &format!("resolved band {band} wires, {banks} banks: {error}{auto}"),
             ));
         }
     }
@@ -644,6 +687,53 @@ where
         },
         canonical_order: parse_bool(raw, "adaptive_canonical_order", ad.canonical_order)?,
     };
+    // The stage-2 circuit's width (data plus band) is known up front: refuse
+    // what stage 6 would refuse, or the adaptive planner would panic on, only
+    // after stages 1-5 ran.
+    let stage2_width = match preprocessing_mode {
+        PreprocessingMode::EmbeddedMasking => 4 * n,
+        PreprocessingMode::ThreeMask => {
+            2 * n + resolve_band_wires(2 * n, three_mask.band_wires as usize)
+        }
+        PreprocessingMode::Nonlinear291 => nonlinear_state_wires.unwrap_or(4 * n),
+    };
+    if stage_on(6)
+        && preprocessing_mode == PreprocessingMode::ThreeMask
+        && stage2_width > STAGE4_MAX_STATE_WIRES
+    {
+        return Err(config_error(
+            raw,
+            "three_mask_band_wires",
+            &format!(
+                "a {n}-wire source with a {}-wire band makes a {stage2_width}-wire stage-2 circuit; stage 6 (delivery) supports at most {STAGE4_MAX_STATE_WIRES} wires; use a smaller band, stop before stage 6 or skip it",
+                stage2_width - 2 * n
+            ),
+        ));
+    }
+    if stage_on(6) && matches!(delivery_mode, DeliveryMode::Adaptive) {
+        // the census draws 64 inputs per batch and needs more than width + 128
+        let batches = adaptive.census_batches as usize;
+        if 64 * batches <= stage2_width + 128 {
+            return Err(config_error(
+                raw,
+                "adaptive_census_batches",
+                &format!(
+                    "a {stage2_width}-wire stage-2 circuit needs at least {} (64 inputs per batch, more than width + 128 in all)",
+                    (stage2_width + 128) / 64 + 1
+                ),
+            ));
+        }
+        // the planner composes every block from the identity: one term per wire
+        if (adaptive.term_cap as usize) < stage2_width {
+            return Err(config_error(
+                raw,
+                "adaptive_term_cap",
+                &format!(
+                    "must be at least the stage-2 circuit's width ({stage2_width} wires: a block's ANF has one term per wire before any gate)"
+                ),
+            ));
+        }
+    }
     let delivery = DeliveryConfig {
         mode: delivery_mode,
         anf_only: parse_bool(raw, "delivery_anf_only", dd.anf_only)?,

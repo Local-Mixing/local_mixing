@@ -931,12 +931,26 @@ fn v2_is_the_campaign_configuration_and_auto_band_rounds_up() {
             && !p.bank_disjoint_masks
             && p.seeded_band_wires == 0
     );
-    // The larger of 2n and 128, rounded up to a multiple of 16.
+    // The larger of 2n and 128, rounded up to a multiple of 32 (so the auto
+    // banks of 16 wires come in an even count: 144 wires would make 9).
     assert_eq!(auto_band_wires(16), 128);
     assert_eq!(auto_band_wires(64), 128);
     assert_eq!(auto_band_wires(128), 128);
-    assert_eq!(auto_band_wires(200), 208);
+    assert_eq!(auto_band_wires(130), 160);
+    assert_eq!(auto_band_wires(200), 224);
     assert_eq!(auto_band_wires(256), 256);
+    for np in (6..=2048).step_by(2) {
+        let r = auto_band_wires(np);
+        assert!(r >= np);
+        validate_geometry(r, resolve_banks(r, 0), 0).unwrap_or_else(|e| panic!("np {np}: {e}"));
+    }
+    assert!(validate_geometry(144, resolve_banks(144, 0), 0).is_err());
+    assert!(validate_geometry(160, 6, 0).is_err());
+    assert!(validate_geometry(128, 32, 0).is_err());
+    assert!(validate_geometry(56, 4, 0).is_err());
+    assert!(validate_geometry(128, 8, 4).is_err());
+    validate_geometry(128, 8, 3).unwrap();
+    validate_geometry(160, 10, 0).unwrap();
     assert_eq!(resolve_band_wires(64, 0), 128);
     assert_eq!(resolve_band_wires(64, 192), 192);
     assert_eq!(

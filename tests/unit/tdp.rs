@@ -464,9 +464,48 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "preprocessing.mode = \"three-mask\"\nthree_mask.banks = 8\nthree_mask.max_retiring = 4",
         "preprocessing.mode = \"three-mask\"\nthree_mask.mask_count = 4",
         "preprocessing.mode = \"three-mask\"\nthree_mask.random_helpers = 1",
+        // the resolved geometry: auto banks of 16 wires need a band that is
+        // a multiple of 32; explicit banks must divide the band into even
+        // banks of at least 8 wires; the band must cover the seeded 2n
+        "source.wires = 64\nthree_mask.band_wires = 144",
+        "source.wires = 64\nthree_mask.band_wires = 160\nthree_mask.banks = 6",
+        "source.wires = 64\nthree_mask.band_wires = 128\nthree_mask.banks = 32",
+        "three_mask.band_wires = 128",
+        // the stage-2 width against stage 6 (1024 wires) and the adaptive
+        // limits against the width (n = 128: 512 wires)
+        "source.wires = 64\nthree_mask.band_wires = 1024",
+        "adaptive.census_batches = 1",
+        "adaptive.census_batches = 10",
+        "adaptive.term_cap = 64",
+        "adaptive.term_cap = 511",
     ] {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
+    // accepted: an odd n resolves to a 160-wire band in 10 banks; a wide
+    // band without stage 6; the adaptive limits at the width
+    resolve_body("source.wires = 65\nsource.gates_rule = \"formula\"").unwrap();
+    resolve_body("source.wires = 64\nthree_mask.band_wires = 1024\nrun.stop_after_stage = 5")
+        .unwrap();
+    resolve_body("source.wires = 64\nthree_mask.band_wires = 1024\nrun.skip_stages = [6]").unwrap();
+    resolve_body("adaptive.census_batches = 11\nadaptive.term_cap = 512").unwrap();
+    let error = resolve_body("source.wires = 64\nthree_mask.band_wires = 1024")
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("1152-wire") && error.contains("1024"),
+        "{error}"
+    );
+    let error = resolve_body("source.wires = 64\nthree_mask.band_wires = 144")
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("9 banks") && error.contains("multiple of 32"),
+        "{error}"
+    );
+    let error = resolve_body("adaptive.term_cap = 64").err().unwrap();
+    assert!(error.contains("512 wires"), "{error}");
+    let error = resolve_body("adaptive.census_batches = 10").err().unwrap();
+    assert!(error.contains("at least 11"), "{error}");
     // the former stage 7 is part of stage 6 now: the message says so
     let error = resolve_body("run.skip_stages = [7]").err().unwrap();
     assert!(error.contains("2..6"), "{error}");

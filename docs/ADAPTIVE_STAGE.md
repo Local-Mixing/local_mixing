@@ -46,7 +46,9 @@ stage's output), the source $C$, the boundary classification. Before round
 `--sandwich`, against the payload contract (`check.input_zero_slice`,
 `check.input_payload_contract`), so a wrong `--n`, `--source-c` or
 `--sandwich` fails in seconds (exit 4), and refuses a census sample count
-too small for the circuit's width (exit 2).
+too small for the circuit's width, or a term cap below the width (exit 2);
+the managed driver's config validation applies both limits to the stage-2
+width before a run starts.
 
 1. **Census** (`census::census`). Every cut of $G$ is scanned on
    `census_batches` × 64 honest inputs (6,144 by default; seed 20261016, the

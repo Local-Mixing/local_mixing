@@ -101,6 +101,10 @@ reject 'adaptive-segments' --adaptive-segments 0
 reject 'adaptive-refinement-levels' --adaptive-refinement-levels 17
 reject 'adaptive-min-refine-gates' --adaptive-min-refine-gates 0
 reject 'adaptive-census-batches' --adaptive-census-batches 0
+# the three-mask geometry the compute requires: a multiple of 32 under auto banks, even banks of >= 8 wires
+reject 'multiple of 32' --three-mask-band-wires 144
+reject 'even banks of at least 8' --three-mask-band-wires 160 --three-mask-banks 6
+reject 'even banks of at least 8' --three-mask-band-wires 128 --three-mask-banks 32
 reject 'adaptive-accept' --adaptive-accept largest
 reject 'requires an argument' --adaptive-max-rounds
 reject 'source-wires' --source-wires 2

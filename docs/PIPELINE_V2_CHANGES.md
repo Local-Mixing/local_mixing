@@ -73,7 +73,8 @@ lowers the reads-weighted exposure, at the cost of a larger exposed count
   `preprocess_sandwich` builds the outer blocks through the same helper as
   embedded masking (so they are identical for the same seed) and puts the
   three-mask compute between them; the band is $\max(2n, 128)$ wires
-  (rounded up to a multiple of 16), with a reversible XOR ingress for the
+  (rounded up to a multiple of 32, so the auto banks of 16 wires come in an
+  even count), with a reversible XOR ingress for the
   wires beyond the seeded $2n$.
 * `gen_sandwich_gadget` accepts `three-mask` as its mode positional, reads
   the `THREE_MASK_*` knobs, refuses `EMBEDDED_MASKING_*` in this mode, runs

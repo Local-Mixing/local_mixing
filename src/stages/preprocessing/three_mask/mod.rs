@@ -177,9 +177,12 @@ impl ThreeMaskParams {
 /// of `np` and 128, rounded up to a multiple of 16. The compute needs
 /// `r >= 64`, `r % 8 == 0` and an even bank size of at least 8; with the
 /// default eight banks, 128 is the smallest geometry that admits 64 data
-/// roles times three masks (a 64-wire band fails at n = 32).
+/// roles times three masks (a 64-wire band fails at n = 32). Rounded up
+/// to a multiple of 32 so that the auto bank policy ([`resolve_banks`]:
+/// banks of 16 wires) always yields the even bank count the compute needs
+/// (at np = 130, 144 wires would make 9 banks).
 pub fn auto_band_wires(np: usize) -> usize {
-    np.max(128).div_ceil(16) * 16
+    np.max(128).div_ceil(32) * 32
 }
 
 /// `band_wires` resolved against the auto policy (`0` = auto).
@@ -195,6 +198,42 @@ pub fn resolve_band_wires(np: usize, band_wires: usize) -> usize {
 /// design's geometry: 8 at a 128-wire band, 16 at 256).
 pub fn resolve_banks(band_wires: usize, banks: usize) -> usize {
     if banks == 0 { band_wires / 16 } else { banks }
+}
+
+/// The bank geometry [`compute`] requires of a resolved band of `r` wires
+/// in `banks` banks with `max_retiring` retiring banks (0 = auto): a band
+/// of at least 64 wires, a multiple of 8; an even bank count of at least 4
+/// dividing the band into even banks of at least 8 wires; fewer retiring
+/// banks than half the count. Checked by the TDP config validation before
+/// a run starts, with the resolved auto values.
+pub fn validate_geometry(r: usize, banks: usize, max_retiring: usize) -> Result<(), String> {
+    if r < 64 || !r.is_multiple_of(8) {
+        return Err(format!(
+            "a band of {r} wires: need at least 64, a multiple of 8"
+        ));
+    }
+    if banks < 4 || !banks.is_multiple_of(2) {
+        return Err(format!(
+            "{banks} banks: need an even bank count of at least 4"
+        ));
+    }
+    if !r.is_multiple_of(banks) {
+        return Err(format!(
+            "a band of {r} wires does not divide into {banks} banks"
+        ));
+    }
+    let size = r / banks;
+    if size < 8 || !size.is_multiple_of(2) {
+        return Err(format!(
+            "a band of {r} wires in {banks} banks makes banks of {size} wires: need an even bank size of at least 8"
+        ));
+    }
+    if max_retiring >= banks / 2 {
+        return Err(format!(
+            "max_retiring {max_retiring}: must be below half the bank count ({banks} banks)"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Default, Debug, Clone)]
@@ -365,18 +404,12 @@ pub fn compute(
     r: usize,
     cfg: &ThreeMaskParams,
 ) -> Result<Output, String> {
-    if np < 3 || r < 64 || !r.is_multiple_of(8) || np + r > 65536 {
-        return Err("need np>=3, band>=64 divisible by 8, total<=65536".into());
+    if np < 3 || np + r > 65536 {
+        return Err("need np>=3 and total<=65536".into());
     }
-    if cfg.banks < 4
-        || !cfg.banks.is_multiple_of(2)
-        || !r.is_multiple_of(cfg.banks)
-        || r / cfg.banks < 8
-        || !(r / cfg.banks).is_multiple_of(2)
-        || cfg.max_retiring >= cfg.banks / 2
-        || cfg.growth_sweeps_per_visit == 0
-    {
-        return Err("need even bank count>=4, even bank size>=8, positive visit sweeps, and max_retiring<bank_count/2 (0=auto)".into());
+    validate_geometry(r, cfg.banks, cfg.max_retiring)?;
+    if cfg.growth_sweeps_per_visit == 0 {
+        return Err("need positive visit sweeps".into());
     }
     if cfg.prefer_fresh && !(cfg.local_masks || cfg.cross_bank_pairs) {
         return Err("prefer_fresh requires local_masks or cross_bank_pairs".into());
