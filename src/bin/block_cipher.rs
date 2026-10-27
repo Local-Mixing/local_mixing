@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 
 use clap::{Parser, ValueEnum};
@@ -19,12 +19,13 @@ enum OperationMode {
     Ofb,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
 enum CircuitGenerationMode {
     Balanced,
     Random,
     FanoutTwo,
     CMR22,
+    Staircase,
     Aes,
 }
 
@@ -197,7 +198,6 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
     CircuitSeq { gates: c }
 }
 
-#[allow(unused)]
 fn balanced_ckt_uniform(n: usize, m: usize) -> CircuitSeq {
     let mut c = Vec::with_capacity(m);
 
@@ -225,8 +225,6 @@ fn balanced_ckt_uniform(n: usize, m: usize) -> CircuitSeq {
 
 /// Generate a circuit where each active pin has fanout two.
 fn fanout_two_ckt(n: usize, m: usize) -> CircuitSeq {
-    assert_eq!(m % n, 0);
-
     let all_wires = 0..m;
 
     // build a simple automata
@@ -290,23 +288,57 @@ fn fanout_two_ckt(n: usize, m: usize) -> CircuitSeq {
     CircuitSeq { gates }
 }
 
-fn cmr_ckt(n: usize, m: usize) -> CircuitSeq {
-    let mut gates = Vec::with_capacity(m);
+struct CmrLayout {
+    levels: u32,
+    reps: u32,
+    density: u32,
+    /// Gates produced by `reps` full passes at `density`.
+    gates: usize,
+}
 
-    // wires = 3^q for some integer q
+/// One CMR pass touches `levels * n / 3` triples. `reps` is `round(log2(n))`.
+/// `m` must be a positive multiple of that step. Any other length panics with
+/// the nearest valid size.
+fn cmr_layout(n: usize, m: usize) -> CmrLayout {
     let levels = ((n as f64).log(3.0)).round() as u32;
-    assert_eq!(3u32.pow(levels), n as u32);
+    assert_eq!(
+        3u32.pow(levels),
+        n as u32,
+        "CMR width must be a power of 3"
+    );
 
-    const DENSITY: u32 = 5;
-    let reps: u32 = levels;
+    let reps = (n as f64).log2().round() as u32;
+    let per_density = reps as usize * levels as usize * n / 3;
+    assert!(
+        per_density > 0,
+        "CMR layout for {n} wires produces no gates at any density"
+    );
+    let density = (((m + per_density / 2) / per_density) as u32).max(1);
+    let closest = per_density * density as usize;
+    assert!(
+        m == closest,
+        "CMR length {m} is not valid for {n} wires; closest CMR length is {closest}"
+    );
+
+    CmrLayout {
+        levels,
+        reps,
+        density,
+        gates: closest,
+    }
+}
+
+fn cmr_ckt(n: usize, m: usize) -> CircuitSeq {
+    let layout = cmr_layout(n, m);
+    let mut gates = Vec::with_capacity(layout.gates);
 
     let mut rng = rand::rng();
 
-    for _ in 0..reps {
-        for l in 0..levels {
-            for i in 0..3u32.pow(levels - l - 1) {
+    for _ in 0..layout.reps {
+        for l in 0..layout.levels {
+            for i in 0..3u32.pow(layout.levels - l - 1) {
                 for j in 0..3u32.pow(l) {
-                    for _ in 0..DENSITY {
+                    for _ in 0..layout.density {
                         let mut g = <[u16; 3]>::try_from(
                             (0..=2)
                                 .map(|v| ((3 * i + v) * 3u32.pow(l) + j) as u16)
@@ -315,11 +347,23 @@ fn cmr_ckt(n: usize, m: usize) -> CircuitSeq {
                         .unwrap();
                         g.shuffle(&mut rng);
                         gates.push(g);
-                        println!(" gate {:?}", g);
                     }
                 }
             }
         }
+    }
+
+    CircuitSeq { gates }
+}
+
+fn staircase_ckt(n: usize, m: usize) -> CircuitSeq {
+    let mut gates = Vec::with_capacity(m);
+    let mut rng = rand::rng();
+
+    for i in 0..m {
+        let mut pins = [(i % n) as u16, ((i + 1) % n) as u16, ((i + 2) % n) as u16];
+        pins.shuffle(&mut rng);
+        gates.push(pins);
     }
 
     CircuitSeq { gates }
@@ -346,8 +390,9 @@ struct Args {
     #[arg(short, long, value_enum, default_value_t = CircuitGenerationMode::Random)]
     circuit_gen: CircuitGenerationMode,
 
-    #[arg(short, long, default_value_t = false)]
-    file: bool,
+    /// Append the `gates: fail,fail,...` summary line to this file.
+    #[arg(short, long, value_name = "FILE")]
+    file: Option<std::path::PathBuf>,
 
     #[arg(short, long, default_value_t = false)]
     brute: bool,
@@ -388,8 +433,16 @@ fn random_ckt_brute(args: &Args) {
         CircuitGenerationMode::Random => random_circuit(n, args.gates),
         CircuitGenerationMode::Balanced => balanced_ckt_uniform(n, args.gates),
         CircuitGenerationMode::FanoutTwo => fanout_two_ckt(n, args.gates),
-        CircuitGenerationMode::CMR22 => cmr_ckt(n, args.gates),
+        CircuitGenerationMode::CMR22 => {
+            let layout = cmr_layout(n, args.gates);
+            println!(
+                "CMR requested {} gates, actual {} gates (density {})",
+                args.gates, layout.gates, layout.density
+            );
+            cmr_ckt(n, args.gates)
+        }
         CircuitGenerationMode::Aes => panic!("AES not supported."),
+        CircuitGenerationMode::Staircase => staircase_ckt(n, args.gates),
     };
 
     let num_trials: usize = 1 << args.reps;
@@ -468,10 +521,15 @@ fn main() {
         return;
     }
 
-    if !args.file {
-        println!("Random reversible circuit: {wires} wires, {gates} gates");
+    println!("Random reversible circuit: {wires} wires, {gates} gates");
+    println!(
+        "Feeding seq len {length} into NIST+DH+DHR battery ({operation_mode:?} mode, {gen_mode:?} circuit)"
+    );
+    if gen_mode == CircuitGenerationMode::CMR22 {
+        let layout = cmr_layout(wires, gates);
         println!(
-            "Feeding seq len {length} into NIST+DH+DHR battery ({operation_mode:?} mode, {gen_mode:?} circuit)"
+            "CMR requested {gates} gates, actual {} gates (density {})",
+            layout.gates, layout.density
         );
     }
 
@@ -494,10 +552,13 @@ fn main() {
                 }
                 CircuitGenerationMode::CMR22 => {
                     let circuit = cmr_ckt(wires, gates);
-                    println!("CMR len: {}", circuit.gates.len());
                     BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
                 }
                 CircuitGenerationMode::Aes => BlockPrg::Aes(AesPrg::new(operation_mode)),
+                CircuitGenerationMode::Staircase => {
+                    let circuit = staircase_ckt(wires, gates);
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, wires, operation_mode))
+                },
             };
             let results = [
                 nist::run_all(&mut rng, length),
@@ -515,19 +576,17 @@ fn main() {
             let total = results.len();
             let failed = total - passed - skipped;
 
-            if !args.file {
-                println!(
-                    "{} / {} passed, {} skipped  => {:.1}%",
-                    passed,
-                    total,
-                    skipped,
-                    100.0 * (passed as f64) / ((total - skipped) as f64)
-                );
-            }
+            println!(
+                "{} / {} passed, {} skipped  => {:.1}%",
+                passed,
+                total,
+                skipped,
+                100.0 * (passed as f64) / ((total - skipped) as f64)
+            );
 
             if failed < 16 {
                 for s in results.iter().filter(|r| !r.passed() && !r.skipped()) {
-                    println!(" f: {} [{}]", s.name, s.note.clone().unwrap());
+                    println!(" f: {} [{}]", s.name, s.note.as_deref().unwrap_or(""));
                 }
             }
 
@@ -535,16 +594,23 @@ fn main() {
         })
         .collect();
 
-    if args.file {
-        println!(
+    if let Some(path) = &args.file {
+        let mut out = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap_or_else(|err| panic!("could not open {}: {err}", path.display()));
+        writeln!(
+            out,
             "{}: {}",
             gates,
             failed_counts
-                .into_iter()
+                .iter()
                 .map(|count| count.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        );
+        )
+        .expect("failed to write diehard summary");
     }
 }
 
@@ -609,7 +675,11 @@ mod tests {
             (32, u256::from(0x1234_5678u32), OperationMode::Ctr),
             (40, u256::from(7u8), OperationMode::Ofb),
             (64, u256::from(u64::MAX), OperationMode::Ctr),
-            (128, u256::from(0x0123_4567_89ab_cdefu64), OperationMode::Ctr),
+            (
+                128,
+                u256::from(0x0123_4567_89ab_cdefu64),
+                OperationMode::Ctr,
+            ),
             (
                 200,
                 (u256::one() << 180) | u256::from(0x1234u16),
@@ -636,9 +706,34 @@ mod tests {
         assert_eq!(pattern_bits(0), u256::zero());
         assert_eq!(pattern_bits(32), u256::from(0x7654_3210u32));
         assert_eq!(pattern_bits(64), u256::from(Y));
-        assert_eq!(
-            pattern_bits(128),
-            u256::from(Y) | (u256::from(Y) << 64)
-        );
+        assert_eq!(pattern_bits(128), u256::from(Y) | (u256::from(Y) << 64));
+    }
+
+    #[test]
+    fn cmr_accepts_exact_lengths() {
+        // n=27 -> 135 gates per density step.
+        assert_eq!(cmr_layout(27, 135).gates, 135);
+        assert_eq!(cmr_ckt(27, 135).gates.len(), 135);
+        assert_eq!(cmr_ckt(27, 270).gates.len(), 270);
+
+        let circuit = cmr_ckt(27, 270);
+        assert!(circuit.gates.iter().all(|g| {
+            g[0] < 27 && g[1] < 27 && g[2] < 27 && g[0] != g[1] && g[0] != g[2] && g[1] != g[2]
+        }));
+
+        assert_eq!(cmr_layout(81, 648).gates, 648);
+        assert_eq!(cmr_layout(243, 3240).gates, 3240);
+    }
+
+    #[test]
+    #[should_panic(expected = "closest CMR length is 135")]
+    fn cmr_rejects_inexact_length() {
+        cmr_layout(27, 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "closest CMR length is 135")]
+    fn cmr_rejects_empty_layout() {
+        cmr_layout(27, 0);
     }
 }
