@@ -1,0 +1,6 @@
+[hmap_affine] c=16 gates (8w), g=57 gates (32w), n=8; degree=1 regressors=33; rows=17 cols=5, samples=6144 (train 4608)
+[exposure] 16 born values, 6 visible (37.5%), 0 coset-minimizations skipped (nullity>14)
+[exposure] t*=  1:     6 values ( 37.5%)  cumulative  37.5%
+[exposure] wrote <DIR>/rep512.exposure.tsv
+[exposure] wrote all-cuts <DIR>/rep512.allcuts.tsv (10 rows)
+[exposure] wrote witness <DIR>/rep512.wit.tsv

@@ -1,0 +1,19 @@
+  cancel pass: 10 pairs
+cancelled 10 pairs (20 gates)
+77 -> 57 gates; 16 -> 15 boundaries
+fix iter 1: C-view visible 16 (floor 8)
+<DIR>/rep512.mpmct1: 77 vs 57 gates; EQUIVALENT (1024 random states)
+57 -> 57 gates; 15 -> 15 boundaries
+fix iter 2: C-view visible 13 (floor 8)
+57 -> 57 gates; 15 -> 15 boundaries
+fix iter 3: C-view visible 12 (floor 8)
+57 -> 57 gates; 15 -> 15 boundaries
+fix iter 4: C-view visible 13 (floor 8)
+57 -> 57 gates; 15 -> 15 boundaries
+<DIR>/rep512.mpmct1: 77 vs 57 gates; EQUIVALENT (1024 random states)
+fallback iter 1: C-view visible 12
+merge: removed 12 of 15 boundaries
+    WARNING: no exposure-free split in [12,57)
+<DIR>/rep512.mpmct1: 2 splits added (3 -> 5 boundaries)
+fallback iter 2: C-view visible 6
+  <DIR>/rep512.mpmct1: 0 splits added (5 -> 5 boundaries)

@@ -1,0 +1,9 @@
+cancelled 0 pairs (0 gates)
+777 -> 777 gates; 3 -> 2 boundaries
+fix iter 1: C-view visible 0 (floor 8)
+<DIR>/rep512.mpmct1: 777 vs 777 gates; EQUIVALENT (1024 random states)
+<DIR>/rep512.mpmct1: 777 vs 777 gates; EQUIVALENT (1024 random states)
+fallback iter 1: C-view visible 0
+  <DIR>/rep512.mpmct1: 6 splits added (2 -> 8 boundaries)
+fallback iter 2: C-view visible 0
+  <DIR>/rep512.mpmct1: 0 splits added (8 -> 8 boundaries)

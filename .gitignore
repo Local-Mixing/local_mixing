@@ -36,6 +36,7 @@
 **/circuits/
 **/work/
 *.log
+!tests/fixtures/**/*.log
 *.state
 *.mpmct
 *.sgc

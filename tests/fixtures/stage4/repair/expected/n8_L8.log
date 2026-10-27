@@ -1,0 +1,12 @@
+  cancel pass: 1280 pairs
+  cancel pass: 46 pairs
+  cancel pass: 1 pairs
+cancelled 1327 pairs (2654 gates)
+37479 -> 34825 gates; 71 -> 71 boundaries
+fix iter 1: C-view visible 6 (floor 8)
+<DIR>/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
+<DIR>/rep512.mpmct1: 37479 vs 34825 gates; EQUIVALENT (1024 random states)
+fallback iter 1: C-view visible 6
+  <DIR>/rep512.mpmct1: 1 splits added (71 -> 72 boundaries)
+fallback iter 2: C-view visible 6
+  <DIR>/rep512.mpmct1: 0 splits added (72 -> 72 boundaries)
