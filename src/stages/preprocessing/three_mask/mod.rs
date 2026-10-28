@@ -251,6 +251,13 @@ pub fn validate_geometry(r: usize, banks: usize, max_retiring: usize) -> Result<
 /// bank size of the design's geometry).
 pub const WIRE_COHORT: usize = 16;
 
+/// Helper lanes under fire interleaving: fire `i` takes its dirty helpers
+/// from lane `i mod HELPER_LANES` of the band's helper reserve
+/// (`band::Band::reserve`: reference-free wires growth never writes).
+pub const HELPER_LANES: usize = 4;
+/// Wire mode: how many of the most rewritten growing wires form the reserve.
+pub const HELPER_RESERVE: usize = 16;
+
 /// The geometry the wire-turnover mode requires: a band of at least 64
 /// wires and a multiple of 32 (cohorts of [`WIRE_COHORT`] wires, half of
 /// them serving at the start), `banks` left at 0 and `max_retiring`
@@ -311,6 +318,12 @@ pub struct ThreeMaskStats {
     /// Mean, over consecutive 250-gate windows of the output, of the spread
     /// of original positions they contain (250 without interleaving).
     pub interleave_span_250: f64,
+    /// Longest dependency chain of the compute (interleaving only).
+    pub interleave_depth: usize,
+    /// Fires whose helpers came from a lane of the reserve, and the summed
+    /// reserve size over fires (interleaving only).
+    pub lane_fires: usize,
+    pub reserve_total: usize,
 }
 
 /// A mask's identity for uniqueness checks: the sorted cubic triple, or the
@@ -400,6 +413,9 @@ fn dh(band: &band::Band, rng: &mut impl Rng, cfg: &ThreeMaskParams) -> Vec<u16> 
 pub struct InterleaveStats {
     pub mean_displacement: f64,
     pub span_250: f64,
+    /// Longest chain of the conflict relation (gates / depth = the mean
+    /// number of gates free to interleave at a time).
+    pub depth: usize,
 }
 
 /// A dependency-preserving random reordering. Gate `j` must follow every
@@ -430,6 +446,8 @@ pub fn interleave(
     let mut succ: Vec<Vec<usize>> = vec![vec![]; m];
     let mut npred = vec![0usize; m];
     let mut preds = vec![];
+    let mut depth = vec![0usize; m];
+    let mut max_depth = 0;
     for (j, g) in gates.iter().enumerate() {
         preds.clear();
         for l in g.ctrls.iter() {
@@ -440,6 +458,8 @@ pub fn interleave(
         preds.sort_unstable();
         preds.dedup();
         npred[j] = preds.len();
+        depth[j] = 1 + preds.iter().map(|&p| depth[p]).max().unwrap_or(0);
+        max_depth = max_depth.max(depth[j]);
         for &p in &preds {
             succ[p].push(j);
         }
@@ -508,6 +528,7 @@ pub fn interleave(
         InterleaveStats {
             mean_displacement,
             span_250,
+            depth: max_depth,
         },
     )
 }
@@ -586,6 +607,11 @@ pub fn compute(
     if cfg.growth_sweeps_per_visit == 0 {
         return Err("need positive visit sweeps".into());
     }
+    if cfg.interleave_window > 0 && !cfg.random_helpers {
+        return Err(
+            "fire interleaving needs random_helpers (its helper lanes partition the pool)".into(),
+        );
+    }
     if cfg.prefer_fresh && !(cfg.local_masks || cfg.cross_bank_pairs) {
         return Err("prefer_fresh requires local_masks or cross_bank_pairs".into());
     }
@@ -635,17 +661,49 @@ pub fn compute(
     } else {
         3
     };
-    let emit_mask = |t, m: Mask, band: &band::Band| {
+    let emit_mask_with = |t, m: Mask, helpers: &[u16]| {
         if cfg.cubic_mask {
             if cfg.discard_fire_helpers {
-                fire::borrowed_mcx_chain_dirty(t, &m.map(|w| (w, true)), &band.borrow_helpers())
+                fire::borrowed_mcx_chain_dirty(t, &m.map(|w| (w, true)), helpers)
             } else {
-                fire::emit_cubic_mask(t, m, &band.borrow_helpers())
+                fire::emit_cubic_mask(t, m, helpers)
             }
         } else if cfg.compact_masks {
             fire::emit_mask_compact(t, m)
         } else {
             fire::emit_mask(t, m)
+        }
+    };
+    let emit_mask = |t, m: Mask, band: &band::Band| emit_mask_with(t, m, &band.borrow_helpers());
+    // Helper lanes (fire interleaving only): fire i draws its dirty helpers
+    // from the reference-free wires of residue class i mod HELPER_LANES, so
+    // fires in different lanes share no scratch wire and only the data
+    // dependencies of C order them. A lane short of four wires falls back
+    // to the whole pool for that fire.
+    let lane_count = if cfg.interleave_window > 0 {
+        HELPER_LANES
+    } else {
+        1
+    };
+    let lane_pool = |band: &band::Band, rng: &mut StdRng, fire: usize| -> Vec<u16> {
+        if lane_count > 1 && band.reserve.len() >= 4 * lane_count {
+            let lane = fire % lane_count;
+            return band
+                .reserve
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| j % lane_count == lane)
+                .map(|(_, &w)| w)
+                .collect();
+        }
+        // no lanes, or a reserve too small for them: the shuffled pool
+        dh(band, rng, cfg)
+    };
+    let em = |t, m: Mask, band: &band::Band, lane_helpers: &[u16]| {
+        if lane_count > 1 {
+            emit_mask_with(t, m, lane_helpers)
+        } else {
+            emit_mask(t, m, band)
         }
     };
     let mut gates = vec![];
@@ -760,7 +818,12 @@ pub fn compute(
             None
         };
         let helpers = band.helpers(&mut rng);
-        let pool = dh(&band, &mut rng, cfg);
+        let pool = lane_pool(&band, &mut rng, i);
+        let lane_helpers: Vec<u16> = pool[..4].to_vec();
+        if lane_count > 1 {
+            stats.reserve_total += band.reserve.len();
+            stats.lane_fires += usize::from(band.reserve.len() >= 4 * lane_count);
+        }
         let mut units = if cfg.cubic_mask {
             fire::compile_cubic_options_dirty(
                 g,
@@ -796,7 +859,7 @@ pub fn compute(
             .chain(fresh)
             .chain(second_fresh.iter().flatten().copied())
             .collect();
-        gates.extend(emit_mask(g.target, cover, &band));
+        gates.extend(em(g.target, cover, &band, &lane_helpers));
         stats.mask_gates += mask_cost;
         cuts.push(gates.len());
         let mid = units.len() / 2;
@@ -825,7 +888,7 @@ pub fn compute(
                     cuts = vec![start];
                 }
                 if !cfg.temporal_masks {
-                    gates.extend(emit_mask(g.target, fresh, &band));
+                    gates.extend(em(g.target, fresh, &band, &lane_helpers));
                     stats.mask_gates += mask_cost;
                     cuts.push(gates.len());
                 }
@@ -844,13 +907,13 @@ pub fn compute(
                 g.target,
                 old,
                 fresh,
-                &dh(&band, &mut rng, cfg),
+                &lane_pool(&band, &mut rng, i),
                 cfg.keep_helper_garbage,
             );
             stats.mask_gates += delta.len();
             gates.extend(delta);
         } else {
-            gates.extend(emit_mask(g.target, old, &band));
+            gates.extend(em(g.target, old, &band, &lane_helpers));
             stats.mask_gates += mask_cost;
         }
         cuts.push(gates.len());
@@ -861,7 +924,7 @@ pub fn compute(
                 g.target,
                 old,
                 new,
-                &dh(&band, &mut rng, cfg),
+                &lane_pool(&band, &mut rng, i),
                 cfg.keep_helper_garbage,
             );
             stats.mask_gates += delta.len();
@@ -870,7 +933,7 @@ pub fn compute(
             masks[t].push(new);
             band.release(old);
         }
-        gates.extend(emit_mask(g.target, cover, &band));
+        gates.extend(em(g.target, cover, &band, &lane_helpers));
         stats.mask_gates += mask_cost;
         cuts.push(gates.len());
         band.release(cover);
@@ -890,10 +953,17 @@ pub fn compute(
                 band.rotate(i, 0, cfg.maturity_sweeps);
             }
             let oldest = band.oldest_retiring();
+            // wire mode: drain the cohort's least referenced wire first
+            let focus = oldest.and_then(|c| band.drain_focus(c));
             if let Some((w, j)) = (0..np).map(|d| (drain_cursor + d) % np).find_map(|w| {
                 masks[w]
                     .iter()
-                    .position(|m| m.iter().any(|&wire| Some(band.bank(wire)) == oldest))
+                    .position(|m| {
+                        m.iter().any(|&wire| match focus {
+                            Some(f) => wire == f,
+                            None => Some(band.bank(wire)) == oldest,
+                        })
+                    })
                     .map(|j| (w, j))
             }) {
                 let ex: Vec<_> = masks[w].iter().flatten().copied().collect();
@@ -918,14 +988,14 @@ pub fn compute(
                         w as u16,
                         old,
                         new,
-                        &dh(&band, &mut rng, cfg),
+                        &lane_pool(&band, &mut rng, i),
                         cfg.keep_helper_garbage,
                     );
                     stats.mask_gates += delta.len();
                     gates.extend(delta);
                 } else {
-                    gates.extend(emit_mask(w as u16, new, &band));
-                    gates.extend(emit_mask(w as u16, old, &band));
+                    gates.extend(em(w as u16, new, &band, &lane_helpers));
+                    gates.extend(em(w as u16, old, &band, &lane_helpers));
                     stats.mask_gates += 2 * mask_cost;
                 }
                 masks[w][j] = new;
@@ -1061,6 +1131,7 @@ pub fn compute(
         stats.interleave_window = cfg.interleave_window;
         stats.interleave_mean_displacement = istats.mean_displacement;
         stats.interleave_span_250 = istats.span_250;
+        stats.interleave_depth = istats.depth;
     }
     stats.compute_gates = final_gates.len();
     assert_eq!(

@@ -670,7 +670,7 @@ pub fn run() {
                 report.guard_gates
             );
             println!(
-                "[gen] three-mask turnover: {} ({} rotations, {} drained; wire limbo mean {:.1} max {} fires); interleave window {} (mean displacement {:.0} gates, 250-gate window spans {:.0} original positions)",
+                "[gen] three-mask turnover: {} ({} rotations, {} drained; wire limbo mean {:.1} max {} fires); interleave window {} (mean displacement {:.0} gates, 250-gate window spans {:.0} original positions, dependency depth {} of {} gates)",
                 if report.wire_turnover { "wire" } else { "bank" },
                 report.rotations,
                 report.retired_banks,
@@ -678,8 +678,18 @@ pub fn run() {
                 report.wire_limbo_max,
                 report.interleave_window,
                 report.interleave_mean_displacement,
-                report.interleave_span_250
+                report.interleave_span_250,
+                report.interleave_depth,
+                report.compute_gates
             );
+            if report.interleave_window > 0 {
+                println!(
+                    "[gen] three-mask helper lanes: {} of {} fires laned (mean reserve {:.1} wires)",
+                    report.stats.lane_fires,
+                    report.stats.input_gates,
+                    report.stats.reserve_total as f64 / report.stats.input_gates.max(1) as f64
+                );
+            }
             (output.circuit, output.guarded)
         }
         PreprocessingMode::Nonlinear291 => {

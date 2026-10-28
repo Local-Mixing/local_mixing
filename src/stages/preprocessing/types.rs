@@ -143,6 +143,7 @@ pub struct ThreeMaskReport {
     pub interleave_window: usize,
     pub interleave_mean_displacement: f64,
     pub interleave_span_250: f64,
+    pub interleave_depth: usize,
     pub fire: super::three_mask::fire::FireStats,
     /// The complete compute statistics the summary fields were taken from.
     pub stats: ThreeMaskStats,

@@ -245,7 +245,12 @@ pub fn preprocess_sandwich(
             // zero); a band of exactly the seeded width needs none.
             let cfg = ThreeMaskParams {
                 seeded_band_wires: if band_wires > seeded { seeded } else { 0 },
-                banks: three_mask::resolve_banks(band_wires, params.banks),
+                // the wire-turnover mode forms its cohorts itself (banks stay 0)
+                banks: if params.wire_turnover {
+                    params.banks
+                } else {
+                    three_mask::resolve_banks(band_wires, params.banks)
+                },
                 ..params.clone()
             };
             let compute = three_mask::compute(&sandwich.gates, np, band_wires, &cfg)?;
@@ -282,6 +287,7 @@ pub fn preprocess_sandwich(
                 interleave_window: s.interleave_window,
                 interleave_mean_displacement: s.interleave_mean_displacement,
                 interleave_span_250: s.interleave_span_250,
+                interleave_depth: s.interleave_depth,
                 fire: s.fire.clone(),
                 stats: s,
             };

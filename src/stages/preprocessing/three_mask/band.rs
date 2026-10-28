@@ -81,6 +81,13 @@ pub struct Band {
     /// Wire turnover: per drained wire, fires between its cohort's
     /// retirement and its own return to growth.
     pub wire_limbo_waits: Vec<usize>,
+    /// Helper lanes (fire interleaving): reference-free wires that growth
+    /// never writes, refreshed every fire. Bank mode: the drained wires of
+    /// retiring banks; wire mode: the most rewritten growing wires, which
+    /// growth then skips. Absolute wire ids, ascending.
+    pub reserve: Vec<u16>,
+    lanes: bool,
+    reserved: Vec<bool>,
 }
 
 impl Band {
@@ -128,7 +135,52 @@ impl Band {
             retired: 0,
             wire: None,
             wire_limbo_waits: vec![],
+            reserve: vec![],
+            lanes: cfg.interleave_window > 0,
+            reserved: vec![false; r],
         }
+    }
+
+    /// The helper reserve for the coming fire (see `reserve`).
+    fn refresh_reserve(&mut self) {
+        if !self.lanes {
+            return;
+        }
+        let r = self.refs.len();
+        let mut picked: Vec<usize> = match &self.wire {
+            None => (0..r)
+                .filter(|&w| {
+                    self.phase_of((self.np + w) as u16) == Phase::Retiring && self.refs[w] == 0
+                })
+                .collect(),
+            Some(_) => {
+                let mut growing: Vec<usize> = (0..r)
+                    .filter(|&w| self.phase[w] == Phase::Growing)
+                    .collect();
+                growing.sort_by_key(|&w| (std::cmp::Reverse(self.updates[w]), w));
+                growing.truncate(super::HELPER_RESERVE);
+                growing
+            }
+        };
+        picked.sort_unstable();
+        self.reserved.fill(false);
+        for &w in &picked {
+            self.reserved[w] = true;
+        }
+        self.reserve = picked.iter().map(|&w| (self.np + w) as u16).collect();
+    }
+
+    /// Wire mode: the wire of retiring cohort `c` with the fewest remaining
+    /// references, so that wires leave the cohort one after another.
+    pub fn drain_focus(&self, c: usize) -> Option<u16> {
+        let ws = self.wire.as_ref()?;
+        ws.cohorts[c]
+            .wires
+            .iter()
+            .copied()
+            .filter(|&w| self.refs[w] > 0)
+            .min_by_key(|&w| (self.refs[w], w))
+            .map(|w| (self.np + w) as u16)
     }
 
     /// Half the band serving in positional cohorts of [`WIRE_COHORT`]
@@ -187,6 +239,9 @@ impl Band {
                 next_target: serving_wires,
             }),
             wire_limbo_waits: vec![],
+            reserve: vec![],
+            lanes: cfg.interleave_window > 0,
+            reserved: vec![false; r],
         }
     }
 
@@ -452,7 +507,7 @@ impl Band {
         let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             let growing: Vec<usize> = (0..r)
-                .filter(|&w| self.phase[w] == Phase::Growing)
+                .filter(|&w| self.phase[w] == Phase::Growing && !self.reserved[w])
                 .collect();
             if growing.len() < 2 {
                 break;
@@ -460,7 +515,7 @@ impl Band {
             let ws = self.wire.as_mut().expect("wire mode");
             let t = (0..r)
                 .map(|d| (ws.next_target + d) % r)
-                .find(|&w| self.phase[w] == Phase::Growing)
+                .find(|&w| self.phase[w] == Phase::Growing && !self.reserved[w])
                 .unwrap();
             ws.next_target = (t + 1) % r;
             let rewritten: Vec<usize> = growing
@@ -476,7 +531,7 @@ impl Band {
             };
             let x = loop {
                 let w = rng.random_range(0..r);
-                if w != t && w != y {
+                if w != t && w != y && !self.reserved[w] {
                     break w;
                 }
             };
@@ -641,8 +696,14 @@ impl Band {
 
     pub fn rotate(&mut self, fire: usize, interval: usize, maturity: usize) {
         if self.wire.is_some() {
-            return self.rotate_wire_mode(fire, interval, maturity);
+            self.rotate_wire_mode(fire, interval, maturity);
+        } else {
+            self.rotate_bank_mode(fire, interval, maturity);
         }
+        self.refresh_reserve();
+    }
+
+    fn rotate_bank_mode(&mut self, fire: usize, interval: usize, maturity: usize) {
         let banks = self.phase.len();
         for b in 0..banks {
             if self.phase[b] == Phase::Retiring
