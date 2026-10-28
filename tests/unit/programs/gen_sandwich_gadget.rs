@@ -98,8 +98,12 @@ fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
         ("THREE_MASK_MASK_COUNT", "2"),
         ("THREE_MASK_RANDOM_HELPERS", "0"),
         ("THREE_MASK_UNIQUE_COVER", "false"),
+        ("THREE_MASK_TURNOVER", "wire"),
+        ("THREE_MASK_INTERLEAVE", "4096"),
     ];
     let p = three_mask_params_from(19, env(set), &names(set)).unwrap();
+    assert!(p.wire_turnover && p.interleave_window == 4096);
+    assert!(!defaults.wire_turnover && defaults.interleave_window == 0);
     assert_eq!(
         (
             p.band_wires,
@@ -125,6 +129,8 @@ fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
         &[("THREE_MASK_BAND_WIRES", "")],
         &[("THREE_MASK_RANDOM_HELPERS", "yes")],
         &[("THREE_MASK_UNIQUE_COVER", "2")],
+        &[("THREE_MASK_TURNOVER", "cohort")],
+        &[("THREE_MASK_INTERLEAVE", "many")],
     ] {
         let bad: &'static [(&'static str, &'static str)] =
             Box::leak(bad.to_vec().into_boxed_slice());

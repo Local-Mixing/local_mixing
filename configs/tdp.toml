@@ -90,6 +90,8 @@ mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear2
 # retire_budget = 2  max_retiring = 0  rotation = 1  maturity = 2  visit_sweeps = 2
 # growth = 8  warmup = 4  segments = 6  mask_count = 3
 # random_helpers = true  unique_cover = true  # false = the generator's "as-is" variant
+# turnover = "bank"  # "wire" = per-wire turnover in cohorts of 16 (banks must be 0)
+# interleave = 0  # fire-interleaving window in gates (0 = off; e.g. 4096)
 
 [db_mixing]
 schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) or "custom"

@@ -431,6 +431,11 @@ pub(crate) struct ThreeMaskConfig {
     pub(crate) mask_count: u64,
     pub(crate) random_helpers: bool,
     pub(crate) unique_cover: bool,
+    /// `"bank"` (the design's bank rotation) or `"wire"` (per-wire turnover
+    /// in cohorts of 16; `banks` must be 0).
+    pub(crate) turnover: String,
+    /// Fire-interleaving window in gates; 0 = off.
+    pub(crate) interleave: u64,
 }
 
 impl Default for ThreeMaskConfig {
@@ -449,13 +454,15 @@ impl Default for ThreeMaskConfig {
             mask_count: 3,
             random_helpers: true,
             unique_cover: true,
+            turnover: "bank".to_string(),
+            interleave: 0,
         }
     }
 }
 
 impl ThreeMaskConfig {
     /// `(config key, script flag suffix, value, default)` in the manifest order.
-    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String, String); 13] {
+    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String, String); 15] {
         let d = ThreeMaskConfig::default();
         let b = |v: bool| u8::from(v).to_string();
         [
@@ -536,6 +543,18 @@ impl ThreeMaskConfig {
                 "unique-cover",
                 b(self.unique_cover),
                 b(d.unique_cover),
+            ),
+            (
+                "turnover",
+                "turnover",
+                self.turnover.clone(),
+                d.turnover.clone(),
+            ),
+            (
+                "interleave",
+                "interleave",
+                self.interleave.to_string(),
+                d.interleave.to_string(),
             ),
         ]
     }

@@ -127,3 +127,45 @@ passes `10 * 2n`, so the managed stage-2 circuit differs from the
 campaign's only in the size of the two guards). The integration test
 `tests/integration/three_mask_parity.rs` pins the sha256 of that circuit,
 of the sandwich and of the source.
+
+
+## Turnover modes and fire interleaving (added 2026-10-28)
+
+Two knobs added after the release, both off by default so the default
+output is unchanged (`stage2_three_mask_parity` still pins it):
+
+**`turnover = "wire"`** turns band coordinates over per wire instead of per
+bank. Phases are per wire; a *cohort* (16 wires promoted together) takes the
+bank's two remaining roles: masks are drawn inside one serving cohort (the
+freshest, as `prefer_fresh` does with banks), and the oldest serving cohort
+retires as a unit, so every budgeted replacement frees three references of
+the cohort being drained, as with bank-local masks. What changes is what
+happens to a drained wire: it returns to growth the moment its last reference
+is replaced, instead of waiting for the slowest wire of its bank, and
+promotion cohorts form from the most rewritten mature growing wires, eight of
+each parity, wherever they sit in the band. Growth rewrites growing wires
+round-robin with one control among the other growing wires (a rewritten one
+when any exists) and one anywhere in the band. `banks` must be 0;
+`max_retiring` counts retiring cohorts (0 = half the cohorts minus one);
+`maturity` is rewrites per wire. The gate count per fire is unchanged, and so
+is the coordinate lifetime floor set by `retire_budget` (one replacement
+retires one of the $3 \cdot 2n$ masks); the gain is the capacity that bank
+limbo wasted (48 of 128 wires at n = 64) and the end of the positional bank
+structure. The report prints the mean and maximum fires a drained wire
+waited in its retiring cohort.
+
+**`interleave = W`** reorders the finished compute (after carrier migration)
+by a dependency-preserving random topological order: a gate must follow
+every earlier gate that writes a wire it reads or reads the wire it writes,
+XOR writes into one wire with no read between them commute, and no gate is
+emitted more than `W` original positions ahead of the earliest gate still
+waiting. Gates of independent fires interleave within the window, so a
+125 to 250-gate window of the output holds fragments of many fires rather
+than one complete fire (the factoring $(d_u+S_u)(d_v+S_v)$ a window
+synthesizer could exploit). No gates are added; the function is unchanged.
+The report prints the mean displacement and the mean spread of original
+positions in a 250-gate output window (250 without interleaving). The
+reordering is positional only: an attacker who clusters gates by
+dependencies can undo it on the stage-2 circuit itself, so its value has to
+be measured on the mixed output, where stage 3's local identities straddle
+gates of different fires.

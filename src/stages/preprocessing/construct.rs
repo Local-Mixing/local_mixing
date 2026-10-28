@@ -271,6 +271,17 @@ pub fn preprocess_sandwich(
                 promotion_stalls: s.promotion_stalls,
                 local_mask_fallbacks: s.local_mask_fallbacks,
                 mask_rank_rejections: s.mask_rank_rejections,
+                wire_turnover: cfg.wire_turnover,
+                wire_limbo_mean: if s.wire_limbo_waits.is_empty() {
+                    0.0
+                } else {
+                    s.wire_limbo_waits.iter().sum::<usize>() as f64
+                        / s.wire_limbo_waits.len() as f64
+                },
+                wire_limbo_max: s.wire_limbo_waits.iter().copied().max().unwrap_or(0),
+                interleave_window: s.interleave_window,
+                interleave_mean_displacement: s.interleave_mean_displacement,
+                interleave_span_250: s.interleave_span_250,
                 fire: s.fire.clone(),
                 stats: s,
             };

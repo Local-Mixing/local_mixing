@@ -4,7 +4,7 @@ use crate::stages::packing::types::{
     MAX_MONOMIAL_BUDGET, MAX_SPAN_CAP, MAX_STATE_WIRES as STAGE4_MAX_STATE_WIRES,
 };
 use crate::stages::preprocessing::three_mask::{
-    resolve_band_wires, resolve_banks, validate_geometry,
+    resolve_band_wires, resolve_banks, validate_geometry, validate_wire_geometry,
 };
 use crate::tdp::manifest::CURRENT_RECIPE_VERSION;
 
@@ -208,7 +208,7 @@ where
         }
     };
     // [three_mask]: only under preprocessing.mode = "three-mask"
-    const THREE_MASK_KEYS: [&str; 13] = [
+    const THREE_MASK_KEYS: [&str; 15] = [
         "three_mask_band_wires",
         "three_mask_banks",
         "three_mask_retire_budget",
@@ -222,6 +222,8 @@ where
         "three_mask_mask_count",
         "three_mask_random_helpers",
         "three_mask_unique_cover",
+        "three_mask_turnover",
+        "three_mask_interleave",
     ];
     if preprocessing_mode != PreprocessingMode::ThreeMask
         && let Some(key) = THREE_MASK_KEYS
@@ -255,6 +257,17 @@ where
         mask_count: tm_u64("three_mask_mask_count", tm.mask_count, 1, 3)?,
         random_helpers: parse_bool(raw, "three_mask_random_helpers", tm.random_helpers)?,
         unique_cover: parse_bool(raw, "three_mask_unique_cover", tm.unique_cover)?,
+        turnover: match raw.value("three_mask_turnover").unwrap_or(&tm.turnover) {
+            v @ ("bank" | "wire") => v.to_string(),
+            other => {
+                return Err(config_error(
+                    raw,
+                    "three_mask_turnover",
+                    &format!("expected \"bank\" or \"wire\"; got {other:?}"),
+                ));
+            }
+        },
+        interleave: tm_u64("three_mask_interleave", tm.interleave, 0, 100_000_000)?,
     };
     if preprocessing_mode == PreprocessingMode::ThreeMask {
         let r = three_mask.band_wires;
@@ -305,7 +318,26 @@ where
                 ),
             ));
         }
-        if let Err(error) = validate_geometry(band, banks, three_mask.max_retiring as usize) {
+        if three_mask.turnover == "wire" {
+            // cohorts of 16 wires are formed by the compute; banks must stay 0
+            if let Err(error) = validate_wire_geometry(
+                band,
+                three_mask.banks as usize,
+                three_mask.max_retiring as usize,
+            ) {
+                let key = if three_mask.banks != 0 {
+                    "three_mask_banks"
+                } else {
+                    "three_mask_band_wires"
+                };
+                return Err(config_error(
+                    raw,
+                    key,
+                    &format!("wire turnover, resolved band {band} wires: {error}"),
+                ));
+            }
+        } else if let Err(error) = validate_geometry(band, banks, three_mask.max_retiring as usize)
+        {
             let key = if three_mask.banks == 0 {
                 "three_mask_band_wires"
             } else {

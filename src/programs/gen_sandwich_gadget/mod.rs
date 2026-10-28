@@ -163,13 +163,15 @@ pub fn stage2_knobs_from_env(p: EmbeddedMaskingParams) -> EmbeddedMaskingParams 
 /// (unset = the v2 campaign configuration, `ThreeMaskParams::v2`). `var`
 /// supplies the lookup so the mapping is testable without the process
 /// environment. `THREE_MASK_BAND_WIRES` 0 = auto; the two flags take 0/1
-/// (or false/true). An unknown `THREE_MASK_*` name is an error.
+/// (or false/true); `THREE_MASK_TURNOVER` is `bank` (default) or `wire`;
+/// `THREE_MASK_INTERLEAVE` is the fire-interleaving window in gates (0 =
+/// off). An unknown `THREE_MASK_*` name is an error.
 pub fn three_mask_params_from(
     seed: u64,
     var: impl Fn(&str) -> Option<String>,
     present: &[String],
 ) -> Result<ThreeMaskParams, String> {
-    const NUMBERS: [&str; 11] = [
+    const NUMBERS: [&str; 12] = [
         "THREE_MASK_BAND_WIRES",
         "THREE_MASK_BANKS",
         "THREE_MASK_RETIRE_BUDGET",
@@ -181,24 +183,34 @@ pub fn three_mask_params_from(
         "THREE_MASK_WARMUP",
         "THREE_MASK_SEGMENTS",
         "THREE_MASK_MASK_COUNT",
+        "THREE_MASK_INTERLEAVE",
     ];
     const FLAGS: [&str; 2] = ["THREE_MASK_RANDOM_HELPERS", "THREE_MASK_UNIQUE_COVER"];
+    const TURNOVER: &str = "THREE_MASK_TURNOVER";
     let mut unknown: Vec<&str> = present
         .iter()
         .map(String::as_str)
         .filter(|key| {
-            key.starts_with("THREE_MASK_") && !NUMBERS.contains(key) && !FLAGS.contains(key)
+            key.starts_with("THREE_MASK_")
+                && !NUMBERS.contains(key)
+                && !FLAGS.contains(key)
+                && *key != TURNOVER
         })
         .collect();
     unknown.sort_unstable();
     if !unknown.is_empty() {
         return Err(format!(
-            "unknown three-mask control(s): {}; the knobs are {} and {}",
+            "unknown three-mask control(s): {}; the knobs are {}, {} and {TURNOVER}",
             unknown.join(", "),
             NUMBERS.join(", "),
             FLAGS.join(", ")
         ));
     }
+    let wire_turnover = match var(TURNOVER).as_deref() {
+        None | Some("bank") => false,
+        Some("wire") => true,
+        Some(value) => return Err(format!("{TURNOVER} must be bank or wire; got {value:?}")),
+    };
     let num = |key: &str, default: usize| -> Result<usize, String> {
         match var(key) {
             None => Ok(default),
@@ -228,8 +240,10 @@ pub fn three_mask_params_from(
         warmup_sweeps: num(NUMBERS[8], base.warmup_sweeps)?,
         migration_segments: num(NUMBERS[9], base.migration_segments)?,
         mask_count: num(NUMBERS[10], base.mask_count)?,
+        interleave_window: num(NUMBERS[11], base.interleave_window)?,
         random_helpers: flag(FLAGS[0], base.random_helpers)?,
         unique_cover: flag(FLAGS[1], base.unique_cover)?,
+        wire_turnover,
         ..base
     })
 }
@@ -654,6 +668,17 @@ pub fn run() {
                 report.band_seed_gates,
                 report.band_reseed_gates,
                 report.guard_gates
+            );
+            println!(
+                "[gen] three-mask turnover: {} ({} rotations, {} drained; wire limbo mean {:.1} max {} fires); interleave window {} (mean displacement {:.0} gates, 250-gate window spans {:.0} original positions)",
+                if report.wire_turnover { "wire" } else { "bank" },
+                report.rotations,
+                report.retired_banks,
+                report.wire_limbo_mean,
+                report.wire_limbo_max,
+                report.interleave_window,
+                report.interleave_mean_displacement,
+                report.interleave_span_250
             );
             (output.circuit, output.guarded)
         }

@@ -131,6 +131,18 @@ pub struct ThreeMaskReport {
     pub promotion_stalls: usize,
     pub local_mask_fallbacks: usize,
     pub mask_rank_rejections: usize,
+    /// Band coordinates turned over per wire (cohorts) instead of per bank.
+    pub wire_turnover: bool,
+    /// Mean and maximum fires a drained wire waited in its retiring cohort
+    /// before growing again (wire turnover only).
+    pub wire_limbo_mean: f64,
+    pub wire_limbo_max: usize,
+    /// Fire interleaving: the displacement window (0 = off), the mean gate
+    /// displacement and the mean original-position spread of a 250-gate
+    /// output window.
+    pub interleave_window: usize,
+    pub interleave_mean_displacement: f64,
+    pub interleave_span_250: f64,
     pub fire: super::three_mask::fire::FireStats,
     /// The complete compute statistics the summary fields were taken from.
     pub stats: ThreeMaskStats,

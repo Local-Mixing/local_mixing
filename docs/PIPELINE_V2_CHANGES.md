@@ -217,3 +217,17 @@ the balanced-C reference hash, `tdp_adaptive` end to end with resume) and
 the five mock-based shell tests of the driver pass on the release branch.
 No n=64 run of the production policy has been made with this build yet;
 the server campaigns of October 2026 ran the prototypes this code ports.
+
+
+## Additions after the release (2026-10-28)
+
+* Review fixes: the packer oracle log fixtures are tracked (CI on a clean
+  checkout), the auto three-mask band rounds to a multiple of 32 (an odd n
+  made an odd bank count), the resolved three-mask geometry, the stage-2
+  width against stage 6's 1024 wires and the adaptive limits
+  (`census_batches`, `term_cap`) against that width are all checked by the
+  config validation before a run starts.
+* Two three-mask knobs, off by default: `three_mask.turnover = "wire"`
+  (per-wire turnover in cohorts of 16) and `three_mask.interleave = W`
+  (dependency-preserving fire interleaving); see
+  `docs/THREE_MASK_STAGE2.md`, "Turnover modes and fire interleaving".

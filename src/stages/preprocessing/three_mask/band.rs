@@ -2,8 +2,8 @@
 //!
 //! Ported verbatim from the `stage2_compute_pilot` generator (`src/band.rs`).
 
-use super::ThreeMaskParams;
 use super::fire::Mask;
+use super::{ThreeMaskParams, WIRE_COHORT};
 use crate::circuit::XGate;
 use rand::{Rng, seq::SliceRandom};
 
@@ -21,9 +21,43 @@ pub struct Rotation {
     pub retiring: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CohortPhase {
+    Serving,
+    Retiring,
+    Done,
+}
+
+/// A promotion cohort of the wire-turnover mode: the wires promoted
+/// together. Masks are drawn inside one serving cohort, the oldest serving
+/// cohort retires as a unit, and its wires leave one by one as their last
+/// reference is replaced.
+#[derive(Clone, Debug)]
+struct Cohort {
+    phase: CohortPhase,
+    promoted_at: usize,
+    retired_at: Option<usize>,
+    /// Band-relative wire indices still in the cohort.
+    wires: Vec<usize>,
+}
+
+/// The wire-turnover state: `Band::phase`, `Band::updates` (growth
+/// rewrites) and `cohort_of` are per wire, cohorts replace banks.
+#[derive(Clone, Debug)]
+struct WireState {
+    cohorts: Vec<Cohort>,
+    /// Per wire: its cohort while serving or retiring.
+    cohort_of: Vec<Option<usize>>,
+    /// Round-robin cursor over the band for growth targets.
+    next_target: usize,
+}
+
+const NO_COHORT: usize = usize::MAX;
+
 pub struct Band {
     pub np: usize,
     pub size: usize,
+    /// Per bank, or per wire in the wire-turnover mode.
     pub phase: Vec<Phase>,
     pub refs: Vec<usize>,
     pub updates: Vec<usize>,
@@ -43,10 +77,17 @@ pub struct Band {
     pub promotion_stalls: usize,
     pub rotations: Vec<Rotation>,
     pub retired: usize,
+    wire: Option<WireState>,
+    /// Wire turnover: per drained wire, fires between its cohort's
+    /// retirement and its own return to growth.
+    pub wire_limbo_waits: Vec<usize>,
 }
 
 impl Band {
     pub fn new(np: usize, r: usize, cfg: &ThreeMaskParams) -> Self {
+        if cfg.wire_turnover {
+            return Self::new_wire_mode(np, r, cfg);
+        }
         let banks = cfg.banks;
         let serving = banks / 2;
         Self {
@@ -85,11 +126,92 @@ impl Band {
             promotion_stalls: 0,
             rotations: vec![],
             retired: 0,
+            wire: None,
+            wire_limbo_waits: vec![],
         }
     }
 
+    /// Half the band serving in positional cohorts of [`WIRE_COHORT`]
+    /// wires (aged like the bank mode's initial banks), the rest growing.
+    fn new_wire_mode(np: usize, r: usize, cfg: &ThreeMaskParams) -> Self {
+        let cohorts_total = r / WIRE_COHORT;
+        let serving = cohorts_total / 2;
+        let cohorts: Vec<Cohort> = (0..serving)
+            .map(|k| Cohort {
+                phase: CohortPhase::Serving,
+                promoted_at: k,
+                retired_at: None,
+                wires: (k * WIRE_COHORT..(k + 1) * WIRE_COHORT).collect(),
+            })
+            .collect();
+        let serving_wires = serving * WIRE_COHORT;
+        Self {
+            np,
+            size: 1,
+            phase: (0..r)
+                .map(|w| {
+                    if w < serving_wires {
+                        Phase::Serving
+                    } else {
+                        Phase::Growing
+                    }
+                })
+                .collect(),
+            refs: vec![0; r],
+            updates: vec![0; r],
+            cursors: vec![],
+            next_bank: 0,
+            service_age: vec![],
+            retire_since: vec![],
+            local_masks: cfg.local_masks,
+            cross_bank_growth: cfg.cross_bank_growth,
+            cross_bank_pairs: false,
+            bank_disjoint_masks: false,
+            prefer_fresh: cfg.prefer_fresh,
+            sweeps_per_visit: cfg.growth_sweeps_per_visit,
+            max_retiring: if cfg.max_retiring == 0 {
+                serving - 1
+            } else {
+                cfg.max_retiring
+            },
+            local_mask_fallbacks: 0,
+            retirement_waits: vec![],
+            promotion_stalls: 0,
+            rotations: vec![],
+            retired: 0,
+            wire: Some(WireState {
+                cohorts,
+                cohort_of: (0..r)
+                    .map(|w| (w < serving_wires).then_some(w / WIRE_COHORT))
+                    .collect(),
+                next_target: serving_wires,
+            }),
+            wire_limbo_waits: vec![],
+        }
+    }
+
+    pub fn wire_mode(&self) -> bool {
+        self.wire.is_some()
+    }
+
+    /// The bank of `w`; in the wire-turnover mode its cohort id, or a
+    /// distinct id per growing wire (no cohort).
     pub fn bank(&self, w: u16) -> usize {
-        (w as usize - self.np) / self.size
+        match &self.wire {
+            None => (w as usize - self.np) / self.size,
+            Some(ws) => {
+                ws.cohort_of[w as usize - self.np].unwrap_or(NO_COHORT - (w as usize - self.np))
+            }
+        }
+    }
+
+    /// The phase of wire `w` (its bank's, or its own in the wire mode).
+    pub fn phase_of(&self, w: u16) -> Phase {
+        if self.wire.is_some() {
+            self.phase[w as usize - self.np]
+        } else {
+            self.phase[self.bank(w)]
+        }
     }
 
     pub fn sample(&mut self, excluded: &[u16], rng: &mut impl Rng) -> Mask {
@@ -103,13 +225,62 @@ impl Band {
     fn sample_mode(&mut self, excluded: &[u16], prefer_fresh: bool, rng: &mut impl Rng) -> Mask {
         let mut avail: Vec<_> = (self.np..self.np + self.refs.len())
             .map(|w| w as u16)
-            .filter(|&w| self.phase[self.bank(w)] == Phase::Serving && !excluded.contains(&w))
+            .filter(|&w| self.phase_of(w) == Phase::Serving && !excluded.contains(&w))
             .collect();
         assert!(
             avail.len() >= 3,
             "insufficient serving wires; configuration/exclusion invariant violated"
         );
         avail.shuffle(rng);
+        if let Some(ws) = &self.wire {
+            // Cohort-local masks: the freshest (or a random) serving cohort
+            // with three available wires of both parities; otherwise any.
+            if self.local_masks {
+                let eligible: Vec<usize> = (0..ws.cohorts.len())
+                    .filter(|&c| {
+                        ws.cohorts[c].phase == CohortPhase::Serving && {
+                            let in_c: Vec<_> = avail
+                                .iter()
+                                .copied()
+                                .filter(|&w| ws.cohort_of[w as usize - self.np] == Some(c))
+                                .collect();
+                            in_c.len() >= 3
+                                && in_c
+                                    .iter()
+                                    .any(|&w| (w as usize - self.np).is_multiple_of(2))
+                                && in_c.iter().any(|&w| (w as usize - self.np) % 2 == 1)
+                        }
+                    })
+                    .collect();
+                if eligible.is_empty() {
+                    self.local_mask_fallbacks += 1;
+                } else {
+                    let c = if prefer_fresh && !self.rotations.is_empty() {
+                        *eligible
+                            .iter()
+                            .max_by_key(|&&c| ws.cohorts[c].promoted_at)
+                            .unwrap()
+                    } else {
+                        eligible[rng.random_range(0..eligible.len())]
+                    };
+                    avail.retain(|&w| ws.cohort_of[w as usize - self.np] == Some(c));
+                }
+            }
+            let x = *avail
+                .iter()
+                .find(|&&w| (w as usize - self.np).is_multiple_of(2))
+                .unwrap();
+            let y = *avail
+                .iter()
+                .find(|&&w| (w as usize - self.np) % 2 == 1)
+                .unwrap();
+            let z = *avail.iter().find(|&&w| w != x && w != y).unwrap();
+            let m = [x, y, z];
+            for w in m {
+                self.refs[w as usize - self.np] += 1;
+            }
+            return m;
+        }
         if self.cross_bank_pairs {
             let banks = self.phase.len();
             let mut counts = vec![[0usize; 2]; banks];
@@ -226,7 +397,7 @@ impl Band {
     pub fn borrow_helpers(&self) -> Vec<u16> {
         let out: Vec<_> = (self.np..self.np + self.refs.len())
             .map(|w| w as u16)
-            .filter(|&w| self.phase[self.bank(w)] == Phase::Growing)
+            .filter(|&w| self.phase_of(w) == Phase::Growing)
             .take(4)
             .collect();
         assert_eq!(out.len(), 4);
@@ -236,7 +407,7 @@ impl Band {
     pub fn borrow_helpers_pool(&self, rng: &mut impl Rng) -> Vec<u16> {
         let mut out: Vec<_> = (self.np..self.np + self.refs.len())
             .map(|w| w as u16)
-            .filter(|&w| match self.phase[self.bank(w)] {
+            .filter(|&w| match self.phase_of(w) {
                 Phase::Growing => true,
                 Phase::Retiring => self.refs[w as usize - self.np] == 0,
                 Phase::Serving => false,
@@ -250,24 +421,173 @@ impl Band {
     pub fn helpers(&self, rng: &mut impl Rng) -> [u16; 2] {
         let mut avail: Vec<_> = (self.np..self.np + self.refs.len())
             .map(|w| w as u16)
-            .filter(|&w| self.phase[self.bank(w)] == Phase::Growing)
+            .filter(|&w| self.phase_of(w) == Phase::Growing)
             .collect();
         avail.shuffle(rng);
         [avail[0], avail[1]]
     }
 
     pub fn retiring_mask(&self, m: Mask) -> bool {
-        m.iter()
-            .any(|&w| self.phase[self.bank(w)] == Phase::Retiring)
+        m.iter().any(|&w| self.phase_of(w) == Phase::Retiring)
     }
 
+    /// The bank (or cohort) retiring longest, by id.
     pub fn oldest_retiring(&self) -> Option<usize> {
+        if let Some(ws) = &self.wire {
+            return (0..ws.cohorts.len())
+                .filter(|&c| ws.cohorts[c].phase == CohortPhase::Retiring)
+                .min_by_key(|&c| ws.cohorts[c].retired_at.unwrap());
+        }
         (0..self.phase.len())
             .filter(|&b| self.phase[b] == Phase::Retiring)
             .min_by_key(|&b| self.retire_since[b].unwrap())
     }
 
+    /// Wire mode: rewrite growing wires round-robin, each with one control
+    /// among the other growing wires (a rewritten one when any exists) and
+    /// one anywhere in the band, so a grown value composes fresh material
+    /// with current serving coordinates. Every target is reference-free.
+    fn growth_wire_mode(&mut self, count: usize, rng: &mut impl Rng) -> Vec<XGate> {
+        let r = self.refs.len();
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let growing: Vec<usize> = (0..r)
+                .filter(|&w| self.phase[w] == Phase::Growing)
+                .collect();
+            if growing.len() < 2 {
+                break;
+            }
+            let ws = self.wire.as_mut().expect("wire mode");
+            let t = (0..r)
+                .map(|d| (ws.next_target + d) % r)
+                .find(|&w| self.phase[w] == Phase::Growing)
+                .unwrap();
+            ws.next_target = (t + 1) % r;
+            let rewritten: Vec<usize> = growing
+                .iter()
+                .copied()
+                .filter(|&w| w != t && self.updates[w] > 0)
+                .collect();
+            let y = if rewritten.is_empty() {
+                let others: Vec<usize> = growing.iter().copied().filter(|&w| w != t).collect();
+                others[rng.random_range(0..others.len())]
+            } else {
+                rewritten[rng.random_range(0..rewritten.len())]
+            };
+            let x = loop {
+                let w = rng.random_range(0..r);
+                if w != t && w != y {
+                    break w;
+                }
+            };
+            assert_eq!(self.refs[t], 0);
+            out.push(
+                XGate::conj(
+                    (self.np + t) as u16,
+                    [
+                        ((self.np + x) as u16, rng.random_bool(0.5)),
+                        ((self.np + y) as u16, rng.random_bool(0.5)),
+                    ],
+                )
+                .unwrap(),
+            );
+            self.updates[t] += 1;
+        }
+        out
+    }
+
+    /// Wire mode: drained retiring wires return to growth at once; on a
+    /// rotation fire, while fewer cohorts than the cap retire, the most
+    /// rewritten mature growing wires (half of each parity) form a new
+    /// serving cohort and the oldest serving cohort retires.
+    fn rotate_wire_mode(&mut self, fire: usize, interval: usize, maturity: usize) {
+        let r = self.refs.len();
+        let ws = self.wire.as_mut().expect("wire mode");
+        for w in 0..r {
+            if self.phase[w] == Phase::Retiring && self.refs[w] == 0 {
+                let c = ws.cohort_of[w].take().expect("a retiring wire's cohort");
+                let cohort = &mut ws.cohorts[c];
+                cohort.wires.retain(|&v| v != w);
+                self.phase[w] = Phase::Growing;
+                self.updates[w] = 0;
+                self.wire_limbo_waits
+                    .push(fire - cohort.retired_at.expect("retired"));
+                if cohort.wires.is_empty() {
+                    cohort.phase = CohortPhase::Done;
+                    self.retired += 1;
+                    self.retirement_waits
+                        .push(fire - cohort.retired_at.expect("retired"));
+                }
+            }
+        }
+        if interval == 0 || !fire.is_multiple_of(interval) {
+            return;
+        }
+        let retiring = ws
+            .cohorts
+            .iter()
+            .filter(|c| c.phase == CohortPhase::Retiring)
+            .count();
+        if retiring >= self.max_retiring {
+            self.promotion_stalls += 1;
+            return;
+        }
+        let mut mature: Vec<usize> = (0..r)
+            .filter(|&w| self.phase[w] == Phase::Growing && self.updates[w] >= maturity)
+            .collect();
+        // most rewritten first, ties by position
+        mature.sort_by_key(|&w| (std::cmp::Reverse(self.updates[w]), w));
+        let half = WIRE_COHORT / 2;
+        let even: Vec<usize> = mature
+            .iter()
+            .copied()
+            .filter(|w| w.is_multiple_of(2))
+            .take(half)
+            .collect();
+        let odd: Vec<usize> = mature
+            .iter()
+            .copied()
+            .filter(|w| w % 2 == 1)
+            .take(half)
+            .collect();
+        if even.len() < half || odd.len() < half {
+            self.promotion_stalls += 1;
+            return;
+        }
+        let old = (0..ws.cohorts.len())
+            .filter(|&c| ws.cohorts[c].phase == CohortPhase::Serving)
+            .min_by_key(|&c| ws.cohorts[c].promoted_at)
+            .expect("a serving cohort");
+        let new = ws.cohorts.len();
+        let mut wires: Vec<usize> = even.into_iter().chain(odd).collect();
+        wires.sort_unstable();
+        for &w in &wires {
+            self.phase[w] = Phase::Serving;
+            ws.cohort_of[w] = Some(new);
+        }
+        ws.cohorts.push(Cohort {
+            phase: CohortPhase::Serving,
+            promoted_at: fire + r / (2 * WIRE_COHORT),
+            retired_at: None,
+            wires,
+        });
+        let cohort = &mut ws.cohorts[old];
+        cohort.phase = CohortPhase::Retiring;
+        cohort.retired_at = Some(fire);
+        for &w in &cohort.wires {
+            self.phase[w] = Phase::Retiring;
+        }
+        self.rotations.push(Rotation {
+            fire,
+            promoted: new,
+            retiring: old,
+        });
+    }
+
     pub fn growth(&mut self, count: usize, rng: &mut impl Rng) -> Vec<XGate> {
+        if self.wire.is_some() {
+            return self.growth_wire_mode(count, rng);
+        }
         let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             let banks = self.phase.len();
@@ -320,6 +640,9 @@ impl Band {
     }
 
     pub fn rotate(&mut self, fire: usize, interval: usize, maturity: usize) {
+        if self.wire.is_some() {
+            return self.rotate_wire_mode(fire, interval, maturity);
+        }
         let banks = self.phase.len();
         for b in 0..banks {
             if self.phase[b] == Phase::Retiring
@@ -374,8 +697,27 @@ impl Band {
         }
         assert_eq!(refs, self.refs);
         for (i, &n) in refs.iter().enumerate() {
-            if self.phase[i / self.size] == Phase::Growing {
+            if self.phase_of((self.np + i) as u16) == Phase::Growing {
                 assert_eq!(n, 0);
+            }
+        }
+        if let Some(ws) = &self.wire {
+            for (w, c) in ws.cohort_of.iter().enumerate() {
+                match c {
+                    None => assert_eq!(self.phase[w], Phase::Growing),
+                    Some(c) => {
+                        let cohort = &ws.cohorts[*c];
+                        assert!(cohort.wires.contains(&w));
+                        assert_eq!(
+                            self.phase[w],
+                            if cohort.phase == CohortPhase::Serving {
+                                Phase::Serving
+                            } else {
+                                Phase::Retiring
+                            }
+                        );
+                    }
+                }
             }
         }
     }

@@ -478,6 +478,12 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "adaptive.census_batches = 10",
         "adaptive.term_cap = 64",
         "adaptive.term_cap = 511",
+        // the turnover mode and the interleaving window
+        "three_mask.turnover = \"cohort\"",
+        "three_mask.turnover = \"wire\"\nthree_mask.banks = 8",
+        "source.wires = 64\nthree_mask.turnover = \"wire\"\nthree_mask.max_retiring = 4",
+        "three_mask.interleave = -1",
+        "preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"L8\"\nthree_mask.interleave = 4096",
     ] {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
@@ -488,6 +494,34 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         .unwrap();
     resolve_body("source.wires = 64\nthree_mask.band_wires = 1024\nrun.skip_stages = [6]").unwrap();
     resolve_body("adaptive.census_batches = 11\nadaptive.term_cap = 512").unwrap();
+    let wire = resolve_body(
+        "three_mask.turnover = \"wire\"\nthree_mask.max_retiring = 3\nthree_mask.interleave = 4096",
+    )
+    .unwrap();
+    assert!(!wire.three_mask.is_default());
+    let args = strings(&script_args(&wire));
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--three-mask-turnover", "wire"]),
+        "{args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--three-mask-interleave", "4096"]),
+        "{args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--three-mask-random-helpers"),
+        "defaults are not passed"
+    );
+    let m = recipe_manifest(&wire, &[], 1);
+    assert!(m.contains("\nthree_mask_params=custom\n"), "{m}");
+    assert!(
+        m.contains("\nthree_mask_turnover=wire\nthree_mask_interleave=4096\n"),
+        "{m}"
+    );
+    resolve_body("source.wires = 64\nthree_mask.turnover = \"wire\"\nthree_mask.band_wires = 160")
+        .unwrap();
     let error = resolve_body("source.wires = 64\nthree_mask.band_wires = 1024")
         .err()
         .unwrap();
@@ -894,7 +928,7 @@ fn the_exact_default_manifest_text() {
         "three_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\n",
         "three_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\n",
         "three_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\n",
-        "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_outer_blocks=L8\n",
+        "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=bank\nthree_mask_interleave=0\nthree_mask_outer_blocks=L8\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
         "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
@@ -2098,7 +2132,7 @@ fn three_mask_table_follows_its_mode() {
     assert!(m.contains("\npreprocessing_mode=three-mask\npreprocessing_preset=none\n"));
     assert!(
         m.contains(
-            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_outer_blocks=L8\n"
+            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=bank\nthree_mask_interleave=0\nthree_mask_outer_blocks=L8\n"
         ),
         "{m}"
     );

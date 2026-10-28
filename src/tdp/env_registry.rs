@@ -130,6 +130,8 @@ pub(crate) const ENV_REGISTRY: &[EnvEntry] = &[
     exact("THREE_MASK_MASK_COUNT", Recipe, "3"),
     exact("THREE_MASK_RANDOM_HELPERS", Recipe, "1"),
     exact("THREE_MASK_UNIQUE_COVER", Recipe, "1"),
+    exact("THREE_MASK_TURNOVER", Recipe, "bank"),
+    exact("THREE_MASK_INTERLEAVE", Recipe, "0"),
     prefix("THREE_MASK_", Forbidden),
     // stage 3 (circuit_mixer) and the frozen store
     exact("FROZEN_DB_DIR", Input, "-"),

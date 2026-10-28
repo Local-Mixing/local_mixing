@@ -91,6 +91,15 @@ pub struct ThreeMaskParams {
     pub random_helpers: bool,
     /// Reject a temporary cover whose cubic label is a live persistent label.
     pub unique_cover: bool,
+    /// Turn band coordinates over per wire instead of per bank: a drained
+    /// wire grows at once, promotion cohorts of 16 form from any mature
+    /// wires and masks stay cohort-local (`band::Band` in its wire mode;
+    /// `banks` must be 0).
+    pub wire_turnover: bool,
+    /// Dependency-preserving random reordering of the finished compute with
+    /// this displacement window in gates (0 = off): gates of independent
+    /// fires interleave, so no narrow window holds a complete fire.
+    pub interleave_window: usize,
 }
 
 impl Default for ThreeMaskParams {
@@ -131,6 +140,8 @@ impl Default for ThreeMaskParams {
             mask_count: 2,
             random_helpers: false,
             unique_cover: false,
+            wire_turnover: false,
+            interleave_window: 0,
         }
     }
 }
@@ -236,6 +247,36 @@ pub fn validate_geometry(r: usize, banks: usize, max_retiring: usize) -> Result<
     Ok(())
 }
 
+/// The number of wires in a promotion cohort of the wire-turnover mode (the
+/// bank size of the design's geometry).
+pub const WIRE_COHORT: usize = 16;
+
+/// The geometry the wire-turnover mode requires: a band of at least 64
+/// wires and a multiple of 32 (cohorts of [`WIRE_COHORT`] wires, half of
+/// them serving at the start), `banks` left at 0 and `max_retiring`
+/// (retiring cohorts at once, 0 = auto: half the cohorts minus one) below
+/// half the cohort count.
+pub fn validate_wire_geometry(r: usize, banks: usize, max_retiring: usize) -> Result<(), String> {
+    if r < 64 || !r.is_multiple_of(2 * WIRE_COHORT) {
+        return Err(format!(
+            "a band of {r} wires under wire turnover: need at least 64, a multiple of {}",
+            2 * WIRE_COHORT
+        ));
+    }
+    if banks != 0 {
+        return Err(format!(
+            "{banks} banks: wire turnover forms cohorts of {WIRE_COHORT} wires itself; set banks = 0"
+        ));
+    }
+    if max_retiring >= r / (2 * WIRE_COHORT) {
+        return Err(format!(
+            "max_retiring {max_retiring}: must be below half the cohort count ({} cohorts)",
+            r / WIRE_COHORT
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct ThreeMaskStats {
     pub input_gates: usize,
@@ -262,6 +303,14 @@ pub struct ThreeMaskStats {
     pub max_mask_rank_deficit: usize,
     pub fires_with_mask_rank_deficit: usize,
     pub feedback_gates: usize,
+    /// Wire turnover: fires at which a drained wire left its retiring cohort
+    /// and started growing, minus the fire its cohort retired at.
+    pub wire_limbo_waits: Vec<usize>,
+    pub interleave_window: usize,
+    pub interleave_mean_displacement: f64,
+    /// Mean, over consecutive 250-gate windows of the output, of the spread
+    /// of original positions they contain (250 without interleaving).
+    pub interleave_span_250: f64,
 }
 
 /// A mask's identity for uniqueness checks: the sorted cubic triple, or the
@@ -347,6 +396,122 @@ fn dh(band: &band::Band, rng: &mut impl Rng, cfg: &ThreeMaskParams) -> Vec<u16> 
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InterleaveStats {
+    pub mean_displacement: f64,
+    pub span_250: f64,
+}
+
+/// A dependency-preserving random reordering. Gate `j` must follow every
+/// earlier gate that writes a wire `j` reads or reads the wire `j` writes;
+/// XOR writes into one wire with no read between them commute. The output
+/// is a random topological order of that relation in which no gate is
+/// emitted more than `window` positions (in the original order) ahead of
+/// the earliest gate still waiting, so gates of independent fires
+/// interleave within the window and nothing drifts further.
+pub fn interleave(
+    gates: &[XGate],
+    window: usize,
+    rng: &mut impl Rng,
+) -> (Vec<XGate>, InterleaveStats) {
+    let m = gates.len();
+    let width = gates
+        .iter()
+        .map(|g| g.max_wire() as usize + 1)
+        .max()
+        .unwrap_or(0);
+    // Per wire, its accesses form alternating groups of writers and readers.
+    // A reader follows every writer of the latest writer group, a writer
+    // follows every reader of the latest reader group; earlier groups are
+    // implied transitively, and members of one group are unordered.
+    let mut writer_group: Vec<Vec<usize>> = vec![vec![]; width];
+    let mut reader_group: Vec<Vec<usize>> = vec![vec![]; width];
+    let mut last_was_writer = vec![false; width];
+    let mut succ: Vec<Vec<usize>> = vec![vec![]; m];
+    let mut npred = vec![0usize; m];
+    let mut preds = vec![];
+    for (j, g) in gates.iter().enumerate() {
+        preds.clear();
+        for l in g.ctrls.iter() {
+            preds.extend_from_slice(&writer_group[l.0 as usize]);
+        }
+        let t = g.target as usize;
+        preds.extend_from_slice(&reader_group[t]);
+        preds.sort_unstable();
+        preds.dedup();
+        npred[j] = preds.len();
+        for &p in &preds {
+            succ[p].push(j);
+        }
+        for l in g.ctrls.iter() {
+            let c = l.0 as usize;
+            if last_was_writer[c] {
+                reader_group[c].clear();
+                last_was_writer[c] = false;
+            }
+            reader_group[c].push(j);
+        }
+        if !last_was_writer[t] {
+            writer_group[t].clear();
+            last_was_writer[t] = true;
+        }
+        writer_group[t].push(j);
+    }
+    let mut ready: std::collections::BTreeSet<usize> = (0..m).filter(|&j| npred[j] == 0).collect();
+    let mut emitted = vec![false; m];
+    let mut frontier = 0usize;
+    let mut out = Vec::with_capacity(m);
+    let mut order = Vec::with_capacity(m);
+    while out.len() < m {
+        while frontier < m && emitted[frontier] {
+            frontier += 1;
+        }
+        // the frontier gate is ready: all its predecessors precede it
+        let limit = frontier.saturating_add(window);
+        let eligible = ready.range(..limit).count();
+        debug_assert!(eligible > 0);
+        let k = rng.random_range(0..eligible);
+        let j = *ready.range(..limit).nth(k).expect("an eligible gate");
+        ready.remove(&j);
+        emitted[j] = true;
+        out.push(gates[j].clone());
+        order.push(j);
+        for &s in &succ[j] {
+            npred[s] -= 1;
+            if npred[s] == 0 {
+                ready.insert(s);
+            }
+        }
+    }
+    let mean_displacement = if m == 0 {
+        0.0
+    } else {
+        order
+            .iter()
+            .enumerate()
+            .map(|(p, &o)| p.abs_diff(o) as f64)
+            .sum::<f64>()
+            / m as f64
+    };
+    let spans: Vec<f64> = order
+        .chunks(250)
+        .filter(|c| c.len() == 250)
+        .map(|c| (c.iter().max().unwrap() - c.iter().min().unwrap()) as f64)
+        .collect();
+    let span_250 = if spans.is_empty() {
+        m as f64
+    } else {
+        spans.iter().sum::<f64>() / spans.len() as f64
+    };
+    (
+        out,
+        InterleaveStats {
+            mean_displacement,
+            span_250,
+        },
+    )
+}
+
 pub struct Output {
     pub gates: Vec<XGate>,
     /// Same compute before physical carrier migration, for role-wise diagnostics.
@@ -407,7 +572,17 @@ pub fn compute(
     if np < 3 || np + r > 65536 {
         return Err("need np>=3 and total<=65536".into());
     }
-    validate_geometry(r, cfg.banks, cfg.max_retiring)?;
+    if cfg.wire_turnover {
+        validate_wire_geometry(r, cfg.banks, cfg.max_retiring)?;
+        if cfg.cross_bank_pairs || cfg.separate_mask_banks || cfg.bank_disjoint_masks {
+            return Err(
+                "wire turnover supports cohort-local masks only (no cross_bank_pairs, separate_mask_banks or bank_disjoint_masks)"
+                    .into(),
+            );
+        }
+    } else {
+        validate_geometry(r, cfg.banks, cfg.max_retiring)?;
+    }
     if cfg.growth_sweeps_per_visit == 0 {
         return Err("need positive visit sweeps".into());
     }
@@ -877,13 +1052,23 @@ pub fn compute(
     stats.migration_gates = shifted.stats.added_gates;
     stats.transfers = shifted.stats.transfer_count;
     stats.skipped_cuts = shifted.stats.skipped_cut_count;
-    stats.compute_gates = shifted.gates.len();
+    stats.wire_limbo_waits = band.wire_limbo_waits;
+    let mut final_gates = shifted.gates;
+    if cfg.interleave_window > 0 {
+        let mut irng = StdRng::seed_from_u64(cfg.seed ^ 0x1A7E_61EA);
+        let (reordered, istats) = interleave(&final_gates, cfg.interleave_window, &mut irng);
+        final_gates = reordered;
+        stats.interleave_window = cfg.interleave_window;
+        stats.interleave_mean_displacement = istats.mean_displacement;
+        stats.interleave_span_250 = istats.span_250;
+    }
+    stats.compute_gates = final_gates.len();
     assert_eq!(
         stats.before_migration,
         stats.fire_core_gates + stats.mask_gates + stats.growth_gates + stats.band_ingress_gates
     );
     Ok(Output {
-        gates: shifted.gates,
+        gates: final_gates,
         logical_gates: gates,
         fire_boundaries,
         stats,

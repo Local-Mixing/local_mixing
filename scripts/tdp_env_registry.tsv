@@ -33,6 +33,8 @@ THREE_MASK_SEGMENTS	exact	recipe	6
 THREE_MASK_MASK_COUNT	exact	recipe	3
 THREE_MASK_RANDOM_HELPERS	exact	recipe	1
 THREE_MASK_UNIQUE_COVER	exact	recipe	1
+THREE_MASK_TURNOVER	exact	recipe	bank
+THREE_MASK_INTERLEAVE	exact	recipe	0
 THREE_MASK_	prefix	forbidden	-
 FROZEN_DB_DIR	exact	input	-
 FROZEN_FILTER	exact	driver	0

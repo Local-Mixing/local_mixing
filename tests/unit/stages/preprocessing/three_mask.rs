@@ -883,6 +883,173 @@ fn nonrestoring_chain_changes_only_target_and_helpers() {
 // The stage-2 assembly.
 
 #[test]
+fn interleave_preserves_function_and_respects_the_window() {
+    let mut rng = StdRng::seed_from_u64(77);
+    let width = 12usize;
+    // distinct gates, so positions in the output identify them
+    let mut unique = std::collections::HashSet::new();
+    let mut gates = Vec::new();
+    while gates.len() < 2000 {
+        let t = rng.random_range(0..width) as u16;
+        let mut a = rng.random_range(0..width - 1) as u16;
+        if a >= t {
+            a += 1;
+        }
+        let mut b = rng.random_range(0..width - 2) as u16;
+        if b >= t.min(a) {
+            b += 1;
+        }
+        if b >= t.max(a) {
+            b += 1;
+        }
+        let mut g = if rng.random_bool(0.3) {
+            XGate::cnot(t, a)
+        } else {
+            XGate::conj(t, [(a, rng.random()), (b, rng.random())]).unwrap()
+        };
+        g.comp = rng.random();
+        if unique.insert(g.clone()) {
+            gates.push(g);
+        }
+    }
+    let (same, st) = interleave(&gates, 1, &mut rng);
+    assert_eq!(same, gates, "window 1 keeps the order");
+    assert_eq!(st.mean_displacement, 0.0);
+    for window in [7usize, 100, 1000, usize::MAX] {
+        let (out, st) = interleave(&gates, window, &mut rng);
+        assert_eq!(out.len(), gates.len());
+        let mut sorted_out: Vec<_> = out.iter().map(|g| format!("{g:?}")).collect();
+        let mut sorted_in: Vec<_> = gates.iter().map(|g| format!("{g:?}")).collect();
+        sorted_out.sort();
+        sorted_in.sort();
+        assert_eq!(sorted_out, sorted_in, "a permutation");
+        // every conflicting pair (one writes what the other reads) keeps its order
+        let position: std::collections::HashMap<&XGate, usize> =
+            out.iter().enumerate().map(|(p, g)| (g, p)).collect();
+        for (i, gi) in gates.iter().enumerate() {
+            for gj in gates.iter().skip(i + 1) {
+                let conflict = gj.ctrls.iter().any(|l| l.0 == gi.target)
+                    || gi.ctrls.iter().any(|l| l.0 == gj.target);
+                if conflict {
+                    assert!(
+                        position[gi] < position[gj],
+                        "window {window}: {gi:?} must precede {gj:?}"
+                    );
+                }
+            }
+        }
+        for _ in 0..8 {
+            let initial: Vec<u64> = (0..width).map(|_| rng.random()).collect();
+            let mut a = initial.clone();
+            let mut b = initial;
+            eval_lanes(&gates, &mut a);
+            eval_lanes(&out, &mut b);
+            assert_eq!(a, b, "window {window}");
+        }
+        assert!(st.mean_displacement > 0.0, "window {window}: {st:?}");
+        if window < gates.len() {
+            // no gate runs more than `window` ahead of the earliest waiting one
+            let mut emitted = vec![false; gates.len()];
+            let mut order = vec![usize::MAX; gates.len()];
+            for (o, g) in gates.iter().enumerate() {
+                order[position[g]] = o;
+            }
+            let mut frontier = 0;
+            for (p, &o) in order.iter().enumerate() {
+                while frontier < gates.len() && emitted[frontier] {
+                    frontier += 1;
+                }
+                assert!(
+                    o < frontier + window,
+                    "position {p}: original {o}, frontier {frontier}, window {window}"
+                );
+                emitted[o] = true;
+            }
+        }
+    }
+}
+
+#[test]
+fn wire_turnover_compute_verifies_and_turns_over() {
+    for seed in 0..6u64 {
+        let mut rng = StdRng::seed_from_u64(900 + seed);
+        // 64 serving wires: three masks of three roles exclude up to 27 per fire
+        let np = if seed % 2 == 0 { 6 } else { 12 };
+        let r = 128;
+        let input: Vec<_> = (0..160)
+            .map(|i| {
+                let mut g = XGate::conj(
+                    (i % 3) as u16,
+                    [
+                        ((i % 3 + 1) as u16, rng.random()),
+                        ((i % 3 + 2) as u16, rng.random()),
+                    ],
+                )
+                .unwrap();
+                g.comp = rng.random();
+                g
+            })
+            .collect();
+        let cfg = ThreeMaskParams {
+            wire_turnover: true,
+            interleave_window: if seed % 3 == 0 { 0 } else { 400 },
+            retirement_budget: if seed < 3 { 2 } else { 4 },
+            ..ThreeMaskParams::v2(seed, r)
+        };
+        let out = compute(&input, np, r, &cfg).unwrap();
+        assert_eq!(out.stats.max_mask_rank_deficit, 0, "seed {seed}");
+        assert!(
+            out.stats.rotations.len() >= 4,
+            "seed {seed}: {} rotations",
+            out.stats.rotations.len()
+        );
+        assert!(
+            out.stats.retired_banks >= 2,
+            "seed {seed}: {} drained cohorts",
+            out.stats.retired_banks
+        );
+        assert!(!out.stats.wire_limbo_waits.is_empty(), "seed {seed}");
+        // small geometries drain a cohort in a few fires, so the budget idles
+        // between rotations; it is never exceeded
+        assert!(
+            out.stats.retiring_replacements > 0
+                && out.stats.retiring_replacements <= cfg.retirement_budget * input.len(),
+            "seed {seed}: {} replacements",
+            out.stats.retiring_replacements
+        );
+        if cfg.interleave_window > 0 {
+            assert!(out.stats.interleave_mean_displacement > 0.0);
+            assert!(out.stats.interleave_span_250 > 250.0);
+        } else {
+            assert_eq!(out.stats.interleave_span_250, 0.0);
+        }
+        for _ in 0..8 {
+            let initial: Vec<u64> = (0..np + r).map(|_| rng.random()).collect();
+            check_payload_both_directions(
+                &out.gates,
+                &input,
+                np,
+                &initial,
+                &format!("wire turnover seed {seed}"),
+            );
+        }
+    }
+    // the geometry rule of the mode
+    assert!(validate_wire_geometry(64, 0, 0).is_ok());
+    assert!(validate_wire_geometry(128, 0, 3).is_ok());
+    assert!(validate_wire_geometry(48, 0, 0).is_err());
+    assert!(validate_wire_geometry(80, 0, 0).is_err());
+    assert!(validate_wire_geometry(128, 8, 0).is_err());
+    assert!(validate_wire_geometry(128, 0, 4).is_err());
+    let bad = ThreeMaskParams {
+        wire_turnover: true,
+        banks: 8,
+        ..ThreeMaskParams::v2(1, 128)
+    };
+    assert!(compute(&[], 6, 128, &bad).is_err());
+}
+
+#[test]
 fn v2_is_the_campaign_configuration_and_auto_band_rounds_up() {
     let p = ThreeMaskParams::v2(7, 128);
     assert_eq!((p.seed, p.band_wires), (7, 128));

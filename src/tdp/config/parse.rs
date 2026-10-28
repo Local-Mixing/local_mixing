@@ -427,6 +427,18 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "three_mask_unique_cover",
         "bool",
     ),
+    (
+        "three_mask.turnover",
+        "three_mask.turnover",
+        "three_mask_turnover",
+        "string",
+    ),
+    (
+        "three_mask.interleave",
+        "three_mask.interleave",
+        "three_mask_interleave",
+        "integer",
+    ),
     ("delivery.mode", "delivery.mode", "delivery_mode", "string"),
     (
         "adaptive.max_rounds",

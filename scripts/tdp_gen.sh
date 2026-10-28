@@ -132,6 +132,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --three-mask-mask-count K     [3; 1..3]
     --three-mask-random-helpers 0|1  [1]
     --three-mask-unique-cover 0|1    [1]
+    --three-mask-turnover bank|wire  [bank; wire = per-wire turnover in cohorts of 16, banks must be 0]
+    --three-mask-interleave W        [0 = off; else the fire-interleaving window in gates]
   --db-mixing-schedule S   validated (default: profile 2,2,2,2,2, moves int(4·G·1.3))
                            or custom:
     --db-mixing-growth-work-units G        [3]  profile n0
@@ -267,7 +269,7 @@ PACK_SPLIT_BUDGET=65536; PACK_FIX_ITERATIONS=4; PACK_FALLBACK_ITERATIONS=4; PACK
 PACK_ALLOW_FLOOR=0; PACK_ALLOW_BUDGET=0
 declare -A SEEN=()
 KNOB_FLAGS=" --preprocessing-mask-pair-wires --preprocessing-max-open-masks --preprocessing-min-open-masks --preprocessing-balanced-masks --preprocessing-shuffling-segments --preprocessing-shuffling-return-home --preprocessing-premask --preprocessing-seed-avoid-c1 --preprocessing-chain --preprocessing-chain-len "
-TM_FLAGS=" --three-mask-band-wires --three-mask-banks --three-mask-retire-budget --three-mask-max-retiring --three-mask-rotation --three-mask-maturity --three-mask-visit-sweeps --three-mask-growth --three-mask-warmup --three-mask-segments --three-mask-mask-count --three-mask-random-helpers --three-mask-unique-cover "
+TM_FLAGS=" --three-mask-band-wires --three-mask-banks --three-mask-retire-budget --three-mask-max-retiring --three-mask-rotation --three-mask-maturity --three-mask-visit-sweeps --three-mask-growth --three-mask-warmup --three-mask-segments --three-mask-mask-count --three-mask-random-helpers --three-mask-unique-cover --three-mask-turnover --three-mask-interleave "
 while [ $# -gt 0 ]; do
   case "$1" in
     -n) set -- --source-wires "${@:2}" ;;
@@ -483,14 +485,15 @@ GEN_ENV=()
 # ---- three-mask knobs (--preprocessing-mode three-mask only; defaults = the
 # campaign configuration "three-mask modified / v2"; the outer blocks are L8) ----
 declare -A TM_BASE=([band-wires]=0 [banks]=0 [retire-budget]=2 [max-retiring]=0 [rotation]=1 [maturity]=2
-  [visit-sweeps]=2 [growth]=8 [warmup]=4 [segments]=6 [mask-count]=3 [random-helpers]=1 [unique-cover]=1)
+  [visit-sweeps]=2 [growth]=8 [warmup]=4 [segments]=6 [mask-count]=3 [random-helpers]=1 [unique-cover]=1
+  [turnover]=bank [interleave]=0)
 declare -A TM_VAR=([band-wires]=THREE_MASK_BAND_WIRES [banks]=THREE_MASK_BANKS [retire-budget]=THREE_MASK_RETIRE_BUDGET
   [max-retiring]=THREE_MASK_MAX_RETIRING [rotation]=THREE_MASK_ROTATION [maturity]=THREE_MASK_MATURITY
   [visit-sweeps]=THREE_MASK_VISIT_SWEEPS [growth]=THREE_MASK_GROWTH [warmup]=THREE_MASK_WARMUP
   [segments]=THREE_MASK_SEGMENTS [mask-count]=THREE_MASK_MASK_COUNT [random-helpers]=THREE_MASK_RANDOM_HELPERS
-  [unique-cover]=THREE_MASK_UNIQUE_COVER)
+  [unique-cover]=THREE_MASK_UNIQUE_COVER [turnover]=THREE_MASK_TURNOVER [interleave]=THREE_MASK_INTERLEAVE)
 TM_ORDER=(band-wires banks retire-budget max-retiring rotation maturity visit-sweeps growth warmup segments
-  mask-count random-helpers unique-cover)
+  mask-count random-helpers unique-cover turnover interleave)
 declare -A TM_EFF=()
 if [ "$PREPROCESSING_MODE" != three-mask ] && [ "${#TM[@]}" -gt 0 ]; then
   for k in "${!TM[@]}"; do fatal "--three-mask-$k is only valid with --preprocessing-mode three-mask"; done
@@ -515,6 +518,13 @@ if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
     TM_EFF[mask-count]=$(bounded_uint --three-mask-mask-count "$(tv mask-count)" 1 3)
     TM_EFF[random-helpers]=$(bounded_uint --three-mask-random-helpers "$(tv random-helpers)" 0 1)
     TM_EFF[unique-cover]=$(bounded_uint --three-mask-unique-cover "$(tv unique-cover)" 0 1)
+    case "$(tv turnover)" in
+      bank|wire) TM_EFF[turnover]=$(tv turnover) ;;
+      *) fatal "--three-mask-turnover must be bank or wire" ;;
+    esac
+    TM_EFF[interleave]=$(bounded_uint --three-mask-interleave "$(tv interleave)" 0 100000000)
+    [ "${TM_EFF[turnover]}" != wire ] || [ "${TM_EFF[banks]}" -eq 0 ] ||
+      fatal "--three-mask-banks must be 0 under --three-mask-turnover wire (cohorts of 16 wires)"
     r=${TM_EFF[band-wires]}
     [ "$r" -eq 0 ] || { [ "$r" -ge 64 ] && [ $((r % 16)) -eq 0 ]; } ||
       fatal "--three-mask-band-wires must be 0 (auto) or at least 64 and a multiple of 16"

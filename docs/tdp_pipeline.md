@@ -359,6 +359,8 @@ defaults below are the campaign configuration "three-mask modified / v2"
 | `three_mask.visit_sweeps`, `three_mask.growth`, `three_mask.warmup` | integers, `2`, `8`, `4` | Growth sweeps per bank visit, growth gates per fire, warm-up sweeps before the first fire. |
 | `three_mask.segments` | integer, `6` | Persistent carrier migration segments per fire box (0 = off). |
 | `three_mask.mask_count` | integer, `3` | Persistent masks per value, `1..3`. |
+| `three_mask.turnover` | string, `"bank"` | `"wire"` turns band coordinates over per wire: masks stay local to promotion cohorts of 16 wires, a drained wire grows again at once instead of waiting for its bank-mates, and cohorts form from any mature growing wires (`banks` must be 0; `max_retiring` counts cohorts). Same gates per fire; the coordinate lifetime is still set by `retire_budget`. |
+| `three_mask.interleave` | integer, `0` | Fire interleaving window in gates (`0` = off): a dependency-preserving random reordering of the finished compute in which no gate runs more than this far ahead of the earliest gate still waiting, so narrow windows hold fragments of many fires instead of one whole fire. Function-preserving; no gates added. |
 | `three_mask.random_helpers`, `three_mask.unique_cover` | bools, `true`, `true` | The "modified / v2" levers: dirty helpers drawn from a shuffled pool of every reference-free band wire (instead of the first four wires of the lowest growing bank), and a temporary cover mask whose cubic label is never a live persistent label. `false` gives the generator's "as-is" variant. |
 
 Every effective value is recorded in the manifest (`three_mask_*`,
@@ -586,7 +588,7 @@ The managed command reads configuration; the Bash driver takes flags (its
 | `source.wires`, `source.gates`, `source.gates_rule`, `source.path`, `source.construction` | `--source-wires N`, `--source-gates M` (`-m`), `--source-gates-rule formula`, `--source-path P`, `--source-construction random\|balanced` |
 | `preprocessing.mode`, `preprocessing.preset` | `--preprocessing-mode M`, `--preprocessing-preset L8\|A\|custom` |
 | custom knobs | `--preprocessing-{mask-pair-wires,max-open-masks,min-open-masks,balanced-masks,shuffling-segments,shuffling-return-home,premask,seed-avoid-c1,chain,chain-len} V` |
-| `three_mask.*` | `--three-mask-{band-wires,banks,retire-budget,max-retiring,rotation,maturity,visit-sweeps,growth,warmup,segments,mask-count,random-helpers,unique-cover} V` |
+| `three_mask.*` | `--three-mask-{band-wires,banks,retire-budget,max-retiring,rotation,maturity,visit-sweeps,growth,warmup,segments,mask-count,random-helpers,unique-cover,turnover,interleave} V` |
 | `db_mixing.*` | `--db-mixing-schedule custom`, `--db-mixing-growth-work-units`, `--db-mixing-hold-work-units`, `--db-mixing-target-size-factor` |
 | `database.lookup_miss_filter` | `--database-lookup-miss-filter auto\|on\|off` |
 | `crossing.*` | `--crossing-target-size-factor R`, `--crossing-width-penalty-base B`, `--crossing-width-penalty-threshold C`, `--crossing-size-tolerance-divisor D`, `--crossing-move-budget-factor F`, `--crossing-move-attempts M` |

@@ -105,6 +105,9 @@ reject 'adaptive-census-batches' --adaptive-census-batches 0
 reject 'multiple of 32' --three-mask-band-wires 144
 reject 'even banks of at least 8' --three-mask-band-wires 160 --three-mask-banks 6
 reject 'even banks of at least 8' --three-mask-band-wires 128 --three-mask-banks 32
+reject 'must be bank or wire' --three-mask-turnover cohort
+reject 'must be 0 under --three-mask-turnover wire' --three-mask-turnover wire --three-mask-banks 8
+reject 'three-mask-interleave' --three-mask-interleave abc
 reject 'adaptive-accept' --adaptive-accept largest
 reject 'requires an argument' --adaptive-max-rounds
 reject 'source-wires' --source-wires 2
