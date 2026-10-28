@@ -88,6 +88,10 @@ pub struct Band {
     pub reserve: Vec<u16>,
     lanes: bool,
     reserved: Vec<bool>,
+    /// The reserve's slots (band-relative wires): a wire keeps its slot,
+    /// hence its lane, until it leaves the candidate set; only emptied
+    /// slots are refilled, so lanes stay disjoint across consecutive fires.
+    slots: Vec<Option<usize>>,
 }
 
 impl Band {
@@ -138,6 +142,7 @@ impl Band {
             reserve: vec![],
             lanes: cfg.interleave_window > 0,
             reserved: vec![false; r],
+            slots: vec![None; super::HELPER_RESERVE],
         }
     }
 
@@ -147,27 +152,48 @@ impl Band {
             return;
         }
         let r = self.refs.len();
-        let mut picked: Vec<usize> = match &self.wire {
-            None => (0..r)
-                .filter(|&w| {
-                    self.phase_of((self.np + w) as u16) == Phase::Retiring && self.refs[w] == 0
-                })
-                .collect(),
-            Some(_) => {
-                let mut growing: Vec<usize> = (0..r)
-                    .filter(|&w| self.phase[w] == Phase::Growing)
-                    .collect();
-                growing.sort_by_key(|&w| (std::cmp::Reverse(self.updates[w]), w));
-                growing.truncate(super::HELPER_RESERVE);
-                growing
-            }
+        let candidate = |band: &Self, w: usize| match &band.wire {
+            None => band.phase_of((band.np + w) as u16) == Phase::Retiring && band.refs[w] == 0,
+            Some(_) => band.phase[w] == Phase::Growing,
         };
-        picked.sort_unstable();
-        self.reserved.fill(false);
-        for &w in &picked {
-            self.reserved[w] = true;
+        for k in 0..self.slots.len() {
+            if let Some(w) = self.slots[k]
+                && !candidate(self, w)
+            {
+                self.slots[k] = None;
+            }
         }
-        self.reserve = picked.iter().map(|&w| (self.np + w) as u16).collect();
+        let held: Vec<usize> = self.slots.iter().flatten().copied().collect();
+        let mut fresh: Vec<usize> = (0..r)
+            .filter(|&w| candidate(self, w) && !held.contains(&w))
+            .collect();
+        // most rewritten first (wire mode: `updates` is per wire); bank mode
+        // takes drained retiring wires by position (`updates` is per bank)
+        let wire_mode = self.wire.is_some();
+        fresh.sort_by_key(|&w| {
+            (
+                std::cmp::Reverse(if wire_mode { self.updates[w] } else { 0 }),
+                w,
+            )
+        });
+        let mut fresh = fresh.into_iter();
+        for slot in self.slots.iter_mut() {
+            if slot.is_none() {
+                *slot = fresh.next();
+            }
+        }
+        self.reserved.fill(false);
+        for w in self.slots.iter().flatten() {
+            self.reserved[*w] = true;
+        }
+        // in slot order (lane = slot mod HELPER_LANES); a partial reserve is
+        // shorter and the compute falls back to the shuffled pool
+        self.reserve = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|&w| (self.np + w) as u16)
+            .collect();
     }
 
     /// Wire mode: the wire of retiring cohort `c` with the fewest remaining
@@ -242,6 +268,7 @@ impl Band {
             reserve: vec![],
             lanes: cfg.interleave_window > 0,
             reserved: vec![false; r],
+            slots: vec![None; super::HELPER_RESERVE],
         }
     }
 

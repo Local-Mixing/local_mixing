@@ -229,5 +229,6 @@ the server campaigns of October 2026 ran the prototypes this code ports.
   config validation before a run starts.
 * Two three-mask knobs, off by default: `three_mask.turnover = "wire"`
   (per-wire turnover in cohorts of 16) and `three_mask.interleave = W`
-  (dependency-preserving fire interleaving); see
+  (dependency-preserving fire interleaving, with a read-only mask refresh,
+  per-fire helper lanes and carrier migration in every eighth fire); see
   `docs/THREE_MASK_STAGE2.md`, "Turnover modes and fire interleaving".

@@ -254,9 +254,13 @@ pub const WIRE_COHORT: usize = 16;
 /// Helper lanes under fire interleaving: fire `i` takes its dirty helpers
 /// from lane `i mod HELPER_LANES` of the band's helper reserve
 /// (`band::Band::reserve`: reference-free wires growth never writes).
-pub const HELPER_LANES: usize = 4;
+pub const HELPER_LANES: usize = HELPER_RESERVE / 4;
 /// Wire mode: how many of the most rewritten growing wires form the reserve.
-pub const HELPER_RESERVE: usize = 16;
+pub const HELPER_RESERVE: usize = 32;
+/// Under fire interleaving the persistent carrier migration transfers roles
+/// in every `MIGRATION_GROUP`-th fire box only, so the fires in between
+/// are not chained through the moved coordinates.
+pub const MIGRATION_GROUP: usize = 8;
 
 /// The geometry the wire-turnover mode requires: a band of at least 64
 /// wires and a multiple of 32 (cohorts of [`WIRE_COHORT`] wires, half of
@@ -699,6 +703,15 @@ pub fn compute(
         // no lanes, or a reserve too small for them: the shuffled pool
         dh(band, rng, cfg)
     };
+    // under fire interleaving the refresh leaves every band coordinate
+    // read-only (same gates, same function; see `emit_cubic_delta_readonly`)
+    let cubic_delta = |t, old: Mask, new: Mask, helpers: &[u16], keep: bool| {
+        if cfg.interleave_window > 0 {
+            fire::emit_cubic_delta_readonly(t, old, new, helpers, keep)
+        } else {
+            fire::emit_cubic_delta(t, old, new, helpers, keep)
+        }
+    };
     let em = |t, m: Mask, band: &band::Band, lane_helpers: &[u16]| {
         if lane_count > 1 {
             emit_mask_with(t, m, lane_helpers)
@@ -903,7 +916,7 @@ pub fn compute(
         let old = masks[t].remove(0);
         masks[t].push(fresh);
         if cfg.temporal_masks {
-            let delta = fire::emit_cubic_delta(
+            let delta = cubic_delta(
                 g.target,
                 old,
                 fresh,
@@ -920,7 +933,7 @@ pub fn compute(
         band.release(old);
         if let Some(new) = second_fresh {
             let old = masks[t].remove(0);
-            let delta = fire::emit_cubic_delta(
+            let delta = cubic_delta(
                 g.target,
                 old,
                 new,
@@ -984,7 +997,7 @@ pub fn compute(
                 )?;
                 let old = masks[w][j];
                 if cfg.temporal_masks {
-                    let delta = fire::emit_cubic_delta(
+                    let delta = cubic_delta(
                         w as u16,
                         old,
                         new,
@@ -1099,9 +1112,19 @@ pub fn compute(
     stats.promotion_stalls = band.promotion_stalls;
     stats.rotations = band.rotations;
     stats.before_migration = gates.len();
+    let migration_boxes: Vec<FireBox> = if cfg.interleave_window > 0 {
+        boxes
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| k.is_multiple_of(MIGRATION_GROUP))
+            .map(|(_, b)| b.clone())
+            .collect()
+    } else {
+        boxes.clone()
+    };
     let shifted = apply_shuffling(
         &gates,
-        &boxes,
+        &migration_boxes,
         np,
         np + r,
         if cfg.midfire_feedback {

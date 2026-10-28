@@ -729,6 +729,25 @@ fn differential_masks_exhaustive_dirty_helper() {
     for keep in [false, true] {
         let gs = fire::emit_cubic_delta(0, [1, 2, 3], [4, 5, 6], &[7], keep);
         assert_eq!(gs.len(), if keep { 15 } else { 18 });
+        let ro = fire::emit_cubic_delta_readonly(0, [1, 2, 3], [4, 5, 6], &[7], keep);
+        assert_eq!(ro.len(), gs.len());
+        assert!(
+            ro.iter().all(|g| g.target == 0 || g.target == 7),
+            "the read-only refresh writes only the target and the helper"
+        );
+        for initial in 0u64..256 {
+            let bits = |v: u64| {
+                (0..8)
+                    .map(|w| if v >> w & 1 == 1 { !0u64 } else { 0 })
+                    .collect::<Vec<_>>()
+            };
+            let mut a = bits(initial);
+            let mut b = bits(initial);
+            eval_lanes(&gs, &mut a);
+            eval_lanes(&ro, &mut b);
+            assert_eq!(a[0], b[0], "input {initial:#b}: same target update");
+            assert_eq!(b[1..7], bits(initial)[1..7], "band coordinates untouched");
+        }
         for base in (0..256).step_by(64) {
             let initial = exhaustive_lanes(8, base);
             for rev in [false, true] {

@@ -244,6 +244,44 @@ pub fn emit_cubic_delta(
     out
 }
 
+/// The same telescoping refresh (`t ^= old0 old1 old2 XOR new0 new1 new2`)
+/// without writing any band coordinate: step `i` adds `p_i old_i` and
+/// `p_i new_i` through the dirty-helper bracket `b1 b2 a b1 b2` (the
+/// helper's garbage cancels), where `p_i` is the product of the other two
+/// current coordinates. Same gate count as [`emit_cubic_delta`]; serving
+/// wires stay read-only, so fires sharing coordinates are not ordered by
+/// their refreshes (fire interleaving).
+pub fn emit_cubic_delta_readonly(
+    t: u16,
+    old: Mask,
+    new: Mask,
+    helpers: &[u16],
+    keep_garbage: bool,
+) -> Vec<XGate> {
+    assert!(old.iter().all(|w| !new.contains(w)));
+    let h = helpers[0];
+    assert!(!old.contains(&h) && !new.contains(&h) && h != t);
+    let mut cur = old;
+    let mut out = vec![];
+    for i in 0..3 {
+        let others: Vec<_> = cur
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, w)| *w)
+            .collect();
+        let a = XGate::conj(h, [(others[0], true), (others[1], true)]).unwrap();
+        let b1 = XGate::conj(t, [(h, true), (old[i], true)]).unwrap();
+        let b2 = XGate::conj(t, [(h, true), (new[i], true)]).unwrap();
+        out.extend([b1.clone(), b2.clone(), a.clone(), b1, b2]);
+        if !keep_garbage {
+            out.push(a);
+        }
+        cur[i] = new[i];
+    }
+    out
+}
+
 pub fn emit_mask(t: u16, m: Mask) -> Vec<XGate> {
     vec![
         XGate::x_gate(t),

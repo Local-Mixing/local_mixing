@@ -170,17 +170,39 @@ dependencies can undo it on the stage-2 circuit itself, so its value has to
 be measured on the mixed output, where stage 3's local identities straddle
 gates of different fires.
 
-### Helper lanes and the measured limit of interleaving (2026-10-28)
+### What interleaving changes inside the compute (2026-10-28/29)
 
-Helper lanes make fires independent of each other's scratch wires: fire
-$i$ takes its dirty helpers from lane $i \bmod 4$ of a reserve that growth
-never writes (bank mode: the drained wires of retiring banks; wire mode: the
-16 most rewritten growing wires, which growth skips). With lanes active for
-every fire at n = 64, the mean displacement is still about 30 gates and a
-250-gate window spans about 780 original positions (250 without
-interleaving): the dependency depth of the compute is 40 to 60 % of its
-gates. The chain is the persistent carrier migration, which transfers band
-and carrier roles between wires at up to six cuts inside every fire, so the
-coordinates a fire reads were written by a transfer after the previous
-fire. A stronger interleave needs the migration placed per lane or at
-coarser cuts, a separate change to `preprocessing_shuffling`.
+A dependency-preserving reordering only helps if consecutive fires are
+independent, and in the design as released they are not: the compute's
+dependency depth is 40 % of its gates (the sandwich itself, C plus slicing
+gates, has depth 260 of 2,832 gates, so the serialization is the compute's
+own). Three mechanisms chained every fire to the next, and `interleave > 0`
+switches each one off; the default output (`interleave = 0`) is unchanged:
+
+1. **Mask refreshes wrote serving coordinates.** The differential cubic
+   refresh mixed the new coordinate into the current coordinate wire and
+   undid it, about nine serving writes per fire; every fire reading those
+   coordinates was ordered against it. `emit_cubic_delta_readonly` adds
+   the same telescoping terms through the dirty-helper bracket
+   `b1 b2 a b1 b2` (the helper's garbage cancels), same gate count, no
+   band write.
+2. **Dirty helpers and growth shared wires.** Fire $i$ now takes its helpers
+   from lane $i \bmod 8$ of a 32-wire reserve that growth never writes
+   (bank mode: drained wires of retiring banks; wire mode: the most
+   rewritten growing wires, skipped by growth). A wire keeps its reserve
+   slot, hence its lane, until it leaves the candidate set, so lanes stay
+   disjoint across consecutive fires. Fires sharing a lane (eight apart)
+   are still ordered through that lane's garbage.
+3. **Carrier migration at every fire.** The persistent migration placed up
+   to six transfers inside every fire box, so the coordinates a fire reads
+   had just been moved. Under interleaving only every eighth fire box
+   migrates (`MIGRATION_GROUP`): 2,081 transfers instead of 16,756 at
+   n = 64, migration gates 6.5k instead of 50k, so the stage-2 circuit is
+   about 9 % smaller; roles hop eight times less often, which is the
+   trade-off to keep in mind.
+
+Measured at n = 64 (one seed, wire turnover, window 4096): mean
+displacement 342 gates, a 250-gate output window spans about 3,070
+original positions (about 20 fires), dependency depth 18 % of the gates;
+the released design under the same reordering gave 31 gates and 755
+positions.
