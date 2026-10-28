@@ -169,3 +169,18 @@ reordering is positional only: an attacker who clusters gates by
 dependencies can undo it on the stage-2 circuit itself, so its value has to
 be measured on the mixed output, where stage 3's local identities straddle
 gates of different fires.
+
+### Helper lanes and the measured limit of interleaving (2026-10-28)
+
+Helper lanes make fires independent of each other's scratch wires: fire
+$i$ takes its dirty helpers from lane $i \bmod 4$ of a reserve that growth
+never writes (bank mode: the drained wires of retiring banks; wire mode: the
+16 most rewritten growing wires, which growth skips). With lanes active for
+every fire at n = 64, the mean displacement is still about 30 gates and a
+250-gate window spans about 780 original positions (250 without
+interleaving): the dependency depth of the compute is 40 to 60 % of its
+gates. The chain is the persistent carrier migration, which transfers band
+and carrier roles between wires at up to six cuts inside every fire, so the
+coordinates a fire reads were written by a transfer after the previous
+fire. A stronger interleave needs the migration placed per lane or at
+coarser cuts, a separate change to `preprocessing_shuffling`.
