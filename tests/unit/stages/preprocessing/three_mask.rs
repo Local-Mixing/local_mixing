@@ -931,11 +931,11 @@ fn interleave_preserves_function_and_respects_the_window() {
             gates.push(g);
         }
     }
-    let (same, st) = interleave(&gates, 1, &mut rng);
+    let (same, _, st) = interleave(&gates, 1, &mut rng);
     assert_eq!(same, gates, "window 1 keeps the order");
     assert_eq!(st.mean_displacement, 0.0);
     for window in [7usize, 100, 1000, usize::MAX] {
-        let (out, st) = interleave(&gates, window, &mut rng);
+        let (out, returned_order, st) = interleave(&gates, window, &mut rng);
         assert_eq!(out.len(), gates.len());
         let mut sorted_out: Vec<_> = out.iter().map(|g| format!("{g:?}")).collect();
         let mut sorted_in: Vec<_> = gates.iter().map(|g| format!("{g:?}")).collect();
@@ -973,6 +973,7 @@ fn interleave_preserves_function_and_respects_the_window() {
             for (o, g) in gates.iter().enumerate() {
                 order[position[g]] = o;
             }
+            assert_eq!(returned_order, order, "the returned order is the output's");
             let mut frontier = 0;
             for (p, &o) in order.iter().enumerate() {
                 while frontier < gates.len() && emitted[frontier] {
@@ -1261,5 +1262,48 @@ fn three_mask_mode_verifies_and_shares_the_l8_outer_blocks() {
             &mut rng,
         )
         .is_err()
+    );
+}
+
+#[test]
+fn fire_spans_are_measured_under_interleaving() {
+    let mut rng = StdRng::seed_from_u64(4242);
+    let np = 12;
+    let input: Vec<_> = (0..160)
+        .map(|i| {
+            let mut g = XGate::conj(
+                (i % 3) as u16,
+                [
+                    ((i % 3 + 1) as u16, rng.random()),
+                    ((i % 3 + 2) as u16, rng.random()),
+                ],
+            )
+            .unwrap();
+            g.comp = rng.random();
+            g
+        })
+        .collect();
+    let cfg = ThreeMaskParams {
+        wire_turnover: true,
+        interleave_window: 4096,
+        ..ThreeMaskParams::v2(5, 128)
+    };
+    let out = compute(&input, np, 128, &cfg).unwrap();
+    let mut hist = std::collections::BTreeMap::new();
+    for g in &out.logical_gates {
+        *hist.entry(g.ctrls.len()).or_insert(0usize) += 1;
+    }
+    let mut post = std::collections::BTreeMap::new();
+    for g in &out.gates {
+        *post.entry(g.ctrls.len()).or_insert(0usize) += 1;
+    }
+    assert!(
+        out.stats.fire_span_measured,
+        "control counts before migration {hist:?}, after {post:?}"
+    );
+    assert!(
+        out.stats.fire_span_mean > out.stats.fire_len_mean,
+        "{:?}",
+        (out.stats.fire_span_mean, out.stats.fire_len_mean)
     );
 }

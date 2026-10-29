@@ -144,6 +144,15 @@ pub struct ThreeMaskReport {
     pub interleave_mean_displacement: f64,
     pub interleave_span_250: f64,
     pub interleave_depth: usize,
+    /// Fires in the output: mean gates per fire, and (when traceable through
+    /// the migration) the span of a fire's gates in the output and the
+    /// distinct fires per 250-gate window.
+    pub fire_len_mean: f64,
+    pub fire_span_measured: bool,
+    pub fire_span_mean: f64,
+    pub fire_span_p50: usize,
+    pub fire_span_p90: usize,
+    pub fires_per_250: f64,
     pub fire: super::three_mask::fire::FireStats,
     /// The complete compute statistics the summary fields were taken from.
     pub stats: ThreeMaskStats,

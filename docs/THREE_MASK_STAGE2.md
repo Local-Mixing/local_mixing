@@ -201,8 +201,18 @@ switches each one off; the default output (`interleave = 0`) is unchanged:
    about 9 % smaller; roles hop eight times less often, which is the
    trade-off to keep in mind.
 
-Measured at n = 64 (one seed, wire turnover, window 4096): mean
-displacement 342 gates, a 250-gate output window spans about 3,070
-original positions (about 20 fires), dependency depth 18 % of the gates;
-the released design under the same reordering gave 31 gates and 755
-positions.
+Measured at n = 64 (one seed, wire turnover; the gen program reports these
+as "three-mask fires", traced through the migration by its origin map):
+
+| | fire span in the output (mean / p50 / p90 gates) | distinct fires in a 250-gate window |
+|---|---|---|
+| no interleaving | 174 / 186 / 188 (a fire is contiguous: 159 compute gates plus its migration transfers) | 2.4 |
+| window 1024 | 1,022 / 1,065 / 1,371 | 7.4 |
+| window 4096 | 2,503 / 2,330 / 4,336 | 9.6 |
+| window 16384 | 4,402 / 2,341 / 11,979 | 9.7 |
+
+The fires a window holds saturate near the eight helper lanes (fires
+sharing a lane stay ordered), so a larger window spreads fires further
+without mixing more of them; 4096 is the knee. The released design under
+the same reordering gave a mean displacement of 31 gates and 755 original
+positions per 250-gate window (342 and 3,070 now).

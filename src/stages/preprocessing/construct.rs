@@ -288,6 +288,12 @@ pub fn preprocess_sandwich(
                 interleave_mean_displacement: s.interleave_mean_displacement,
                 interleave_span_250: s.interleave_span_250,
                 interleave_depth: s.interleave_depth,
+                fire_len_mean: s.fire_len_mean,
+                fire_span_measured: s.fire_span_measured,
+                fire_span_mean: s.fire_span_mean,
+                fire_span_p50: s.fire_span_p50,
+                fire_span_p90: s.fire_span_p90,
+                fires_per_250: s.fires_per_250,
                 fire: s.fire.clone(),
                 stats: s,
             };

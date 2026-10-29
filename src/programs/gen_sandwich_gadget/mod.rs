@@ -682,6 +682,22 @@ pub fn run() {
                 report.interleave_depth,
                 report.compute_gates
             );
+            if report.fire_span_measured {
+                println!(
+                    "[gen] three-mask fires: {} fires of {:.0} compute gates each; a fire spans {:.0} output gates on average (p50 {}, p90 {}); a 250-gate output window holds {:.1} distinct fires",
+                    report.stats.input_gates,
+                    report.fire_len_mean,
+                    report.fire_span_mean,
+                    report.fire_span_p50,
+                    report.fire_span_p90,
+                    report.fires_per_250
+                );
+            } else {
+                println!(
+                    "[gen] three-mask fires: {} fires of {:.0} compute gates each (span not traceable through the migration)",
+                    report.stats.input_gates, report.fire_len_mean
+                );
+            }
             if report.interleave_window > 0 {
                 println!(
                     "[gen] three-mask helper lanes: {} of {} fires laned (mean reserve {:.1} wires)",

@@ -72,6 +72,9 @@ pub struct ShufflingStats {
 
 pub(crate) struct ShufflingOutput {
     pub gates: Vec<XGate>,
+    /// Per output gate, the index of the input gate it remaps, or
+    /// `usize::MAX` for a gate the migration inserted.
+    pub origin: Vec<usize>,
     /// Physical location for each logical role after the complete gate stream.
     pub final_layout: Vec<u16>,
     pub stats: ShufflingStats,
@@ -476,6 +479,7 @@ pub(crate) fn apply_shuffling(
     if segments == 0 {
         return ShufflingOutput {
             gates: gates.to_vec(),
+            origin: (0..gates.len()).collect(),
             final_layout: layout,
             stats: ShufflingStats {
                 original_gates: gates.len(),
@@ -499,6 +503,7 @@ pub(crate) fn apply_shuffling(
         .map(|fire_box| segments.min(fire_box.unit_cuts.len() - 1) * 3)
         .sum();
     let mut out = Vec::with_capacity(gates.len() + additional_capacity);
+    let mut origin: Vec<usize> = Vec::with_capacity(gates.len() + additional_capacity);
     let mut stats = ShufflingStats {
         original_gates: gates.len(),
         ..ShufflingStats::default()
@@ -519,6 +524,8 @@ pub(crate) fn apply_shuffling(
             }
             let mapped = remap_gate(gate, &layout);
             note_reads(&mut rsw, &mapped);
+            origin.resize(out.len(), usize::MAX);
+            origin.push(source_index);
             out.push(mapped);
             if let Some(jit) = &mut jit {
                 jit.after_gate(
@@ -669,6 +676,8 @@ pub(crate) fn apply_shuffling(
                     original_counts[mapped.target as usize] += 1;
                 }
                 note_reads(&mut rsw, &mapped);
+                origin.resize(out.len(), usize::MAX);
+                origin.push(cut);
                 out.push(mapped);
                 if let Some(jit) = &mut jit {
                     jit.after_gate(gate, cut, &layout, &mut out, &mut rsw, &mut counts);
@@ -701,6 +710,8 @@ pub(crate) fn apply_shuffling(
         }
         let mapped = remap_gate(gate, &layout);
         note_reads(&mut rsw, &mapped);
+        origin.resize(out.len(), usize::MAX);
+        origin.push(source_index);
         out.push(mapped);
         if let Some(jit) = &mut jit {
             jit.after_gate(
@@ -755,8 +766,14 @@ pub(crate) fn apply_shuffling(
     );
     stats.shuffled_gates = out.len();
     stats.added_gates = out.len() - gates.len();
+    origin.resize(out.len(), usize::MAX);
+    debug_assert_eq!(
+        origin.iter().filter(|&&o| o != usize::MAX).count(),
+        gates.len()
+    );
     ShufflingOutput {
         gates: out,
+        origin,
         final_layout: layout,
         stats,
     }

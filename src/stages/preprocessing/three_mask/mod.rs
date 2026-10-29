@@ -328,6 +328,17 @@ pub struct ThreeMaskStats {
     /// reserve size over fires (interleaving only).
     pub lane_fires: usize,
     pub reserve_total: usize,
+    /// Fires in the output: mean compute gates per fire (before migration),
+    /// and, when the migration inserted only CNOTs (so compute gates can be
+    /// traced through it), the span of a fire's gates in the final output
+    /// (last minus first position plus one: the fire's length when fires
+    /// are contiguous) and the distinct fires a 250-gate window holds.
+    pub fire_len_mean: f64,
+    pub fire_span_measured: bool,
+    pub fire_span_mean: f64,
+    pub fire_span_p50: usize,
+    pub fire_span_p90: usize,
+    pub fires_per_250: f64,
 }
 
 /// A mask's identity for uniqueness checks: the sorted cubic triple, or the
@@ -433,7 +444,7 @@ pub fn interleave(
     gates: &[XGate],
     window: usize,
     rng: &mut impl Rng,
-) -> (Vec<XGate>, InterleaveStats) {
+) -> (Vec<XGate>, Vec<usize>, InterleaveStats) {
     let m = gates.len();
     let width = gates
         .iter()
@@ -529,6 +540,7 @@ pub fn interleave(
     };
     (
         out,
+        order,
         InterleaveStats {
             mean_displacement,
             span_250,
@@ -1146,15 +1158,76 @@ pub fn compute(
     stats.transfers = shifted.stats.transfer_count;
     stats.skipped_cuts = shifted.stats.skipped_cut_count;
     stats.wire_limbo_waits = band.wire_limbo_waits;
-    let mut final_gates = shifted.gates;
+    // the migration's map from its output back to the compute gates
+    let origin: Vec<Option<usize>> = shifted
+        .origin
+        .iter()
+        .map(|&o| (o != usize::MAX).then_some(o))
+        .collect();
+    let post_gates = shifted.gates;
+    let traceable = origin.iter().flatten().count() == gates.len();
+    let mut final_gates = post_gates;
+    let mut order: Vec<usize> = (0..final_gates.len()).collect();
     if cfg.interleave_window > 0 {
         let mut irng = StdRng::seed_from_u64(cfg.seed ^ 0x1A7E_61EA);
-        let (reordered, istats) = interleave(&final_gates, cfg.interleave_window, &mut irng);
+        let (reordered, o, istats) = interleave(&final_gates, cfg.interleave_window, &mut irng);
         final_gates = reordered;
+        order = o;
         stats.interleave_window = cfg.interleave_window;
         stats.interleave_mean_displacement = istats.mean_displacement;
         stats.interleave_span_250 = istats.span_250;
         stats.interleave_depth = istats.depth;
+    }
+    let fires = fire_boundaries.len().saturating_sub(1);
+    if fires > 0 {
+        stats.fire_len_mean = (fire_boundaries[fires] - fire_boundaries[0]) as f64 / fires as f64;
+    }
+    if traceable && fires > 0 {
+        let fire_of = |pre: usize| -> Option<usize> {
+            if pre < fire_boundaries[0] || pre >= fire_boundaries[fires] {
+                return None;
+            }
+            Some(match fire_boundaries.binary_search(&pre) {
+                Ok(k) => k,
+                Err(k) => k - 1,
+            })
+        };
+        let mut lo = vec![usize::MAX; fires];
+        let mut hi = vec![0usize; fires];
+        let mut fire_at: Vec<Option<usize>> = vec![None; final_gates.len()];
+        for (p, &post_idx) in order.iter().enumerate() {
+            if let Some(pre) = origin[post_idx]
+                && let Some(f) = fire_of(pre)
+            {
+                lo[f] = lo[f].min(p);
+                hi[f] = hi[f].max(p);
+                fire_at[p] = Some(f);
+            }
+        }
+        let mut spans: Vec<usize> = (0..fires)
+            .filter(|&f| lo[f] != usize::MAX)
+            .map(|f| hi[f] - lo[f] + 1)
+            .collect();
+        spans.sort_unstable();
+        if !spans.is_empty() {
+            stats.fire_span_measured = true;
+            stats.fire_span_mean = spans.iter().sum::<usize>() as f64 / spans.len() as f64;
+            stats.fire_span_p50 = spans[spans.len() / 2];
+            stats.fire_span_p90 = spans[spans.len() * 9 / 10];
+        }
+        let counts: Vec<usize> = fire_at
+            .chunks(250)
+            .filter(|c| c.len() == 250)
+            .map(|c| {
+                let mut s: Vec<usize> = c.iter().flatten().copied().collect();
+                s.sort_unstable();
+                s.dedup();
+                s.len()
+            })
+            .collect();
+        if !counts.is_empty() {
+            stats.fires_per_250 = counts.iter().sum::<usize>() as f64 / counts.len() as f64;
+        }
     }
     stats.compute_gates = final_gates.len();
     assert_eq!(
