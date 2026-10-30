@@ -251,16 +251,28 @@ pub fn validate_geometry(r: usize, banks: usize, max_retiring: usize) -> Result<
 /// bank size of the design's geometry).
 pub const WIRE_COHORT: usize = 16;
 
+/// The helper reserve under fire interleaving (`band::Band::reserve`:
+/// reference-free wires growth never writes): a quarter of the band, 16 to
+/// 64 wires, so the lanes grow with the band (8 at a 128-wire band, 16 at
+/// 256; the sandwich's dependency width grows with n as well).
+pub fn helper_reserve(band_wires: usize) -> usize {
+    (band_wires / 4).clamp(16, 64)
+}
+
 /// Helper lanes under fire interleaving: fire `i` takes its dirty helpers
-/// from lane `i mod HELPER_LANES` of the band's helper reserve
-/// (`band::Band::reserve`: reference-free wires growth never writes).
-pub const HELPER_LANES: usize = HELPER_RESERVE / 4;
-/// Wire mode: how many of the most rewritten growing wires form the reserve.
-pub const HELPER_RESERVE: usize = 32;
+/// from lane `i mod helper_lanes(r)` of the reserve, four wires per lane.
+pub fn helper_lanes(band_wires: usize) -> usize {
+    helper_reserve(band_wires) / 4
+}
 /// Under fire interleaving the persistent carrier migration transfers roles
-/// in every `MIGRATION_GROUP`-th fire box only, so the fires in between
-/// are not chained through the moved coordinates.
-pub const MIGRATION_GROUP: usize = 8;
+/// in every `migration_group(r)`-th fire box only (one box per lane cycle:
+/// 8 at a 128-wire band, 16 at 256), so the fires in between are not
+/// chained through the moved coordinates. Measured at n = 128: every 8th
+/// fire caps a 250-gate window at 11 distinct fires, every 32nd at 14,
+/// no migration at 16; the group trades carrier hops for interleaving.
+pub fn migration_group(band_wires: usize) -> usize {
+    helper_lanes(band_wires)
+}
 
 /// The geometry the wire-turnover mode requires: a band of at least 64
 /// wires and a multiple of 32 (cohorts of [`WIRE_COHORT`] wires, half of
@@ -697,7 +709,7 @@ pub fn compute(
     // dependencies of C order them. A lane short of four wires falls back
     // to the whole pool for that fire.
     let lane_count = if cfg.interleave_window > 0 {
-        HELPER_LANES
+        helper_lanes(r)
     } else {
         1
     };
@@ -1128,7 +1140,7 @@ pub fn compute(
         boxes
             .iter()
             .enumerate()
-            .filter(|(k, _)| k.is_multiple_of(MIGRATION_GROUP))
+            .filter(|(k, _)| k.is_multiple_of(migration_group(r)))
             .map(|(_, b)| b.clone())
             .collect()
     } else {

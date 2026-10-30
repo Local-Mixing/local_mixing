@@ -187,19 +187,21 @@ switches each one off; the default output (`interleave = 0`) is unchanged:
    `b1 b2 a b1 b2` (the helper's garbage cancels), same gate count, no
    band write.
 2. **Dirty helpers and growth shared wires.** Fire $i$ now takes its helpers
-   from lane $i \bmod 8$ of a 32-wire reserve that growth never writes
-   (bank mode: drained wires of retiring banks; wire mode: the most
-   rewritten growing wires, skipped by growth). A wire keeps its reserve
-   slot, hence its lane, until it leaves the candidate set, so lanes stay
-   disjoint across consecutive fires. Fires sharing a lane (eight apart)
-   are still ordered through that lane's garbage.
+   from lane $i \bmod L$ of a reserve that growth never writes (bank mode:
+   drained wires of retiring banks; wire mode: the most rewritten growing
+   wires, skipped by growth). The reserve is a quarter of the band, 16 to
+   64 wires, four per lane: $L = 8$ at a 128-wire band (n = 64), 16 at
+   256 (n = 128). A wire keeps its reserve slot, hence its lane, until it
+   leaves the candidate set, so lanes stay disjoint across consecutive
+   fires. Fires sharing a lane ($L$ apart) are still ordered through that
+   lane's garbage.
 3. **Carrier migration at every fire.** The persistent migration placed up
    to six transfers inside every fire box, so the coordinates a fire reads
-   had just been moved. Under interleaving only every eighth fire box
-   migrates (`MIGRATION_GROUP`): 2,081 transfers instead of 16,756 at
-   n = 64, migration gates 6.5k instead of 50k, so the stage-2 circuit is
-   about 9 % smaller; roles hop eight times less often, which is the
-   trade-off to keep in mind.
+   had just been moved. Under interleaving only every $L$-th fire box
+   migrates (`migration_group`, one box per lane cycle): at n = 64, 2,081
+   transfers instead of 16,756 and 6.5k migration gates instead of 50k, so
+   the stage-2 circuit is about 9 % smaller; roles hop $L$ times less
+   often, which is the trade-off to keep in mind.
 
 Measured at n = 64 (one seed, wire turnover; the gen program reports these
 as "three-mask fires", traced through the migration by its origin map):
@@ -211,8 +213,20 @@ as "three-mask fires", traced through the migration by its origin map):
 | window 4096 | 2,503 / 2,330 / 4,336 | 9.6 |
 | window 16384 | 4,402 / 2,341 / 11,979 | 9.7 |
 
-The fires a window holds saturate near the eight helper lanes (fires
-sharing a lane stay ordered), so a larger window spreads fires further
-without mixing more of them; 4096 is the knee. The released design under
-the same reordering gave a mean displacement of 31 gates and 755 original
-positions per 250-gate window (342 and 3,070 now).
+The fires a window holds saturate near ten, so a larger window spreads
+fires further without mixing more of them; 4096 is the knee. The released
+design under the same reordering gave a mean displacement of 31 gates and
+755 original positions per 250-gate window (342 and 3,070 now).
+
+**What bounds the parallelism.** Fires in flight cannot exceed the
+dependency width of the sandwich (C plus slicing gates): depth 261 of 2,832
+gates at n = 64, so about 11 fires per layer (C alone: depth 111 of 1,000,
+width 9); depth 407 of 7,920 at n = 128, width about 19. Against that
+ceiling, at n = 64 the lanes (8) and the migration group (8) cost little:
+without any migration a 250-gate window holds 11.2 fires, with sixteen
+lanes 10.4. At n = 128 the migration group was the binding limit: 11.1
+fires per window with a group of 8, 14.3 with 32, 15.5 without migration
+(16.7 with window 16384, where a fire spans 8,800 output gates). The
+group now follows the lane count (16 at n = 128). Going beyond the
+sandwich's width needs a C or a slicing with more independent gates per
+layer, not more lanes.

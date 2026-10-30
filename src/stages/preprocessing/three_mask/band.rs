@@ -142,7 +142,7 @@ impl Band {
             reserve: vec![],
             lanes: cfg.interleave_window > 0,
             reserved: vec![false; r],
-            slots: vec![None; super::HELPER_RESERVE],
+            slots: vec![None; super::helper_reserve(r)],
         }
     }
 
@@ -268,7 +268,7 @@ impl Band {
             reserve: vec![],
             lanes: cfg.interleave_window > 0,
             reserved: vec![false; r],
-            slots: vec![None; super::HELPER_RESERVE],
+            slots: vec![None; super::helper_reserve(r)],
         }
     }
 
