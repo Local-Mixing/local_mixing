@@ -698,6 +698,17 @@ pub fn run() {
                     report.stats.input_gates, report.fire_len_mean
                 );
             }
+            if report.fire_span_measured {
+                println!(
+                    "[gen] three-mask fires by kind: {} one-control fires of {:.0} compute gates spanning {:.0} output gates; {} two-control fires of {:.0} gates spanning {:.0}",
+                    report.stats.cnot_fires,
+                    report.stats.cnot_fire_len_mean,
+                    report.stats.cnot_fire_span_mean,
+                    report.stats.input_gates - report.stats.cnot_fires,
+                    report.stats.toffoli_fire_len_mean,
+                    report.stats.toffoli_fire_span_mean
+                );
+            }
             if report.interleave_window > 0 {
                 println!(
                     "[gen] three-mask helper lanes: {} of {} fires laned (mean reserve {:.1} wires)",

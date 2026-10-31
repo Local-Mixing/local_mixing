@@ -351,6 +351,14 @@ pub struct ThreeMaskStats {
     pub fire_span_p50: usize,
     pub fire_span_p90: usize,
     pub fires_per_250: f64,
+    /// The same by input gate: (mean compute gates, mean output span) for
+    /// one-control fires (CNOTs: the central copies and the slicing gates)
+    /// and for two-control fires.
+    pub cnot_fire_len_mean: f64,
+    pub cnot_fire_span_mean: f64,
+    pub cnot_fires: usize,
+    pub toffoli_fire_len_mean: f64,
+    pub toffoli_fire_span_mean: f64,
 }
 
 /// A mask's identity for uniqueness checks: the sorted cubic triple, or the
@@ -1220,6 +1228,27 @@ pub fn compute(
             .filter(|&f| lo[f] != usize::MAX)
             .map(|f| hi[f] - lo[f] + 1)
             .collect();
+        // by the input gate's control count (fire f realizes ordered[f])
+        let mut by_kind = [(0usize, 0usize, 0usize); 2];
+        for f in 0..fires {
+            if lo[f] == usize::MAX {
+                continue;
+            }
+            let kind = usize::from(ordered[f].ctrls.len() >= 2);
+            by_kind[kind].0 += 1;
+            by_kind[kind].1 += fire_boundaries[f + 1] - fire_boundaries[f];
+            by_kind[kind].2 += hi[f] - lo[f] + 1;
+        }
+        let mean = |(n, a, b): (usize, usize, usize)| {
+            if n == 0 {
+                (0.0, 0.0)
+            } else {
+                (a as f64 / n as f64, b as f64 / n as f64)
+            }
+        };
+        stats.cnot_fires = by_kind[0].0;
+        (stats.cnot_fire_len_mean, stats.cnot_fire_span_mean) = mean(by_kind[0]);
+        (stats.toffoli_fire_len_mean, stats.toffoli_fire_span_mean) = mean(by_kind[1]);
         spans.sort_unstable();
         if !spans.is_empty() {
             stats.fire_span_measured = true;
