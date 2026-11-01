@@ -124,3 +124,50 @@ Pending measurement:
 5. An n = 128 arm (nothing at n = 128 has been attacked).
 6. One-control fire absorption (`d_t ^= d_u` plus deferred mask retirement, ~3 % gates) only if the
    attribution singles out CNOT reads; the present data does not.
+
+## Sandwich redesign for gate mobility (stage 1)
+
+The fires in flight cannot exceed the dependency width of a sandwich block, and the blocks
+(C with S1, then D with S2) are in series because D consumes C's outputs, so the sandwich's width
+is the block's width: 10.9 measured at n = 64, i.e. C's own 9 plus a little from the slicing.
+Simulated block-1 widths at n = 64 (1,000 C gates, 384 S1 gates; `mobility.py` in the session
+scratchpad; the random case reproduces the measured depth):
+
+| C | no slicing | S1 random interleave (today) | S1 in idle slots | S1 random + E(300) on the high half |
+|---|---|---|---|---|
+| random | 9.4 (depth 106) | 11.8 (117) | 12.9 (107) | 14.5 (116) |
+| layered, 16 gates per layer | 16.7 (60) | 16.3 (85) | 22.3 (62) | 18.9 (89) |
+| layered, 21 gates per layer | 20.8 (48) | 18.2 (76) | 21.3 (65) | 21.9 (77) |
+
+1. **Layered C and D.** Sample C as layers of disjoint three-wire gates (random partial
+   matchings, 16 to 21 gates per layer at n = 64) instead of a random sequence: width 17 to 21
+   against 9, no extra gates, the same g57 gate form; D likewise. Whether the layered
+   distribution is acceptable for the trapdoor is RC's call. The balanced construction does not
+   widen C (9.3). At n = 128 the random C already has width ~19; layering would give ~40.
+2. **Slice gates in idle slots.** The random interleave of S1 with C costs a layered C 40 % of
+   its gain (depth 60 to 85) because a slice gate's low-half target pins it between C's accesses
+   of that wire. Choosing each slice gate's target and low control among wires the current C
+   layer does not touch, and emitting it in that layer, keeps the depth at C's own (62). The
+   slice gates have this freedom by design: their on-slice function is the identity and their
+   off-slice junk is arbitrary.
+3. **Slice gates on dead values.** A dead S1 gate on a live C value re-encodes it in stage 2 and
+   counts like an extra read (a quarter of births get one). Targets chosen among wires whose
+   current value has no future read remove that channel at no cost.
+4. **A companion E on the high half during block 1** (positive-polarity gates only, so E(0) = 0
+   keeps the forward slice honest and S1 dead) adds concurrency and decoy fires, but at the cost
+   of its own fires (300 gates = +10 % of stage 2 for +2 to +3 of width); layering is the
+   cheaper lever. In block 2 the V gadget plays this role for free, since V (high half) and D
+   (low half) are independent and interleave.
+5. **The midpoint.** D depends on all of C's outputs, so fires are most pinned around the copy
+   column; this is also where the degree-2 payload replica lives. V helps on both counts: it
+   adds independent gates there and removes the replica. Keep the copy gates floating backward
+   only (they cannot pass V).
+6. **Moving S1/S2 to the ports** (guards keyed on the high half, like the band guard) would
+   remove 27 % of the fires and the dead-fire channel entirely and leave C's full width, at the
+   price of no longer hiding C's gates among slice gates inside the block; a reduced count of
+   slice gates (s = 128) placed as in 2 and 3 is the intermediate option.
+
+With a layered C and slice gates in idle slots, the n = 64 block width goes from 11 to ~22, so
+the span of a pinned fire (width times fire length) doubles to ~5,000 stage-2 gates and a
+250-gate window holds ~20 fires; stage 2 then needs 16 lanes (`band_wires = 256`) and the
+migration group follows.
