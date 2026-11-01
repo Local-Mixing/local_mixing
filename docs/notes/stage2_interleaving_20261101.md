@@ -232,3 +232,47 @@ Cost: stage 2's contract becomes "correct on the honest slice" for the high half
 checks and the every-band-state verification take it as zero), the high roles get their masks at
 the copy, and the off-slice function changes, which the port keying makes irrelevant. None of it
 touches the fire design, so it combines with the lanes and the layered C.
+
+## The second half of the sandwich: S2, V and the reverse contract
+
+**The reverse contract can live at the ports.** With both port guards keyed on the high half
+(dead when it is zero, junking the low half otherwise), S1 and S2 are both unnecessary. Forward
+on (x, 0): the input guard is dead, C runs, the copy puts C(x) up, V re-encodes it, D junks the
+low half, V inverse restores C(x), the output guard sees a nonzero high half and junks the low
+half further. Reverse on (a, 0): the output guard is dead, V maps zero to zero, D inverse runs
+clean, V inverse maps zero to zero, the copy writes D inverse of a into the high half, C inverse
+runs, and the input guard, seeing a nonzero high half, junks the low half, which is what S1 did
+in reverse. The symmetric design is therefore: guards keyed on the high half at both ports (plus
+the band guards), C | N | (D on the low half, V on the high half) | V inverse, with V(0) = 0
+(positive-polarity gates, free). Without the reverse contract the output guard and the V(0) = 0
+condition go; nothing else changes.
+
+**Why S2 should not read the re-encoded register.** Every read of a value is a fire exposing it
+with probability ~7 % per read in the interleaved design; S2 reads each register bit about six
+times, so with V in place it would hand the attacker about a third of V(C(x))'s bits per sampled
+input: V's input-output behaviour, and V is small. Without S2 the high half between V and V
+inverse is read by nothing but V inverse, so V's values are exposed only through its own fires.
+Chaff in block 2, if wanted, should read the low half (D's state), not the register.
+
+**Resilience versus efficiency (n = 64):**
+
+| | fires | fixes | risks |
+|---|---|---|---|
+| today | 2,832 | | midpoint degree-2 replica, S2 reads of the payload, dead-S1 channel |
+| guards at the ports, no S1/S2, V of 300 gates | 2,664 (-6 %) | the replica between V and V inverse, both slice channels, C's full width and the clean high half in block 1 | no chaff among C's and D's fires; V learnable if too small |
+| the same with V of 500 gates | 3,064 (+8 %) | the same, V harder to learn | |
+
+A net gain in both columns for a V of a few hundred gates, with one thing to measure first: the
+structural attacks (reconstruction walks, slice matching) on a block 1 that is C alone, since the
+38 % decoy fires are what is given up. V inverse should be emitted interleaved with D's tail, not
+as a separate block before the mask flush.
+
+**No clean half in block 2.** The clean high half exists only in block 1: from V onward the high
+half carries V(C(x)) and the low half D's state, so all 2n roles are live and masked, the
+reference load is the full 1,152 and the coordinate lifetime the budget-bound 192 fires. The
+register's roles are idle between V and V inverse but not clean (dropping their masks would put
+V(C(x)) in the clear). The block-1 gains (halved references, no known-plaintext relations, the
+one-gate copy) stay block-1 gains. Two paid levers if block 2 should match: carry the idle
+register with one mask instead of three (references 1,152 to 1,024) or a larger replacement
+budget in block 2 only (budget 4 there: 96 fires, about 8 % more gates overall); measure the
+block-1 effect before buying either.
