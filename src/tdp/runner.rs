@@ -670,8 +670,13 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
             }
         }
     }
-    if !config.reverse_contract {
-        push("--preprocessing-reverse-contract", "0".to_owned());
+    // the script's default: no reverse contract in the guarded modes, kept in
+    // nonlinear291 (no guards)
+    if config.reverse_contract != (config.preprocessing_mode == PreprocessingMode::Nonlinear291) {
+        push(
+            "--preprocessing-reverse-contract",
+            u8::from(config.reverse_contract).to_string(),
+        );
     }
     if config.preprocessing_mode == PreprocessingMode::ThreeMask {
         for (_, flag, value, default) in config.three_mask.fields() {
@@ -902,10 +907,10 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         sw.slicing,
         sw.layer,
         sw.v_gates_at(config.n),
-        match sw.v_gates {
-            None => ", auto",
-            Some(0) => ", the N column",
-            Some(_) => "",
+        if sw.v_gates == 0 {
+            ", the N column"
+        } else {
+            ""
         },
         config.preset.name(),
         config.reverse_contract

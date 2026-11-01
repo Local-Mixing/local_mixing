@@ -1,11 +1,26 @@
 # Stages 1-2 update and trial sweep (n = 64, 128), 2026-11-01
 
 Code: branch `ran/stage12-layered-v` (from `ran/review-fixes-20261028`): c31a55ef (library, gen, tests), eea26e56 and
-7191de03 (managed driver, recipe v14, docs), 4d780951 (adaptive stage 6 `--forward-only`). Recommendations implemented from `docs/notes/stage2_interleaving_20261101.md`: stage 1
+7191de03 (managed driver, recipe v14, docs), and the defaults commit after RC's decisions below (4d780951's
+`tdp_adaptive --forward-only` was reverted: stage 6 stays unchanged). Recommendations implemented from `docs/notes/stage2_interleaving_20261101.md`: stage 1
 slicing optional, layer size w, the V gadget; stage 2 reverse-contract switch, wire turnover + interleave 4096 as default,
 pre-growth of the whole band. Trial arms: `~/code/lm_worktrees/s12_runs` (make_arms.py, tables.py, blocks.py; seeds per
 (n, w) in `private/`, shared by every arm with that (n, w) so the t and slicing comparisons are paired); battery on the
 server under `~/variants/s2new` (scheduler `py/s2queue.py`, results in `~/variants/run/battery/<arm>/`).
+
+## Decisions (RC, 2026-11-01, after the first results)
+
+Defaults now: t = 1 (the V gadget's copy in triples with a one-gate V; larger V revisited once the degree-2
+midpoint search reports), w = 1, no slicing, no reverse contract in the guarded modes; the band seed and reseed
+stay at both ends. Stage 6 stays unchanged: with no reverse contract the managed driver runs the adaptive stage
+without `--sandwich` (its sandwich payload contract checks both directions), and its zero-slice checks against C
+verify the forward payload. Stage 1 is still the sandwich construction, updated, with the slice blocks optional.
+
+Caveat for the degree-2 question: with t = 1 the register holds the copy's bijection of C(x) between the copy and
+the recovery, and that bijection's inverse is itself of degree 2 (a controlled permutation: CNOTs and controlled
+swaps), so at the sandwich level the payload stays a degree-2 function of the register there unless V scrambles
+it. In the measured three-mask arms the masking alone already left no degree-2 replica (0 of 64 at depths
+0.40-0.60, pipeline_variants_report_20261101.md §3.7); the deg-2 scan on circuits built with t = 1 is the test.
 
 ## High level
 

@@ -20,8 +20,8 @@ SLICE_GUARD_LEGACY	exact	forbidden	0
 SANDWICH_VARIANT	exact	driver	classic
 SANDWICH_SLICING	exact	driver	0
 SANDWICH_LAYER	exact	driver	1
-SANDWICH_V_GATES	exact	driver	auto
-STAGE2_REVERSE_CONTRACT	exact	driver	1
+SANDWICH_V_GATES	exact	driver	1
+STAGE2_REVERSE_CONTRACT	exact	driver	0
 TDP_SOURCE_C	exact	driver	-
 TDP_SOURCE_CONSTRUCTION	exact	driver	random
 THREE_MASK_BAND_WIRES	exact	recipe	0

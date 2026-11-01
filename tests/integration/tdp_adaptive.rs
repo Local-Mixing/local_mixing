@@ -58,9 +58,12 @@ fn kv(report: &str, key: &str) -> String {
 /// `OUT.sandwich.mpmct1`.
 fn gen_fixture(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let out = dir.join("g.mpmct1");
+    // the reverse contract kept, so the sandwich payload contract (checked in
+    // both directions) applies
     let o = Command::new(env!("CARGO_BIN_EXE_gen_sandwich_gadget"))
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
+        .env("STAGE2_REVERSE_CONTRACT", "1")
         .arg(&out)
         .args(["8", "16", "16", "24", "1", "160", "7", "7", "7"])
         .output()

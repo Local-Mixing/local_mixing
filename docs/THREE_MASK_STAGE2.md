@@ -261,11 +261,13 @@ decodes every fire (its internal witness) and realizes the input both ways
 property of the outer blocks: the opening and closing guards each junk only
 the low data half when the band is not zero, so the reversed circuit still
 carries $D^{-1}$ of its input on wires $n..2n$, and gen verifies that
-(`reverse verify PASSED`). `false` keeps the forward payload only: the
-opening guard covers all data wires with the same gate count (its Feistel
-rounds alternate halves, accumulating from one and injecting into the
-other, so each round's uncompute stays exact), and the closing guard is
-dropped; the reversed artifact then junks both halves, and gen skips the
-reverse verification. The managed driver refuses it with the adaptive
-stage 6, whose fail-fast payload contract compares the stage-5 circuit with
-the sandwich in both directions.
+(`reverse verify PASSED`) when it is `true`. `false`, the default in the
+guarded modes since RC's 2026-11-01 decision, keeps the forward payload
+only: the opening guard covers all data wires with the same gate count (its
+Feistel rounds alternate halves, accumulating from one and injecting into
+the other, so each round's uncompute stays exact), and the closing guard is
+dropped; the band seed and reseed stay at both ends; the reversed artifact
+then junks both halves, and gen skips the reverse verification. Stage 6 is
+unchanged: the managed driver runs the adaptive stage without `--sandwich`
+then (its payload contract compares both directions), and the stage's
+zero-slice checks against C verify the forward payload.

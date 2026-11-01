@@ -228,14 +228,15 @@ fn nonlinear_width_beyond_stage_four_is_refused_up_front() {
     assert!(error.contains("at most 1024 state wires"), "{error}");
     assert!(resolve_for_test(&parse(&format!("{wide}run.stop_after_stage = 3"))).is_ok());
     // with the V gadget the recovery's corrections are drawn: the maximum,
-    // 2|C| + 2s + 2n + 2t + 3n - 5 floor(n/3) + (n - floor(n/3)) = 450 gates
+    // 2|C| + 2s + 2n + 2t + 3n - 5 floor(n/3) + (n - floor(n/3)) = 324 gates
+    // at the default t = 1
     let error = resolve_body(
         "source.wires = 16\nsource.gates = 64\npreprocessing.mode = \"nonlinear291\"\nsandwich.slicing = true\n",
     )
     .err()
     .unwrap();
     assert!(
-        error.contains("a stage-2 circuit of up to 5813 wires"),
+        error.contains("a stage-2 circuit of up to 4301 wires"),
         "{error}"
     );
     // n=4, |C|=1, s=8: 389 wires, within stage 6 (with the V gadget at most 749)
@@ -797,7 +798,7 @@ fn checked_in_toml_recipe_is_the_l8_default() {
     assert_eq!((config.n, config.mcd), (128, 3000));
     assert_eq!(config.recipe_version, 14);
     assert_eq!(config.sandwich, SandwichConfig::default());
-    assert!(config.reverse_contract);
+    assert!(!config.reverse_contract);
     assert_eq!(config.stop_after_stage(), 6);
     assert_eq!(config.stages_text(), "1-6");
     assert!(config.delivery.is_default() && config.adaptive.is_default());
@@ -1007,8 +1008,8 @@ fn the_exact_default_manifest_text() {
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "source_construction=random\n",
         "sandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\n",
-        "sandwich_v_gates=384\n",
-        "preprocessing_mode=three-mask\npreprocessing_preset=none\npreprocessing_reverse_contract=1\n",
+        "sandwich_v_gates=1\n",
+        "preprocessing_mode=three-mask\npreprocessing_preset=none\npreprocessing_reverse_contract=0\n",
         "three_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\n",
         "three_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\n",
         "three_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\n",
@@ -1520,7 +1521,10 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     let chain = format!(
         "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
     );
-    let body = format!("{chain}sandwich.slicing = true\nsandwich.v_gates = 0\n");
+    // the legacy stage 1 at the v14 default port contract (forward only) ...
+    let legacy_shape = format!("{chain}sandwich.slicing = true\nsandwich.v_gates = 0\n");
+    // ... and with the reverse contract kept: the chain
+    let body = format!("{legacy_shape}preprocessing.reverse_contract = true\n");
     // the default stage 2 (three-mask) is not the chain
     let default_stage2 = resolve_body(&format!(
         "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
@@ -1534,13 +1538,11 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     // forward-only stage 1-2 are not the chain
     let default_shape = resolve_body(&chain).unwrap();
     assert_eq!(pinned(&default_shape), "none");
-    for extra in [
-        "sandwich.layer = 2\n",
-        "preprocessing.reverse_contract = false\n",
-    ] {
-        let changed = resolve_body(&format!("{body}{extra}")).unwrap();
-        assert_eq!(pinned(&changed), "none", "{extra}");
-    }
+    let layered = resolve_body(&format!("{body}sandwich.layer = 2\n")).unwrap();
+    assert_eq!(pinned(&layered), "none", "layered");
+    let forward_only = resolve_body(&legacy_shape).unwrap();
+    assert!(!forward_only.reverse_contract);
+    assert_eq!(pinned(&forward_only), "none", "forward only");
     let only_column = resolve_body(&format!("{chain}sandwich.v_gates = 0\n")).unwrap();
     assert_eq!(pinned(&only_column), "none", "no slice blocks");
     // the balanced source and the three-mask stage 2 are not the chain
@@ -2116,7 +2118,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         assert!(marker.contains(&format!("preprocessing_mode={mode}\n")));
         assert!(marker.contains("gadget_seed_rule=gen\n"));
         // the shape the manifest records is the one the marker records
-        let v = if mode == "nonlinear291" { "0" } else { "8" };
+        let v = if mode == "nonlinear291" { "0" } else { "1" };
         assert!(
             marker.contains(&format!(
                 "sandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates={v}\n"
@@ -2126,8 +2128,11 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         assert!(manifest.contains(&format!(
             "sandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates={v}\n"
         )));
+        // no reverse contract by default in the guarded modes; nonlinear291 has
+        // no guards (kept)
+        let rc = if mode == "nonlinear291" { "1" } else { "0" };
         assert!(
-            marker.contains("preprocessing_reverse_contract=1\n"),
+            marker.contains(&format!("preprocessing_reverse_contract={rc}\n")),
             "{marker}"
         );
         // ... and the one gen was given: a non-default shape only
@@ -2382,14 +2387,16 @@ fn adaptive_table_follows_the_delivery_mode() {
 /// shape gen builds, auto resolved.
 #[test]
 fn sandwich_table_defaults_flags_and_manifest() {
-    use crate::stages::sandwich::{SandwichVariant, sandwich_default_s, sandwich_default_v};
+    use crate::stages::sandwich::{DEFAULT_V_GATES, SandwichVariant};
     let d = resolve_body("source.wires = 64").unwrap();
     assert_eq!(d.sandwich, SandwichConfig::default());
     assert_eq!(
         d.sandwich.shape(64),
         crate::stages::sandwich::SandwichShape::default_for(64)
     );
-    assert_eq!(d.sandwich.v_gates_at(64), 384);
+    // RC 2026-11-01: t = 1 by default
+    assert_eq!(DEFAULT_V_GATES, 1);
+    assert_eq!(d.sandwich.v_gates_at(64), 1);
     assert_eq!(d.sandwich.params_name(64), "default");
     let args = strings(&script_args(&d));
     assert!(
@@ -2398,13 +2405,13 @@ fn sandwich_table_defaults_flags_and_manifest() {
     );
     let m = recipe_manifest(&d, &[], 1);
     assert!(
-        m.contains("\nsandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates=384\npreprocessing_mode="),
+        m.contains("\nsandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates=1\npreprocessing_mode="),
         "{m}"
     );
-    // an explicit v_gates equal to the auto value builds the same shape:
+    // an explicit v_gates equal to the default builds the same shape:
     // no flag, the same manifest
-    let explicit = resolve_body("source.wires = 64\nsandwich.v_gates = 384").unwrap();
-    assert_eq!(explicit.sandwich.v_gates, Some(384));
+    let explicit = resolve_body("source.wires = 64\nsandwich.v_gates = 1").unwrap();
+    assert_eq!(explicit.sandwich.v_gates, 1);
     assert!(
         !strings(&script_args(&explicit))
             .iter()
@@ -2457,7 +2464,11 @@ fn sandwich_table_defaults_flags_and_manifest() {
                 );
                 let shape = SandwichConfig {
                     layer: layer as u64,
-                    v_gates: (!v.is_empty()).then_some(0),
+                    v_gates: if v.is_empty() {
+                        DEFAULT_V_GATES as u64
+                    } else {
+                        0
+                    },
                     ..SandwichConfig::default()
                 }
                 .shape(n);
@@ -2469,15 +2480,11 @@ fn sandwich_table_defaults_flags_and_manifest() {
             }
         }
     }
-    // scripts/tdp_gen.sh takes the auto V size as its s (V_AUTO=$S_SL)
-    for n in [3usize, 4, 5, 16, 63, 64, 65, 128, 256, 4095] {
-        assert_eq!(sandwich_default_v(n), sandwich_default_s(n), "n {n}");
-    }
+    // scripts/tdp_gen.sh starts from the same defaults
     let script =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
             .unwrap();
-    assert!(script.contains("V_AUTO=$S_SL\n"));
-    assert!(script.contains("SW_SLICING=0; SW_LAYER=1; SW_V_GATES=auto\n"));
+    assert!(script.contains("SW_SLICING=0; SW_LAYER=1; SW_V_GATES=1\n"));
     // the legacy sandwich's size: |C| + |D| + 2s + n (2,832 gates at n=64)
     assert_eq!(
         SandwichConfig::LEGACY.gate_range(64, 1000),
@@ -2488,46 +2495,58 @@ fn sandwich_table_defaults_flags_and_manifest() {
     for (key, _, _, default) in SandwichConfig::default().fields(64) {
         let entry = registry(&format!("SANDWICH_{}", key.to_uppercase()));
         assert_eq!(entry.class, crate::tdp::env_registry::EnvClass::Driver);
-        let expected = if key == "v_gates" { "auto" } else { &default };
+        let expected = &default;
         assert_eq!(entry.default, expected, "{key}");
     }
 }
 
 /// Recipe v14: `preprocessing.reverse_contract` (STAGE2_REVERSE_CONTRACT).
-/// False is refused under nonlinear291 (no port guards); with the adaptive
-/// stage 6 the script runs `tdp_adaptive --forward-only`, whose payload
-/// contract then checks the forward direction only: pinned below on a real
-/// forward-only stage 2 (both directions fail, forward only passes).
+/// Unset: false in the guarded modes (RC 2026-11-01), true in nonlinear291
+/// (no port guards; an explicit false is refused there). Stage 6 is
+/// unchanged: the adaptive stage's sandwich payload contract checks both
+/// directions, which a forward-only stage 2 fails (pinned below on a real
+/// one), so the script runs it without --sandwich then (its zero-slice
+/// checks against C verify the forward payload, also pinned below).
 #[test]
 fn reverse_contract_follows_the_mode_and_stage_six() {
     let d = resolve_body("source.wires = 64").unwrap();
-    assert!(d.reverse_contract);
+    assert!(!d.reverse_contract);
     assert!(
         !strings(&script_args(&d))
             .iter()
             .any(|a| a == "--preprocessing-reverse-contract")
     );
-    assert!(recipe_manifest(&d, &[], 1).contains("\npreprocessing_reverse_contract=1\n"));
+    assert!(recipe_manifest(&d, &[], 1).contains("\npreprocessing_reverse_contract=0\n"));
     for body in [
         "",
         "delivery.mode = \"windowed\"",
         "run.skip_stages = [6]",
-        "run.stop_after_stage = 5",
-        "preprocessing.mode = \"embedded-masking\"\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true",
+        "preprocessing.mode = \"embedded-masking\"",
     ] {
         let c = resolve_body(&format!(
-            "source.wires = 64\npreprocessing.reverse_contract = false\n{body}"
+            "source.wires = 64\npreprocessing.reverse_contract = true\n{body}"
         ))
         .unwrap();
-        assert!(!c.reverse_contract);
+        assert!(c.reverse_contract);
         assert!(
             strings(&script_args(&c))
                 .windows(2)
-                .any(|w| w == ["--preprocessing-reverse-contract", "0"]),
+                .any(|w| w == ["--preprocessing-reverse-contract", "1"]),
             "{body}"
         );
-        assert!(recipe_manifest(&c, &[], 1).contains("\npreprocessing_reverse_contract=0\n"));
+        assert!(recipe_manifest(&c, &[], 1).contains("\npreprocessing_reverse_contract=1\n"));
     }
+    // nonlinear291: kept by default (no guards), an explicit false refused
+    let nl = resolve_body(
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\nrun.skip_stages = [6]",
+    )
+    .unwrap();
+    assert!(nl.reverse_contract);
+    assert!(
+        !strings(&script_args(&nl))
+            .iter()
+            .any(|a| a == "--preprocessing-reverse-contract")
+    );
     let error = resolve_body(
         "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\npreprocessing.reverse_contract = false\nrun.skip_stages = [6]",
     )
@@ -2536,13 +2555,20 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
     assert!(error.contains("guarded mode"), "{error}");
     assert_eq!(
         crate::tdp::env_registry::classify("STAGE2_REVERSE_CONTRACT").map(|e| (e.class, e.default)),
-        Some((crate::tdp::env_registry::EnvClass::Driver, "1"))
+        Some((crate::tdp::env_registry::EnvClass::Driver, "0"))
     );
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
+            .unwrap();
+    assert!(script.contains(
+        "ADSANDWICH=(--sandwich \"$GADGET.sandwich.mpmct1\"); [ \"$REV_CONTRACT\" = 1 ] || ADSANDWICH=()"
+    ));
 
-    // tdp_adaptive's payload contract on a real stage 2 (n = 8, the default
-    // stage-1 shape, three-mask v3): kept passes both directions; forward-only
-    // fails the inverse direction and passes `--forward-only`'s check
-    use crate::stages::adaptive::driver::{payload_contract, payload_contract_dirs};
+    // tdp_adaptive's checks on a real stage 2 (n = 8, the default stage-1
+    // shape, three-mask v3): the sandwich payload contract holds with the
+    // reverse contract and fails without it (inverse direction); the
+    // zero-slice check against C holds either way
+    use crate::stages::adaptive::driver::payload_contract;
     use crate::stages::preprocessing::embedded_masking::EmbeddedMaskingParams;
     use crate::stages::preprocessing::three_mask::ThreeMaskParams;
     use crate::stages::preprocessing::{PreprocessingParams, preprocess_sandwich_ports};
@@ -2550,7 +2576,7 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
         SandwichShape, SandwichVariant, SourceConstruction, construct_shaped_sandwich,
         prepare_source,
     };
-    use rand::SeedableRng;
+    use rand::{RngCore, SeedableRng};
     let n = 8;
     let (source_seed, gadget_seed, sandwich_seed) = (61, 67, 71);
     let source = prepare_source(n, 24, source_seed, None, SourceConstruction::Random).unwrap();
@@ -2592,16 +2618,25 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
         if let Err(error) = checked {
             assert!(format!("{error:?}").contains("inverse"), "{error:?}");
         }
-        assert!(
-            payload_contract_dirs(
-                &sandwich.gates,
-                sandwich.num_wires,
-                &stage2.circuit.gates,
-                stage2.circuit.num_wires,
-                n,
-                false,
-            )
-            .is_ok()
+        // the zero slice: x on wires 0..n, zeros elsewhere -> C(x) on n..2n
+        let mut zrng = rand::rngs::StdRng::seed_from_u64(5);
+        let mut state = vec![0u64; stage2.circuit.num_wires];
+        for w in state.iter_mut().take(n) {
+            *w = zrng.next_u64();
+        }
+        let mut want = vec![0u64; 2 * n];
+        want[..n].copy_from_slice(&state[..n]);
+        crate::circuit::eval_lanes(&stage2.circuit.gates, &mut state);
+        let c_xgates: Vec<crate::circuit::XGate> = source
+            .gates
+            .iter()
+            .map(|&g| crate::circuit::XGate::from_g57(g))
+            .collect();
+        crate::circuit::eval_lanes(&c_xgates, &mut want);
+        assert_eq!(
+            &state[n..2 * n],
+            &want[..n],
+            "zero slice, contract {reverse_contract}"
         );
     }
 }

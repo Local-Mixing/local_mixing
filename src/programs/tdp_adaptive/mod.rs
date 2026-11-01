@@ -60,14 +60,13 @@ pub fn run() {
     std::process::exit(code);
 }
 
-const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
+const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96] [--probe-inputs 8192] [--threads T] [--label tdp]
 tdp_adaptive help";
 
 // ---------------------------------------------------------------- argv
 
-const SWITCHES: [&str; 6] = [
-    "--forward-only",
+const SWITCHES: [&str; 5] = [
     "--blind",
     "--no-canonical-order",
     "--keep-round-circuits",
@@ -75,13 +74,12 @@ const SWITCHES: [&str; 6] = [
     "--help",
 ];
 
-const RUN_OPTIONS: [&str; 33] = [
+const RUN_OPTIONS: [&str; 32] = [
     "input",
     "source-c",
     "n",
     "out-dir",
     "sandwich",
-    "forward-only",
     "seed",
     "seed-file",
     "threads",
@@ -339,7 +337,6 @@ fn cmd_run(a: &Args) -> Result<(), AdaptiveError> {
         source_c: PathBuf::from(a.req("source-c")?),
         n,
         sandwich: a.get("sandwich").map(PathBuf::from),
-        forward_only: a.flag("forward-only"),
         out_dir: PathBuf::from(a.req("out-dir")?),
         seed,
         threads,

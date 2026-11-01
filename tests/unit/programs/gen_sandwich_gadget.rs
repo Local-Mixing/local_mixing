@@ -277,7 +277,7 @@ fn source_construction_env_defaults_to_random_and_rejects_unknown_values() {
 
 #[test]
 fn sandwich_shape_defaults_overrides_and_refusals() {
-    use crate::stages::sandwich::{SandwichShape, SandwichVariant, sandwich_default_v};
+    use crate::stages::sandwich::{DEFAULT_V_GATES, SandwichShape, SandwichVariant};
     let classic = SandwichVariant::Classic;
     let none = |_: &str| None;
     let shape = sandwich_shape_from(64, classic, none).unwrap();
@@ -287,10 +287,11 @@ fn sandwich_shape_defaults_overrides_and_refusals() {
         SandwichShape {
             slicing: false,
             layer: 1,
-            v_gates: sandwich_default_v(64)
+            v_gates: DEFAULT_V_GATES
         }
     );
-    assert_eq!(sandwich_default_v(64), 384);
+    // RC 2026-11-01: t = 1 (the triples encoding with a one-gate V)
+    assert_eq!(DEFAULT_V_GATES, 1);
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |key: &str| {
             pairs
@@ -341,7 +342,9 @@ fn sandwich_shape_defaults_overrides_and_refusals() {
 #[test]
 fn reverse_contract_parses_and_needs_a_guarded_mode() {
     let three = PreprocessingMode::ThreeMask;
-    assert!(reverse_contract_from(three, None).unwrap());
+    // unset: no reverse contract in the guarded modes (RC 2026-11-01)
+    assert!(!reverse_contract_from(three, None).unwrap());
+    assert!(!reverse_contract_from(PreprocessingMode::EmbeddedMasking, None).unwrap());
     assert!(reverse_contract_from(three, Some("1")).unwrap());
     assert!(!reverse_contract_from(three, Some("0")).unwrap());
     assert!(!reverse_contract_from(PreprocessingMode::EmbeddedMasking, Some("false")).unwrap());

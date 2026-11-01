@@ -40,7 +40,8 @@ fn stage2_typed_params_byte_identical() {
             cmd.env_clear()
                 .env("PATH", "/usr/bin:/bin")
                 .env("SANDWICH_SLICING", "1")
-                .env("SANDWICH_V_GATES", "0");
+                .env("SANDWICH_V_GATES", "0")
+                .env("STAGE2_REVERSE_CONTRACT", "1");
             for kv in env.split_whitespace() {
                 let (k, v) = kv.split_once('=').unwrap();
                 cmd.env(k, v);

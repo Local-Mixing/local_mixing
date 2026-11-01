@@ -51,7 +51,7 @@ done
 # follows the driver: embedded-masking takes none)
 L8_ENV="EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8"
 cases=(
-  "legacy-forward|$L8_ENV SANDWICH_SLICING=1 SANDWICH_V_GATES=0 STAGE2_REVERSE_CONTRACT=0|--preprocessing-mode embedded-masking --sandwich-slicing 1 --sandwich-v-gates 0 --preprocessing-reverse-contract 0"
+  "legacy-reverse|$L8_ENV SANDWICH_SLICING=1 SANDWICH_V_GATES=0 STAGE2_REVERSE_CONTRACT=1|--preprocessing-mode embedded-masking --sandwich-slicing 1 --sandwich-v-gates 0 --preprocessing-reverse-contract 1"
   "layered-v13-three-mask|SANDWICH_LAYER=3 SANDWICH_V_GATES=40 THREE_MASK_TURNOVER=bank THREE_MASK_INTERLEAVE=0 THREE_MASK_PREGROW=0|--sandwich-layer 3 --sandwich-v-gates 40 --three-mask-turnover bank --three-mask-interleave 0 --three-mask-pregrow 0"
 )
 for c in "${cases[@]}"; do
@@ -74,10 +74,11 @@ for c in "${cases[@]}"; do
   echo "stage-2 parity $label: tdp.mpmct1, source C, sandwich identical ($(head -1 "$ref/tdp.mpmct1" | awk '{print $3}') gates)"
 done
 # the shape and port contract changed the circuits: the sandwiches differ from
-# the default shape's, and the forward-only stage 2 skipped the reverse check
-if cmp -s "$tmp/ref_L8/tdp.mpmct1.sandwich.mpmct1" "$tmp/ref_legacy-forward/tdp.mpmct1.sandwich.mpmct1"; then
+# the default shape's; the default stage 2 (no reverse contract) skipped the
+# reverse check, and the legacy stage 1 with the contract kept passed it
+if cmp -s "$tmp/ref_L8/tdp.mpmct1.sandwich.mpmct1" "$tmp/ref_legacy-reverse/tdp.mpmct1.sandwich.mpmct1"; then
   echo "the legacy shape built the default sandwich" >&2; exit 1
 fi
-grep -q 'reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0' "$tmp/man_legacy-forward/stage12.log"
-grep -q 'reverse verify PASSED' "$tmp/man_L8/stage12.log"
+grep -q 'reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0' "$tmp/man_L8/stage12.log"
+grep -q 'reverse verify PASSED' "$tmp/man_legacy-reverse/stage12.log"
 echo 'TDP stage 1+2 parity tests passed'

@@ -309,7 +309,8 @@ import json, sys
 c = [json.loads(l) for l in open(sys.argv[1]) if '"tdp_adaptive"' in l][-1]
 a = [x.rsplit('/', 1)[-1] for x in c['args']]; raw = c['argv']
 assert a[:3] == ['run', '--input', 'crossing.mpmct1'], a
-assert a[a.index('--source-c') + 1] == 'tdp.mpmct1.source_c.g57' and a[a.index('--sandwich') + 1] == 'tdp.mpmct1.sandwich.mpmct1', a
+# the default stage 2 keeps no reverse contract: stage 6 (unchanged) runs without --sandwich
+assert a[a.index('--source-c') + 1] == 'tdp.mpmct1.source_c.g57' and '--sandwich' not in a, a
 assert a[a.index('--out-dir') + 1] == 'adaptive' and a[a.index('--n') + 1] == '4', a
 assert '--seed' not in raw and raw[raw.index('--seed-file') + 1] == '/dev/fd/3', raw
 assert not any(x.startswith(('--max-rounds', '--stop-fraction', '--time-limit', '--threads')) for x in a), a

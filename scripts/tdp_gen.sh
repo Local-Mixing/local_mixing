@@ -110,13 +110,16 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --sandwich-slicing 0|1     [0; 1 = slice blocks S1/S2 interleaved with C and D]
     --sandwich-layer W         [1; sample the random C, D and V in layers of W
                                wire-disjoint gates, 1..n/3]
-    --sandwich-v-gates N|auto  [auto = round(n·log2 n); 0 = no V gadget (the N column of
-                               copy CNOTs); with nonlinear291 only 0 or --sandwich-slicing 1]
+    --sandwich-v-gates N       [1 = the nonlinear copy in triples with a one-gate V;
+                               0 = no V gadget (the N column of copy CNOTs); with
+                               nonlinear291 only 0 or --sandwich-slicing 1]
   --preprocessing-mode M   three-mask (default), embedded-masking or nonlinear291
   --preprocessing-reverse-contract 0|1
-                           [1; 0 = forward payload only: the opening guard covers all
-                           data wires, no closing guard; not with nonlinear291, not with
-                           the adaptive stage 6 (it checks the payload both ways)]
+                           [0 in the guarded modes = forward payload only: the opening
+                           guard covers all data wires, no closing guard, and the
+                           adaptive stage 6 checks the payload forward only; 1 = both
+                           junk-half guards, the reverse payload kept; nonlinear291 has
+                           no guards (1, and 0 is refused)]
   --preprocessing-preset P L8 (default) | A | custom (embedded-masking only; the three-mask
                            default has no preset: its outer blocks are L8)
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
@@ -268,8 +271,8 @@ if [ "${#refused[@]}" -gt 0 ]; then
 fi
 
 N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""; SOURCE_CONSTRUCTION=random
-SW_SLICING=0; SW_LAYER=1; SW_V_GATES=auto
-PREPROCESSING_MODE=three-mask; PRESET=""; REV_CONTRACT=1
+SW_SLICING=0; SW_LAYER=1; SW_V_GATES=1
+PREPROCESSING_MODE=three-mask; PRESET=""; REV_CONTRACT=""
 declare -A KNOB=()
 declare -A TM=()
 DELIV_MODE=adaptive
@@ -765,18 +768,18 @@ SW_SLICING=$(bounded_uint --sandwich-slicing "$SW_SLICING" 0 1)
 SW_LAYER=$(bounded_uint --sandwich-layer "$SW_LAYER" 1 4095)
 [ $((3 * SW_LAYER)) -le "$N" ] ||
   fatal "--sandwich-layer $SW_LAYER: need 1 <= W <= n/3 = $((N / 3)) (each gate of a layer takes three distinct wires)"
-# auto = sandwich_default_v(n) = sandwich_default_s(n) = max(n, round(n log2 n)) = S_SL
-V_AUTO=$S_SL
-if [ "$SW_V_GATES" = auto ]; then V_EFF=$V_AUTO; else V_EFF=$(bounded_uint --sandwich-v-gates "$SW_V_GATES" 0 1000000000); fi
+V_EFF=$(bounded_uint --sandwich-v-gates "$SW_V_GATES" 0 1000000000)
 # nonlinear291's templates take r57, nab, positive-AND and positive-copy gates:
 # the V gadget's copy qualifies only zero-preserving, i.e. with the slice blocks
 [ "$PREPROCESSING_MODE" != nonlinear291 ] || [ "$V_EFF" -eq 0 ] || [ "$SW_SLICING" = 1 ] ||
   fatal "nonlinear291 takes the V gadget ($V_EFF gates) only with --sandwich-slicing 1: without the slice blocks its copy writes two-control conjunctions of either polarity, which nonlinear291's templates do not cover; set --sandwich-v-gates 0 (the N column of copy CNOTs) or --sandwich-slicing 1"
+# unset: no reverse contract in the guarded modes; nonlinear291 has no guards
+if [ -z "$REV_CONTRACT" ]; then
+  if [ "$PREPROCESSING_MODE" = nonlinear291 ]; then REV_CONTRACT=1; else REV_CONTRACT=0; fi
+fi
 REV_CONTRACT=$(bounded_uint --preprocessing-reverse-contract "$REV_CONTRACT" 0 1)
 [ "$REV_CONTRACT" = 1 ] || [ "$PREPROCESSING_MODE" != nonlinear291 ] ||
   fatal "--preprocessing-reverse-contract 0 needs a guarded mode (embedded-masking or three-mask): nonlinear291 has no port guards"
-# a forward-only stage 2: tdp_adaptive checks the payload contract forward only
-[ "$REV_CONTRACT" = 1 ] || ! adaptive_on || ADFLAGS+=(--forward-only)
 # the sandwich's gate count (shaped_sandwich_gate_range): exact without the V
 # gadget; with it the maximum (the recovery's polarity corrections are drawn)
 if [ "$V_EFF" -eq 0 ]; then
@@ -998,8 +1001,9 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   # the stage-1 shape and the port contract, each only when not gen's default
   [ "$SW_SLICING" = 0 ] || RECIPE_ENV+=(SANDWICH_SLICING="$SW_SLICING")
   [ "$SW_LAYER" = 1 ] || RECIPE_ENV+=(SANDWICH_LAYER="$SW_LAYER")
-  [ "$V_EFF" = "$V_AUTO" ] || RECIPE_ENV+=(SANDWICH_V_GATES="$V_EFF")
-  [ "$REV_CONTRACT" = 1 ] || RECIPE_ENV+=(STAGE2_REVERSE_CONTRACT=0)
+  [ "$V_EFF" = 1 ] || RECIPE_ENV+=(SANDWICH_V_GATES="$V_EFF")
+  # gen's default: no reverse contract in the guarded modes, kept in nonlinear291
+  [ "$PREPROCESSING_MODE" = nonlinear291 ] || [ "$REV_CONTRACT" = 0 ] || RECIPE_ENV+=(STAGE2_REVERSE_CONTRACT=1)
   # val_chain.sh's argv, except that the three seeds (all = the gen seed) arrive
   # as @/dev/fd/N here-strings: a seed on argv is visible in ps to every local
   # user, and the gen seed regenerates C. gen prints them as "(file)".
@@ -1396,8 +1400,13 @@ if [ "$stage6_done" -eq 0 ]; then
   note "stage 6 (delivery, adaptive): tdp_adaptive run on $(basename "$CUR") (max rounds $AD_MAX_ROUNDS, stop fraction $AD_STOP_FRACTION, $AD_SEEDS seeds per block, time limit $AD_TIME_LIMIT s${ADFLAGS[*]:+; flags ${ADFLAGS[*]}})"
   RECIPE_ENV=()
   set +e
+  # stage 6 is unchanged (RC 2026-11-01): its sandwich payload contract checks
+  # both directions, so a forward-only stage 2 (no reverse contract) runs
+  # without --sandwich; its zero-slice checks against C still verify the
+  # forward payload before round 1 and on the published circuit
+  ADSANDWICH=(--sandwich "$GADGET.sandwich.mpmct1"); [ "$REV_CONTRACT" = 1 ] || ADSANDWICH=()
   stage_exec "$BIN/tdp_adaptive" run --input "$CUR" --source-c "$GADGET.source_c.g57" --n "$N" \
-      --sandwich "$GADGET.sandwich.mpmct1" --out-dir "$ADAPT_DIR" --seed-file /dev/fd/3 \
+      ${ADSANDWICH[@]+"${ADSANDWICH[@]}"} --out-dir "$ADAPT_DIR" --seed-file /dev/fd/3 \
       ${ADFLAGS[@]+"${ADFLAGS[@]}"} ${THREADFLAGS[@]+"${THREADFLAGS[@]}"} 3<<< "$UNPACK_SEED" \
       >> "$RUN/stage6.log" 2>&1
   rc=$?

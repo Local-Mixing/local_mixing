@@ -111,6 +111,7 @@ fn stage2_three_mask_matches_the_server_generator() {
         .env("THREE_MASK_TURNOVER", "bank")
         .env("THREE_MASK_INTERLEAVE", "0")
         .env("THREE_MASK_PREGROW", "0")
+        .env("STAGE2_REVERSE_CONTRACT", "1")
         .arg(&out)
         .args([
             "32",

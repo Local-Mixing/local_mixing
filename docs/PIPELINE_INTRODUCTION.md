@@ -145,9 +145,10 @@ attack. It adds no hiding: on its slice the sandwich runs C gate by gate in
 the clear (`docs/TDP_PIPELINE_REFERENCE.md` §1).
 
 Construction (`docs/tdp_pipeline.md`, "Stage 1"; `[sandwich]`; RC,
-2026-11-01, `docs/notes/stage2_interleaving_20261101.md`). With x the low
-half (wires 0..n) and y the high half, the register (n..2n), in execution
-order (recipe v14)
+2026-11-01, `docs/notes/stage2_interleaving_20261101.md`): still the
+sandwich, updated, with the slice blocks optional and off by default. With
+x the low half (wires 0..n) and y the high half, the register (n..2n), in
+execution order (recipe v14)
 
 ```text
 A = C ; copy ; [ D on the low half beside V, V*, recovery on the register ]
@@ -158,14 +159,21 @@ D is an independently drawn random g57 circuit of C's size and design. The
 of C's outputs into the register in groups of three wires, each register
 wire receiving a balanced degree-2 function of three of its group's values
 from two two-control conjunctions (never a single value on a wire); V is
-t = round(n·log2 n) random gates on the register (384 at n = 64) and V* its
-inverse, run beside D; the register's own inverse of the copy then restores
-C(x). Forward on the slice, (x, 0) → (C(x), 0) → (C(x), copy(C(x))) →
-(junk, V(copy(C(x)))) and, after V* and the recovery, (junk, C(x)); no
-degree-2 replica of the payload sits at the midpoint. Backward the register carries the copy's bijection of
-D⁻¹(a). The copy gates float backward into C as far as commutation allows.
-|A| = |C| + |D| + 2n + 2t + the recovery (3n − 5⌊n/3⌋ gates plus drawn
-polarity corrections): 2,983 to 3,069 gates on 128 wires at n = 64.
+t random gates on the register and V* its inverse, run beside D; the
+register's own inverse of the copy then restores C(x). Forward on the
+slice, (x, 0) → (C(x), 0) → (C(x), copy(C(x))) → (junk, V(copy(C(x)))) and,
+after V* and the recovery, (junk, C(x)). The default is t = 1 (RC,
+2026-11-01): V V* is one cancelling pair, so the gadget is in effect the
+nonlinear copy and its recovery; larger t (n·log2 n / 2 and n·log2 n were
+trialled) waits for the degree-2 midpoint search. Note that the copy's
+inverse is itself of degree 2 (a controlled permutation), so between the
+copy and the recovery the payload is a degree-2 function of the register at
+the sandwich level whenever V does not scramble it; in the measured
+three-mask arms the masking alone left no degree-2 replica (0 of 64).
+Backward the register carries the copy's bijection of D⁻¹(a). The copy
+gates float backward into C as far as commutation allows. |A| = |C| + |D| +
+2n + 2t + the recovery (3n − 5⌊n/3⌋ gates plus drawn polarity
+corrections): 2,217 to 2,303 gates on 128 wires at n = 64, t = 1.
 
 Two options restore parts of the earlier construction. `slicing = true`
 interleaves the slice blocks S1 with C and S2 with D: s = max(n,
@@ -201,11 +209,13 @@ each) are the identity exactly when the band is zero. At the end, on input
 (x, 0^n, 0^{2n}), wires n..2n hold C(x) and everything else is junk
 (`docs/tdp_pipeline.md`, "Stage 2"). The guards keep the **reverse
 contract**: each junks only the low half, so the reversed circuit still
-carries D⁻¹ of its input on wires n..2n. `preprocessing.reverse_contract =
-false` (recipe v14) drops it: the opening guard covers all data wires with
-the same gate count and there is no closing guard, so only the forward
-payload is kept (refused with the adaptive stage 6, which checks both
-directions).
+carries D⁻¹ of its input on wires n..2n (`preprocessing.reverse_contract =
+true`). The default since recipe v14 (RC, 2026-11-01) is false: the opening
+guard covers all data wires with the same gate count and there is no
+closing guard, so only the forward payload is kept; the band seed and
+reseed stay at both ends. Stage 6 is unchanged: the adaptive stage then runs
+without the sandwich (its payload contract checks both directions), and its
+zero-slice checks against C verify the forward payload.
 
 **Embedded masking** (`preprocessing.mode = "embedded-masking"`, preset
 `L8`; the default before recipe v13). Each data wire carries two or three open balanced
@@ -489,7 +499,7 @@ mode) are rejected before a run starts. The settings a first user touches:
 | setting | meaning |
 | --- | --- |
 | `source.wires`, `source.gates`, `source.construction`, `source.path` | n (3..4095; at most 256 when stage 6 runs), |C|, random/balanced, or a supplied C |
-| `[sandwich]` | the stage-1 shape: `slicing`, `layer`, `v_gates` (the V gadget; `slicing = true` with `v_gates = 0` is recipe v13's stage 1) |
+| `[sandwich]` | the stage-1 sandwich's shape: `slicing` (false), `layer` (1), `v_gates` (1; `slicing = true` with `v_gates = 0` is recipe v13's stage 1) |
 | `preprocessing.mode`, `preprocessing.preset`, `[three_mask]` | `three-mask` (default) with its knobs, or `embedded-masking` (preset `L8`); `preprocessing.reverse_contract` |
 | `run.skip_stages`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | stages 2..6 not run; where to stop; what to redo; thread pin |
 | `database.regular_dir` | the frozen store (required when stage 3 runs) |

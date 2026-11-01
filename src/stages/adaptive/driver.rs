@@ -74,11 +74,6 @@ pub struct DriverInputs {
     pub n: usize,
     /// The stage-1 sandwich (mpmct1, `2n` wires) for the payload contract.
     pub sandwich: Option<PathBuf>,
-    /// Check the payload contract forward only (`--forward-only`): the
-    /// stage-2 circuit was built without the reverse contract (opening
-    /// guard over all data wires, no closing guard), so its inverse junks
-    /// the reverse payload by design.
-    pub forward_only: bool,
     pub out_dir: PathBuf,
     /// The stage seed (never printed).
     pub seed: u64,
@@ -164,11 +159,8 @@ pub struct FinalChecks {
     pub canonical_applied: Option<bool>,
     pub canonical_reason: String,
     pub zero_slice: usize,
-    /// Payload contract inputs (both directions, or forward only), when a
-    /// sandwich was given.
+    /// Payload contract inputs (both directions), when a sandwich was given.
     pub payload_contract: Option<usize>,
-    /// The payload contract was checked forward only (`--forward-only`).
-    pub payload_forward_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -300,20 +292,6 @@ pub fn payload_contract(
     width: usize,
     n: usize,
 ) -> Result<usize, AdaptiveError> {
-    payload_contract_dirs(sandwich, sandwich_width, circuit, width, n, true)
-}
-
-/// [`payload_contract`] with the inverse direction optional: `inverse`
-/// false checks the forward payload only (a stage 2 built without the
-/// reverse contract).
-pub fn payload_contract_dirs(
-    sandwich: &[XGate],
-    sandwich_width: usize,
-    circuit: &[XGate],
-    width: usize,
-    n: usize,
-    inverse: bool,
-) -> Result<usize, AdaptiveError> {
     let sw = sandwich_width.max(2 * n);
     if n == 0 || 2 * n > width {
         return Err(AdaptiveError::Usage(format!(
@@ -330,8 +308,7 @@ pub fn payload_contract_dirs(
     let structured = structured_patterns(n);
     let random_batches = PAYLOAD_RANDOM_INPUTS.div_ceil(1024);
     let mut checked = 0usize;
-    let directions: &[bool] = if inverse { &[false, true] } else { &[false] };
-    for &inverse in directions {
+    for inverse in [false, true] {
         let mut rng = PyRandom::new(CHECK_SEED ^ 0x2026_1019 ^ inverse as u64);
         let mut batches: Vec<Vec<Lanes>> = Vec::new();
         for _ in 0..random_batches {
@@ -691,15 +668,6 @@ pub fn final_report_text(
         "check.payload_contract={}",
         okn(rep.checks.payload_contract)
     );
-    let _ = writeln!(
-        s,
-        "check.payload_directions={}",
-        if rep.checks.payload_forward_only {
-            "forward"
-        } else {
-            "both"
-        }
-    );
     let _ = writeln!(s, "seconds={:.3}", rep.seconds);
     s
 }
@@ -854,8 +822,7 @@ pub fn run(
     ));
     let input_payload_contract = match &sandwich {
         Some((sg, sw)) => {
-            let k = payload_contract_dirs(sg, *sw, &gates, width, n, !inputs.forward_only)
-                .map_err(|e| match e {
+            let k = payload_contract(sg, *sw, &gates, width, n).map_err(|e| match e {
                 AdaptiveError::Verify(m) => AdaptiveError::Verify(format!(
                     "the stage-5 circuit {} does not satisfy the payload contract of the sandwich {}: {m}",
                     inputs.input.display(),
@@ -992,7 +959,6 @@ pub fn run(
     let mut checks = FinalChecks {
         input_zero_slice,
         input_payload_contract,
-        payload_forward_only: inputs.forward_only,
         ..Default::default()
     };
     let final_census_dir = inputs.out_dir.join("final_census");
@@ -1101,15 +1067,10 @@ pub fn run(
         checks.zero_slice
     ));
     if let Some((sg, sw)) = &sandwich {
-        let k = payload_contract_dirs(sg, *sw, &final_gates, width, n, !inputs.forward_only)?;
+        let k = payload_contract(sg, *sw, &final_gates, width, n)?;
         checks.payload_contract = Some(k);
         say(&format!(
-            "payload contract vs the sandwich: ok ({k} inputs, {})",
-            if inputs.forward_only {
-                "forward only"
-            } else {
-                "both directions"
-            }
+            "payload contract vs the sandwich: ok ({k} inputs over both directions)"
         ));
     }
     let fc = match final_census {

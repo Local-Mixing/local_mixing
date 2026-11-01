@@ -129,7 +129,7 @@ for value in 2 abc; do reject 'preprocessing-reverse-contract' --preprocessing-r
 reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291
 reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291 --sandwich-v-gates 5
 reject 'needs a guarded mode' --preprocessing-mode nonlinear291 --sandwich-v-gates 0 --preprocessing-reverse-contract 0
-# (a forward-only stage 2 with the adaptive stage 6: tdp_block_size.bash)
+# (the default forward-only stage 2 with the adaptive stage 6: tdp_block_size.bash)
 # packing budgets are resource bounds (MAX_MONOMIAL_BUDGET = 2^18)
 reject 'packing-monomial-budget' --delivery-mode windowed --packing-monomial-budget 262145
 reject 'packing-split-budget' --delivery-mode windowed --packing-split-budget 262145
@@ -149,7 +149,7 @@ if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preproc
      --sandwich-slicing 1 --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
   echo "unexpected success: nonlinear291 n=16 with the V gadget and stage 6" >&2; exit 1
 fi
-grep -q 'FATAL: nonlinear291 makes a stage-2 circuit of up to 5813 wires; stage 6' "$tmp/error" ||
+grep -q 'FATAL: nonlinear291 makes a stage-2 circuit of up to 4301 wires; stage 6' "$tmp/error" ||
   { cat "$tmp/error" >&2; exit 1; }
 if ! bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
      --sandwich-slicing 1 --sandwich-v-gates 0 --run-directory "$tmp/nl-wide" --run-skip-stages 6 --run-stop-after-stage 2 >"$tmp/error" 2>&1; then
@@ -224,8 +224,8 @@ run_case three-mask-v2 --three-mask-turnover bank --three-mask-interleave 0 --th
 run_case balanced --source-construction balanced
 run_case legacy-shape "${E[@]}" --sandwich-slicing 1 --sandwich-v-gates 0
 run_case v-gates --sandwich-v-gates 24 --sandwich-layer 1
-run_case v-auto --sandwich-v-gates 8
-run_case forward-only "${E[@]}" --preprocessing-reverse-contract 0
+run_case v-default --sandwich-v-gates 1
+run_case reverse-kept "${E[@]}" --preprocessing-reverse-contract 1
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
 import json, sys
@@ -253,17 +253,18 @@ expected = {
     'balanced': ({}, 'none'),
     'legacy-shape': (L8, 'L8'),
     'v-gates': ({}, 'none'),
-    'v-auto': ({}, 'none'),
-    'forward-only': (L8, 'L8'),
+    'v-default': ({}, 'none'),
+    'reverse-kept': (L8, 'L8'),
 }
 # the stage-1 shape and port contract reach gen only when not its default
-# (auto V at n=4: max(4, round(4 log2 4)) = 8): (env, marker slicing, layer, v_gates, reverse_contract)
+# (V = 1 gate; no reverse contract in the guarded modes, kept in nonlinear291):
+# (env, marker slicing, layer, v_gates, reverse_contract)
 shape = {
     'nonlinear291': ({'SANDWICH_V_GATES': '0'}, '0', '1', '0', '1'),
-    'nonlinear291-v': ({'SANDWICH_SLICING': '1'}, '1', '1', '8', '1'),
-    'legacy-shape': ({'SANDWICH_SLICING': '1', 'SANDWICH_V_GATES': '0'}, '1', '1', '0', '1'),
-    'v-gates': ({'SANDWICH_V_GATES': '24'}, '0', '1', '24', '1'),
-    'forward-only': ({'STAGE2_REVERSE_CONTRACT': '0'}, '0', '1', '8', '0'),
+    'nonlinear291-v': ({'SANDWICH_SLICING': '1'}, '1', '1', '1', '1'),
+    'legacy-shape': ({'SANDWICH_SLICING': '1', 'SANDWICH_V_GATES': '0'}, '1', '1', '0', '0'),
+    'v-gates': ({'SANDWICH_V_GATES': '24'}, '0', '1', '24', '0'),
+    'reverse-kept': ({'STAGE2_REVERSE_CONTRACT': '1'}, '0', '1', '1', '1'),
 }
 for name, (env, preset) in expected.items():
     calls = [json.loads(l) for l in (root / f'{name}.calls').read_text().splitlines()]
@@ -274,11 +275,11 @@ for name, (env, preset) in expected.items():
     assert got == env, (name, got)
     # no other recipe variable reaches gen (the balanced construction travels as TDP_SOURCE_CONSTRUCTION)
     assert not any(k.startswith(('SLICE_GUARD', 'PROD_')) or k in ('TDP_SOURCE_C', 'SANDWICH_VARIANT') for k in gen['env']), gen['env']
-    shape_env, slicing, layer, v_gates, reverse = shape.get(name, ({}, '0', '1', '8', '1'))
+    shape_env, slicing, layer, v_gates, reverse = shape.get(name, ({}, '0', '1', '1', '0'))
     got = {k: v for k, v in gen['env'].items() if k.startswith(('SANDWICH_', 'STAGE2_'))}
     assert got == shape_env, (name, got)
     assert gen['env'].get('TDP_SOURCE_CONSTRUCTION') == ('balanced' if name == 'balanced' else None), (name, gen['env'])
-    mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking' if name in ('embedded', 'preset-L8', 'preset-A', 'legacy-shape', 'forward-only') or name.startswith('custom') else 'three-mask'
+    mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking' if name in ('embedded', 'preset-L8', 'preset-A', 'legacy-shape', 'reverse-kept') or name.startswith('custom') else 'three-mask'
     args = gen['args']
     assert args[1:] == ['4', '1', '1', '8', '1', '80'] + [args[7]] * 3 + ([mode] if mode != 'embedded-masking' else []), args
     # the seeds reach gen through descriptors, never on its argv
@@ -318,7 +319,7 @@ for changed in "--source-gates 1 --preprocessing-mode nonlinear291 --sandwich-v-
                "--source-gates 1 --preprocessing-mode embedded-masking --preprocessing-preset A" "--source-gates 2" \
                "--source-gates 1 --three-mask-turnover bank --three-mask-banks 8" "--source-gates 1 --source-construction balanced" \
                "--source-gates 1 --three-mask-pregrow 0" "--source-gates 1 --sandwich-slicing 1" "--source-gates 1 --sandwich-v-gates 0" \
-               "--source-gates 1 --preprocessing-reverse-contract 0"; do
+               "--source-gates 1 --preprocessing-reverse-contract 1"; do
   # shellcheck disable=SC2086
   if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/defaults" --run-stop-after-stage 2 $changed >"$tmp/changed.log" 2>&1; then
     echo "changed preprocessing recipe unexpectedly resumed: $changed" >&2; exit 1

@@ -90,9 +90,10 @@ if name == "gen_sandwich_gadget":
     mode = args[10] if len(args) > 10 else "embedded-masking"
     construction = os.environ.get("TDP_SOURCE_CONSTRUCTION", "random")
     # gen's banner ends with the stage-1 shape and the port contract it built
-    # (defaults: no slicing, layer 1, V = max(n, round(n log2 n)), reverse kept)
-    shape = {"SANDWICH_SLICING": "0", "SANDWICH_LAYER": "1",
-             "SANDWICH_V_GATES": str(max(n, round(n * math.log2(n)))), "STAGE2_REVERSE_CONTRACT": "1"}
+    # (defaults since RC 2026-11-01: no slicing, layer 1, V = 1 gate, no
+    # reverse contract in the guarded modes, kept in nonlinear291)
+    shape = {"SANDWICH_SLICING": "0", "SANDWICH_LAYER": "1", "SANDWICH_V_GATES": "1",
+             "STAGE2_REVERSE_CONTRACT": "1" if mode == "nonlinear291" else "0"}
     if "gen_ignore_shape" not in opts:
         shape = {k: os.environ.get(k, v) for k, v in shape.items()}
     print(f"[gen] n={n} |C|={args[2]} |D|={args[3]} s={args[4]} rg_freq={args[5]} slice_gates={args[6]} "
@@ -167,8 +168,10 @@ elif name == "tdp_unpacking":
         f"param.max_rounds={rounds}\n")
 elif name == "tdp_adaptive":
     assert args[0] == "run", args
+    # --sandwich is optional (a forward-only stage 2 runs without it)
     for flag in ("--input", "--source-c", "--sandwich"):
-        assert Path(args[args.index(flag) + 1]).is_file(), (flag, args)
+        if flag in args or flag != "--sandwich":
+            assert Path(args[args.index(flag) + 1]).is_file(), (flag, args)
     assert "--n" in args and "--seed" in args, args
     out = Path(args[args.index("--out-dir") + 1])
     code = int(opts.get("adaptive_exit", "0"))

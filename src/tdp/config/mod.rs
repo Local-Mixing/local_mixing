@@ -4,7 +4,7 @@ mod validate;
 pub(crate) use crate::stages::preprocessing::PreprocessingMode;
 use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
 use crate::stages::sandwich::{
-    SandwichShape, sandwich_default_s, sandwich_default_v, shaped_sandwich_gate_range,
+    DEFAULT_V_GATES, SandwichShape, sandwich_default_s, shaped_sandwich_gate_range,
 };
 use crate::tdp::paths::*;
 pub(crate) use parse::*;
@@ -425,9 +425,10 @@ pub(crate) struct SandwichConfig {
     /// (1 = the fully random sequence; at most n/3).
     pub(crate) layer: u64,
     /// Gates of the V gadget's random circuit: `None` = auto
-    /// ([`sandwich_default_v`], round(n log2 n)); `Some(0)` = no gadget (the
-    /// N column of n copy CNOTs).
-    pub(crate) v_gates: Option<u64>,
+    /// default [`DEFAULT_V_GATES`] = 1 (RC 2026-11-01: the nonlinear copy in
+    /// triples with a one-gate V); 0 = no gadget (the N column of n copy
+    /// CNOTs).
+    pub(crate) v_gates: u64,
 }
 
 impl Default for SandwichConfig {
@@ -435,7 +436,7 @@ impl Default for SandwichConfig {
         SandwichConfig {
             slicing: false,
             layer: 1,
-            v_gates: None,
+            v_gates: DEFAULT_V_GATES as u64,
         }
     }
 }
@@ -446,12 +447,13 @@ impl SandwichConfig {
     pub(crate) const LEGACY: SandwichConfig = SandwichConfig {
         slicing: true,
         layer: 1,
-        v_gates: Some(0),
+        v_gates: 0,
     };
 
-    /// The V gadget's size at `n` source wires, auto resolved.
-    pub(crate) fn v_gates_at(&self, n: usize) -> u64 {
-        self.v_gates.unwrap_or(sandwich_default_v(n) as u64)
+    /// The V gadget's size (the same at every `n` since the default became
+    /// a constant; kept for the callers' signature).
+    pub(crate) fn v_gates_at(&self, _n: usize) -> u64 {
+        self.v_gates
     }
 
     /// The shape gen builds for `n` source wires.

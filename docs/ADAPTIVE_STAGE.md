@@ -144,10 +144,7 @@ inputs: $x$ on wires $0..n$, zeros elsewhere, $C(x)$ on wires $n..2n$) and
 against the sandwich's payload contract in both directions (8,192 random
 plus the structured inputs of the prototype's `clean_payload`: forward, $x$
 on the low $n$ wires and zeros elsewhere reproduce the sandwich's upper
-half; inverse, the same on the reversed gate lists; `--forward-only`, for a
-stage 2 built without the reverse contract, checks the forward direction
-only, here and on the input before round 1, and the report says
-`check.payload_directions=forward`), censused once more, and
+half; inverse, the same on the reversed gate lists), censused once more, and
 written as `adaptive/final.mpmct1` with `adaptive/adaptive.report`.
 
 Resumability: `boundary.txt` and every completed round (`result.report` +
