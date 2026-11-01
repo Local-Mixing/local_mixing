@@ -200,3 +200,35 @@ lanes matched to the sandwich width, about 16 band wires per lane, and no wider:
 | n = 64, layered C with slice gates in idle slots | ~22 | 256 to 384 | 16 to 24 |
 | n = 128, random C | ~19 | 256 to 384 | 16 to 24 |
 | n = 128, layered C | ~40 | 512 to 640 | 32 to 40 |
+
+## Keying at the port, no S1, and the clean high half (stage 1 + stage 2)
+
+RC's preferred variant of suggestion 6 above: key the input-port guard on the n top wires (the
+high half) instead of interleaving S1 with C, and remove S1. Block 1 is then C alone (27 % fewer
+fires, no dead-fire re-encodings, C's full width), and the high half is untouched, hence zero on
+the honest slice, throughout block 1: n effectively clean ancillas during the computation of C.
+The price is the chaff S1 provided inside block 1 (38 % decoy fires among C's), unmeasured against
+the attacks we run. What the clean half is and is not good for:
+
+- **Not a cheap source of concurrency.** A clean ancilla is restored at the end of a fire and the
+  next fire's read must follow that write, so fires sharing a wire stay ordered; lanes still come
+  from disjoint helper sets. The high half would add n/4 lanes (16 at n = 64, 32 at n = 128) in
+  block 1, but as clean helpers, with the restoring product chains that cost about 40 % more fire
+  gates (restored helpers 707k vs dirty 502k at n = 64); the band gives a lane for four wires at
+  about five gates each. Dirty use of the high half is out (data-dependent garbage before the
+  copy).
+- **No masks on the zero roles during block 1.** Today the 64 high roles carry three masks each
+  while holding nothing: half of the 1,152 references the replacement budget drains belong to
+  zeros. Dropping them halves the reference load of block 1: coordinate lifetime ~192 to ~96
+  fires at the same budget, or budget 1 at today's lifetime (about 8 % of the gates). It also
+  removes 64 known-plaintext relations (a masked zero satisfies carrier = sum of its monomials at
+  every cut).
+- **A one-gate copy at the midpoint.** With y_i a plain zero, the copy is a single CNOT of the
+  carrier, y_i inheriting x'_i's masks until its first refresh separates them: no four-unit
+  linear expansion of a payload bit at the centre, and a shorter midpoint bottleneck.
+- **Free landing wires** for carrier hops in block 1, if the migration is kept.
+
+Cost: stage 2's contract becomes "correct on the honest slice" for the high half (the witness
+checks and the every-band-state verification take it as zero), the high roles get their masks at
+the copy, and the off-slice function changes, which the port keying makes irrelevant. None of it
+touches the fire design, so it combines with the lanes and the layered C.
