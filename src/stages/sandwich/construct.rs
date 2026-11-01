@@ -59,6 +59,169 @@ pub fn sandwich_default_m(n: usize) -> usize {
     ((n as f64) * l * l).round().max(n as f64) as usize
 }
 
+/// Default size t of the V gadget's random circuit: round(n * log2 n),
+/// floored at n (the slice-block default).
+pub fn sandwich_default_v(n: usize) -> usize {
+    sandwich_default_s(n)
+}
+
+/// The stage-1 shape knobs (RC, 2026-11-01; docs/notes/stage2_interleaving_20261101.md):
+/// whether the slice blocks are interleaved with C and D, how random
+/// circuits are sampled, and the V gadget on the payload register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SandwichShape {
+    /// Interleave the slice blocks S1 (with C) and S2 (with D).
+    pub slicing: bool,
+    /// Gates per layer when sampling a random circuit (the random C, D and
+    /// V): each layer is `layer` wire-disjoint gates on 3 * `layer` distinct
+    /// wires. 1 is the fully random sequence; at most n / 3.
+    pub layer: usize,
+    /// Gates of the V gadget's random circuit; 0 = no gadget (the classic
+    /// N column of n copy CNOTs). Nonzero: C's outputs are copied into the
+    /// register by a nonlinear bijection on groups of three wires, V and V*
+    /// run on the register beside D, and the register's own inverse of the
+    /// bijection restores C(x) at the end ([`v_gadget_sandwich`]).
+    pub v_gates: usize,
+}
+
+impl SandwichShape {
+    /// The construction before 2026-11-01: slice blocks, fully random
+    /// sequences and the N column of copy CNOTs. Reproduces old seeds.
+    pub const LEGACY: SandwichShape = SandwichShape {
+        slicing: true,
+        layer: 1,
+        v_gates: 0,
+    };
+
+    /// The defaults for `n` source wires: no slicing, fully random
+    /// sequences (`layer` 1) and a V gadget of [`sandwich_default_v`] gates.
+    pub fn default_for(n: usize) -> Self {
+        SandwichShape {
+            slicing: false,
+            layer: 1,
+            v_gates: sandwich_default_v(n),
+        }
+    }
+
+    /// The constraints [`construct_shaped_sandwich`] relies on.
+    pub fn validate(&self, n: usize, variant: SandwichVariant) -> Result<(), String> {
+        if self.layer == 0 || 3 * self.layer > n {
+            return Err(format!(
+                "layer size {}: need 1 <= w <= n/3 = {} (each gate of a layer takes three distinct wires)",
+                self.layer,
+                n / 3
+            ));
+        }
+        if self.v_gates > 0 && variant.is_balanced() {
+            return Err(
+                "the V gadget needs the classic sandwich (the balanced variant runs D on the register)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// What a shaped sandwich is made of, for reports and tests.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SandwichLayout {
+    pub c_gates: usize,
+    pub s1_gates: usize,
+    /// The N column (n CNOTs) or the V gadget's nonlinear copy.
+    pub copy_gates: usize,
+    /// |V| (V* has as many).
+    pub v_gates: usize,
+    /// The register's inverse of the copy bijection (V gadget only).
+    pub recovery_gates: usize,
+    pub d_gates: usize,
+    pub s2_gates: usize,
+    /// Copy groups of the V gadget (0 without it).
+    pub copy_groups: usize,
+    /// Final positions of the copy gates, ascending.
+    pub copy_positions: Vec<usize>,
+}
+
+/// Layered sampling: `m` g57 triples `[target, x, y]` on wires `0..n`,
+/// drawn `layer` wire-disjoint gates at a time (the 3 * `layer` wires of a
+/// layer are a uniformly random sample, grouped in drawing order). A layer
+/// repeating a gate of the previous layer (which would cancel it) is
+/// redrawn. `draw(k)` returns a uniform integer in `0..k`.
+fn layered_triples(
+    n: usize,
+    m: usize,
+    layer: usize,
+    mut draw: impl FnMut(usize) -> usize,
+) -> Vec<[u16; 3]> {
+    assert!(layer >= 1 && 3 * layer <= n, "layer size must be 1..=n/3");
+    let mut wires: Vec<u16> = (0..n as u16).collect();
+    let mut out: Vec<[u16; 3]> = Vec::with_capacity(m);
+    let mut previous: Vec<[u16; 3]> = Vec::new();
+    while out.len() < m {
+        let size = layer.min(m - out.len());
+        let current = loop {
+            for i in 0..3 * size {
+                let j = i + draw(n - i);
+                wires.swap(i, j);
+            }
+            let current: Vec<[u16; 3]> = (0..size)
+                .map(|k| [wires[3 * k], wires[3 * k + 1], wires[3 * k + 2]])
+                .collect();
+            if !current.iter().any(|g| previous.contains(g)) {
+                break current;
+            }
+        };
+        out.extend_from_slice(&current);
+        previous = current;
+    }
+    out
+}
+
+/// `m` random g57 gates on wires `0..n` drawn from the source's fastrand
+/// stream in layers of `layer` wire-disjoint gates (the layered random C).
+pub fn layered_random_circuit(n: usize, m: usize, layer: usize) -> CircuitSeq {
+    CircuitSeq {
+        gates: layered_triples(n, m, layer, |k| fastrand::usize(..k)),
+    }
+}
+
+/// `m` random gates on wires `offset..offset + n` from `rng`: g57 gates, or
+/// positive two-control conjunctions when `zero_preserving` (a circuit of
+/// those maps the zero state to itself). `layer` 1 draws the fully random
+/// sequence ([`random_g57_xgates`]'s draws for g57 gates).
+fn sampled_xgates(
+    n: usize,
+    m: usize,
+    layer: usize,
+    offset: usize,
+    zero_preserving: bool,
+    rng: &mut impl Rng,
+) -> Vec<XGate> {
+    let triples: Vec<[u16; 3]> = if layer == 1 {
+        (0..m)
+            .map(|_| {
+                let a = rng.random_range(0..n);
+                let x = random_wire_except(n, &[a], rng);
+                let y = random_wire_except(n, &[a, x], rng);
+                [a as u16, x as u16, y as u16]
+            })
+            .collect()
+    } else {
+        layered_triples(n, m, layer, |k| rng.random_range(0..k))
+    };
+    let o = u16::try_from(offset).expect("wire offset fits a wire index");
+    triples
+        .into_iter()
+        .map(|[a, x, y]| {
+            if zero_preserving {
+                XGate::conj(a + o, [(x + o, true), (y + o, true)])
+                    .expect("distinct conjunction wires")
+            } else {
+                XGate::from_g57([a + o, x + o, y + o])
+            }
+        })
+        .collect()
+}
+
 /// How stage 1 draws the secret source circuit C when none is supplied.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SourceConstruction {
@@ -111,7 +274,32 @@ pub fn prepare_source(
     supplied: Option<CircuitSeq>,
     construction: SourceConstruction,
 ) -> Result<CircuitSeq, String> {
+    prepare_source_layered(n, gate_count, seed, supplied, construction, 1)
+}
+
+/// [`prepare_source`] with the random construction drawn in layers of
+/// `layer` wire-disjoint gates ([`layered_random_circuit`]; `layer` 1 is
+/// the fully random sequence, byte-identical to [`prepare_source`]). A
+/// supplied or balanced source is not sampled gate by gate, so `layer`
+/// leaves it unchanged.
+pub fn prepare_source_layered(
+    n: usize,
+    gate_count: usize,
+    seed: u64,
+    supplied: Option<CircuitSeq>,
+    construction: SourceConstruction,
+    layer: usize,
+) -> Result<CircuitSeq, String> {
     fastrand::seed(seed);
+    if layer > 1 && supplied.is_none() && construction == SourceConstruction::Random {
+        if 3 * layer > n {
+            return Err(format!(
+                "layer size {layer}: need 1 <= w <= n/3 = {}",
+                n / 3
+            ));
+        }
+        return Ok(layered_random_circuit(n, gate_count, layer));
+    }
     match (supplied, construction) {
         (Some(_), SourceConstruction::Balanced) => {
             Err("source.path and the balanced construction are exclusive".into())
@@ -150,6 +338,345 @@ pub fn construct_seeded_sandwich(
     use rand::{SeedableRng, rngs::StdRng};
     let mut rng = StdRng::seed_from_u64(seed ^ 0x5150_1CED);
     sliced_sandwich_cnot(source, n, companion_gates, slice_gates, variant, &mut rng)
+}
+
+/// [`construct_seeded_sandwich`] with the stage-1 shape knobs, on the same
+/// dedicated stream; [`SandwichShape::LEGACY`] reproduces it gate for gate.
+/// D is drawn first (layered when `shape.layer > 1`), then the blocks: the
+/// classic column ([`sliced_sandwich_cnot`], slice blocks optional) when
+/// `shape.v_gates` is 0, the V gadget ([`v_gadget_sandwich`]) otherwise.
+pub fn construct_shaped_sandwich(
+    source: &CircuitSeq,
+    n: usize,
+    companion_gates: usize,
+    slice_gates: usize,
+    variant: SandwichVariant,
+    seed: u64,
+    shape: SandwichShape,
+) -> Result<(CnotCircuit, SandwichLayout), String> {
+    use rand::{SeedableRng, rngs::StdRng};
+    shape.validate(n, variant)?;
+    let mut rng = StdRng::seed_from_u64(seed ^ 0x5150_1CED);
+    Ok(shaped_sandwich(
+        source,
+        n,
+        companion_gates,
+        slice_gates,
+        variant,
+        shape,
+        &mut rng,
+    ))
+}
+
+/// The shaped sandwich on an explicit stream (see [`construct_shaped_sandwich`]).
+pub fn shaped_sandwich(
+    main: &CircuitSeq,
+    n: usize,
+    m: usize,
+    s: usize,
+    variant: SandwichVariant,
+    shape: SandwichShape,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, SandwichLayout) {
+    let d_gates = if shape.layer == 1 {
+        random_g57_xgates(n, m, rng)
+    } else {
+        sampled_xgates(n, m, shape.layer, 0, false, rng)
+    };
+    if shape.v_gates == 0 {
+        let (circuit, positions) =
+            sliced_sandwich_build_opt(main, &d_gates, n, s, variant, shape.slicing, rng);
+        let slice = if shape.slicing { s } else { 0 };
+        let layout = SandwichLayout {
+            c_gates: main.gates.len(),
+            s1_gates: slice,
+            copy_gates: n,
+            d_gates: d_gates.len(),
+            s2_gates: slice,
+            copy_positions: positions,
+            ..SandwichLayout::default()
+        };
+        (circuit, layout)
+    } else {
+        v_gadget_sandwich(main, &d_gates, n, s, shape, rng)
+    }
+}
+
+/// A random partition of the wires `0..n` into copy groups of three, the
+/// last group taking the remainder (3, 4 or 5 wires); each group lists its
+/// wires in a random order (the first is the group's selector).
+fn copy_groups(n: usize, rng: &mut impl Rng) -> Vec<Vec<u16>> {
+    assert!(n >= 3, "the V gadget needs n >= 3");
+    let mut wires: Vec<u16> = (0..n as u16).collect();
+    wires.shuffle(rng);
+    let count = n / 3;
+    (0..count)
+        .map(|k| {
+            let end = if k + 1 == count { n } else { 3 * k + 3 };
+            wires[3 * k..end].to_vec()
+        })
+        .collect()
+}
+
+/// The V gadget's copy of one group and the register's inverse of it.
+///
+/// For the group's low wires (a; x_1..x_m), m >= 2, with register wires
+/// H(v) = n + v, the copy XORs into the register the bijection
+///
+///   H(x_1) ^= mux(a; x_1^q1, x_2^p0)      H(a) ^= mux(a; x_1^q1, x_2^!p0)
+///   H(x_i) ^= mux(a; x_i^qi, x_pi(i)^pi)  for i = 2..m,
+///
+/// mux(a; u, v) = (!a & u) ^ (a & v), each realized by two two-control
+/// conjunctions (no CNOT, never a single-literal value on a wire), where
+/// pi(2) = 1 for m = 2 and otherwise pi(2) = m, pi(3) = 1, pi(i) = i - 1:
+/// every coordinate is a balanced degree-2 function of three of the group's
+/// values. Superscripts are literal polarities, random unless
+/// `zero_preserving` (then the a = 0 branches are positive, so the copy
+/// writes zero when C's outputs are zero).
+///
+/// The recovery acts on the register alone and inverts the copy on the
+/// zero slice: H(a) ^= H(x_1) leaves a there; per-wire CNOTs from H(a)
+/// make both branches positive; controlled swaps on a put each x_i back on
+/// H(x_i). Off the zero slice the register keeps nonlinear junk.
+fn group_copy(
+    group: &[u16],
+    n: usize,
+    zero_preserving: bool,
+    rng: &mut impl Rng,
+) -> (Vec<XGate>, Vec<XGate>) {
+    let m = group.len() - 1;
+    assert!(m >= 2, "copy groups have at least three wires");
+    let off = n as u16;
+    let a = group[0];
+    let x = |i: usize| group[i]; // x_i, i = 1..=m
+    let pi = |i: usize| -> usize {
+        match i {
+            2 if m == 2 => 1,
+            2 => m,
+            3 => 1,
+            _ => i - 1,
+        }
+    };
+    // branch-0 polarity: positive when the copy must preserve zero
+    let polarity =
+        |rng: &mut dyn rand::RngCore| -> bool { zero_preserving || rng.random_bool(0.5) };
+    // (register wire, branch-0 literal, branch-1 literal) per coordinate
+    type Literal = (u16, bool);
+    let mut coords: Vec<(u16, Literal, Literal)> = Vec::with_capacity(m + 1);
+    let q1 = polarity(rng);
+    let p0 = rng.random_bool(0.5);
+    coords.push((off + x(1), (x(1), q1), (x(2), p0)));
+    coords.push((off + a, (x(1), q1), (x(2), !p0)));
+    for i in 2..=m {
+        let qi = polarity(rng);
+        let p = rng.random_bool(0.5);
+        coords.push((off + x(i), (x(i), qi), (x(pi(i)), p)));
+    }
+    let mut copy: Vec<XGate> = Vec::with_capacity(2 * coords.len());
+    for &(h, l0, l1) in &coords {
+        copy.push(XGate::conj(h, [(a, false), l0]).expect("distinct copy wires"));
+        copy.push(XGate::conj(h, [(a, true), l1]).expect("distinct copy wires"));
+    }
+    copy.shuffle(rng);
+
+    let ha = off + a;
+    let mut recovery = vec![XGate::cnot(ha, off + x(1))];
+    // after the first step, H(x_1) holds (q1 on a = 0, p0 on a = 1) and
+    // H(x_i) holds (qi, pi); make both branches positive
+    let mut branches: Vec<(u16, bool, bool)> = vec![(off + x(1), q1, p0)];
+    for (k, &(h, l0, l1)) in coords.iter().enumerate().skip(2) {
+        debug_assert_eq!(k, branches.len() + 1);
+        branches.push((h, l0.1, l1.1));
+    }
+    for &(h, q, p) in &branches {
+        // correction c(a) = [q negative] * !a  ^  [p negative] * a
+        if !q {
+            recovery.push(XGate::conj(h, [(ha, false)]).expect("distinct wires"));
+        }
+        if !p {
+            recovery.push(XGate::cnot(h, ha));
+        }
+    }
+    // on a = 1, register wire H(x_i) now holds x_rho(i): rho(1) = 2,
+    // rho(i) = pi(i); controlled swaps sort the contents home
+    let mut content: Vec<usize> = (0..=m).collect();
+    content[1] = 2;
+    for (i, slot) in content.iter_mut().enumerate().skip(2) {
+        *slot = pi(i);
+    }
+    let reg = |i: usize| off + x(i);
+    for i in 1..=m {
+        while content[i] != i {
+            let j = content[i];
+            // controlled swap of H(x_i), H(x_j) on H(a)
+            recovery.push(XGate::cnot(reg(j), reg(i)));
+            recovery.push(XGate::conj(reg(i), [(ha, true), (reg(j), true)]).expect("distinct"));
+            recovery.push(XGate::cnot(reg(j), reg(i)));
+            content.swap(i, j);
+        }
+    }
+    (copy, recovery)
+}
+
+/// The classic sandwich with the V gadget on the payload register:
+///
+///   A = [ C (with S1) ] ; copy ; [ D (with S2) beside V, V*, recovery ]
+///
+/// The copy writes a nonlinear bijection of C's outputs into the register
+/// in groups of three ([`group_copy`]), V is `shape.v_gates` random gates on
+/// the register and V* its inverse, and the recovery (the register's own
+/// inverse of the copy) restores C(x) on the zero slice:
+///   A(x, 0) = (D(C(x)) [junked by S2], C(x)).
+/// V runs beside D's first half and V*, then the recovery, beside its
+/// second half; V and D touch disjoint halves and interleave freely.
+/// Reverse, A^-1(p, 0) leaves on the register the copy's bijection of
+/// D^-1(p) (shifted by its value at zero). With S2 on, V must map zero to
+/// zero (positive conjunctions) and so must the copy, or S2 would fire
+/// under reverse evaluation; without slice blocks V is g57 gates like C, D.
+///
+/// The copy gates then float backward (into C, where their wires are
+/// cold) as far as commutation allows; they cannot pass V.
+pub fn v_gadget_sandwich(
+    main: &CircuitSeq,
+    d_gates: &[XGate],
+    n: usize,
+    s: usize,
+    shape: SandwichShape,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, SandwichLayout) {
+    assert!(n >= 3, "the V gadget needs n >= 3");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(shape.v_gates > 0);
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "source wire outside 0..n"
+    );
+    let zero_preserving = shape.slicing;
+    let c_gates: Vec<XGate> = main.gates.iter().map(|&g| XGate::from_g57(g)).collect();
+    let mut out = if shape.slicing {
+        let s1 = sandwich_slice_gates(n, s, false, rng);
+        random_interleave(c_gates, s1, rng)
+    } else {
+        c_gates
+    };
+    let groups = copy_groups(n, rng);
+    let mut copy = Vec::new();
+    let mut recovery = Vec::new();
+    for group in &groups {
+        let (c, r) = group_copy(group, n, zero_preserving, rng);
+        copy.extend(c);
+        recovery.extend(r);
+    }
+    let copy_start = out.len();
+    let copy_count = copy.len();
+    out.extend(copy);
+    let v = sampled_xgates(n, shape.v_gates, shape.layer, n, zero_preserving, rng);
+    let mut high_tail: Vec<XGate> = v.iter().rev().cloned().collect();
+    let recovery_count = recovery.len();
+    high_tail.extend(recovery);
+    let low: Vec<XGate> = if shape.slicing {
+        let s2 = sandwich_slice_gates(n, s, false, rng);
+        random_interleave(d_gates.to_vec(), s2, rng)
+    } else {
+        d_gates.to_vec()
+    };
+    let half = low.len() / 2;
+    out.extend(random_interleave(low[..half].to_vec(), v, rng));
+    out.extend(random_interleave(low[half..].to_vec(), high_tail, rng));
+
+    // Float the copy gates backward in a random order; positions of the
+    // others shift as one passes them.
+    let mut floaters: Vec<usize> = (copy_start..copy_start + copy_count).collect();
+    floaters.shuffle(rng);
+    for k in 0..floaters.len() {
+        let p = floaters[k];
+        let q = float_extremal(&mut out, p, true);
+        floaters[k] = q;
+        for (idx, r) in floaters.iter_mut().enumerate() {
+            if idx != k && *r >= q && *r < p {
+                *r += 1;
+            }
+        }
+    }
+    floaters.sort_unstable();
+    let slice = if shape.slicing { s } else { 0 };
+    let layout = SandwichLayout {
+        c_gates: main.gates.len(),
+        s1_gates: slice,
+        copy_gates: copy_count,
+        v_gates: shape.v_gates,
+        recovery_gates: recovery_count,
+        d_gates: d_gates.len(),
+        s2_gates: slice,
+        copy_groups: groups.len(),
+        copy_positions: floaters,
+    };
+    (
+        CnotCircuit {
+            gates: out,
+            num_wires: 2 * n,
+        },
+        layout,
+    )
+}
+
+/// Longest chain of the dependency relation [`crate::stages::preprocessing::three_mask::interleave`]
+/// orders by (a gate follows the latest writers of the wires it reads and
+/// the latest readers of the wire it writes; XOR writes into one wire with
+/// no read between them commute). gates / depth is the mean number of
+/// gates free to run at a time (the circuit's dependency width).
+pub fn dependency_depth(gates: &[XGate]) -> usize {
+    let width = gates
+        .iter()
+        .map(|g| g.max_wire() as usize + 1)
+        .max()
+        .unwrap_or(0);
+    // per wire: depth after the latest writer group, after the latest reader
+    // group, and the depth floor a new group of the other kind starts from
+    let mut writers_done = vec![0usize; width];
+    let mut readers_done = vec![0usize; width];
+    let mut last_was_writer = vec![false; width];
+    let mut writer_floor = vec![0usize; width];
+    let mut reader_floor = vec![0usize; width];
+    let mut max_depth = 0;
+    for g in gates {
+        let t = g.target as usize;
+        let mut d = 0usize;
+        for &(c, _) in &g.ctrls {
+            let c = c as usize;
+            // a read follows the latest writer group
+            d = d.max(if last_was_writer[c] {
+                writers_done[c]
+            } else {
+                reader_floor[c]
+            });
+        }
+        // a write follows the latest reader group
+        d = d.max(if last_was_writer[t] {
+            writer_floor[t]
+        } else {
+            readers_done[t]
+        });
+        let depth = d + 1;
+        max_depth = max_depth.max(depth);
+        for &(c, _) in &g.ctrls {
+            let c = c as usize;
+            if last_was_writer[c] {
+                // a new reader group starts after the writer group
+                reader_floor[c] = writers_done[c];
+                readers_done[c] = 0;
+                last_was_writer[c] = false;
+            }
+            readers_done[c] = readers_done[c].max(depth);
+        }
+        if !last_was_writer[t] {
+            writer_floor[t] = readers_done[t];
+            writers_done[t] = 0;
+            last_was_writer[t] = true;
+        }
+        writers_done[t] = writers_done[t].max(depth);
+    }
+    max_depth
 }
 
 /// One slice block for the sliced-sandwich construction: `s` gates whose
@@ -356,6 +883,21 @@ fn sliced_sandwich_build(
     variant: SandwichVariant,
     rng: &mut impl Rng,
 ) -> (CnotCircuit, Vec<usize>) {
+    sliced_sandwich_build_opt(main, d_gates, n, s, variant, true, rng)
+}
+
+/// [`sliced_sandwich_build`] with the slice blocks optional: `slicing`
+/// false leaves out S1 and S2 (C ; N ; D) and draws nothing for them, so
+/// `slicing` true keeps every draw, hence every old seed's circuit.
+fn sliced_sandwich_build_opt(
+    main: &CircuitSeq,
+    d_gates: &[XGate],
+    n: usize,
+    s: usize,
+    variant: SandwichVariant,
+    slicing: bool,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, Vec<usize>) {
     assert!(n >= 3, "sliced_sandwich_with_d requires n >= 3");
     assert!(2 * n <= u16::MAX as usize, "too many wires");
     assert!(
@@ -376,8 +918,12 @@ fn sliced_sandwich_build(
     // the low half and reads the high one, so it is dead on the forward
     // slice and fires under reverse evaluation.
     let c_gates: Vec<XGate> = main.gates.iter().map(|&g| XGate::from_g57(g)).collect();
-    let s1 = sandwich_slice_gates(n, s, false, rng);
-    let mut out = random_interleave(c_gates, s1, rng);
+    let mut out = if slicing {
+        let s1 = sandwich_slice_gates(n, s, false, rng);
+        random_interleave(c_gates, s1, rng)
+    } else {
+        c_gates
+    };
 
     // N step: y ^= x (classic, the answer is copied UP into the register) or
     // x ^= y (balanced, the register is XORed DOWN onto the answer, which is
@@ -396,13 +942,21 @@ fn sliced_sandwich_build(
     // high half and mirrors S2 with it (targets high, reads low), so block 2
     // writes only the high half and the forward answer in the low half is
     // frozen from N onwards.
-    let s2 = sandwich_slice_gates(n, s, balanced, rng);
+    let s2 = if slicing {
+        sandwich_slice_gates(n, s, balanced, rng)
+    } else {
+        Vec::new()
+    };
     let d_placed: Vec<XGate> = if balanced {
         d_gates.iter().map(|g| shift_xgate_wires(g, n)).collect()
     } else {
         d_gates.to_vec()
     };
-    out.extend(random_interleave(d_placed, s2, rng));
+    if slicing {
+        out.extend(random_interleave(d_placed, s2, rng));
+    } else {
+        out.extend(d_placed);
+    }
 
     // Final float stage: the N column is the sandwich's most
     // structure-revealing part (the C|N|D seam). Each of its CNOTs is

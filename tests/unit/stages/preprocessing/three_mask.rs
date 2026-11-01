@@ -1307,3 +1307,212 @@ fn fire_spans_are_measured_under_interleaving() {
         (out.stats.fire_span_mean, out.stats.fire_len_mean)
     );
 }
+
+/// Without the reverse contract the opening guard covers both data halves
+/// (same gate count), there is no closing guard, the forward payload still
+/// verifies, and the reversed artifact no longer reproduces the reversed
+/// sandwich's payload half.
+#[test]
+fn no_reverse_contract_guards_all_data_wires_and_drops_the_closing_guard() {
+    use crate::stages::preprocessing::construct::preprocess_sandwich_ports;
+    use crate::stages::preprocessing::verify::verify_payload_ports;
+    let n = 8;
+    let (source_seed, gadget_seed, sandwich_seed) = (51, 53, 59);
+    let source = prepare_source(n, 24, source_seed, None, SourceConstruction::Random).unwrap();
+    let sandwich =
+        construct_seeded_sandwich(&source, n, 24, 24, SandwichVariant::Classic, sandwich_seed);
+    let build = |reverse_contract: bool| {
+        let mut rng = StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E);
+        preprocess_sandwich_ports(
+            &sandwich,
+            n,
+            160,
+            SandwichVariant::Classic,
+            &PreprocessingParams::ThreeMask {
+                params: ThreeMaskParams::v3(gadget_seed, 0),
+                outer: EmbeddedMaskingParams::preset_l8(gadget_seed, n),
+                balanced_seed: true,
+                seed_fill_nl: 4,
+            },
+            reverse_contract,
+            &mut rng,
+        )
+        .unwrap()
+    };
+    let kept = build(true);
+    let forward_only = build(false);
+    let (rk, rf) = (
+        kept.three_mask_report.as_ref().unwrap(),
+        forward_only.three_mask_report.as_ref().unwrap(),
+    );
+    assert_eq!(rk.guard_gates, rf.guard_gates, "same opening-guard size");
+    assert_eq!(
+        forward_only.circuit.gates.len(),
+        rf.guard_gates + rf.band_seed_gates + rf.compute_gates + rf.band_reseed_gates,
+        "no closing guard"
+    );
+    assert_eq!(
+        kept.circuit.gates.len(),
+        forward_only.circuit.gates.len() + rk.guard_gates
+    );
+    let open = &forward_only.circuit.gates[..rf.guard_gates];
+    let np = 2 * n;
+    assert!(
+        open.iter().any(|g| (g.target as usize) < n),
+        "low half guarded"
+    );
+    assert!(
+        open.iter().any(|g| (n..np).contains(&(g.target as usize))),
+        "high half guarded"
+    );
+    // band targets are the accumulators, which read data wires only
+    assert!(
+        open.iter()
+            .filter(|g| (g.target as usize) >= np)
+            .all(|g| g.ctrls.iter().all(|&(w, _)| (w as usize) < np)),
+        "a band target is an accumulator"
+    );
+    // forward payload verifies, the reverse check is skipped
+    assert_eq!(
+        verify_payload_ports(
+            &sandwich,
+            &forward_only.circuit,
+            n,
+            true,
+            SandwichVariant::Classic,
+            source_seed,
+            false
+        ),
+        (n, np, false)
+    );
+    // and the reversed artifact does junk the reverse payload
+    let rev_gadget: Vec<XGate> = forward_only.circuit.gates.iter().rev().cloned().collect();
+    let rev_sandwich: Vec<XGate> = sandwich.gates.iter().rev().cloned().collect();
+    let mut vrng = StdRng::seed_from_u64(7);
+    let mut ga = vec![0u64; forward_only.circuit.num_wires];
+    for w in ga.iter_mut().take(n) {
+        *w = vrng.random();
+    }
+    let mut sa = ga.clone();
+    eval_lanes(&rev_gadget, &mut ga);
+    eval_lanes(&rev_sandwich, &mut sa);
+    assert!(
+        (n..np).any(|w| ga[w] != sa[w]),
+        "the reverse payload survived a guard over all data wires"
+    );
+    // with the contract kept the reverse payload survives
+    assert_eq!(
+        verify_payload_ports(
+            &sandwich,
+            &kept.circuit,
+            n,
+            true,
+            SandwichVariant::Classic,
+            source_seed,
+            true
+        ),
+        (n, np, true)
+    );
+}
+
+/// The all-data Feistel guard is a valid zero-slice guard: dead on the zero
+/// band, and every single-wire band slice disturbs the data.
+#[test]
+fn all_data_feistel_guard_is_dead_exactly_on_the_zero_slice() {
+    use crate::stages::preprocessing::slice_guards::slice_zero_feistel_guard_dims_all;
+    let (np, band) = (16, 64);
+    for seed in 0..4u64 {
+        let mut rng = StdRng::seed_from_u64(0x9a00 + seed);
+        let guard = slice_zero_feistel_guard_dims_all(np, band, 160, &mut rng);
+        assert_eq!(guard.gates.len(), 160);
+        assert!(guard.gates.iter().all(|g| g.ctrls.len() <= 2));
+        let mut state: Vec<u64> = (0..np + band).map(|_| rng.random()).collect();
+        state[np..].fill(0);
+        let before = state.clone();
+        eval_lanes(&guard.gates, &mut state);
+        assert_eq!(state, before, "dead on the zero band");
+        for w in np..np + band {
+            let mut s: Vec<u64> = before.clone();
+            s[w] = !0;
+            let input = s.clone();
+            eval_lanes(&guard.gates, &mut s);
+            assert!(
+                (0..np).any(|d| s[d] != input[d]),
+                "band wire {w} disturbs nothing"
+            );
+        }
+        // the accumulate rounds restore their accumulators exactly
+        let touched_high = guard
+            .gates
+            .iter()
+            .any(|g| (np / 2..np).contains(&(g.target as usize)));
+        let touched_low = guard.gates.iter().any(|g| (g.target as usize) < np / 2);
+        assert!(touched_high && touched_low);
+    }
+}
+
+/// Pre-growth rewrites every serving wire `warmup_sweeps` times before the
+/// first mask, in both turnover modes, and the compute still decodes every
+/// fire (its internal witness) and realizes the input.
+#[test]
+fn pregrow_rewrites_the_serving_half_before_the_first_masks() {
+    let np = 12;
+    let mut rng = StdRng::seed_from_u64(31337);
+    let input: Vec<XGate> = (0..60)
+        .map(|_| {
+            let t = rng.random_range(0..np);
+            let a = loop {
+                let a = rng.random_range(0..np);
+                if a != t {
+                    break a;
+                }
+            };
+            let b = loop {
+                let b = rng.random_range(0..np);
+                if b != t && b != a {
+                    break b;
+                }
+            };
+            XGate::from_g57([t as u16, a as u16, b as u16])
+        })
+        .collect();
+    for wire_turnover in [false, true] {
+        let base = ThreeMaskParams {
+            wire_turnover,
+            interleave_window: 0,
+            pregrow: false,
+            banks: if wire_turnover { 0 } else { 8 },
+            ..ThreeMaskParams::v3(9, 128)
+        };
+        let off = compute(&input, np, 128, &base).unwrap();
+        let on = compute(
+            &input,
+            np,
+            128,
+            &ThreeMaskParams {
+                pregrow: true,
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(off.stats.pregrow_gates, 0);
+        assert_eq!(
+            on.stats.pregrow_gates,
+            base.warmup_sweeps * 64,
+            "turnover {wire_turnover}"
+        );
+        // the pre-growth gates come first and write serving (first-half) band wires
+        let pre = &on.logical_gates[..on.stats.pregrow_gates];
+        assert!(
+            pre.iter()
+                .all(|g| (np..np + 64).contains(&(g.target as usize)))
+        );
+        assert!(
+            pre.iter()
+                .all(|g| g.ctrls.len() == 2 && g.ctrls.iter().all(|&(w, _)| w as usize >= np))
+        );
+        let mut vrng = StdRng::seed_from_u64(77);
+        let initial: Vec<u64> = (0..np + 128).map(|_| vrng.random()).collect();
+        check_payload_both_directions(&on.gates, &input, np, &initial, "pregrow");
+    }
+}

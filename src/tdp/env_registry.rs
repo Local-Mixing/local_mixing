@@ -114,6 +114,12 @@ pub(crate) const ENV_REGISTRY: &[EnvEntry] = &[
     prefix("EMBEDDED_MASKING_", Forbidden),
     exact("SLICE_GUARD_LEGACY", Forbidden, "0"),
     exact("SANDWICH_VARIANT", Driver, "classic"),
+    // stage 1 shape (RC 2026-11-01): slice blocks, layer size, V gadget
+    exact("SANDWICH_SLICING", Driver, "0"),
+    exact("SANDWICH_LAYER", Driver, "1"),
+    exact("SANDWICH_V_GATES", Driver, "auto"),
+    // stage 2 port guards: reverse contract kept (1) or forward only (0)
+    exact("STAGE2_REVERSE_CONTRACT", Driver, "1"),
     exact("TDP_SOURCE_C", Driver, "-"),
     exact("TDP_SOURCE_CONSTRUCTION", Driver, "random"),
     // stage 2 (gen_sandwich_gadget, three-mask mode): the [three_mask] knobs
@@ -130,8 +136,9 @@ pub(crate) const ENV_REGISTRY: &[EnvEntry] = &[
     exact("THREE_MASK_MASK_COUNT", Recipe, "3"),
     exact("THREE_MASK_RANDOM_HELPERS", Recipe, "1"),
     exact("THREE_MASK_UNIQUE_COVER", Recipe, "1"),
-    exact("THREE_MASK_TURNOVER", Recipe, "bank"),
-    exact("THREE_MASK_INTERLEAVE", Recipe, "0"),
+    exact("THREE_MASK_TURNOVER", Recipe, "wire"),
+    exact("THREE_MASK_INTERLEAVE", Recipe, "4096"),
+    exact("THREE_MASK_PREGROW", Recipe, "1"),
     prefix("THREE_MASK_", Forbidden),
     // stage 3 (circuit_mixer) and the frozen store
     exact("FROZEN_DB_DIR", Input, "-"),

@@ -7,7 +7,8 @@ use super::embedded_masking::{
 };
 use super::nonlinear291::preprocess_nonlinear291;
 use super::slice_guards::{
-    slice_zero_feistel_guard_dims, slice_zero_feistel_guard_dims_high, slice_zero_junk_guard_dims,
+    slice_zero_feistel_guard_dims, slice_zero_feistel_guard_dims_all,
+    slice_zero_feistel_guard_dims_high, slice_zero_junk_guard_dims, slice_zero_junk_guard_dims_all,
     slice_zero_junk_guard_dims_high,
 };
 use super::three_mask::{self, ThreeMaskParams};
@@ -28,6 +29,11 @@ struct OuterBlocks {
 /// the independently seeded band reseed, for a band of `nondata` wires
 /// (`np..np + nondata`). Shared by every mode that wraps a compute; the
 /// compute itself never touches `rng`, so the blocks do not depend on it.
+///
+/// `reverse_contract` false (stage-2 `reverse_contract`, RC 2026-11-01):
+/// the opening guard covers all data wires with the same gate count and
+/// there is no closing guard (`close` is empty), so only the forward
+/// payload is kept.
 #[allow(clippy::too_many_arguments)]
 fn outer_blocks(
     sandwich: &Circuit,
@@ -38,6 +44,7 @@ fn outer_blocks(
     params: &EmbeddedMaskingParams,
     balanced_seed: bool,
     seed_fill_nl: usize,
+    reverse_contract: bool,
     rng: &mut impl rand::Rng,
 ) -> OuterBlocks {
     let gadget_seed = params.seed;
@@ -59,16 +66,21 @@ fn outer_blocks(
     // (width <= 2 everywhere) is the default; SLICE_GUARD_LEGACY=1
     // restores the width-3 quad generator for comparison arms.
     let legacy_guard = params.legacy_slice_guard;
-    let open = if legacy_guard {
-        slice_zero_junk_guard_dims(np, nondata, gc, rng)
-    } else {
-        slice_zero_feistel_guard_dims(np, nondata, gc, rng)
+    let open = match (reverse_contract, legacy_guard) {
+        (true, true) => slice_zero_junk_guard_dims(np, nondata, gc, rng),
+        (true, false) => slice_zero_feistel_guard_dims(np, nondata, gc, rng),
+        (false, true) => slice_zero_junk_guard_dims_all(np, nondata, gc, rng),
+        (false, false) => slice_zero_feistel_guard_dims_all(np, nondata, gc, rng),
     };
-    let close = match (variant.is_balanced(), legacy_guard) {
-        (true, true) => slice_zero_junk_guard_dims_high(np, nondata, gc, rng),
-        (true, false) => slice_zero_feistel_guard_dims_high(np, nondata, gc, rng),
-        (false, true) => slice_zero_junk_guard_dims(np, nondata, gc, rng),
-        (false, false) => slice_zero_feistel_guard_dims(np, nondata, gc, rng),
+    let close = match (reverse_contract, variant.is_balanced(), legacy_guard) {
+        (false, _, _) => Circuit {
+            gates: Vec::new(),
+            num_wires: np + nondata,
+        },
+        (true, true, true) => slice_zero_junk_guard_dims_high(np, nondata, gc, rng),
+        (true, true, false) => slice_zero_feistel_guard_dims_high(np, nondata, gc, rng),
+        (true, false, true) => slice_zero_junk_guard_dims(np, nondata, gc, rng),
+        (true, false, false) => slice_zero_feistel_guard_dims(np, nondata, gc, rng),
     };
     // Module 2: band-seeding pipelined between the input slice guard (dead
     // on the zero band) and the compute (which only reads the band).
@@ -144,6 +156,31 @@ pub fn preprocess_sandwich(
     options: &PreprocessingParams,
     rng: &mut impl rand::Rng,
 ) -> Result<PreprocessingOutput, String> {
+    preprocess_sandwich_ports(
+        sandwich,
+        source_wires,
+        slice_gate_count,
+        variant,
+        options,
+        true,
+        rng,
+    )
+}
+
+/// [`preprocess_sandwich`] with the port contract explicit:
+/// `reverse_contract` true keeps both junk-half guards (the reversed
+/// artifact reproduces the reversed sandwich's payload half); false makes
+/// the opening guard cover all data wires and drops the closing guard
+/// (forward payload only). Nonlinear291 has no guards and ignores it.
+pub fn preprocess_sandwich_ports(
+    sandwich: &Circuit,
+    source_wires: usize,
+    slice_gate_count: usize,
+    variant: SandwichVariant,
+    options: &PreprocessingParams,
+    reverse_contract: bool,
+    rng: &mut impl rand::Rng,
+) -> Result<PreprocessingOutput, String> {
     let n = source_wires;
     match options {
         PreprocessingParams::EmbeddedMasking {
@@ -179,6 +216,7 @@ pub fn preprocess_sandwich(
                 params,
                 *balanced_seed,
                 *seed_fill_nl,
+                reverse_contract,
                 rng,
             );
             let report = EmbeddedMaskingReport {
@@ -238,6 +276,7 @@ pub fn preprocess_sandwich(
                 outer,
                 *balanced_seed,
                 *seed_fill_nl,
+                reverse_contract,
                 rng,
             );
             // Extra band wires beyond the seeded prefix get the compute's

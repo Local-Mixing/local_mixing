@@ -68,11 +68,25 @@ fn three_mask_is_supported() {
 }
 
 #[test]
-fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
+fn three_mask_knobs_default_to_v3_and_reject_bad_values() {
     let none = |_: &str| None;
     let defaults = three_mask_params_from(19, none, &[]).unwrap();
+    let v3 = ThreeMaskParams::v3(19, 0);
+    assert_eq!(format!("{defaults:?}"), format!("{v3:?}"));
+    // v3 = v2 with wire turnover, interleave 4096 and pre-growth
     let v2 = ThreeMaskParams::v2(19, 0);
-    assert_eq!(format!("{defaults:?}"), format!("{v2:?}"));
+    assert_eq!(
+        format!(
+            "{:?}",
+            ThreeMaskParams {
+                wire_turnover: false,
+                interleave_window: 0,
+                pregrow: false,
+                ..v3
+            }
+        ),
+        format!("{v2:?}")
+    );
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |key: &str| {
             pairs
@@ -98,12 +112,13 @@ fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
         ("THREE_MASK_MASK_COUNT", "2"),
         ("THREE_MASK_RANDOM_HELPERS", "0"),
         ("THREE_MASK_UNIQUE_COVER", "false"),
-        ("THREE_MASK_TURNOVER", "wire"),
-        ("THREE_MASK_INTERLEAVE", "4096"),
+        ("THREE_MASK_TURNOVER", "bank"),
+        ("THREE_MASK_INTERLEAVE", "1024"),
+        ("THREE_MASK_PREGROW", "0"),
     ];
     let p = three_mask_params_from(19, env(set), &names(set)).unwrap();
-    assert!(p.wire_turnover && p.interleave_window == 4096);
-    assert!(!defaults.wire_turnover && defaults.interleave_window == 0);
+    assert!(!p.wire_turnover && p.interleave_window == 1024 && !p.pregrow);
+    assert!(defaults.wire_turnover && defaults.interleave_window == 4096 && defaults.pregrow);
     assert_eq!(
         (
             p.band_wires,
@@ -131,6 +146,7 @@ fn three_mask_knobs_default_to_v2_and_reject_bad_values() {
         &[("THREE_MASK_UNIQUE_COVER", "2")],
         &[("THREE_MASK_TURNOVER", "cohort")],
         &[("THREE_MASK_INTERLEAVE", "many")],
+        &[("THREE_MASK_PREGROW", "maybe")],
     ] {
         let bad: &'static [(&'static str, &'static str)] =
             Box::leak(bad.to_vec().into_boxed_slice());
@@ -257,4 +273,79 @@ fn source_construction_env_defaults_to_random_and_rejects_unknown_values() {
         let e = parse_source_construction(Some(bad)).unwrap_err();
         assert!(e.contains("TDP_SOURCE_CONSTRUCTION"), "{bad:?}: {e}");
     }
+}
+
+#[test]
+fn sandwich_shape_defaults_overrides_and_refusals() {
+    use crate::stages::sandwich::{SandwichShape, SandwichVariant, sandwich_default_v};
+    let classic = SandwichVariant::Classic;
+    let none = |_: &str| None;
+    let shape = sandwich_shape_from(64, classic, none).unwrap();
+    assert_eq!(shape, SandwichShape::default_for(64));
+    assert_eq!(
+        shape,
+        SandwichShape {
+            slicing: false,
+            layer: 1,
+            v_gates: sandwich_default_v(64)
+        }
+    );
+    assert_eq!(sandwich_default_v(64), 384);
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+        }
+    };
+    let set: &'static [(&'static str, &'static str)] = &[
+        ("SANDWICH_SLICING", "1"),
+        ("SANDWICH_LAYER", "21"),
+        ("SANDWICH_V_GATES", "0"),
+    ];
+    assert_eq!(
+        sandwich_shape_from(64, classic, env(set)).unwrap(),
+        SandwichShape {
+            slicing: true,
+            layer: 21,
+            v_gates: 0
+        }
+    );
+    // legacy shape through the variables
+    let legacy: &'static [(&'static str, &'static str)] =
+        &[("SANDWICH_SLICING", "true"), ("SANDWICH_V_GATES", "0")];
+    assert_eq!(
+        sandwich_shape_from(64, classic, env(legacy)).unwrap(),
+        SandwichShape::LEGACY
+    );
+    for (bad, needle) in [
+        (&[("SANDWICH_SLICING", "yes")][..], "SANDWICH_SLICING"),
+        (&[("SANDWICH_LAYER", "0")], "layer size 0"),
+        (&[("SANDWICH_LAYER", "22")], "layer size 22"),
+        (&[("SANDWICH_LAYER", "x")], "SANDWICH_LAYER"),
+        (&[("SANDWICH_V_GATES", "-3")], "SANDWICH_V_GATES"),
+    ] {
+        let bad: &'static [(&'static str, &'static str)] =
+            Box::leak(bad.to_vec().into_boxed_slice());
+        let error = sandwich_shape_from(64, classic, env(bad)).unwrap_err();
+        assert!(error.contains(needle), "{error}");
+    }
+    // the V gadget needs the classic layout
+    let error = sandwich_shape_from(64, SandwichVariant::Balanced, none).unwrap_err();
+    assert!(error.contains("classic"), "{error}");
+    let no_v: &'static [(&'static str, &'static str)] = &[("SANDWICH_V_GATES", "0")];
+    assert!(sandwich_shape_from(64, SandwichVariant::Balanced, env(no_v)).is_ok());
+}
+
+#[test]
+fn reverse_contract_parses_and_needs_a_guarded_mode() {
+    let three = PreprocessingMode::ThreeMask;
+    assert!(reverse_contract_from(three, None).unwrap());
+    assert!(reverse_contract_from(three, Some("1")).unwrap());
+    assert!(!reverse_contract_from(three, Some("0")).unwrap());
+    assert!(!reverse_contract_from(PreprocessingMode::EmbeddedMasking, Some("false")).unwrap());
+    assert!(reverse_contract_from(three, Some("no")).is_err());
+    assert!(reverse_contract_from(PreprocessingMode::Nonlinear291, Some("0")).is_err());
+    assert!(reverse_contract_from(PreprocessingMode::Nonlinear291, None).unwrap());
 }

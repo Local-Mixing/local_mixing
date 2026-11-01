@@ -36,7 +36,11 @@ fn stage2_typed_params_byte_identical() {
         for seed in ["11", "1013", "424242"] {
             let out = dir.join(format!("{name}_{seed}.mpmct1"));
             let mut cmd = Command::new(env!("CARGO_BIN_EXE_gen_sandwich_gadget"));
-            cmd.env_clear().env("PATH", "/usr/bin:/bin");
+            // the fixtures predate the 2026-11-01 stage-1 defaults
+            cmd.env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("SANDWICH_SLICING", "1")
+                .env("SANDWICH_V_GATES", "0");
             for kv in env.split_whitespace() {
                 let (k, v) = kv.split_once('=').unwrap();
                 cmd.env(k, v);

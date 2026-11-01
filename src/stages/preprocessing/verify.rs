@@ -15,6 +15,22 @@ pub fn verify_payload(
     variant: SandwichVariant,
     seed: u64,
 ) -> (usize, usize, bool) {
+    verify_payload_ports(sandwich, gadget, n, guarded, variant, seed, true)
+}
+
+/// [`verify_payload`] for an assembly built with or without the reverse
+/// contract (`preprocess_sandwich_ports`): without it the reverse check is
+/// skipped (the reversed artifact is junk by design) and the third value
+/// is false.
+pub fn verify_payload_ports(
+    sandwich: &Circuit,
+    gadget: &Circuit,
+    n: usize,
+    guarded: bool,
+    variant: SandwichVariant,
+    seed: u64,
+    reverse_contract: bool,
+) -> (usize, usize, bool) {
     let sandwich_n = sandwich.num_wires;
     // state[w] = lane word for wire w; bit L = wire w's value in sample L.
     fn eval_lanes(gates: &[crate::circuit::xgate::XGate], state: &mut [u64]) {
@@ -68,7 +84,8 @@ pub fn verify_payload(
     // sandwich's upper half — the gadget-level mirror of the sandwich's
     // A^-1(a,0) = (junk, D^-1(a)) contract. Every XGate is an involution,
     // so the reversed gate list is the inverse circuit.
-    if guarded && !variant.is_balanced() {
+    let reverse_checked = guarded && !variant.is_balanced() && reverse_contract;
+    if reverse_checked {
         let rev_gadget: Vec<crate::circuit::xgate::XGate> =
             gadget.gates.iter().rev().cloned().collect();
         let rev_sandwich: Vec<crate::circuit::xgate::XGate> =
@@ -90,5 +107,5 @@ pub fn verify_payload(
             }
         }
     }
-    (verify_from, verify_to, guarded && !variant.is_balanced())
+    (verify_from, verify_to, reverse_checked)
 }

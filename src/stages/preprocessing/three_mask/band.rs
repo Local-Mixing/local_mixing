@@ -666,6 +666,51 @@ impl Band {
         });
     }
 
+    /// Pre-growth (RC 2026-11-01): `sweeps` rewrites of every serving wire,
+    /// in band order, before any mask references the band, so the first
+    /// serving coordinates are not the raw band seed. Each gate composes a
+    /// growing wire with another band wire, random polarities. Bank and
+    /// wire modes alike; growth counters are untouched (serving wires
+    /// restart them when they return to growth).
+    pub fn pregrow(&mut self, sweeps: usize, rng: &mut impl Rng) -> Vec<XGate> {
+        let r = self.refs.len();
+        let np = self.np;
+        let serving: Vec<usize> = (0..r)
+            .filter(|&w| self.phase_of((np + w) as u16) == Phase::Serving)
+            .collect();
+        let growing: Vec<usize> = (0..r)
+            .filter(|&w| self.phase_of((np + w) as u16) == Phase::Growing)
+            .collect();
+        assert!(
+            !growing.is_empty() && r >= 3,
+            "pre-growth needs a growing wire"
+        );
+        let mut out = Vec::with_capacity(sweeps * serving.len());
+        for _ in 0..sweeps {
+            for &t in &serving {
+                assert_eq!(self.refs[t], 0, "pre-growth before any reference");
+                let y = growing[rng.random_range(0..growing.len())];
+                let x = loop {
+                    let w = rng.random_range(0..r);
+                    if w != t && w != y {
+                        break w;
+                    }
+                };
+                out.push(
+                    XGate::conj(
+                        (np + t) as u16,
+                        [
+                            ((np + x) as u16, rng.random_bool(0.5)),
+                            ((np + y) as u16, rng.random_bool(0.5)),
+                        ],
+                    )
+                    .expect("distinct pre-growth wires"),
+                );
+            }
+        }
+        out
+    }
+
     pub fn growth(&mut self, count: usize, rng: &mut impl Rng) -> Vec<XGate> {
         if self.wire.is_some() {
             return self.growth_wire_mode(count, rng);

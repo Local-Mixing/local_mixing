@@ -244,6 +244,36 @@ pub(crate) fn try_slice_zero_feistel_dims(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> Result<CnotCircuit, String> {
+    feistel_guard(n, target_lo, target_hi, None, nondata, gate_count, rng)
+}
+
+/// The accumulate-and-inject guard over ALL `n` data wires (the opening
+/// guard without the reverse contract): the prologue targets any data wire,
+/// and the rounds alternate halves — accumulate from the high half and
+/// inject into the low half, then the reverse — so a round's sources are
+/// never written inside it and its uncompute stays exact.
+pub(crate) fn try_slice_zero_feistel_all_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> Result<CnotCircuit, String> {
+    feistel_guard(n, 0, n, Some(n / 2), nondata, gate_count, rng)
+}
+
+/// Shared body of the Feistel guards. `split` = None: every round
+/// accumulates from the data wires outside `target_lo..target_hi` and
+/// injects into that range. `split` = Some(h): round k accumulates from
+/// `h..n` and injects into `0..h` for even k, the reverse for odd k.
+fn feistel_guard(
+    n: usize,
+    target_lo: usize,
+    target_hi: usize,
+    split: Option<usize>,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> Result<CnotCircuit, String> {
     if n < 3 {
         return Err(format!("slice feistel guard requires n >= 3, got {n}"));
     }
@@ -267,13 +297,26 @@ pub(crate) fn try_slice_zero_feistel_dims(
             "every non-data wire must be read: needs at least {nondata} gates, got {gate_count}"
         ));
     }
-    // Accumulator sources: data wires the guard never writes.
+    // Accumulator sources: data wires the guard never writes (per round
+    // under `split`: the half it does not inject into).
     let sources: Vec<u16> = (0..n)
         .filter(|w| !(target_lo..target_hi).contains(w))
         .map(|w| w as u16)
         .collect();
+    // (sources, injection targets) of round k
+    let round_halves = |k: usize| -> (Vec<u16>, (usize, usize)) {
+        match split {
+            None => (sources.clone(), (target_lo, target_hi)),
+            Some(h) if k.is_multiple_of(2) => ((h as u16..n as u16).collect(), (0, h)),
+            Some(h) => ((0..h as u16).collect(), (h, n)),
+        }
+    };
     let acc_size = (nondata / 8).clamp(2, 16);
-    let rounds_possible = sources.len() >= 2 && nondata > acc_size;
+    let smallest_source = match split {
+        None => sources.len(),
+        Some(h) => h.min(n - h),
+    };
+    let rounds_possible = smallest_source >= 2 && nondata > acc_size;
 
     for _ in 0..1000 {
         // Budget: ~a third prologue (floored at one gate per band wire),
@@ -320,7 +363,8 @@ pub(crate) fn try_slice_zero_feistel_dims(
         }
 
         // --- rounds ---
-        for (acc, inj) in &planned {
+        for (round, (acc, inj)) in planned.iter().enumerate() {
+            let (sources, (target_lo, target_hi)) = round_halves(round);
             let acc_set: std::collections::HashSet<u16> = acc.iter().copied().collect();
             let mut acc_gates: Vec<XGate> = Vec::with_capacity(acc.len());
             for &t in acc {
@@ -382,6 +426,33 @@ pub fn slice_zero_feistel_guard_dims(
     rng: &mut impl Rng,
 ) -> CnotCircuit {
     try_slice_zero_feistel_dims(n, 0, n / 2, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The opening guard WITHOUT the reverse contract: an accumulate-and-inject
+/// guard whose targets cover all `n` data wires (both halves), keyed on the
+/// band like the others. Dead at the input port on the honest forward slice;
+/// under reverse evaluation it runs last on a junk band and junks both
+/// halves, so the reversed artifact hands out nothing.
+pub fn slice_zero_feistel_guard_dims_all(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    try_slice_zero_feistel_all_dims(n, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The width-3 legacy generator's counterpart of
+/// [`slice_zero_feistel_guard_dims_all`] (targets on all `n` data wires).
+pub fn slice_zero_junk_guard_dims_all(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    try_slice_zero_block_dims(n, 0, n, nondata, gate_count, rng)
         .unwrap_or_else(|error| panic!("{error}"))
 }
 

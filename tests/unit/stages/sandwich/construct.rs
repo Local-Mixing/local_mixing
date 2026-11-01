@@ -236,3 +236,266 @@ fn balanced_sliced_sandwich_inverse_reveals_d_inverse_on_the_mirrored_slice() {
         }
     }
 }
+
+/// A small random g57 source on wires 0..n.
+fn small_source(n: usize, m: usize, seed: u64) -> CircuitSeq {
+    let mut rng = StdRng::seed_from_u64(seed);
+    CircuitSeq {
+        gates: (0..m)
+            .map(|_| {
+                let a = rng.random_range(0..n);
+                let x = random_wire_except(n, &[a], &mut rng);
+                let y = random_wire_except(n, &[a, x], &mut rng);
+                [a as u16, x as u16, y as u16]
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn group_copy_is_nonlinear_and_the_register_inverts_it() {
+    // groups of 3, 4 and 5 low wires (the remainder group) on n = 5 wires
+    for size in 3..=5usize {
+        let n = 5;
+        for seed in 0..16u64 {
+            for zero_preserving in [false, true] {
+                let mut rng = StdRng::seed_from_u64(0x6c00_0000 + seed * 8 + size as u64);
+                let mut group: Vec<u16> = (0..n as u16).collect();
+                group.shuffle(&mut rng);
+                group.truncate(size);
+                let (copy, recovery) = group_copy(&group, n, zero_preserving, &mut rng);
+                assert_eq!(copy.len(), 2 * size, "two conjunctions per register wire");
+                for g in &copy {
+                    assert!((g.target as usize) >= n, "copy writes the register");
+                    assert_eq!(g.ctrls.len(), 2, "two-control conjunctions, no CNOT");
+                    assert!(!g.comp);
+                    assert!(g.ctrls.iter().all(|&(w, _)| group.contains(&w)));
+                }
+                for g in &recovery {
+                    assert!((g.target as usize) >= n);
+                    assert!(g.ctrls.iter().all(|&(w, _)| (w as usize) >= n));
+                }
+                let reg_mask: u64 = group.iter().map(|&w| 1u64 << (n + w as usize)).sum();
+                let low_mask: u64 = group.iter().map(|&w| 1u64 << w).sum();
+                let mut images = std::collections::HashSet::new();
+                for x in 0..(1u64 << n) {
+                    let copied = eval_u64(&copy, x);
+                    assert_eq!(
+                        copied & !reg_mask,
+                        x,
+                        "copy touches only the group's register wires"
+                    );
+                    images.insert((copied & reg_mask, x & low_mask));
+                    let back = eval_u64(&recovery, copied);
+                    // on the zero slice the register ends holding the group's values
+                    let expected: u64 = group
+                        .iter()
+                        .map(|&w| ((x >> w) & 1) << (n + w as usize))
+                        .sum();
+                    assert_eq!(back & reg_mask, expected, "size {size} seed {seed}");
+                    if zero_preserving && x & low_mask == 0 {
+                        assert_eq!(copied & reg_mask, 0, "zero-preserving copy");
+                    }
+                }
+                // no register wire holds an affine function of a single low wire
+                for &h in &group {
+                    let r = n + h as usize;
+                    for &v in &group {
+                        for flip in [0u64, 1] {
+                            let affine = (0..(1u64 << n))
+                                .all(|x| (eval_u64(&copy, x) >> r) & 1 == ((x >> v) & 1) ^ flip);
+                            assert!(!affine, "register wire {r} is a copy of wire {v}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn v_gadget_sandwich_computes_c_on_the_register_and_is_a_permutation() {
+    let n = 7; // groups 3 + 4
+    let mask = (1u64 << n) - 1;
+    let main = small_source(n, 30, 0x6d01);
+    for (slicing, layer) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
+        for seed in 0..4u64 {
+            let mut rng = StdRng::seed_from_u64(0x6d00_0000 + seed);
+            let shape = SandwichShape {
+                slicing,
+                layer,
+                v_gates: 25,
+            };
+            let (a, layout) = shaped_sandwich(
+                &main,
+                n,
+                20,
+                3 * n,
+                SandwichVariant::Classic,
+                shape,
+                &mut rng,
+            );
+            assert_eq!(layout.copy_groups, 2);
+            assert_eq!(layout.copy_gates, 2 * n);
+            assert_eq!(
+                a.gates.len(),
+                layout.c_gates
+                    + layout.s1_gates
+                    + layout.copy_gates
+                    + 2 * layout.v_gates
+                    + layout.recovery_gates
+                    + layout.d_gates
+                    + layout.s2_gates
+            );
+            assert!(a.gates.iter().all(|g| g.ctrls.len() <= 2));
+            for x in 0..=mask {
+                let expected = main.evaluate(x as usize) as u64 & mask;
+                assert_eq!(
+                    (eval_u64(&a.gates, x) >> n) & mask,
+                    expected,
+                    "slicing {slicing} layer {layer} seed {seed}: A(x,0)"
+                );
+            }
+            let mut seen = std::collections::HashSet::new();
+            for input in 0..(1u64 << (2 * n)) {
+                assert!(seen.insert(eval_u64(&a.gates, input)), "A not injective");
+            }
+            // the reverse payload is a bijection of the low input
+            let inverse: Vec<XGate> = a.gates.iter().rev().cloned().collect();
+            let outs: std::collections::HashSet<u64> = (0..=mask)
+                .map(|p| (eval_u64(&inverse, p) >> n) & mask)
+                .collect();
+            assert_eq!(
+                outs.len() as u64,
+                mask + 1,
+                "reverse payload is a bijection"
+            );
+        }
+    }
+}
+
+#[test]
+fn sliced_v_gadget_keeps_s2_dead_under_reverse_evaluation() {
+    // with slice blocks the register must stay zero through V, V* and the
+    // recovery in reverse, so the reverse payload is exactly the copy's
+    // bijection of D^-1(p): checking it against D^-1 and the copy alone
+    let n = 6;
+    let mask = (1u64 << n) - 1;
+    let main = small_source(n, 24, 0x6e01);
+    for seed in 0..4u64 {
+        let mut rng = StdRng::seed_from_u64(0x6e00_0000 + seed);
+        let d_gates = random_g57_xgates(n, 18, &mut rng);
+        let shape = SandwichShape {
+            slicing: true,
+            layer: 1,
+            v_gates: 20,
+        };
+        let (a, _) = v_gadget_sandwich(&main, &d_gates, n, 3 * n, shape, &mut rng);
+        let inverse: Vec<XGate> = a.gates.iter().rev().cloned().collect();
+        // the copy gates are the ones writing the register from the low half
+        let copy: Vec<XGate> = a
+            .gates
+            .iter()
+            .filter(|g| {
+                (g.target as usize) >= n
+                    && g.ctrls.iter().all(|&(w, _)| (w as usize) < n)
+                    && g.ctrls.len() == 2
+                    && !g.comp
+            })
+            .cloned()
+            .collect();
+        let d_inverse: Vec<XGate> = d_gates.iter().rev().cloned().collect();
+        for p in 0..=mask {
+            let low = eval_u64(&d_inverse, p) & mask;
+            let expected = (eval_u64(&copy, low) >> n) & mask;
+            assert_eq!(
+                (eval_u64(&inverse, p) >> n) & mask,
+                expected,
+                "seed {seed}: reverse register is not copy(D^-1(p))"
+            );
+        }
+    }
+}
+
+#[test]
+fn layered_triples_are_wire_disjoint_within_a_layer() {
+    let (n, layer) = (13, 4);
+    let mut rng = StdRng::seed_from_u64(0x6f01);
+    let triples = layered_triples(n, 103, layer, |k| rng.random_range(0..k));
+    assert_eq!(triples.len(), 103);
+    for chunk in triples.chunks(layer) {
+        let mut wires: Vec<u16> = chunk.iter().flatten().copied().collect();
+        let total = wires.len();
+        wires.sort_unstable();
+        wires.dedup();
+        assert_eq!(wires.len(), total, "a layer's gates share no wire");
+        assert!(wires.iter().all(|&w| (w as usize) < n));
+    }
+    for pair in triples.chunks(layer).collect::<Vec<_>>().windows(2) {
+        assert!(
+            !pair[1].iter().any(|g| pair[0].contains(g)),
+            "no gate repeats the previous layer"
+        );
+    }
+    // the layered C on fastrand is reproducible from the seed
+    fastrand::seed(77);
+    let first = layered_random_circuit(12, 40, 4);
+    fastrand::seed(77);
+    assert_eq!(first.gates, layered_random_circuit(12, 40, 4).gates);
+}
+
+#[test]
+fn legacy_shape_reproduces_the_sliced_sandwich() {
+    let n = 6;
+    let main = small_source(n, 24, 0x7001);
+    for variant in [SandwichVariant::Classic, SandwichVariant::Balanced] {
+        for seed in 0..4u64 {
+            let mut r1 = StdRng::seed_from_u64(0x7000_0000 + seed);
+            let mut r2 = StdRng::seed_from_u64(0x7000_0000 + seed);
+            let old = sliced_sandwich_cnot(&main, n, 20, 4 * n, variant, &mut r1);
+            let (new, layout) =
+                shaped_sandwich(&main, n, 20, 4 * n, variant, SandwichShape::LEGACY, &mut r2);
+            assert_eq!(old.gates, new.gates);
+            assert_eq!(layout.copy_positions.len(), n);
+        }
+    }
+}
+
+#[test]
+fn unsliced_column_sandwich_is_c_n_d() {
+    let n = 5;
+    let mask = (1u64 << n) - 1;
+    let main = small_source(n, 20, 0x7101);
+    let shape = SandwichShape {
+        slicing: false,
+        layer: 1,
+        v_gates: 0,
+    };
+    let mut rng = StdRng::seed_from_u64(0x7102);
+    let (a, layout) = shaped_sandwich(
+        &main,
+        n,
+        15,
+        4 * n,
+        SandwichVariant::Classic,
+        shape,
+        &mut rng,
+    );
+    assert_eq!(a.gates.len(), 20 + n + 15);
+    assert_eq!((layout.s1_gates, layout.s2_gates), (0, 0));
+    for x in 0..=mask {
+        let expected = main.evaluate(x as usize) as u64 & mask;
+        assert_eq!((eval_u64(&a.gates, x) >> n) & mask, expected);
+    }
+}
+
+#[test]
+fn dependency_depth_matches_the_interleaver() {
+    use crate::stages::preprocessing::three_mask::interleave;
+    for seed in 0..6u64 {
+        let mut rng = StdRng::seed_from_u64(0x7201 + seed);
+        let gates = sampled_xgates(9, 200, 1 + (seed as usize % 3), 0, seed % 2 == 0, &mut rng);
+        let (_, _, stats) = interleave(&gates, 1, &mut rng);
+        assert_eq!(dependency_depth(&gates), stats.depth, "seed {seed}");
+    }
+}

@@ -103,6 +103,14 @@ fn stage2_three_mask_matches_the_server_generator() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("THREE_MASK_BAND_WIRES", "128")
+        // the generator's configuration predates the 2026-11-01 defaults:
+        // slice blocks, the N column, bank turnover, no interleaving or
+        // pre-growth
+        .env("SANDWICH_SLICING", "1")
+        .env("SANDWICH_V_GATES", "0")
+        .env("THREE_MASK_TURNOVER", "bank")
+        .env("THREE_MASK_INTERLEAVE", "0")
+        .env("THREE_MASK_PREGROW", "0")
         .arg(&out)
         .args([
             "32",

@@ -100,6 +100,11 @@ pub struct ThreeMaskParams {
     /// this displacement window in gates (0 = off): gates of independent
     /// fires interleave, so no narrow window holds a complete fire.
     pub interleave_window: usize,
+    /// Pre-grow the serving half of the band before the first masks
+    /// reference it (`warmup_sweeps` rewrites per serving wire), so the
+    /// initial serving coordinates are not the raw band seed; the warm-up
+    /// then grows the growing half as before (RC 2026-11-01).
+    pub pregrow: bool,
 }
 
 impl Default for ThreeMaskParams {
@@ -142,6 +147,7 @@ impl Default for ThreeMaskParams {
             unique_cover: false,
             wire_turnover: false,
             interleave_window: 0,
+            pregrow: false,
         }
     }
 }
@@ -182,7 +188,23 @@ impl ThreeMaskParams {
             ..Self::default()
         }
     }
+
+    /// The stage-2 policy of 2026-11-01 (docs/notes/stage2_interleaving_20261101.md,
+    /// clear-cut suggestions 1 and 2): [`Self::v2`] with per-wire turnover,
+    /// fire interleaving in a 4096-gate window, and the whole band pre-grown.
+    pub fn v3(seed: u64, band_wires: usize) -> Self {
+        Self {
+            wire_turnover: true,
+            interleave_window: DEFAULT_INTERLEAVE_WINDOW,
+            pregrow: true,
+            ..Self::v2(seed, band_wires)
+        }
+    }
 }
+
+/// The fire-interleaving window of the default policy ([`ThreeMaskParams::v3`]):
+/// the knee of the measured spans (1024: span 1,022; 4096: 2,503; 16384: 4,402).
+pub const DEFAULT_INTERLEAVE_WINDOW: usize = 4096;
 
 /// The automatic band width for a sandwich of `np` (= 2n) wires: the larger
 /// of `np` and 128, rounded up to a multiple of 16. The compute needs
@@ -322,6 +344,8 @@ pub struct ThreeMaskStats {
     pub local_mask_fallbacks: usize,
     pub promotion_stalls: usize,
     pub band_ingress_gates: usize,
+    /// Pre-growth gates on the serving half (part of `growth_gates`).
+    pub pregrow_gates: usize,
     pub mask_rank_rejections: usize,
     pub max_mask_rank_deficit: usize,
     pub fires_with_mask_rank_deficit: usize,
@@ -787,6 +811,13 @@ pub fn compute(
             }
         }
         stats.band_ingress_gates = gates.len();
+    }
+    if cfg.pregrow {
+        // nothing references the band yet, so the serving wires may grow
+        let pre = band.pregrow(cfg.warmup_sweeps, &mut rng);
+        stats.pregrow_gates = pre.len();
+        stats.growth_gates += pre.len();
+        gates.extend(pre);
     }
     for w in 0..np {
         for _ in 0..if cfg.single_mask { 1 } else { cfg.mask_count } {

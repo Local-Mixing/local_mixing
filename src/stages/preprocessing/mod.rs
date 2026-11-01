@@ -8,5 +8,5 @@ pub mod slice_guards;
 pub mod three_mask;
 pub mod types;
 pub mod verify;
-pub use construct::preprocess_sandwich;
+pub use construct::{preprocess_sandwich, preprocess_sandwich_ports};
 pub use types::{PreprocessingMode, PreprocessingOutput, PreprocessingParams};

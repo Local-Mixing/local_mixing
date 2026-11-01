@@ -37,6 +37,15 @@
 //! `balanced` (RC's balanced C, every completed internal value read exactly
 //! twice; exclusive with TDP_SOURCE_C). Source and sandwich artifacts
 //! are written beside the output as .source_c.g57 and .sandwich.mpmct1.
+//!
+//! Stage-1 shape (RC 2026-11-01, `sandwich_shape_from`): SANDWICH_SLICING
+//! 0|1 interleaves the slice blocks S1/S2 with C and D (default 0: none);
+//! SANDWICH_LAYER w samples the random C, D and V in layers of w
+//! wire-disjoint gates (default 1, at most n/3); SANDWICH_V_GATES t sizes
+//! the V gadget on the payload register (default round(n log2 n); 0 = the
+//! classic N column of copy CNOTs). STAGE2_REVERSE_CONTRACT 0|1 (default 1)
+//! chooses the port guards: 0 makes the opening guard cover all data wires
+//! and drops the closing guard (forward payload only).
 
 use crate::circuit::formats::write_mpmct;
 use crate::stages::preprocessing::embedded_masking::{
@@ -44,11 +53,13 @@ use crate::stages::preprocessing::embedded_masking::{
 };
 use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
 use crate::stages::preprocessing::three_mask::ThreeMaskParams;
-use crate::stages::preprocessing::verify::verify_payload;
-use crate::stages::preprocessing::{PreprocessingMode, PreprocessingParams, preprocess_sandwich};
+use crate::stages::preprocessing::verify::verify_payload_ports;
+use crate::stages::preprocessing::{
+    PreprocessingMode, PreprocessingParams, preprocess_sandwich_ports,
+};
 use crate::stages::sandwich::{
-    SandwichVariant, SourceConstruction, audit_balanced, construct_seeded_sandwich, prepare_source,
-    sandwich_default_s,
+    SandwichShape, SandwichVariant, SourceConstruction, audit_balanced, construct_shaped_sandwich,
+    dependency_depth, prepare_source_layered, sandwich_default_s, sandwich_default_v,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -160,12 +171,14 @@ pub fn stage2_knobs_from_env(p: EmbeddedMaskingParams) -> EmbeddedMaskingParams 
 }
 
 /// The three-mask compute knobs from their `THREE_MASK_*` environment names
-/// (unset = the v2 campaign configuration, `ThreeMaskParams::v2`). `var`
-/// supplies the lookup so the mapping is testable without the process
-/// environment. `THREE_MASK_BAND_WIRES` 0 = auto; the two flags take 0/1
-/// (or false/true); `THREE_MASK_TURNOVER` is `bank` (default) or `wire`;
+/// (unset = the 2026-11-01 policy, `ThreeMaskParams::v3`: the v2 campaign
+/// configuration with wire turnover, interleave window 4096 and pre-growth).
+/// `var` supplies the lookup so the mapping is testable without the process
+/// environment. `THREE_MASK_BAND_WIRES` 0 = auto; the flags take 0/1 (or
+/// false/true); `THREE_MASK_TURNOVER` is `wire` (default) or `bank`;
 /// `THREE_MASK_INTERLEAVE` is the fire-interleaving window in gates (0 =
-/// off). An unknown `THREE_MASK_*` name is an error.
+/// off); `THREE_MASK_PREGROW` pre-grows the serving half of the band. An
+/// unknown `THREE_MASK_*` name is an error.
 pub fn three_mask_params_from(
     seed: u64,
     var: impl Fn(&str) -> Option<String>,
@@ -185,7 +198,11 @@ pub fn three_mask_params_from(
         "THREE_MASK_MASK_COUNT",
         "THREE_MASK_INTERLEAVE",
     ];
-    const FLAGS: [&str; 2] = ["THREE_MASK_RANDOM_HELPERS", "THREE_MASK_UNIQUE_COVER"];
+    const FLAGS: [&str; 3] = [
+        "THREE_MASK_RANDOM_HELPERS",
+        "THREE_MASK_UNIQUE_COVER",
+        "THREE_MASK_PREGROW",
+    ];
     const TURNOVER: &str = "THREE_MASK_TURNOVER";
     let mut unknown: Vec<&str> = present
         .iter()
@@ -206,8 +223,10 @@ pub fn three_mask_params_from(
             FLAGS.join(", ")
         ));
     }
+    let base = ThreeMaskParams::v3(seed, 0);
     let wire_turnover = match var(TURNOVER).as_deref() {
-        None | Some("bank") => false,
+        None => base.wire_turnover,
+        Some("bank") => false,
         Some("wire") => true,
         Some(value) => return Err(format!("{TURNOVER} must be bank or wire; got {value:?}")),
     };
@@ -227,7 +246,6 @@ pub fn three_mask_params_from(
             Some(value) => Err(format!("{key} must be 0, 1, false or true; got {value:?}")),
         }
     };
-    let base = ThreeMaskParams::v2(seed, 0);
     Ok(ThreeMaskParams {
         band_wires: num(NUMBERS[0], base.band_wires)?,
         banks: num(NUMBERS[1], base.banks)?,
@@ -243,9 +261,68 @@ pub fn three_mask_params_from(
         interleave_window: num(NUMBERS[11], base.interleave_window)?,
         random_helpers: flag(FLAGS[0], base.random_helpers)?,
         unique_cover: flag(FLAGS[1], base.unique_cover)?,
+        pregrow: flag(FLAGS[2], base.pregrow)?,
         wire_turnover,
         ..base
     })
+}
+
+/// The stage-1 shape from `SANDWICH_SLICING` (0|1, default 0),
+/// `SANDWICH_LAYER` (w, default 1) and `SANDWICH_V_GATES` (t, default
+/// `sandwich_default_v(n)`; 0 = no V gadget), validated against `n` and
+/// the variant. `var` supplies the lookup (testable without the process
+/// environment).
+pub fn sandwich_shape_from(
+    n: usize,
+    variant: SandwichVariant,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<SandwichShape, String> {
+    let slicing = match var("SANDWICH_SLICING").as_deref() {
+        None | Some("0") | Some("false") => false,
+        Some("1") | Some("true") => true,
+        Some(value) => {
+            return Err(format!(
+                "SANDWICH_SLICING must be 0, 1, false or true; got {value:?}"
+            ));
+        }
+    };
+    let number = |key: &str, default: usize| -> Result<usize, String> {
+        match var(key) {
+            None => Ok(default),
+            Some(value) => value
+                .parse::<usize>()
+                .map_err(|_| format!("{key} must be a non-negative integer; got {value:?}")),
+        }
+    };
+    let shape = SandwichShape {
+        slicing,
+        layer: number("SANDWICH_LAYER", 1)?,
+        v_gates: number("SANDWICH_V_GATES", sandwich_default_v(n))?,
+    };
+    shape.validate(n, variant)?;
+    Ok(shape)
+}
+
+/// `STAGE2_REVERSE_CONTRACT` (0|1, default 1): whether the stage-2 port
+/// guards keep the reverse payload. Only the guarded modes have guards, so
+/// 0 is refused under nonlinear291.
+pub fn reverse_contract_from(mode: PreprocessingMode, value: Option<&str>) -> Result<bool, String> {
+    let keep = match value {
+        None | Some("1") | Some("true") => true,
+        Some("0") | Some("false") => false,
+        Some(value) => {
+            return Err(format!(
+                "STAGE2_REVERSE_CONTRACT must be 0, 1, false or true; got {value:?}"
+            ));
+        }
+    };
+    if !keep && mode == PreprocessingMode::Nonlinear291 {
+        return Err(
+            "STAGE2_REVERSE_CONTRACT=0 needs a guarded mode (embedded-masking or three-mask)"
+                .into(),
+        );
+    }
+    Ok(keep)
 }
 
 /// The environment names a mode does not accept: under `three-mask` every
@@ -436,6 +513,19 @@ pub fn run() {
                 std::process::exit(2)
             })
     });
+    let shape =
+        sandwich_shape_from(n, variant, |key| std::env::var(key).ok()).unwrap_or_else(|error| {
+            eprintln!("gen_sandwich_gadget: {error}");
+            std::process::exit(2)
+        });
+    let reverse_contract = reverse_contract_from(
+        gadgetization_mode,
+        std::env::var("STAGE2_REVERSE_CONTRACT").ok().as_deref(),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("gen_sandwich_gadget: {error}");
+        std::process::exit(2)
+    });
     let (shuffling_segments, shuffling_return_home, shuffling_jit_gap) = parse_shuffling_controls(
         gadgetization_mode,
         std::env::var("EMBEDDED_MASKING_SHUFFLING").ok().as_deref(),
@@ -456,13 +546,17 @@ pub fn run() {
     // The driver pattern-matches the middle of this line: new fields go at
     // the end only.
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={} source_construction={}",
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={} source_construction={} slicing={} layer={} v_gates={} reverse_contract={}",
         shown(seed, seed_private),
         shown(gadget_seed, gadget_seed_private),
         shown(sandwich_seed, sandwich_seed_private),
         gadgetization_mode.canonical_name(),
         variant.name(),
-        construction.name()
+        construction.name(),
+        u8::from(shape.slicing),
+        shape.layer,
+        shape.v_gates,
+        u8::from(reverse_contract)
     );
 
     let source_path = std::env::var("TDP_SOURCE_C").ok();
@@ -471,12 +565,13 @@ pub fn run() {
             .unwrap_or_else(|error| panic!("TDP_SOURCE_C: cannot read {path}: {error}"));
         crate::circuit::CircuitSeq::from_bytes(&raw)
     });
-    let c = prepare_source(n, m_c, seed, supplied, construction).unwrap_or_else(|error| {
-        panic!(
-            "TDP_SOURCE_C: {} {error}",
-            source_path.as_deref().unwrap_or("source")
-        )
-    });
+    let c = prepare_source_layered(n, m_c, seed, supplied, construction, shape.layer)
+        .unwrap_or_else(|error| {
+            panic!(
+                "TDP_SOURCE_C: {} {error}",
+                source_path.as_deref().unwrap_or("source")
+            )
+        });
     if let Some(path) = source_path {
         println!(
             "[gen] source C LOADED from {path} ({} gates, {} wires)",
@@ -508,7 +603,9 @@ pub fn run() {
         "[gen] wrote source C ({} g57 gates) to {c_path}",
         c.gates.len()
     );
-    let sandwich = construct_seeded_sandwich(&c, n, m_d, s, variant, sandwich_seed);
+    let (sandwich, layout) =
+        construct_shaped_sandwich(&c, n, m_d, s, variant, sandwich_seed, shape)
+            .unwrap_or_else(|error| panic!("sandwich construction failed: {error}"));
     println!(
         "[gen] {} sliced sandwich: {} gates, {} wires (payload on wires {} on the zero slice)",
         variant.name(),
@@ -520,6 +617,31 @@ pub fn run() {
             format!("{n}..{}", 2 * n)
         }
     );
+    {
+        let c_xgates: Vec<crate::circuit::XGate> = c
+            .gates
+            .iter()
+            .map(|&g| crate::circuit::XGate::from_g57(g))
+            .collect();
+        let c_depth = dependency_depth(&c_xgates).max(1);
+        let depth = dependency_depth(&sandwich.gates).max(1);
+        println!(
+            "[gen] sandwich parts: C {} + S1 {} + copy {} ({} groups) + V {} + V* {} + recovery {} + D {} + S2 {}; dependency depth {} (width {:.1}); C alone depth {} (width {:.1})",
+            layout.c_gates,
+            layout.s1_gates,
+            layout.copy_gates,
+            layout.copy_groups,
+            layout.v_gates,
+            layout.v_gates,
+            layout.recovery_gates,
+            layout.d_gates,
+            layout.s2_gates,
+            depth,
+            sandwich.gates.len() as f64 / depth as f64,
+            c_depth,
+            c.gates.len() as f64 / c_depth as f64
+        );
+    }
     let a_path = format!("{out}.sandwich.mpmct1");
     write_mpmct(&a_path, &sandwich.gates, sandwich.num_wires).expect("write sandwich");
     println!("[gen] wrote sandwich A to {a_path}");
@@ -582,11 +704,16 @@ pub fn run() {
                 }),
                 params: stage2_knobs_from_env(params),
             };
-            let output =
-                preprocess_sandwich(&sandwich, n, slice_gates, variant, &options, &mut rng)
-                    .unwrap_or_else(|error| {
-                        panic!("embedded-masking preprocessing failed: {error}")
-                    });
+            let output = preprocess_sandwich_ports(
+                &sandwich,
+                n,
+                slice_gates,
+                variant,
+                &options,
+                reverse_contract,
+                &mut rng,
+            )
+            .unwrap_or_else(|error| panic!("embedded-masking preprocessing failed: {error}"));
             if let Some(report) = output.embedded_masking_report {
                 println!(
                     "[gen] embedded-masking: {} atoms, band={} wires, {} band-seed + {} band-reseed + {} slice-guard gates each side",
@@ -639,9 +766,16 @@ pub fn run() {
                 balanced_seed: true,
                 seed_fill_nl: 4,
             };
-            let output =
-                preprocess_sandwich(&sandwich, n, slice_gates, variant, &options, &mut rng)
-                    .unwrap_or_else(|error| panic!("three-mask preprocessing failed: {error}"));
+            let output = preprocess_sandwich_ports(
+                &sandwich,
+                n,
+                slice_gates,
+                variant,
+                &options,
+                reverse_contract,
+                &mut rng,
+            )
+            .unwrap_or_else(|error| panic!("three-mask preprocessing failed: {error}"));
             let report = output
                 .three_mask_report
                 .as_ref()
@@ -670,7 +804,7 @@ pub fn run() {
                 report.guard_gates
             );
             println!(
-                "[gen] three-mask turnover: {} ({} rotations, {} drained; wire limbo mean {:.1} max {} fires); interleave window {} (mean displacement {:.0} gates, 250-gate window spans {:.0} original positions, dependency depth {} of {} gates)",
+                "[gen] three-mask turnover: {} ({} rotations, {} drained; wire limbo mean {:.1} max {} fires); interleave window {} (mean displacement {:.0} gates, 250-gate window spans {:.0} original positions, dependency depth {} of {} gates); pre-growth {} gates",
                 if report.wire_turnover { "wire" } else { "bank" },
                 report.rotations,
                 report.retired_banks,
@@ -680,7 +814,8 @@ pub fn run() {
                 report.interleave_mean_displacement,
                 report.interleave_span_250,
                 report.interleave_depth,
-                report.compute_gates
+                report.compute_gates,
+                report.stats.pregrow_gates
             );
             if report.fire_span_measured {
                 println!(
@@ -720,12 +855,13 @@ pub fn run() {
             (output.circuit, output.guarded)
         }
         PreprocessingMode::Nonlinear291 => {
-            let output = preprocess_sandwich(
+            let output = preprocess_sandwich_ports(
                 &sandwich,
                 n,
                 slice_gates,
                 variant,
                 &PreprocessingParams::Nonlinear291,
+                reverse_contract,
                 &mut rng,
             )
             .unwrap_or_else(|error| panic!("nonlinear291 preprocessing failed: {error}"));
@@ -738,14 +874,25 @@ pub fn run() {
         gadget.num_wires
     );
 
-    let (verify_from, verify_to, reverse_verified) =
-        verify_payload(&sandwich, &gadget, n, guarded, variant, seed);
+    let (verify_from, verify_to, reverse_verified) = verify_payload_ports(
+        &sandwich,
+        &gadget,
+        n,
+        guarded,
+        variant,
+        seed,
+        reverse_contract,
+    );
     println!(
         "[gen] verify PASSED (256 bit-sliced samples, payload wires {verify_from}..{verify_to})"
     );
     if reverse_verified {
         println!(
             "[gen] reverse verify PASSED (256 bit-sliced samples, wires {n}..{sandwich_n}: D^-1 emerges under backward evaluation)"
+        );
+    } else if guarded && !reverse_contract {
+        println!(
+            "[gen] reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0: the opening guard covers all data wires, no closing guard)"
         );
     } else if guarded && variant.is_balanced() {
         println!(
