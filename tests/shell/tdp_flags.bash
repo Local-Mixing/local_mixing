@@ -149,7 +149,7 @@ if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preproc
      --sandwich-slicing 1 --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
   echo "unexpected success: nonlinear291 n=16 with the V gadget and stage 6" >&2; exit 1
 fi
-grep -q 'FATAL: nonlinear291 makes a stage-2 circuit of up to 4301 wires; stage 6' "$tmp/error" ||
+grep -q 'FATAL: nonlinear291 makes a stage-2 circuit of up to 4661 wires; stage 6' "$tmp/error" ||
   { cat "$tmp/error" >&2; exit 1; }
 if ! bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
      --sandwich-slicing 1 --sandwich-v-gates 0 --run-directory "$tmp/nl-wide" --run-skip-stages 6 --run-stop-after-stage 2 >"$tmp/error" 2>&1; then
@@ -224,7 +224,7 @@ run_case three-mask-v2 --three-mask-turnover bank --three-mask-interleave 0 --th
 run_case balanced --source-construction balanced
 run_case legacy-shape "${E[@]}" --sandwich-slicing 1 --sandwich-v-gates 0
 run_case v-gates --sandwich-v-gates 24 --sandwich-layer 1
-run_case v-default --sandwich-v-gates 1
+run_case v-default --sandwich-v-gates 4
 run_case reverse-kept "${E[@]}" --preprocessing-reverse-contract 1
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -257,14 +257,14 @@ expected = {
     'reverse-kept': (L8, 'L8'),
 }
 # the stage-1 shape and port contract reach gen only when not its default
-# (V = 1 gate; no reverse contract in the guarded modes, kept in nonlinear291):
+# (V = n gates = 4; no reverse contract in the guarded modes, kept in nonlinear291):
 # (env, marker slicing, layer, v_gates, reverse_contract)
 shape = {
     'nonlinear291': ({'SANDWICH_V_GATES': '0'}, '0', '1', '0', '1'),
-    'nonlinear291-v': ({'SANDWICH_SLICING': '1'}, '1', '1', '1', '1'),
+    'nonlinear291-v': ({'SANDWICH_SLICING': '1'}, '1', '1', '4', '1'),
     'legacy-shape': ({'SANDWICH_SLICING': '1', 'SANDWICH_V_GATES': '0'}, '1', '1', '0', '0'),
     'v-gates': ({'SANDWICH_V_GATES': '24'}, '0', '1', '24', '0'),
-    'reverse-kept': ({'STAGE2_REVERSE_CONTRACT': '1'}, '0', '1', '1', '1'),
+    'reverse-kept': ({'STAGE2_REVERSE_CONTRACT': '1'}, '0', '1', '4', '1'),
 }
 for name, (env, preset) in expected.items():
     calls = [json.loads(l) for l in (root / f'{name}.calls').read_text().splitlines()]
@@ -275,7 +275,7 @@ for name, (env, preset) in expected.items():
     assert got == env, (name, got)
     # no other recipe variable reaches gen (the balanced construction travels as TDP_SOURCE_CONSTRUCTION)
     assert not any(k.startswith(('SLICE_GUARD', 'PROD_')) or k in ('TDP_SOURCE_C', 'SANDWICH_VARIANT') for k in gen['env']), gen['env']
-    shape_env, slicing, layer, v_gates, reverse = shape.get(name, ({}, '0', '1', '1', '0'))
+    shape_env, slicing, layer, v_gates, reverse = shape.get(name, ({}, '0', '1', '4', '0'))
     got = {k: v for k, v in gen['env'].items() if k.startswith(('SANDWICH_', 'STAGE2_'))}
     assert got == shape_env, (name, got)
     assert gen['env'].get('TDP_SOURCE_CONSTRUCTION') == ('balanced' if name == 'balanced' else None), (name, gen['env'])

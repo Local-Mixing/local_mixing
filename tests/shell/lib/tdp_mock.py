@@ -90,9 +90,9 @@ if name == "gen_sandwich_gadget":
     mode = args[10] if len(args) > 10 else "embedded-masking"
     construction = os.environ.get("TDP_SOURCE_CONSTRUCTION", "random")
     # gen's banner ends with the stage-1 shape and the port contract it built
-    # (defaults since RC 2026-11-01: no slicing, layer 1, V = 1 gate, no
+    # (defaults since RC 2026-11-01: no slicing, layer 1, V = n gates, no
     # reverse contract in the guarded modes, kept in nonlinear291)
-    shape = {"SANDWICH_SLICING": "0", "SANDWICH_LAYER": "1", "SANDWICH_V_GATES": "1",
+    shape = {"SANDWICH_SLICING": "0", "SANDWICH_LAYER": "1", "SANDWICH_V_GATES": str(n),
              "STAGE2_REVERSE_CONTRACT": "1" if mode == "nonlinear291" else "0"}
     if "gen_ignore_shape" not in opts:
         shape = {k: os.environ.get(k, v) for k, v in shape.items()}

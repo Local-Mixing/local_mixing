@@ -267,7 +267,6 @@ only: the opening guard covers all data wires with the same gate count (its
 Feistel rounds alternate halves, accumulating from one and injecting into
 the other, so each round's uncompute stays exact), and the closing guard is
 dropped; the band seed and reseed stay at both ends; the reversed artifact
-then junks both halves, and gen skips the reverse verification. Stage 6 is
-unchanged: the managed driver runs the adaptive stage without `--sandwich`
-then (its payload contract compares both directions), and the stage's
-zero-slice checks against C verify the forward payload.
+then junks both halves, and gen skips the reverse verification. The managed
+driver then runs the adaptive stage 6 with `--forward-only` (its payload
+contract against the sandwich checks the forward direction only).

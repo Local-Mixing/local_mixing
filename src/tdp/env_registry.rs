@@ -117,7 +117,7 @@ pub(crate) const ENV_REGISTRY: &[EnvEntry] = &[
     // stage 1 shape (RC 2026-11-01): slice blocks, layer size, V gadget
     exact("SANDWICH_SLICING", Driver, "0"),
     exact("SANDWICH_LAYER", Driver, "1"),
-    exact("SANDWICH_V_GATES", Driver, "1"),
+    exact("SANDWICH_V_GATES", Driver, "n"),
     // stage 2 port guards: forward only (0, the guarded modes' default) or
     // the reverse contract kept (1)
     exact("STAGE2_REVERSE_CONTRACT", Driver, "0"),

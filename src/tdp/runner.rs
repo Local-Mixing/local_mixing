@@ -907,7 +907,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
         sw.slicing,
         sw.layer,
         sw.v_gates_at(config.n),
-        if sw.v_gates == 0 {
+        if sw.v_gates_at(config.n) == 0 {
             ", the N column"
         } else {
             ""

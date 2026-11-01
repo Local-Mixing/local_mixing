@@ -42,7 +42,7 @@
 //! 0|1 interleaves the slice blocks S1/S2 with C and D (default 0: none);
 //! SANDWICH_LAYER w samples the random C, D and V in layers of w
 //! wire-disjoint gates (default 1, at most n/3); SANDWICH_V_GATES t sizes
-//! the V gadget on the payload register (default 1; 0 = the classic N column
+//! the V gadget on the payload register (default n; 0 = the classic N column
 //! of copy CNOTs). STAGE2_REVERSE_CONTRACT 0|1 chooses the port guards
 //! (default 0 in the guarded modes: the opening guard covers all data wires,
 //! no closing guard, forward payload only; 1 keeps both junk-half guards and
@@ -59,8 +59,8 @@ use crate::stages::preprocessing::{
     PreprocessingMode, PreprocessingParams, preprocess_sandwich_ports,
 };
 use crate::stages::sandwich::{
-    DEFAULT_V_GATES, SandwichShape, SandwichVariant, SourceConstruction, audit_balanced,
-    construct_shaped_sandwich, dependency_depth, prepare_source_layered, sandwich_default_s,
+    SandwichShape, SandwichVariant, SourceConstruction, audit_balanced, construct_shaped_sandwich,
+    dependency_depth, prepare_source_layered, sandwich_default_s, sandwich_default_v,
 };
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -270,7 +270,7 @@ pub fn three_mask_params_from(
 
 /// The stage-1 shape from `SANDWICH_SLICING` (0|1, default 0),
 /// `SANDWICH_LAYER` (w, default 1) and `SANDWICH_V_GATES` (t, default
-/// `DEFAULT_V_GATES` = 1; 0 = no V gadget), validated against `n` and
+/// `sandwich_default_v(n)` = n; 0 = no V gadget), validated against `n` and
 /// the variant. `var` supplies the lookup (testable without the process
 /// environment).
 pub fn sandwich_shape_from(
@@ -298,7 +298,7 @@ pub fn sandwich_shape_from(
     let shape = SandwichShape {
         slicing,
         layer: number("SANDWICH_LAYER", 1)?,
-        v_gates: number("SANDWICH_V_GATES", DEFAULT_V_GATES)?,
+        v_gates: number("SANDWICH_V_GATES", sandwich_default_v(n))?,
     };
     shape.validate(n, variant)?;
     Ok(shape)

@@ -334,13 +334,13 @@ slicing, `layer` 1, `v_gates` 1); the validated runs' stage 1 is
 | --- | --- | --- |
 | `sandwich.slicing` | bool, `false` | `true` interleaves the slice blocks $S_1$ (with $C$) and $S_2$ (with $D$), $s = \max(n, \mathrm{round}(n\log_2 n))$ gates each. With them the V gadget and its copy preserve zero ($V$ of positive conjunctions, the copy's selector-zero branches positive), so $S_2$ stays dead in reverse. |
 | `sandwich.layer` | integer, `1` | Sample the random $C$ (generated with `construction = "random"`), $D$ and V in layers of $w$ = `layer` wire-disjoint gates ($3w$ distinct wires; 1 = the fully random sequence); `1..n/3`. A supplied or balanced $C$ is unchanged. |
-| `sandwich.v_gates` | integer, `1` | Gates of the V gadget's random circuit; `1` (RC, 2026-11-01) = the nonlinear copy in groups of three with a one-gate V and its inverse (larger V, e.g. $\mathrm{round}(n\log_2 n)$ = 384 at n=64, waits for the degree-2 midpoint search); `0` = no gadget (the N column of $n$ copy CNOTs). The gadget needs the classic sandwich (the only one the driver builds). nonlinear291 takes it only with `slicing = true` (its templates cover the zero-preserving copy only); the driver refuses the other combination. |
+| `sandwich.v_gates` | integer, $n$ | Gates of the V gadget's random circuit; omitted = $n$ (RC, 2026-11-01: a low count; degree-2 payload replicas came back after ANF packing and resynthesis even with three masks, so V must scramble the register; larger V, e.g. $\mathrm{round}(n\log_2 n)$ = 384 at n=64, waits for the degree-2 midpoint search); `0` = no gadget (the N column of $n$ copy CNOTs). The gadget needs the classic sandwich (the only one the driver builds). nonlinear291 takes it only with `slicing = true` (its templates cover the zero-preserving copy only); the driver refuses the other combination. |
 
 Every value is recorded in the manifest (`sandwich_params=default|legacy|custom`,
 `sandwich_slicing`, `sandwich_layer`, `sandwich_v_gates`) and in
 `stage12.recipe`; a value reaches gen (`SANDWICH_SLICING`, `SANDWICH_LAYER`,
 `SANDWICH_V_GATES`, driver class) only when it differs from gen's default,
-so an explicit `v_gates = 1` is the same recipe. The bash driver also checks that gen's banner reports the shape it
+so an explicit `v_gates` equal to $n$ is the same recipe. The bash driver also checks that gen's banner reports the shape it
 asked for (`slicing= layer= v_gates= reverse_contract=`).
 
 ### Frozen replacement stores
@@ -356,7 +356,7 @@ asked for (`slicing= layer= v_gates= reverse_contract=`).
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `preprocessing.mode` | string, `"three-mask"` | `"three-mask"` (the default: the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)), `"embedded-masking"` (preset L8 by default, the validated chain's stage 2) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·\|sandwich\| + 29 wires; the legacy sandwich has 2\|C\| + 2s + n gates: 3,677 wires at n=16, \|C\|=64; with the V gadget the driver takes the largest count its drawn recovery can reach), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
-| `preprocessing.reverse_contract` | bool, `false` (guarded modes) | The stage-2 port guards. `false` (the default since recipe v14, RC 2026-11-01): forward payload only: the opening guard covers all data wires (same gate count; its Feistel rounds alternate halves), there is no closing guard and no reverse verification; the band seed and reseed stay at both ends. `true`: both junk-half guards; reversed, the circuit still carries $D^{-1}$ of its input on wires $n..2n$ and gen verifies it. nonlinear291 has no guards (`true`; `false` is refused). Stage 6 is unchanged: with `false` the adaptive stage runs without `--sandwich` (its sandwich payload contract checks both directions), and its zero-slice checks against $C$ verify the forward payload before round 1 and on the published circuit. Reaches gen as `STAGE2_REVERSE_CONTRACT=1` when kept in a guarded mode; manifest `preprocessing_reverse_contract`. |
+| `preprocessing.reverse_contract` | bool, `false` (guarded modes) | The stage-2 port guards. `false` (the default since recipe v14, RC 2026-11-01): forward payload only: the opening guard covers all data wires (same gate count; its Feistel rounds alternate halves), there is no closing guard and no reverse verification; the band seed and reseed stay at both ends. `true`: both junk-half guards; reversed, the circuit still carries $D^{-1}$ of its input on wires $n..2n$ and gen verifies it. nonlinear291 has no guards (`true`; `false` is refused). With `false` the adaptive stage 6 runs with `--forward-only`: its sandwich payload contract (before round 1 and on the published circuit) checks the forward direction only (`check.payload_directions=forward` in `adaptive.report`). Reaches gen as `STAGE2_REVERSE_CONTRACT=1` when kept in a guarded mode; manifest `preprocessing_reverse_contract`. |
 | `preprocessing.preset` | string, `"L8"` (embedded-masking only) | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
 | `preprocessing.mask_pair_wires` | integer, custom only | Band wires per mask, `2..64` (base 2). |
 | `preprocessing.max_open_masks` | integer, custom only | Open-mask cap, `2..64` (base 3). |
@@ -740,9 +740,9 @@ Two settings act on the outer blocks and the compute's start since recipe
 v14. `preprocessing.reverse_contract` chooses the port guards: `false` (the
 default in the guarded modes) makes the opening guard cover all data wires
 with the same gate count and drops the closing guard, keeping the forward
-payload only (gen skips the reverse verification; the unchanged adaptive
-stage 6 then runs without `--sandwich`, its zero-slice checks against $C$
-verifying the forward payload); `true` keeps both junk-half guards, so the
+payload only (gen skips the reverse verification, and the adaptive stage 6
+runs with `--forward-only`, checking the sandwich payload contract forward
+only); `true` keeps both junk-half guards, so the
 reversed circuit still carries $D^{-1}$ of its input on wires $n..2n$ (gen
 verifies it). The band seed and reseed are emitted at both ends either way. `three_mask.pregrow` rewrites the serving half of the band `warmup`
 times before the first masks reference it.

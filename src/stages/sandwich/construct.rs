@@ -59,11 +59,14 @@ pub fn sandwich_default_m(n: usize) -> usize {
     ((n as f64) * l * l).round().max(n as f64) as usize
 }
 
-/// Default size t of the V gadget's random circuit (RC 2026-11-01): one gate,
-/// so V V* is nearly empty and the gadget is in effect the nonlinear copy in
-/// groups of three with its register-only recovery. Larger V (the trials ran
-/// t = n log2 n / 2 and n log2 n) waits for the degree-2 midpoint search.
-pub const DEFAULT_V_GATES: usize = 1;
+/// Default size t of the V gadget's random circuit (RC 2026-11-01): t = n,
+/// a low count. The degree-2 payload replicas came back after ANF packing and
+/// resynthesis even with three masks, so V must scramble the register; t = 1
+/// was too optimistic, and the trials' n log2 n / 2 and n log2 n wait for the
+/// degree-2 midpoint search.
+pub fn sandwich_default_v(n: usize) -> usize {
+    n
+}
 
 /// The stage-1 shape knobs (RC, 2026-11-01; docs/notes/stage2_interleaving_20261101.md):
 /// whether the slice blocks are interleaved with C and D, how random
@@ -93,17 +96,15 @@ impl SandwichShape {
         v_gates: 0,
     };
 
-    /// The defaults (RC 2026-11-01): no slicing, fully random sequences
-    /// (`layer` 1) and the V gadget with [`DEFAULT_V_GATES`] = 1 gate.
-    pub const DEFAULT: SandwichShape = SandwichShape {
-        slicing: false,
-        layer: 1,
-        v_gates: DEFAULT_V_GATES,
-    };
-
-    /// [`Self::DEFAULT`] (the same for every `n`).
-    pub fn default_for(_n: usize) -> Self {
-        Self::DEFAULT
+    /// The defaults for `n` source wires (RC 2026-11-01): no slicing, fully
+    /// random sequences (`layer` 1) and the V gadget with
+    /// [`sandwich_default_v`] = n gates.
+    pub fn default_for(n: usize) -> Self {
+        SandwichShape {
+            slicing: false,
+            layer: 1,
+            v_gates: sandwich_default_v(n),
+        }
     }
 
     /// The constraints [`construct_shaped_sandwich`] relies on.

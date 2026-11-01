@@ -78,9 +78,9 @@ wires = 128  # integer 3..4095 (stage 6: at most 256); logical wires of C
 #                  # with them V and the copy preserve zero, so S2 stays dead in reverse
 # layer = 1  # integer 1..n/3: sample the random C, D and V in layers of this many
 #            # wire-disjoint gates (1 = the fully random sequence)
-# v_gates = 1  # integer; 1 (default, RC 2026-11-01) = the triples copy with a one-gate V;
-#              # 0 = no V gadget (the N column of n copy CNOTs); nonlinear291 takes the
-#              # gadget only with slicing
+# v_gates = 128  # integer; omit for the default n (RC 2026-11-01): V of n random gates after
+#                # the triples copy; 0 = no V gadget (the N column of n copy CNOTs);
+#                # nonlinear291 takes the gadget only with slicing
 # slicing = true and v_gates = 0 together are the stage 1 of recipe v13 and earlier.
 
 [database]
@@ -96,7 +96,7 @@ mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear2
 # reverse_contract = false  # bool; default false in the guarded modes (RC 2026-11-01): forward
 #                           # payload only, the opening guard covers all data wires (same gate
 #                           # count), no closing guard, no reverse check; the adaptive stage 6 then
-#                           # runs without --sandwich (its zero-slice checks against C remain).
+#                           # checks the payload contract forward only (--forward-only).
 #                           # true keeps both junk-half guards and the reverse payload.
 #                           # nonlinear291 has no guards (true; false refused)
 # preset = "L8"  # embedded-masking only: "L8" (recommended), "A" (no bounded chains) or "custom"

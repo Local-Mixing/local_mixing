@@ -76,8 +76,7 @@ where
         slicing: parse_bool(raw, "sandwich_slicing", sd.slicing)?,
         layer,
         v_gates: parse_optional_u64(raw, "sandwich_v_gates", 0, 1_000_000_000)?
-            .map(|v| v.parse().expect("validated"))
-            .unwrap_or(sd.v_gates),
+            .map(|v| v.parse().expect("validated")),
     };
     // preprocessing.reverse_contract: the port guards of the guarded modes;
     // unset = no reverse contract there (RC 2026-11-01), kept in nonlinear291

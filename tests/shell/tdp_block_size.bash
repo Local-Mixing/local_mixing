@@ -78,7 +78,7 @@ run_case six --crossing-target-size-factor 2.5 --crossing-width-penalty-base 4 -
 # ... and in the adaptive mode (the default), with its knobs set
 run_case adaptive --crossing-target-size-factor 2.5 --threads 2 --adaptive-max-rounds 4 --adaptive-seeds-per-block 1 \
   --adaptive-stop-fraction 0.01 --adaptive-accept smaller --adaptive-no-canonical-order --preprocessing-reverse-contract 1
-# ... and on the default forward-only stage 2 (stage 6 unchanged, called without --sandwich)
+# ... and on the default forward-only stage 2 (the payload contract checked forward only)
 run_case adaptive_fwd
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 python3 -I - "$tmp" <<'PY'
@@ -184,11 +184,13 @@ marker = (root / 'adaptive' / 'delivery.recipe').read_text()
 assert 'delivery_mode=adaptive\n' in marker and 'adaptive_params=--max-rounds 4 --stop-fraction 0.01 --seeds-per-block 1 --accept smaller --no-canonical-order\n' in marker, marker
 calls = [json.loads(l) for l in (root / 'adaptive_fwd.calls').read_text().splitlines()]
 ad = next(c['args'] for c in calls if c['name'] == 'tdp_adaptive')
-assert '--sandwich' not in ad and '--forward-only' not in ad, ad
+assert '--sandwich' in ad and '--forward-only' in ad, ad
 gen = next(c for c in calls if c['name'] == 'gen_sandwich_gadget')
 assert 'STAGE2_REVERSE_CONTRACT' not in gen['env'], gen['env']
 assert 'adaptive_params=default\n' in (root / 'adaptive_fwd' / 'delivery.recipe').read_text()
-gen = next(c for c in [json.loads(l) for l in (root / 'adaptive.calls').read_text().splitlines()] if c['name'] == 'gen_sandwich_gadget')
+calls = [json.loads(l) for l in (root / 'adaptive.calls').read_text().splitlines()]
+assert '--forward-only' not in next(c['args'] for c in calls if c['name'] == 'tdp_adaptive')
+gen = next(c for c in calls if c['name'] == 'gen_sandwich_gadget')
 assert gen['env'].get('STAGE2_REVERSE_CONTRACT') == '1', gen['env']
 PY
 # Continuation must recognize every saved artifact and avoid another call.
