@@ -171,3 +171,32 @@ With a layered C and slice gates in idle slots, the n = 64 block width goes from
 the span of a pinned fire (width times fire length) doubles to ~5,000 stage-2 gates and a
 250-gate window holds ~20 fires; stage 2 then needs 16 lanes (`band_wires = 256`) and the
 migration group follows.
+
+## Stage-2 concurrency bounds and the band width
+
+Independently of stage 1, two stage-2 mechanisms bound the fires in flight, both set by the band
+width: the helper lanes (reserve = band/4, four growth-free wires per lane, so lanes = band/16:
+8 at a 128-wire band, 16 at 256; fires sharing a lane are ordered through its dirty helpers, and
+the window holds at most about "lanes plus two" fires) and the migration group (one migrating
+fire per lane cycle, a barrier for the coordinates it moves, worth about 15 % of concurrency).
+Measured fires per 250-gate window: n = 64, band 128: 9.6 (group 8), 10.7 (group 32), 11.2 (no
+migration; the sandwich width is 11); band 256 with 16 lanes: 10.4. n = 128, band 256: 11.1
+(group 8), 13.1 (group 16, default), 14.3 (32), 15.5 (none; sandwich width ~19, so the 16 lanes
+bind). Switching the migration off (relying on stage 3's twists for wire hopping) lifts the
+barrier but adds no lanes: the migration never holds band wires beyond a fire box.
+
+Widening the band buys lanes (band/16) and, second-order, more serving coordinates (half the
+band: fewer mask references per coordinate, a larger mask vocabulary) and a larger growing pool;
+it does not shorten the coordinate lifetime (budget-bound). It costs width in every later stage
+(the adaptive census per cut, the planner's ANF, stage 6's 1,024-wire cap: band <= 512 at
+n = 256), about five ingress gates per extra wire, and growth diluted over more wires (scale the
+8 growth gates per fire with the band, ~5 % of gates per 128 wires, to keep the coordinates'
+degree); the reserve cap of 64 wires in the code must be lifted beyond 16 lanes. Recommendation:
+lanes matched to the sandwich width, about 16 band wires per lane, and no wider:
+
+| configuration | sandwich width | band | lanes |
+|---|---|---|---|
+| n = 64, random C (today) | 11 | 128 (keep) | 8 |
+| n = 64, layered C with slice gates in idle slots | ~22 | 256 to 384 | 16 to 24 |
+| n = 128, random C | ~19 | 256 to 384 | 16 to 24 |
+| n = 128, layered C | ~40 | 512 to 640 | 32 to 40 |
