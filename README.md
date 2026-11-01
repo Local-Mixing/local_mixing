@@ -190,7 +190,7 @@ execute together.
 `run.rerun_from_stage` deliberately recomputes that stage and the later stages
 the invocation reaches. It does not permit changing a recorded recipe.
 
-New runs record recipe v12 in `tdp_command.conf`, including the resolved
+New runs record recipe v14 in `tdp_command.conf`, including the resolved
 recipe and driver/executable fingerprints (never a seed or a hash of $C$). Managed continuation reuses the exact
 recorded stage binaries and skips rebuilding them. Preserve their build
 directory; use a fresh run directory after changing recipe settings or stage

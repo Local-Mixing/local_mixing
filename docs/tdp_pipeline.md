@@ -11,13 +11,13 @@ uniformly at random, or with RC's balanced construction
 (`source.construction = "balanced"`: every internal value of $C$ is read
 exactly twice as a control, write counts within one of each other). What
 the pipeline then mixes is not $C$ itself but a specific circuit structure
-built around it: the sliced sandwich on $2n$ wires (stage 1) and the
+built around it: the sandwich on $2n$ wires (stage 1) and the
 masked construction on $4n$ wires (stage 2: embedded masking, or the
 three-mask compute inside the same outer blocks), to which stages 3-6 apply.
 
 | Stage | What it does | Runs as | Output |
 | --- | --- | --- | --- |
-| 1. Sandwich | Classic sliced sandwich around $C$ on $2n$ wires; $C$ random, balanced, or supplied | `gen_sandwich_gadget` (with stage 2) | `tdp.mpmct1.sandwich.mpmct1`, `tdp.mpmct1.source_c.g57` |
+| 1. Sandwich | Classic sandwich around $C$ on $2n$ wires: $C$, a nonlinear copy of its outputs into the register re-encoded by the V gadget, and a random $D$ (recipe v14; slice blocks optional, `[sandwich]`); $C$ random, balanced, or supplied | `gen_sandwich_gadget` (with stage 2) | `tdp.mpmct1.sandwich.mpmct1`, `tdp.mpmct1.source_c.g57` |
 | 2. Preprocessing | The three-mask compute (the default, `preprocessing.mode = "three-mask"`: each value carried as $d_i$ plus three cubic band monomials, rotating band banks, dirty-helper chains, differential refresh, persistent migration) inside the embedded-masking L8 outer blocks, on $2n + \max(2n, 128)$ wires; or embedded masking on $4n$ wires (`"embedded-masking"`: masked fires, band, guards, persistent carrier migration, preset L8) | `gen_sandwich_gadget` | `tdp.mpmct1` |
 | 3. Mixing | Database mixing with the regular frozen store | `circuit_mixer --tdp --db-mixing --p-db 1.0` | `db_mixing.mpmct1` |
 | 4. Splitting | Every complemented g57 gate split into plain conjunctions, joined to distant brackets through absorbed NOT twists, to exhaustion | `circuit_mixer --split --split-stop` | `split.mpmct1`, `split.state` |
@@ -26,10 +26,10 @@ three-mask compute inside the same outer blocks), to which stages 3-6 apply.
 | 6. Delivery, windowed mode (`delivery.mode = "windowed"`) | Packing (commuting reorder into ANF windows, repair, serialization), then unpacking with lattice refinement: every window resynthesized from its ANF alone, a window that does not resynthesize cut in two and both halves repacked and unpacked, the result concatenated and canonically reordered | `tdp_packing run`, then `tdp_unpacking run --refine` | `unpacking/unpacked.mpmct1` (the published circuit in this mode); internal: `packing/deliverable.tdp4` (the packer's lattice; the published object only under `delivery.anf_only`), `unpacking/deliverable.tdp4` (the refined lattice) |
 
 ```text
-C → sliced sandwich → three-mask | embedded masking → DB mixing → split → crossing walk → adaptive resynthesis
-       stage 1               stage 2                   stage 3     stage 4    stage 5      stage 6 (delivery, default)
-                                                                                           adaptive/round<r>/ (internal)
-                                                                                           → adaptive/final.mpmct1 (the TDP, published)
+C → sandwich → three-mask | embedded masking → DB mixing → split → crossing walk → adaptive resynthesis
+    stage 1           stage 2                   stage 3     stage 4    stage 5      stage 6 (delivery, default)
+                                                                                    adaptive/round<r>/ (internal)
+                                                                                    → adaptive/final.mpmct1 (the TDP, published)
      ... → crossing walk → packing → unpacking with refinement          stage 6, windowed mode (delivery.mode = "windowed")
                            packing/deliverable.tdp4 → unpacking/deliverable.tdp4 (internal) → unpacking/unpacked.mpmct1
 ```
@@ -59,19 +59,27 @@ and the windowed delivery was its only mode until recipe v13 (2026-10-26:
 the adaptive C-aware resynthesis validated by the server campaigns of
 October 2026 became the default; [ADAPTIVE_STAGE.md](ADAPTIVE_STAGE.md); the
 differences from the previous release: [PIPELINE_V2_CHANGES.md](PIPELINE_V2_CHANGES.md)).
+Recipe v14 (2026-11-01) made gen's new stage-1/2 policy the default: no
+slice blocks, the V gadget on the payload register, and the three-mask
+compute with wire turnover, fire interleaving (window 4096) and pre-growth;
+the old construction stays selectable (`[sandwich] slicing = true, v_gates =
+0`; `[three_mask] turnover = "bank", interleave = 0, pregrow = false`).
 A config of an earlier driver (`config_version = 3` or `4`, an `[unpacking]`
 table, `run.skip_stages` with a 7) is refused with a pointer; a `config_version
 = 4` recipe becomes a v5 one by setting `5` and, to keep the windowed
 delivery, `delivery.mode = "windowed"`.
 
 The managed `tdp_gen` command drives the stages. **With
-`preprocessing.mode = "embedded-masking"` the defaults of stages 1-3 and the
-windowed packer reproduce the chosen validation runs** (`val_chain.sh`
-CONFIG=L8, runs vL64a/b and vL128a/b): a managed run that sets only
-`source.wires` (64 or 128), that mode, `run.skip_stages = [4, 5]`,
-`delivery.mode = "windowed"` and `delivery.anf_only = true` produces, from
-the same seeds, byte-identical stage-2, stage-3, packed, repaired and
-deliverable artifacts. This is checked on the archived
+`preprocessing.mode = "embedded-masking"` and the legacy stage 1
+(`[sandwich] slicing = true, v_gates = 0`, gen's default until recipe v14)
+the defaults of stages 1-3 and the windowed packer reproduce the chosen
+validation runs** (`val_chain.sh` CONFIG=L8, runs vL64a/b and vL128a/b): a
+managed run that sets only `source.wires` (64 or 128), that mode and
+stage 1, `run.skip_stages = [4, 5]`, `delivery.mode = "windowed"` and
+`delivery.anf_only = true` produces, from the same seeds, byte-identical
+stage-2, stage-3, packed, repaired and deliverable artifacts (without the
+two `[sandwich]` keys it runs `val_chain.sh` itself on the same binaries,
+whose gen now builds the v14 stage 1). This is checked on the archived
 runs themselves (the historic anchor) and by a reproduction test against the
 reference script; see [docs/STAGE4_RUST_DESIGN.md](STAGE4_RUST_DESIGN.md) §2
 and §12 (written when packing was stage 4; its stage numbers are the
@@ -105,7 +113,8 @@ Further reading:
 - [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md): the three-mask stage 2 (the
   construction, its knobs, the parity with the campaign generator).
 - [PIPELINE_V2_CHANGES.md](PIPELINE_V2_CHANGES.md): what recipe v13 changed
-  against the previous release, setting by setting.
+  against the previous release, setting by setting, and what recipe v14
+  changed in stages 1 and 2.
 - [PIPELINE_INTRODUCTION.md](PIPELINE_INTRODUCTION.md): the pipeline from
   scratch, for a first-time reader.
 - [DELIVERY_STAGE.md](DELIVERY_STAGE.md): the windowed delivery (the decision,
@@ -141,9 +150,10 @@ For first-time setup and the circuit utilities, start with the
 **The managed driver** (`tdp_gen`) is the supported entry point. It reads a
 TOML recipe (config v5), builds and fingerprints the five stage binaries,
 draws the seeds into the private `$RUN/SEEDS`, records a manifest (recipe
-v13), and resumes runs safely. Its defaults are the recommended
-configuration: a random $C$, the three-mask stage 2 in its campaign
-configuration, stage-3 schedule `validated`, stages 4 and 5 on, and the
+v14), and resumes runs safely. Its defaults are the recommended
+configuration: a random $C$ in the sandwich with the V gadget and no slice
+blocks, the three-mask stage 2 in its campaign configuration with wire
+turnover, fire interleaving and pre-growth, stage-3 schedule `validated`, stages 4 and 5 on, and the
 adaptive stage 6 run to its plateau
 (two synthesizer seeds per block, 60/120/240 s per block by size, the 2 %
 two-round stop rule); the windowed mode keeps its defaults (the packer at G =
@@ -263,7 +273,7 @@ stage 6 was the windowed delivery: set `5`, and set `delivery.mode =
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `config_version` | integer, required `5` | TOML schema identifier, separate from the saved recipe v13. `1`, `2`, `3` and `4` are rejected with migration messages. |
+| `config_version` | integer, required `5` | TOML schema identifier, separate from the saved recipe v14. `1`, `2`, `3` and `4` are rejected with migration messages. Recipe v14 kept schema 5: its new keys are optional, but a v5 file without them now gets the v14 stage-1/2 defaults ([PIPELINE_V2_CHANGES.md](PIPELINE_V2_CHANGES.md), "Recipe v14"). |
 | `run.directory` | string, generated directory under `runs/` | Output directory and continuation target. Omit for a fresh timestamped run; select the same directory to continue it. Within the repository it must be a dedicated subdirectory of `runs/`; dedicated external directories are also allowed. It must not overlap build or database directories. |
 | `run.build_binaries` | bool, `true` | Build `gen_sandwich_gadget`, `circuit_mixer`, `tdp_adaptive`, `tdp_packing` and `tdp_unpacking` for a fresh run, plus `hmap_affine` (`--features security-tools`, a separate cargo build whose failure also aborts the run) for the report-only stage-2 span check. `false` requires them under the resolved build directory. |
 | `run.build_directory` | string, `CARGO_TARGET_DIR` or `target` | Cargo artifact directory; stage binaries come from its host-target `release/` directory. |
@@ -276,17 +286,22 @@ stage 6 was the windowed delivery: set `5`, and set `delivery.mode =
 Lifecycle options (stop/rerun stage, threads, build selection) do not change
 the recipe. Everything else, `run.skip_stages` included, is recorded in
 `tdp_command.conf`; changing it requires a fresh run. The manifest starts
-with `tdp_command_recipe=13` (recipe v12 runs, the previous six-stage
-driver's, v11 runs, the seven-stage driver's, v10 runs, the four-stage
-driver's, and v9 runs are refused: resume them with the checkout that
-created them); `stage12.recipe` uses `tdp_stage12_recipe=8`.
+with `tdp_command_recipe=14` (recipe v13 runs, whose stage-1/2 defaults
+were the slice blocks, the N column and the bank turnover, v12 runs, the
+previous six-stage driver's, v11 runs, the seven-stage driver's, v10 runs,
+the four-stage driver's, and v9 runs are refused: resume them with the
+checkout that created them); `stage12.recipe` uses `tdp_stage12_recipe=9`
+(adds `sandwich_slicing=`, `sandwich_layer=`, `sandwich_v_gates=`,
+`preprocessing_reverse_contract=` and `three_mask_pregrow=`).
 
 The manifest's `pinned_recipe` names the validated chain the run reproduces,
 `val_chain-L8-20261007` or `val_chain-A-20261007`, and is `none` for anything
 else. It requires every recipe setting of that chain (a random generated
 source, embedded masking with preset L8 or A, the validated |C|, schedule
-`validated` in one piece, no leakage repair, default packing, stages 4 and 5
-off and the windowed stage 6 ending after the packer's deliverable:
+`validated` in one piece, no leakage repair, default packing, the legacy
+stage 1 (`sandwich.slicing = true`, `sandwich.v_gates = 0`, `sandwich.layer =
+1`) with both port guards (`preprocessing.reverse_contract = true`), stages 4
+and 5 off and the windowed stage 6 ending after the packer's deliverable:
 `run.skip_stages = [4, 5]`, `delivery.mode = "windowed"` and
 `delivery.anf_only = true`; the then-unused unpacking parameters do not
 matter) **and** stage 3
@@ -307,6 +322,26 @@ that of `frozen_m1_m11`, and `FROZEN_FILTER=1` on a store without
 | `source.path` | string, unset | Supply $C$ as a nonempty circuit in the g57 file form instead of generating it (any reversible gates with up to two controls, written as `a ^= x ∨ ¬y`; the route to a $C$ with more than 64 bits of entropy, §13.1 of the design). Exclusive with the balanced construction. |
 | `source.construction` | string, `"random"` | How a generated $C$ is drawn from the gen seed: `"random"` (uniformly random g57 gates, `random_circuit`) or `"balanced"` (RC's balanced construction, `stages::sandwich::balanced_source`: every internal value of $C$ is read exactly twice as a control, no value more than twice, targets always among the least-written wires; a constrained random sampler with rejection of immediate dead ends, bit-exact with the Python reference that built the campaign's balanced $C$, audited before use). Exposure of $C$'s values through the pipeline is per control read, so the balanced $C$ redistributes it: no value is read-free, none is read more than twice ([notes/c_design_exposure_20261021.md](notes/c_design_exposure_20261021.md)). Recorded in the manifest and in `stage12.recipe`; reaches gen as `TDP_SOURCE_CONSTRUCTION`. |
 
+### Sandwich (stage 1, `[sandwich]`)
+
+The shape of the classic sandwich around $C$ (gen's `SandwichShape`,
+`SANDWICH_*`; RC, 2026-11-01). The defaults are gen's since recipe v14; the
+validated runs' stage 1 is `slicing = true`, `v_gates = 0`.
+
+| Setting | Type and default | What it changes and constraints |
+| --- | --- | --- |
+| `sandwich.slicing` | bool, `false` | `true` interleaves the slice blocks $S_1$ (with $C$) and $S_2$ (with $D$), $s = \max(n, \mathrm{round}(n\log_2 n))$ gates each. With them the V gadget and its copy preserve zero ($V$ of positive conjunctions, the copy's selector-zero branches positive), so $S_2$ stays dead in reverse. |
+| `sandwich.layer` | integer, `1` | Sample the random $C$ (generated with `construction = "random"`), $D$ and V in layers of $w$ = `layer` wire-disjoint gates ($3w$ distinct wires; 1 = the fully random sequence); `1..n/3`. A supplied or balanced $C$ is unchanged. |
+| `sandwich.v_gates` | integer, auto | Gates of the V gadget's random circuit; omitted = auto, $\mathrm{round}(n\log_2 n)$ (384 at n=64, 896 at n=128); `0` = no gadget (the N column of $n$ copy CNOTs). The gadget needs the classic sandwich (the only one the driver builds). nonlinear291 takes it only with `slicing = true` (its templates cover the zero-preserving copy only); the driver refuses the other combination. |
+
+Every value is recorded in the manifest (`sandwich_params=default|legacy|custom`,
+`sandwich_slicing`, `sandwich_layer`, `sandwich_v_gates` with auto resolved)
+and in `stage12.recipe`; a value reaches gen (`SANDWICH_SLICING`,
+`SANDWICH_LAYER`, `SANDWICH_V_GATES`, driver class) only when it differs from
+gen's default, so an explicit `v_gates` equal to the auto value is the same
+recipe. The bash driver also checks that gen's banner reports the shape it
+asked for (`slicing= layer= v_gates= reverse_contract=`).
+
 ### Frozen replacement stores
 
 | Setting | Type and default | What it changes and constraints |
@@ -319,7 +354,8 @@ that of `frozen_m1_m11`, and `FROZEN_FILTER=1` on a store without
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
-| `preprocessing.mode` | string, `"three-mask"` | `"three-mask"` (the default: the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)), `"embedded-masking"` (preset L8 by default, the validated chain's stage 2) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·(2\|C\| + 2s + n) + 29 wires: 3,677 at n=16, \|C\|=64), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
+| `preprocessing.mode` | string, `"three-mask"` | `"three-mask"` (the default: the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)), `"embedded-masking"` (preset L8 by default, the validated chain's stage 2) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·\|sandwich\| + 29 wires; the legacy sandwich has 2\|C\| + 2s + n gates: 3,677 wires at n=16, \|C\|=64; with the V gadget the driver takes the largest count its drawn recovery can reach), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
+| `preprocessing.reverse_contract` | bool, `true` | The stage-2 port guards. `true`: both junk-half guards; reversed, the circuit still carries $D^{-1}$ of its input on wires $n..2n$ and gen verifies it. `false`: forward payload only: the opening guard covers all data wires (same gate count; its Feistel rounds alternate halves), there is no closing guard and no reverse verification. Guarded modes only (refused with nonlinear291), and refused with the adaptive stage 6, whose fail-fast payload contract checks the stage-5 circuit against the sandwich in both directions: use `delivery.mode = "windowed"`, or skip or stop before stage 6. Reaches gen as `STAGE2_REVERSE_CONTRACT=0`; manifest `preprocessing_reverse_contract`. |
 | `preprocessing.preset` | string, `"L8"` (embedded-masking only) | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
 | `preprocessing.mask_pair_wires` | integer, custom only | Band wires per mask, `2..64` (base 2). |
 | `preprocessing.max_open_masks` | integer, custom only | Open-mask cap, `2..64` (base 3). |
@@ -346,21 +382,25 @@ band wires, the band is divided into banks that rotate through serving,
 retiring and growing phases, every source gate fires through a dirty-helper
 chain over the band, masks are refreshed differentially, and the carriers
 migrate persistently ([THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)). The
-defaults below are the campaign configuration "three-mask modified / v2"
-(random helpers, unique cover); any key is an error under another mode.
+defaults below are gen's (`ThreeMaskParams::v3`, recipe v14): the campaign
+configuration "three-mask modified / v2" (random helpers, unique cover) with
+wire turnover, fire interleaving in a 4096-gate window and pre-growth
+(recipe v13's defaults: `turnover = "bank"`, `interleave = 0`, `pregrow =
+false`); any key is an error under another mode.
 
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `three_mask.band_wires` | integer, `0` | Band width; `0` = auto: the larger of $2n$ and 128, rounded up to a multiple of 32 (a 64-wire band cannot host 64 data roles with three masks each; a multiple of 32 keeps the auto bank count even). Else at least $2n$ (the band the outer blocks seed) and a multiple of 16 that the bank count divides into even banks of at least 8 wires (a multiple of 32 under `banks = 0`); when stage 6 runs, $2n + r \le 1024$. The resolved geometry is checked before the run starts. When it exceeds $2n$ the extra wires get a reversible XOR ingress from the seeded $2n$-wire prefix. |
-| `three_mask.banks` | integer, `0` | Band banks; `0` = auto: banks of 16 wires (`band_wires / 16`: 8 at n=64, 16 at n=128, the design's geometry), else even and at least 4 with an even bank size of at least 8. |
+| `three_mask.banks` | integer, `0` | Band banks; `0` = auto: banks of 16 wires (`band_wires / 16`: 8 at n=64, 16 at n=128, the design's geometry), else even and at least 4 with an even bank size of at least 8; explicit banks need `turnover = "bank"`. |
 | `three_mask.retire_budget` | integer, `2` | Mask replacements per fire that drain retiring banks. |
 | `three_mask.max_retiring` | integer, `0` | Banks retiring at once; `0` = auto (half the banks minus one), else below half the banks. |
 | `three_mask.rotation`, `three_mask.maturity` | integers, `1`, `2` | Promotion check interval (fires; 0 = never) and the growth sweeps a bank needs before promotion. |
 | `three_mask.visit_sweeps`, `three_mask.growth`, `three_mask.warmup` | integers, `2`, `8`, `4` | Growth sweeps per bank visit, growth gates per fire, warm-up sweeps before the first fire. |
 | `three_mask.segments` | integer, `6` | Persistent carrier migration segments per fire box (0 = off). |
 | `three_mask.mask_count` | integer, `3` | Persistent masks per value, `1..3`. |
-| `three_mask.turnover` | string, `"bank"` | `"wire"` turns band coordinates over per wire: masks stay local to promotion cohorts of 16 wires, a drained wire grows again at once instead of waiting for its bank-mates, and cohorts form from any mature growing wires (`banks` must be 0; `max_retiring` counts cohorts). Same gates per fire; the coordinate lifetime is still set by `retire_budget`. |
-| `three_mask.interleave` | integer, `0` | Fire interleaving window in gates (`0` = off): a dependency-preserving random reordering of the finished compute in which no gate runs more than this far ahead of the earliest gate still waiting, so narrow windows hold fragments of many fires instead of one whole fire. Function-preserving; no gates added. Nonzero also makes the mask refresh leave band coordinates read-only, draws dirty helpers from per-fire lanes of a growth-free reserve, and migrates carriers in one fire per lane cycle only (every 8th fire at n = 64, every 16th at n = 128; fewer, not more, gates); see docs/THREE_MASK_STAGE2.md. |
+| `three_mask.turnover` | string, `"wire"` | `"wire"` turns band coordinates over per wire: masks stay local to promotion cohorts of 16 wires, a drained wire grows again at once instead of waiting for its bank-mates, and cohorts form from any mature growing wires (`banks` must be 0, the band a multiple of 32, which the auto band always is; `max_retiring` counts cohorts and stays below half of them). Same gates per fire; the coordinate lifetime is still set by `retire_budget`. `"bank"` is the design's bank rotation. |
+| `three_mask.interleave` | integer, `4096` | Fire interleaving window in gates (`0` = off): a dependency-preserving random reordering of the finished compute in which no gate runs more than this far ahead of the earliest gate still waiting, so narrow windows hold fragments of many fires instead of one whole fire. Function-preserving; no gates added. Nonzero also makes the mask refresh leave band coordinates read-only, draws dirty helpers from per-fire lanes of a growth-free reserve, and migrates carriers in one fire per lane cycle only (every 8th fire at n = 64, every 16th at n = 128; fewer, not more, gates); see docs/THREE_MASK_STAGE2.md. |
+| `three_mask.pregrow` | bool, `true` | Pre-grow the serving half of the band before the first masks reference it: `warmup` rewrites per serving wire (two-control band gates), so the initial serving coordinates are not the raw band seed (the first serving banks carried it for 100-190 fires; [notes/stage2_interleaving_20261101.md](notes/stage2_interleaving_20261101.md), suggestion 2); the warm-up then grows the growing half as before. A few hundred gates. |
 | `three_mask.random_helpers`, `three_mask.unique_cover` | bools, `true`, `true` | The "modified / v2" levers: dirty helpers drawn from a shuffled pool of every reference-free band wire (instead of the first four wires of the lowest growing bank), and a temporary cover mask whose cubic label is never a live persistent label. `false` gives the generator's "as-is" variant. |
 
 Every effective value is recorded in the manifest (`three_mask_*`,
@@ -566,8 +606,8 @@ by a test) classifies every environment name the crate reads:
 
 | Class | Examples | An inherited value is |
 | --- | --- | --- |
-| recipe | `EMBEDDED_MASKING_SHUFFLING` … `CHAIN_LEN`, `K`, `MAX_OPEN`, `MIN_OPEN`, `BALANCED`; `THREE_MASK_BAND_WIRES` … `UNIQUE_COVER` | fatal (the preset / the `[three_mask]` table sets them) |
-| driver | `FROZEN_FILTER`, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `TDP_SOURCE_C`, `TDP_SOURCE_CONSTRUCTION`, `MIXER_STOP_FLAG` | fatal (use the config field / flag) |
+| recipe | `EMBEDDED_MASKING_SHUFFLING` … `CHAIN_LEN`, `K`, `MAX_OPEN`, `MIN_OPEN`, `BALANCED`; `THREE_MASK_BAND_WIRES` … `UNIQUE_COVER`, `TURNOVER`, `INTERLEAVE`, `PREGROW` | fatal (the preset / the `[three_mask]` table sets them) |
+| driver | `FROZEN_FILTER`, `FROZEN_REGULAR_VALUE_CONVENTION`, `SANDWICH_VARIANT`, `SANDWICH_SLICING`, `SANDWICH_LAYER`, `SANDWICH_V_GATES`, `STAGE2_REVERSE_CONTRACT`, `TDP_SOURCE_C`, `TDP_SOURCE_CONSTRUCTION`, `MIXER_STOP_FLAG` | fatal (use the config field / flag) |
 | input | `FROZEN_DB_DIR`, `TDP_BIN_DIR`, `TDP_GEN_ALLOW_EMPTY_STORE` | accepted |
 | neutral | `LOOKUP_CACHE_MB`, `CANON_CACHE_MB`, `XPOLY_CANON_CACHE_MB` | ignored with a note |
 | forbidden / diagnostic | every other `EMBEDDED_MASKING_*` and `THREE_MASK_*`, `SLICE_GUARD_LEGACY`, `MIXER_DB_LEN_BAND`, `MIXER_STOP_AT_*`, `TWIST_G57_*`, `MIN_DIR_LOOKUP`, `CANON_*_CAP`, `PROD_*`, `SAT_*`, `DB_QC*`, `BV5_*`, `FROZEN_CURATED_*` | fatal: `X is not honoured by the managed recipe; unset it (use flags/config)` |
@@ -586,9 +626,10 @@ The managed command reads configuration; the Bash driver takes flags (its
 | --- | --- |
 | `run.directory`, `run.skip_stages`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | `--run-directory DIR`, `--run-skip-stages 4,5`, `--run-stop-after-stage K`, `--run-rerun-from-stage K`, `--threads T` |
 | `source.wires`, `source.gates`, `source.gates_rule`, `source.path`, `source.construction` | `--source-wires N`, `--source-gates M` (`-m`), `--source-gates-rule formula`, `--source-path P`, `--source-construction random\|balanced` |
-| `preprocessing.mode`, `preprocessing.preset` | `--preprocessing-mode M`, `--preprocessing-preset L8\|A\|custom` |
+| `sandwich.slicing`, `sandwich.layer`, `sandwich.v_gates` | `--sandwich-slicing 0\|1`, `--sandwich-layer W`, `--sandwich-v-gates N\|auto` |
+| `preprocessing.mode`, `preprocessing.preset`, `preprocessing.reverse_contract` | `--preprocessing-mode M`, `--preprocessing-preset L8\|A\|custom`, `--preprocessing-reverse-contract 0\|1` |
 | custom knobs | `--preprocessing-{mask-pair-wires,max-open-masks,min-open-masks,balanced-masks,shuffling-segments,shuffling-return-home,premask,seed-avoid-c1,chain,chain-len} V` |
-| `three_mask.*` | `--three-mask-{band-wires,banks,retire-budget,max-retiring,rotation,maturity,visit-sweeps,growth,warmup,segments,mask-count,random-helpers,unique-cover,turnover,interleave} V` |
+| `three_mask.*` | `--three-mask-{band-wires,banks,retire-budget,max-retiring,rotation,maturity,visit-sweeps,growth,warmup,segments,mask-count,random-helpers,unique-cover,turnover,interleave,pregrow} V` |
 | `db_mixing.*` | `--db-mixing-schedule custom`, `--db-mixing-growth-work-units`, `--db-mixing-hold-work-units`, `--db-mixing-target-size-factor` |
 | `database.lookup_miss_filter` | `--database-lookup-miss-filter auto\|on\|off` |
 | `crossing.*` | `--crossing-target-size-factor R`, `--crossing-width-penalty-base B`, `--crossing-width-penalty-threshold C`, `--crossing-size-tolerance-divisor D`, `--crossing-move-budget-factor F`, `--crossing-move-attempts M` |
@@ -615,21 +656,49 @@ the first `bash` on `PATH` that is 5.1 or newer, then
 `/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, `/bin/bash`,
 `/usr/bin/bash`; with none it stops naming every bash it found.
 
-## Stage 1: the sliced sandwich
+## Stage 1: the sandwich
 
-We put $C$ inside a circuit on $2n$ wires. In execution order, the classic
-sandwich is
+We put $C$ inside a circuit on $2n$ wires: the low half $x$ (wires $0..n$)
+and the register $y$ ($n..2n$). Since recipe v14 the classic sandwich is, in
+execution order,
 
 $$
-[C\text{ interleaved with }S_1]\ ;\ N\ ;\
-[D\text{ interleaved with }S_2].
+C\ ;\ \mathrm{copy}\ ;\ [D \text{ beside } V,\ V^{*},\ \mathrm{recovery}].
 $$
 
-$D$ is a separately sampled circuit, $N$ copies the first half into the second
-with CNOTs, and the slice blocks $S_1,S_2$ use the second half as controls.
-On inputs $(x,0^n)$, the second output half is $C(x)$; the first half may
-contain junk. We also move the copy CNOTs through gates they commute with so
-they do not remain in one obvious column.
+The **V gadget** (`sandwich.v_gates`, default $t = \mathrm{round}(n\log_2 n)$):
+the copy writes a nonlinear bijection of $C$'s outputs into the register in
+groups of three wires (the last group takes the remainder, 3 to 5 wires):
+each register wire receives a balanced degree-2 function of three of its
+group's values, realized by two two-control conjunctions (a multiplexer on
+the group's selector; no CNOT, never a single value in the clear); $V$ is $t$
+random gates on the register and $V^{*}$ its inverse, run beside $D$, which
+junks the low half; then the register's own inverse of the copy (one CNOT,
+polarity corrections and controlled swaps per group) restores $C(x)$. On
+inputs $(x,0^n)$ the register ends holding $C(x)$; between $V$ and $V^{*}$ it
+holds $V(\mathrm{copy}(C(x)))$, so no degree-2 replica of the payload sits at
+the midpoint. The copy gates float backward into $C$ as far as commutation
+allows (they cannot pass $V$). `sandwich.v_gates = 0` is the classic **N
+column** instead: $n$ CNOTs $y_i \mathrel{\oplus}= x_i$, floated through the
+gates they commute with.
+
+**Slicing** (`sandwich.slicing`, default off since v14) interleaves the slice
+blocks $S_1$ with $C$ and $S_2$ with $D$: $s$ gates each, every one targeting
+the low half and reading a register wire, so each block is the identity
+while the register is zero. With slicing on, $V$ and the copy preserve zero
+($V$ of positive conjunctions, the copy's selector-zero branches positive),
+so $S_2$ stays dead in reverse; this and the N
+column are the construction of recipes v13 and earlier
+(`slicing = true`, `v_gates = 0`, gate for gate the same circuit for the same
+seed). **Layered sampling** (`sandwich.layer = w`) draws the random $C$, $D$
+and $V$ as layers of $w$ wire-disjoint gates on $3w$ distinct wires (default
+1, the fully random sequence), which widens their dependency width (a
+random C has width 9 at n = 64, a layered one 17 to 21).
+
+Reversed on $(a, 0^n)$ the register carries the copy's bijection of
+$D^{-1}(a)$ (shifted by its value at zero), not $C^{-1}$. Gen prints the
+parts (`sandwich parts: C + S1 + copy (groups) + V + V* + recovery + D +
+S2`) and the dependency depth next to $C$'s.
 
 $C$ itself is supplied (`source.path`) or generated from the gen seed:
 uniformly random g57 gates, or RC's balanced construction
@@ -639,7 +708,8 @@ control reads, never more, with the targets always among the least-written
 wires; it rejects choices that would leave no legal target for the next gate
 and audits the result). Read
 [src/stages/sandwich/construct.rs](../src/stages/sandwich/construct.rs),
-starting with `prepare_source`, `construct_seeded_sandwich`, and
+starting with `prepare_source_layered`, `construct_shaped_sandwich`
+(`SandwichShape`), `v_gadget_sandwich`, `group_copy` and
 `sliced_sandwich_cnot`.
 
 ## Stage 2: preprocessing (three-mask or embedded masking)
@@ -650,11 +720,13 @@ wire per sandwich value, taking us from $2n$ to $4n$ physical wires, and
 surrounds the masked computation with slice guards and input-derived band
 seed/reseed blocks. The three-mask mode (`"three-mask"`, the default since
 recipe v13) keeps those outer blocks and replaces the masked computation: every value is carried as its
-data bit plus three cubic monomials of band wires, the band is organized in
-banks that rotate through serving, retiring and growing phases (a growing
-bank is rewritten by random Toffolis until it is promoted; a retiring bank
-drains as its masks are replaced), every source gate fires through a
-dirty-helper chain over the band, and the carriers migrate persistently; at
+data bit plus three cubic monomials of band wires, band coordinates pass
+through serving, retiring and growing phases (a growing coordinate is
+rewritten by random Toffolis until it is promoted; a retiring one drains as
+its masks are replaced; since recipe v14 per wire, in promotion cohorts of
+16, with `turnover = "bank"` per bank), every source gate fires through a
+dirty-helper chain over the band, the finished compute is interleaved in a
+4096-gate window (since v14), and the carriers migrate persistently; at
 n=64 the compute is 35 % smaller than embedded masking's. The construction
 is in [src/stages/preprocessing/three_mask/](../src/stages/preprocessing/three_mask/)
 and described in [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md).
@@ -662,6 +734,16 @@ and described in [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md).
 At the end, on input $(x,0^n,0^{2n})$, wires $n,\ldots,2n-1$ contain $C(x)$.
 The remaining outputs are junk. The full circuit is reversible, but this is
 the public slice on which we ask it to reproduce the source computation.
+
+Two settings act on the outer blocks and the compute's start since recipe
+v14. `preprocessing.reverse_contract` chooses the port guards: `true` (the
+default) keeps both junk-half guards, so the reversed circuit still carries
+$D^{-1}$ of its input on wires $n..2n$ (gen verifies it); `false` makes the
+opening guard cover all data wires with the same gate count and drops the
+closing guard, keeping the forward payload only (gen skips the reverse
+verification; the adaptive stage 6, which checks both directions, refuses
+it). `three_mask.pregrow` rewrites the serving half of the band `warmup`
+times before the first masks reference it.
 
 Start at `preprocess_sandwich` in
 [src/stages/preprocessing/construct.rs](../src/stages/preprocessing/construct.rs).
@@ -1133,7 +1215,7 @@ managed presets of the same names set exactly its environment.
 Retired components and the earlier pipelines are recorded in
 [local_mixing_history.md](local_mixing_history.md) (and the archive
 inventories it links to); this manual describes only the current six
-stages. A run that records a recipe earlier than v13, or a mixer state file
+stages. A run that records a recipe earlier than v14, or a mixer state file
 of a format other than the current v6, is refused: resume it with the
 checkout that created it.
 

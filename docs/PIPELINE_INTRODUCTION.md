@@ -1,7 +1,9 @@
 # The TDP Pipeline: An Introduction
 
 *Release `ran/pipeline-v2` (recipe schema `config_version = 5`, saved recipe
-v13), October 2026. This is the entry point for a reader who has not seen the
+v13), October 2026; stages 1 and 2 updated for recipe v14 (2026-11-01: the V
+gadget without slice blocks, the three-mask compute with wire turnover,
+interleaving and pre-growth). This is the entry point for a reader who has not seen the
 pipeline before. The operational manual (`docs/tdp_pipeline.md`), the full
 reference (`docs/TDP_PIPELINE_REFERENCE.md`) and the design notes listed in
 section 6 hold the details and the evidence. Every number below is taken from
@@ -116,7 +118,7 @@ exposures in the census (§3, §5 of the same note).
 
 ```text
 C (n wires, g57)
- |  stage 1  sliced sandwich           gen_sandwich_gadget   tdp.mpmct1.sandwich.mpmct1  2n wires; 2,832 gates at n=64
+ |  stage 1  sandwich                  gen_sandwich_gadget   tdp.mpmct1.sandwich.mpmct1  2n wires; 2,832 gates at n=64 (v13)
  |  stage 2  preprocessing             (same process)        tdp.mpmct1                  4n wires; 777k (L8) / 505k (three-mask)
  |  stage 3  database mixing   [opt]   circuit_mixer         db_mixing.mpmct1            ~2x: 1.60M / 1.06M
  |  stage 4  splitting         [opt]   circuit_mixer         split.mpmct1 + split.state  ~1.9x: 3.02M / 1.89M
@@ -127,36 +129,54 @@ C (n wires, g57)
 
 Gate counts are the n = 64 campaign figures for the embedded-masking baseline
 and the three-mask modified arm
-(`docs/notes/stage2_stage6_campaign_20261021.md`). Every stage after the
+(`docs/notes/stage2_stage6_campaign_20261021.md`), made with recipe v13's
+stages 1-2 (slice blocks and the N column; bank turnover, no interleaving);
+the v14 sandwich has 2,983 to 3,069 gates at n = 64. Every stage after the
 first is optional (`run.skip_stages`); each stage reads the output of the
 last stage that ran (`docs/tdp_pipeline.md`). Stages 1 and 2 run in one
 process, `gen_sandwich_gadget`; `circuit_mixer` runs stages 3, 4 and 5 as
 three of its modes; stage 6 is its own binary.
 
-### 3.1 Stage 1: the sliced sandwich (2n wires)
+### 3.1 Stage 1: the sandwich (2n wires)
 
 Purpose: fix the problem shape (which inputs are free, which are pinned,
 where the answer appears) and remove the trivial "reverse the gate list"
 attack. It adds no hiding: on its slice the sandwich runs C gate by gate in
 the clear (`docs/TDP_PIPELINE_REFERENCE.md` §1).
 
-Construction (`docs/TDP_PIPELINE_REFERENCE.md` §1.4-1.5;
-`docs/local_mixing_documentation.md`, "The sliced sandwich"). With x the low
-half (wires 0..n) and y the high half (n..2n), in execution order
+Construction (`docs/tdp_pipeline.md`, "Stage 1"; `[sandwich]`; RC,
+2026-11-01, `docs/notes/stage2_interleaving_20261101.md`). With x the low
+half (wires 0..n) and y the high half, the register (n..2n), in execution
+order (recipe v14)
 
 ```text
-A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
+A = C ; copy ; [ D on the low half beside V, V*, recovery on the register ]
 ```
 
-D is an independently drawn random g57 circuit of C's size and design, N is
-the column of n CNOTs `y_i ^= x_i`, and the slice blocks S1 and S2 have
-s = max(n, round(n·log2 n)) gates each (384 at n = 64), every one of which
-targets the low half and reads exactly one y wire, so each block is the
-identity when y = 0. Forward on the slice, (x, 0) → (C(x), 0) → (C(x), C(x))
-→ (junk, C(x)); backward the high half carries D⁻¹(a). The copy CNOTs are
-floated through the gates they commute with so that they do not remain in
-one obvious column. |A| = |C| + |D| + 2s + n: 2,832 gates on 128 wires at
-n = 64, 7,920 on 256 wires at n = 128.
+D is an independently drawn random g57 circuit of C's size and design. The
+**V gadget** replaces the plain copy: the copy writes a nonlinear bijection
+of C's outputs into the register in groups of three wires, each register
+wire receiving a balanced degree-2 function of three of its group's values
+from two two-control conjunctions (never a single value on a wire); V is
+t = round(n·log2 n) random gates on the register (384 at n = 64) and V* its
+inverse, run beside D; the register's own inverse of the copy then restores
+C(x). Forward on the slice, (x, 0) → (C(x), 0) → (C(x), copy(C(x))) →
+(junk, V(copy(C(x)))) and, after V* and the recovery, (junk, C(x)); no
+degree-2 replica of the payload sits at the midpoint. Backward the register carries the copy's bijection of
+D⁻¹(a). The copy gates float backward into C as far as commutation allows.
+|A| = |C| + |D| + 2n + 2t + the recovery (3n − 5⌊n/3⌋ gates plus drawn
+polarity corrections): 2,983 to 3,069 gates on 128 wires at n = 64.
+
+Two options restore parts of the earlier construction. `slicing = true`
+interleaves the slice blocks S1 with C and S2 with D: s = max(n,
+round(n·log2 n)) gates each, every one targeting the low half and reading a
+y wire, so each block is the identity when y = 0 (V and the copy then
+preserve zero, keeping S2 dead in reverse). `v_gates = 0` is the N column of
+n CNOTs `y_i ^= x_i`. Both together are recipe v13's stage 1:
+|A| = |C| + |D| + 2s + n, 2,832 gates at n = 64, 7,920 at n = 128
+(`docs/TDP_PIPELINE_REFERENCE.md` §1.4-1.5). `layer = w` draws the random C,
+D and V as layers of w wire-disjoint gates (default 1), which roughly
+doubles their dependency width (17 to 21 against 9 for C at n = 64).
 
 ### 3.2 Stage 2: preprocessing (4n wires)
 
@@ -179,7 +199,13 @@ x (otherwise every mask would be a slice constant), the **reseed** does the
 same for the backward direction, and the two **slice guards** (20n gates
 each) are the identity exactly when the band is zero. At the end, on input
 (x, 0^n, 0^{2n}), wires n..2n hold C(x) and everything else is junk
-(`docs/tdp_pipeline.md`, "Stage 2").
+(`docs/tdp_pipeline.md`, "Stage 2"). The guards keep the **reverse
+contract**: each junks only the low half, so the reversed circuit still
+carries D⁻¹ of its input on wires n..2n. `preprocessing.reverse_contract =
+false` (recipe v14) drops it: the opening guard covers all data wires with
+the same gate count and there is no closing guard, so only the forward
+payload is kept (refused with the adaptive stage 6, which checks both
+directions).
 
 **Embedded masking** (`preprocessing.mode = "embedded-masking"`, preset
 `L8`; the default before recipe v13). Each data wire carries two or three open balanced
@@ -211,11 +237,17 @@ compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_
   cubic monomial in three band coordinates; a mask is a stored triple of
   band indices, not a register, and cubic labels are unique across roles.
 - The band (`band_wires = 0` = the larger of 2n and 128, rounded up to a
-  multiple of 32; `banks = 0` = banks of 16 wires: 8 at n = 64, 16 at
-  n = 128, the design's geometry) rotates its banks through **serving**
-  (supplying mask coordinates, never written), **retiring** (drained of
-  references) and **growing** (freely rewritten by 8 nonlinear growth gates
-  per fire) phases, so masks are a renewable supply.
+  multiple of 32) passes its coordinates through **serving** (supplying
+  mask coordinates, never written), **retiring** (drained of references)
+  and **growing** (freely rewritten by 8 nonlinear growth gates per fire)
+  phases, so masks are a renewable supply. Since recipe v14 the turnover is
+  per wire (`turnover = "wire"`): promotion cohorts of 16 wires take the
+  roles of the design's banks, and a drained wire grows again at once
+  instead of waiting for its bank-mates; `turnover = "bank"` keeps the
+  design's banks (`banks = 0` = banks of 16 wires: 8 at n = 64, 16 at
+  n = 128). **Pre-growth** (`pregrow`, on since v14) rewrites the serving
+  half `warmup` times before the first masks, so no mask starts on raw
+  band-seed coordinates.
 - A logical gate `x_t ^= x_u·x_v` is compiled without decoding its controls:
   `d_t ^= (d_u + S_u)(d_v + S_v)` expands to at most 16 products of up to six
   controls, each emitted as a non-restoring **dirty-helper chain** of 2k−3
@@ -230,8 +262,15 @@ compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_
   and the growth gates are emitted. A **persistent migration** pass (6
   segments) spreads target writes over physical carriers, and all masks are
   XORed out at the end of the compute.
+- Since recipe v14 the finished compute is **interleaved**
+  (`interleave = 4096`): a dependency-preserving random reordering in which
+  no gate runs more than 4,096 positions ahead of the earliest waiting gate,
+  so a 250-gate window holds pieces of 9.6 fires on average at n = 64
+  (2.4 without interleaving, where a fire is contiguous;
+  `docs/THREE_MASK_STAGE2.md`).
 
-The defaults are the campaign configuration "three-mask modified / v2":
+The defaults are the campaign configuration "three-mask modified / v2"
+(plus, since recipe v14, wire turnover, interleaving and pre-growth):
 `random_helpers = true` (helpers drawn from a shuffled pool per fire, which
 drops the share of band writes landing on the four busiest wires from
 14.8 % to 4.5 % at zero gate cost) and `unique_cover = true` (a cover whose
@@ -450,7 +489,8 @@ mode) are rejected before a run starts. The settings a first user touches:
 | setting | meaning |
 | --- | --- |
 | `source.wires`, `source.gates`, `source.construction`, `source.path` | n (3..4095; at most 256 when stage 6 runs), |C|, random/balanced, or a supplied C |
-| `preprocessing.mode`, `preprocessing.preset`, `[three_mask]` | `three-mask` (default) with its knobs, or `embedded-masking` (preset `L8`) |
+| `[sandwich]` | the stage-1 shape: `slicing`, `layer`, `v_gates` (the V gadget; `slicing = true` with `v_gates = 0` is recipe v13's stage 1) |
+| `preprocessing.mode`, `preprocessing.preset`, `[three_mask]` | `three-mask` (default) with its knobs, or `embedded-masking` (preset `L8`); `preprocessing.reverse_contract` |
 | `run.skip_stages`, `run.stop_after_stage`, `run.rerun_from_stage`, `run.threads` | stages 2..6 not run; where to stop; what to redo; thread pin |
 | `database.regular_dir` | the frozen store (required when stage 3 runs) |
 | `db_mixing.schedule`, `[crossing]` | `validated` or `custom`; the stage-5 target, penalty, temperature and budget |

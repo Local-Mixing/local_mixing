@@ -6,8 +6,10 @@ construction (design note
 `stage2_three_mask_design.md`, 2026-10-20; review
 [notes/three_mask_review_20261021.md](notes/three_mask_review_20261021.md)),
 in the configuration the server campaigns of October 2026 ran as
-"three-mask modified / v2". The outer blocks are embedded masking's, with the
-L8 parameters: the opening slice guard, the band seed, the compute, the band
+"three-mask modified / v2", since recipe v14 (2026-11-01) with per-wire
+turnover, fire interleaving in a 4096-gate window and pre-growth on top
+(gen's `ThreeMaskParams::v3`; the sections at the end). The outer blocks are
+embedded masking's, with the L8 parameters: the opening slice guard, the band seed, the compute, the band
 reseed and the closing guard; only the compute differs. The code is
 [src/stages/preprocessing/three_mask/](../src/stages/preprocessing/three_mask/)
 (`mod.rs` the compute and its configuration, `band.rs` the banks,
@@ -29,12 +31,14 @@ forest). A mask is applied and removed by a borrowed-helper Toffoli ladder
 helpers, or a non-restoring chain of 2k-3 gates with `discard_fire_helpers`,
 which leaves garbage only in reference-free growing-bank wires).
 
-**The band.** $r$ band wires (`band_wires`: $\max(2n, 128)$ rounded up to a
+**The band** (described in the bank mode, `turnover = "bank"`; the default
+since recipe v14 is the per-wire turnover below). $r$ band wires (`band_wires`: $\max(2n, 128)$ rounded up to a
 multiple of 32 by default) are divided into `banks` banks (auto: banks of
 16 wires, 8 at n=64 and 16 at n=128, the design's geometry; the rounding
 to 32 keeps the auto bank count even, which the compute requires). Half the
-banks start *serving* (their wires may be mask operands); the others are
-*growing*: between fires they are rewritten by random two-control Toffolis
+banks start *serving* (their wires may be mask operands; with `pregrow`, the
+default since recipe v14, rewritten `warmup` times before the first masks);
+the others are *growing*: between fires they are rewritten by random two-control Toffolis
 whose controls lie in the other half of the same bank, or, with
 `cross_bank_growth`, in the next bank (`growth` gates per fire, `warmup`
 sweeps before the first fire, `visit_sweeps` sweeps per bank visit). Every
@@ -106,8 +110,11 @@ narrow attacks exploit.
 The `[three_mask]` table (manual: [tdp_pipeline.md](tdp_pipeline.md), "Three-mask");
 every key is an error under another mode, and `preprocessing.preset` and the
 embedded-masking knobs are errors under this one (the outer blocks are
-always L8). The defaults are the v2 configuration; `random_helpers = false`
-and `unique_cover = false` give the "as-is" generator. The gen program takes
+always L8). The defaults are gen's `ThreeMaskParams::v3` since recipe v14:
+the v2 configuration with `turnover = "wire"`, `interleave = 4096` and
+`pregrow = true`; `turnover = "bank"`, `interleave = 0`, `pregrow = false`
+give v2 (recipe v13's default), and `random_helpers = false` and
+`unique_cover = false` on top the "as-is" generator. The gen program takes
 the mode as its gadgetization-mode positional (`three-mask`) and the knobs
 as `THREE_MASK_*` variables (recipe class in the environment registry; the
 driver exports only non-defaults; every `EMBEDDED_MASKING_*` variable is an
@@ -131,8 +138,9 @@ of the sandwich and of the source.
 
 ## Turnover modes and fire interleaving (added 2026-10-28)
 
-Two knobs added after the release, both off by default so the default
-output is unchanged (`stage2_three_mask_parity` still pins it):
+Two knobs added after the release, off until recipe v14 made both the
+default (`turnover = "wire"`, `interleave = 4096`; `stage2_three_mask_parity`
+pins the v2 output by setting them, and pre-growth, off):
 
 **`turnover = "wire"`** turns band coordinates over per wire instead of per
 bank. Phases are per wire; a *cohort* (16 wires promoted together) takes the
@@ -177,7 +185,8 @@ independent, and in the design as released they are not: the compute's
 dependency depth is 40 % of its gates (the sandwich itself, C plus slicing
 gates, has depth 260 of 2,832 gates, so the serialization is the compute's
 own). Three mechanisms chained every fire to the next, and `interleave > 0`
-switches each one off; the default output (`interleave = 0`) is unchanged:
+switches each one off; at `interleave = 0` (recipe v13's default) the output
+is unchanged:
 
 1. **Mask refreshes wrote serving coordinates.** The differential cubic
    refresh mixed the new coordinate into the current coordinate wire and
@@ -230,3 +239,33 @@ fires per window with a group of 8, 14.3 with 32, 15.5 without migration
 group now follows the lane count (16 at n = 128). Going beyond the
 sandwich's width needs a C or a slicing with more independent gates per
 layer, not more lanes.
+
+
+## Recipe v14 defaults: pre-growth and the reverse contract (2026-11-01)
+
+Gen's default policy is `ThreeMaskParams::v3`: v2 plus wire turnover, the
+4096-gate interleaving window (the knee of the measured spans above) and
+**pre-growth** (`pregrow`, `THREE_MASK_PREGROW`), the clear-cut suggestions
+1 and 2 of [notes/stage2_interleaving_20261101.md](notes/stage2_interleaving_20261101.md).
+Without pre-growth the warm-up grows only the growing half, so the first
+serving coordinates are the raw band seed for 100 to 190 fires, where half
+of rust2's recoveries sat. With it, before the first mask the serving half
+is rewritten `warmup` times (one two-control band gate per serving wire per
+sweep: `warmup` × r/2 gates, 256 at a 128-wire band), in both turnover
+modes; the warm-up then grows the growing half as before. The compute still
+decodes every fire (its internal witness) and realizes the input both ways
+(`pregrow_rewrites_the_serving_half_before_the_first_masks`).
+
+**The reverse contract** (`preprocessing.reverse_contract`,
+`STAGE2_REVERSE_CONTRACT`; embedded masking and three-mask only) is a
+property of the outer blocks: the opening and closing guards each junk only
+the low data half when the band is not zero, so the reversed circuit still
+carries $D^{-1}$ of its input on wires $n..2n$, and gen verifies that
+(`reverse verify PASSED`). `false` keeps the forward payload only: the
+opening guard covers all data wires with the same gate count (its Feistel
+rounds alternate halves, accumulating from one and injecting into the
+other, so each round's uncompute stays exact), and the closing guard is
+dropped; the reversed artifact then junks both halves, and gen skips the
+reverse verification. The managed driver refuses it with the adaptive
+stage 6, whose fail-fast payload contract compares the stage-5 circuit with
+the sandwich in both directions.

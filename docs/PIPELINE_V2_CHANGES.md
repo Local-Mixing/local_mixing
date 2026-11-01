@@ -232,3 +232,71 @@ the server campaigns of October 2026 ran the prototypes this code ports.
   (dependency-preserving fire interleaving, with a read-only mask refresh,
   per-fire helper lanes and carrier migration in one fire per lane cycle); see
   `docs/THREE_MASK_STAGE2.md`, "Turnover modes and fire interleaving".
+
+
+## Recipe v14: the stage-1/2 defaults of 2026-11-01
+
+RC's stage-1 redesign and the clear-cut stage-2 suggestions of
+[notes/stage2_interleaving_20261101.md](notes/stage2_interleaving_20261101.md)
+became gen's defaults (`SandwichShape::default_for`, `ThreeMaskParams::v3`;
+commit c31a55ef), and the managed driver follows them. **The config schema
+stays 5**: every new key is optional, so a v5 file is still valid, but one
+that sets none of them now produces the v14 stages 1-2 below. The recipe
+manifest says so (`tdp_command_recipe=14`), and a v13 run directory is
+refused on resume with a pointer, as every earlier recipe change did.
+
+| | recipe v13 | recipe v14 |
+| --- | --- | --- |
+| Stage 1 | slice blocks $S_1$, $S_2$ interleaved with $C$ and $D$; the N column of $n$ copy CNOTs | no slice blocks; the **V gadget**: a nonlinear copy of $C$'s outputs into the register in groups of three wires (each register wire a balanced degree-2 function of three of the group's values, from two two-control conjunctions), $V$ and $V^*$ ($t = \mathrm{round}(n\log_2 n)$ random gates each) on the register beside $D$, the register's inverse of the copy restoring $C(x)$ |
+| Random $C$, $D$, $V$ | the fully random sequence | the same by default; `sandwich.layer = w` samples layers of $w$ wire-disjoint gates |
+| Stage-2 port guards | both junk-half guards (reverse contract) | the same by default; `preprocessing.reverse_contract = false`: the opening guard covers all data wires (same gate count), no closing guard, forward payload only |
+| Three-mask turnover, interleave, pre-growth | `bank`, `0`, off | `wire`, `4096`, on (the serving half of the band rewritten `warmup` times before the first masks) |
+| New keys | | `[sandwich]` `slicing` (bool, `false`), `layer` (integer, `1`, at most n/3), `v_gates` (integer, omitted = auto, `0` = the N column); `preprocessing.reverse_contract` (bool, `true`); `three_mask.pregrow` (bool, `true`) |
+| Script flags | | `--sandwich-slicing 0\|1`, `--sandwich-layer W`, `--sandwich-v-gates N\|auto`, `--preprocessing-reverse-contract 0\|1`, `--three-mask-pregrow 0\|1` |
+| Gen environment | | `SANDWICH_SLICING`, `SANDWICH_LAYER`, `SANDWICH_V_GATES`, `STAGE2_REVERSE_CONTRACT` (driver class), `THREE_MASK_PREGROW` (recipe class); each passed only when not gen's default |
+| Recipe manifest | `tdp_command_recipe=13` | `14`; new keys `sandwich_params` (`default`, `legacy` or `custom`), `sandwich_slicing`, `sandwich_layer`, `sandwich_v_gates` (auto resolved: 384 at n=64, 896 at n=128), `preprocessing_reverse_contract`, `three_mask_pregrow` |
+| Stage-1/2 marker | `tdp_stage12_recipe=8` | `9` (the same new lines); the bash driver also checks that gen's banner ends with the shape and port contract it asked for |
+| Validated chain pin | embedded masking L8/A, the four-stage chain, the validated store | the same plus the legacy stage 1 (`slicing = true`, `v_gates = 0`, `layer = 1`) and `reverse_contract = true` |
+
+To build v13's stages 1-2 in a fresh run:
+
+```toml
+[sandwich]
+slicing = true      # the slice blocks
+v_gates = 0         # the N column instead of the V gadget
+[three_mask]        # three-mask mode only
+turnover = "bank"   # explicit three_mask.banks need this now
+interleave = 0
+pregrow = false
+```
+
+(`tests/shell/tdp_stage12_parity.bash` runs gen with the corresponding
+variables against these flags on real binaries; `stage2_typed_params` and
+`stage2_three_mask_parity` pin the bytes of that construction.)
+
+New refusals, all before anything runs:
+
+* `three_mask.banks` other than 0 without `turnover = "bank"` (wire
+  turnover forms its own cohorts of 16); under wire turnover the band is a
+  multiple of 32 (the auto band always is) and `max_retiring` below half
+  the cohorts.
+* `sandwich.layer` outside `1..n/3`.
+* nonlinear291 with the V gadget and no slicing: without the slice blocks
+  the copy writes two-control conjunctions of either polarity, outside
+  nonlinear291's templates (r57, nab, positive AND, positive copy); gen
+  would panic. Set `sandwich.v_gates = 0` or `sandwich.slicing = true`
+  (the zero-preserving gadget). nonlinear291's width is now computed from
+  the shape: the legacy sandwich's $2|C| + 2s + n$ gates exactly, the V
+  gadget's at its maximum (`shaped_sandwich_gate_range`: the recovery's
+  polarity corrections are drawn).
+* `preprocessing.reverse_contract = false` with nonlinear291 (no port
+  guards), and with the adaptive stage 6: `tdp_adaptive` checks the
+  stage-5 circuit against the sandwich in both directions before round 1
+  (`payload_contract`), which a forward-only stage 2 fails (pinned by
+  `reverse_contract_follows_the_mode_and_stage_six`). The windowed stage 6,
+  or a run that skips or stops before stage 6, takes it.
+
+`val_chain.sh` sets no `SANDWICH_*` variable, so on today's binaries it
+builds the v14 stage 1 too: the managed embedded-masking defaults still
+match it argument for argument (`tdp_defaults`, `tdp_stage12_parity`), and
+the archived validation runs need the legacy stage 1 on both sides.
