@@ -21,21 +21,25 @@
 # Stage 2 has three constructions (preprocessing.mode): "three-mask" (the
 # default: the three-mask compute inside the L8 outer blocks, knobs in
 # [three_mask]; the default knobs are the campaign configuration "three-mask
-# modified / v2"), "embedded-masking" (preset L8) and "nonlinear291". The source C
+# modified / v2" with wire turnover, interleave 4096 and pre-growth, recipe
+# v14), "embedded-masking" (preset L8) and "nonlinear291". The source C
 # is uniformly random or, with source.construction = "balanced", RC's
-# balanced construction (every internal value read exactly twice).
+# balanced construction (every internal value read exactly twice). Stage 1
+# builds the sandwich around C ([sandwich]; since recipe v14 without slice
+# blocks and with the V gadget on the payload register).
 #
 # With preprocessing.mode = "embedded-masking" the defaults of stages 1-3 and
-# the windowed packer reproduce val_chain.sh CONFIG=L8 as run for vL64a/b,
-# vL128a/b (docs/STAGE4_RUST_DESIGN.md §2): stage-2 preset L8, stage-3
-# schedule `validated` (profile 2,2,2,2,2, serial), packing G=512 / split
-# budget 65536; source.gates defaults to 1000 (n=64) / 3000 (n=128); that
-# mode with skip_stages = [4, 5], delivery.mode = "windowed" and
-# delivery.anf_only = true is the four-stage chain exactly. Stages 4 and 5 use the archive-era
+# the windowed packer run val_chain.sh CONFIG=L8 (docs/STAGE4_RUST_DESIGN.md
+# §2): stage-2 preset L8, stage-3 schedule `validated` (profile 2,2,2,2,2,
+# serial), packing G=512 / split budget 65536; source.gates defaults to 1000
+# (n=64) / 3000 (n=128); that mode with skip_stages = [4, 5], delivery.mode =
+# "windowed" and delivery.anf_only = true is the four-stage chain exactly, and
+# with [sandwich] slicing = true, v_gates = 0 (the stage 1 of recipe v13 and
+# earlier) it reproduces the chosen runs vL64a/b, vL128a/b. Stages 4 and 5 use the archive-era
 # driver's flags (ea2e516f). No stage-2 or stage-3 knob is set here: a preset
 # or schedule field next to `L8` / `validated` is an error, so an old
 # template cannot silently produce a hybrid recipe.
-config_version = 5  # required TOML schema version (distinct from the saved recipe v13)
+config_version = 5  # required TOML schema version (distinct from the saved recipe v14)
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
@@ -61,6 +65,22 @@ wires = 128  # integer 3..4095 (stage 6: at most 256); logical wires of C
 # construction = "random"  # "random" (default) or "balanced": RC's balanced C (every internal value
 #                          # read exactly twice as a control, write counts within 1); exclusive with path
 
+[sandwich]
+# Stage 1: the classic sandwich around C on 2n wires, C ; copy ; D (gen's
+# SandwichShape; the defaults since recipe v14). The V gadget copies C's
+# outputs into the register by a nonlinear bijection on groups of three
+# wires (each register wire gets a balanced degree-2 function of three of the
+# group's values, from two two-control conjunctions), V and V* (v_gates random
+# gates each) run on the register beside D, and the register's own inverse of
+# the copy restores C(x) at the end.
+# slicing = false  # bool; true interleaves the slice blocks S1 (with C) and S2 (with D);
+#                  # with them V and the copy preserve zero, so S2 stays dead in reverse
+# layer = 1  # integer 1..n/3: sample the random C, D and V in layers of this many
+#            # wire-disjoint gates (1 = the fully random sequence)
+# v_gates = 128  # integer; omit for auto = round(n*log2(n)) (896 at n=128); 0 = no V gadget
+#                # (the N column of n copy CNOTs); nonlinear291 takes the gadget only with slicing
+# slicing = true and v_gates = 0 together are the stage 1 of recipe v13 and earlier.
+
 [database]
 # regular_dir = "/path/to/frozen"  # string; alternatively set FROZEN_DB_DIR
 lookup_miss_filter = "auto"  # "auto", "on", or "off"
@@ -71,6 +91,9 @@ allow_no_database_for_tests = false  # bool; true requires clearing the DB path/
 
 [preprocessing]
 mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear291"
+# reverse_contract = true  # bool; false keeps only the forward payload: the opening guard covers
+#                          # all data wires (same gate count), no closing guard, no reverse check;
+#                          # not with nonlinear291, not with the adaptive stage 6 (it checks both ways)
 # preset = "L8"  # embedded-masking only: "L8" (recommended), "A" (no bounded chains) or "custom"
 # preset = "custom" requires ALL of:
 # mask_pair_wires = 2  shuffling_segments = 8  premask = true  chain = 2
@@ -80,18 +103,24 @@ mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear2
 
 [three_mask]
 # Stage 2 in its three-mask mode (preprocessing.mode = "three-mask"): the
-# three-mask compute (x_i = d_i + three cubic band monomials, banks of band
-# wires in serving/retiring/growing phases, dirty-helper chains, differential
-# cubic refresh, persistent migration) inside the L8 outer blocks. The
-# defaults are the campaign configuration "three-mask modified / v2" (random
-# helpers, unique cover). Any key here is an error under another mode.
+# three-mask compute (x_i = d_i + three cubic band monomials, band wires in
+# serving/retiring/growing phases (per wire in cohorts of 16, or per bank),
+# dirty-helper chains, differential cubic refresh, persistent migration)
+# inside the L8 outer blocks. The
+# defaults are gen's (recipe v14): the campaign configuration "three-mask
+# modified / v2" (random helpers, unique cover) with wire turnover, fire
+# interleaving in a 4096-gate window and pre-growth. Any key here is an error
+# under another mode.
 # band_wires = 0  # integer; 0 = auto: the larger of 2n and 128, rounded up to a multiple of 32; else >= 2n, a multiple of 16 the banks divide evenly (a multiple of 32 under auto banks); 2n + band_wires <= 1024 when stage 6 runs
 # banks = 0  # integer; 0 = auto: banks of 16 wires (8 at n=64, 16 at n=128); else even, at least 4
+#            # (explicit banks need turnover = "bank")
 # retire_budget = 2  max_retiring = 0  rotation = 1  maturity = 2  visit_sweeps = 2
 # growth = 8  warmup = 4  segments = 6  mask_count = 3
 # random_helpers = true  unique_cover = true  # false = the generator's "as-is" variant
-# turnover = "bank"  # "wire" = per-wire turnover in cohorts of 16 (banks must be 0)
-# interleave = 0  # fire-interleaving window in gates (0 = off; e.g. 4096)
+# turnover = "wire"  # per-wire turnover in cohorts of 16 (banks must be 0); "bank" = the bank rotation
+# interleave = 4096  # fire-interleaving window in gates (0 = off)
+# pregrow = true  # pre-grow the serving half of the band (warmup rewrites per wire) before the first masks
+# turnover = "bank", interleave = 0, pregrow = false together are recipe v13's three-mask stage 2.
 
 [db_mixing]
 schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) or "custom"

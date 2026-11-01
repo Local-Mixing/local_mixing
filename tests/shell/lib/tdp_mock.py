@@ -12,7 +12,9 @@ from the driver) are read as the real binaries read them: `args` records the
 resolved argv (`--seed-file P` as `--seed V`, as val_chain.sh passes it),
 `argv` the raw one (what ps would show). Optional behaviour is read from
 `<run dir>.mock` (key=value lines): gen_seed_override=K makes the gen banner
-report a different seed; packing_exit=K makes `tdp_packing run` exit K;
+report a different seed; gen_ignore_shape=1 makes it report gen's default
+stage-1 shape and port contract whatever SANDWICH_* / STAGE2_REVERSE_CONTRACT
+say (a gen that predates them); packing_exit=K makes `tdp_packing run` exit K;
 packing_status=S writes that status; unpacking_exit=K / unpacking_status=S
 likewise for `tdp_unpacking run --refine` (the unpacking sub-step of the
 delivery stage: it writes the refined deliverable.tdp4, bounds.final,
@@ -21,6 +23,7 @@ adaptive_exit=K / adaptive_status=S likewise for `tdp_adaptive run` (stage 6 in
 its adaptive mode: it writes final.mpmct1, adaptive.report and adaptive.log).
 """
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -86,9 +89,17 @@ if name == "gen_sandwich_gadget":
         seed = opts["gen_seed_override"]
     mode = args[10] if len(args) > 10 else "embedded-masking"
     construction = os.environ.get("TDP_SOURCE_CONSTRUCTION", "random")
+    # gen's banner ends with the stage-1 shape and the port contract it built
+    # (defaults: no slicing, layer 1, V = max(n, round(n log2 n)), reverse kept)
+    shape = {"SANDWICH_SLICING": "0", "SANDWICH_LAYER": "1",
+             "SANDWICH_V_GATES": str(max(n, round(n * math.log2(n)))), "STAGE2_REVERSE_CONTRACT": "1"}
+    if "gen_ignore_shape" not in opts:
+        shape = {k: os.environ.get(k, v) for k, v in shape.items()}
     print(f"[gen] n={n} |C|={args[2]} |D|={args[3]} s={args[4]} rg_freq={args[5]} slice_gates={args[6]} "
           f"seed={seed} gadget_seed={gseed} sandwich_seed={sseed} gadgetization_mode={mode} "
-          f"sandwich_variant=classic source_construction={construction}")
+          f"sandwich_variant=classic source_construction={construction} slicing={shape['SANDWICH_SLICING']} "
+          f"layer={shape['SANDWICH_LAYER']} v_gates={shape['SANDWICH_V_GATES']} "
+          f"reverse_contract={shape['STAGE2_REVERSE_CONTRACT']}")
     g = int(opts.get("gen_gates", "1"))
     Path(out).write_text(f"mpmct1 {4 * n} {g}\n" + "0 0 0\n" * g)
     Path(out + ".sandwich.mpmct1").write_text(f"mpmct1 {2 * n} 1\n0 0 0\n")

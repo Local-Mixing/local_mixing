@@ -670,6 +670,9 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
             }
         }
     }
+    if !config.reverse_contract {
+        push("--preprocessing-reverse-contract", "0".to_owned());
+    }
     if config.preprocessing_mode == PreprocessingMode::ThreeMask {
         for (_, flag, value, default) in config.three_mask.fields() {
             if value != default {
@@ -682,6 +685,11 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
             "--source-construction",
             config.source_construction.name().to_owned(),
         );
+    }
+    for (_, flag, value, default) in config.sandwich.fields(config.n) {
+        if value != default {
+            push(&format!("--sandwich-{flag}"), value);
+        }
     }
     match config.mcd_rule {
         SourceGatesRule::Validated => {}
@@ -879,8 +887,9 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             SeedPlan::Random => "CSPRNG for a fresh run -> private $RUN/SEEDS (kept on resume)",
         }
     );
+    let sw = &config.sandwich;
     println!(
-        "[tdp_gen] stage 1-2: source.gates={} ({}{}) source.construction={} preset={}",
+        "[tdp_gen] stage 1-2: source.gates={} ({}{}) source.construction={} sandwich={} (slicing={} layer={} v_gates={}{}) preset={} reverse_contract={}",
         config.mcd,
         config.mcd_rule.name(),
         if config.mcd_rule == SourceGatesRule::Formula {
@@ -889,7 +898,17 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             ""
         },
         config.source_construction.name(),
-        config.preset.name()
+        sw.params_name(config.n),
+        sw.slicing,
+        sw.layer,
+        sw.v_gates_at(config.n),
+        match sw.v_gates {
+            None => ", auto",
+            Some(0) => ", the N column",
+            Some(_) => "",
+        },
+        config.preset.name(),
+        config.reverse_contract
     );
     if config.preprocessing_mode == PreprocessingMode::ThreeMask {
         println!(

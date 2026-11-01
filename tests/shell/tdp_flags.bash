@@ -73,8 +73,14 @@ reject 'only valid with --preprocessing-mode three-mask' --preprocessing-mode no
 reject 'unknown argument' --preprocessing-mode three-mask --three-mask-invented 1
 reject 'requires an argument' --preprocessing-mode three-mask --three-mask-banks
 for value in 48 72 abc; do reject 'band-wires' --preprocessing-mode three-mask --three-mask-band-wires "$value"; done
-for value in 2 7; do reject 'banks' --preprocessing-mode three-mask --three-mask-banks "$value"; done
-reject 'max-retiring' --preprocessing-mode three-mask --three-mask-banks 8 --three-mask-max-retiring 4
+# explicit banks need bank turnover (wire turnover, the default since recipe v14, forms cohorts)
+for value in 2 7; do reject 'even and at least 4' --preprocessing-mode three-mask --three-mask-turnover bank --three-mask-banks "$value"; done
+reject 'max-retiring' --preprocessing-mode three-mask --three-mask-turnover bank --three-mask-banks 8 --three-mask-max-retiring 4
+reject 'must be 0 under --three-mask-turnover wire.*--three-mask-turnover bank' --three-mask-banks 8
+# wire turnover: max_retiring counts cohorts (n=4: the auto band of 128 wires, 8 cohorts)
+reject 'less than half the cohort count' --three-mask-max-retiring 4
+reject 'three-mask-pregrow' --three-mask-pregrow 2
+reject 'only valid with --preprocessing-mode three-mask' "${E[@]}" --three-mask-pregrow 0
 for value in 0 4; do reject 'mask-count' --preprocessing-mode three-mask --three-mask-mask-count "$value"; done
 reject 'random-helpers' --preprocessing-mode three-mask --three-mask-random-helpers 2
 # the source construction
@@ -103,8 +109,8 @@ reject 'adaptive-min-refine-gates' --adaptive-min-refine-gates 0
 reject 'adaptive-census-batches' --adaptive-census-batches 0
 # the three-mask geometry the compute requires: a multiple of 32 under auto banks, even banks of >= 8 wires
 reject 'multiple of 32' --three-mask-band-wires 144
-reject 'even banks of at least 8' --three-mask-band-wires 160 --three-mask-banks 6
-reject 'even banks of at least 8' --three-mask-band-wires 128 --three-mask-banks 32
+reject 'even banks of at least 8' --three-mask-turnover bank --three-mask-band-wires 160 --three-mask-banks 6
+reject 'even banks of at least 8' --three-mask-turnover bank --three-mask-band-wires 128 --three-mask-banks 32
 reject 'must be bank or wire' --three-mask-turnover cohort
 reject 'must be 0 under --three-mask-turnover wire' --three-mask-turnover wire --three-mask-banks 8
 reject 'three-mask-interleave' --three-mask-interleave abc
@@ -112,21 +118,50 @@ reject 'adaptive-accept' --adaptive-accept largest
 reject 'requires an argument' --adaptive-max-rounds
 reject 'source-wires' --source-wires 2
 reject 'source-wires' --source-wires 4096
+# the stage-1 shape (n=4: layers of one gate only) and the port contract
+for value in 2 abc; do reject 'sandwich-slicing' --sandwich-slicing "$value"; done
+for value in 0 abc; do reject 'sandwich-layer' --sandwich-layer "$value"; done
+reject 'n/3 = 1 ' --sandwich-layer 2
+for value in abc 1000000001; do reject 'sandwich-v-gates' --sandwich-v-gates "$value"; done
+reject 'requires an argument' --sandwich-v-gates
+for value in 2 abc; do reject 'preprocessing-reverse-contract' --preprocessing-reverse-contract "$value"; done
+# nonlinear291: the V gadget only zero-preserving (with slicing); no port guards
+reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291
+reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291 --sandwich-v-gates 5
+reject 'needs a guarded mode' --preprocessing-mode nonlinear291 --sandwich-v-gates 0 --preprocessing-reverse-contract 0
+# the adaptive stage 6 checks the payload in both directions (reject() stops
+# after stage 2, so this case runs with the default stop); the windowed stage 6
+# or a stop before stage 6 takes a forward-only stage 2
+if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --preprocessing-reverse-contract 0 \
+     --run-directory "$tmp/fwd-adaptive" >"$tmp/error" 2>&1; then
+  echo "unexpected success: forward-only stage 2 with the adaptive stage 6" >&2; exit 1
+fi
+test ! -e "$tmp/fwd-adaptive"
+grep -q 'FATAL: --preprocessing-reverse-contract 0 keeps only the forward payload, but the adaptive stage 6' "$tmp/error" ||
+  { cat "$tmp/error" >&2; exit 1; }
 # packing budgets are resource bounds (MAX_MONOMIAL_BUDGET = 2^18)
 reject 'packing-monomial-budget' --delivery-mode windowed --packing-monomial-budget 262145
 reject 'packing-split-budget' --delivery-mode windowed --packing-split-budget 262145
 # nonlinear291 wider than stage 6's 1024 state wires is refused before stage 1
 # (reject() stops after stage 2, so this case runs with the default stop);
 # skipping stage 6 (delivery) lifts the limit
+# (the legacy stage 1: 2|C| + 2s + n = 272 sandwich gates, exact; with the
+# V gadget at most 450, its recovery's polarity corrections being drawn)
 if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
-     --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
+     --sandwich-slicing 1 --sandwich-v-gates 0 --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
   echo "unexpected success: nonlinear291 n=16 with stage 6" >&2; exit 1
 fi
 test ! -e "$tmp/nl-wide"
 grep -q 'FATAL: nonlinear291 makes a 3677-wire stage-2 circuit; stage 6 (delivery) supports at most 1024' "$tmp/error" ||
   { cat "$tmp/error" >&2; exit 1; }
+if bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
+     --sandwich-slicing 1 --run-directory "$tmp/nl-wide" >"$tmp/error" 2>&1; then
+  echo "unexpected success: nonlinear291 n=16 with the V gadget and stage 6" >&2; exit 1
+fi
+grep -q 'FATAL: nonlinear291 makes a stage-2 circuit of up to 5813 wires; stage 6' "$tmp/error" ||
+  { cat "$tmp/error" >&2; exit 1; }
 if ! bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 64 --preprocessing-mode nonlinear291 \
-     --run-directory "$tmp/nl-wide" --run-skip-stages 6 --run-stop-after-stage 2 >"$tmp/error" 2>&1; then
+     --sandwich-slicing 1 --sandwich-v-gates 0 --run-directory "$tmp/nl-wide" --run-skip-stages 6 --run-stop-after-stage 2 >"$tmp/error" 2>&1; then
   cat "$tmp/error" >&2; exit 1
 fi
 # the optional-stage surface: stages 2..6 (the former stage 7 is part of 6)
@@ -190,10 +225,16 @@ run_case custom-masks "${C[@]}" --preprocessing-mask-pair-wires 0004 --preproces
 run_case custom-narrow "${C[@]}" --preprocessing-max-open-masks 2 --preprocessing-min-open-masks 1
 run_case custom-l8 "${C[@]}" --preprocessing-shuffling-segments 8 --preprocessing-shuffling-return-home 0 --preprocessing-premask 1 --preprocessing-seed-avoid-c1 1 --preprocessing-chain 2 --preprocessing-chain-len 8
 run_case custom-home "${C[@]}" --preprocessing-shuffling-segments 0008 --preprocessing-shuffling-return-home true
-run_case nonlinear291 --preprocessing-mode nonlinear291
+run_case nonlinear291 --preprocessing-mode nonlinear291 --sandwich-v-gates 0
+run_case nonlinear291-v --preprocessing-mode nonlinear291 --sandwich-slicing 1
 run_case three-mask --preprocessing-mode three-mask
-run_case three-mask-knobs --preprocessing-mode three-mask --three-mask-band-wires 0256 --three-mask-unique-cover 0 --three-mask-banks 8 --three-mask-max-retiring 3
+run_case three-mask-knobs --preprocessing-mode three-mask --three-mask-band-wires 0256 --three-mask-unique-cover 0 --three-mask-turnover bank --three-mask-banks 8 --three-mask-max-retiring 3
+run_case three-mask-v2 --three-mask-turnover bank --three-mask-interleave 0 --three-mask-pregrow 0
 run_case balanced --source-construction balanced
+run_case legacy-shape "${E[@]}" --sandwich-slicing 1 --sandwich-v-gates 0
+run_case v-gates --sandwich-v-gates 24 --sandwich-layer 1
+run_case v-auto --sandwich-v-gates 8
+run_case forward-only "${E[@]}" --preprocessing-reverse-contract 0
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
 import json, sys
@@ -214,9 +255,24 @@ expected = {
     'custom-l8': (L8, 'custom'),
     'custom-home': ({'EMBEDDED_MASKING_SHUFFLING': '8'}, 'custom'),
     'nonlinear291': ({}, 'none'),
+    'nonlinear291-v': ({}, 'none'),
     'three-mask': ({}, 'none'),
-    'three-mask-knobs': ({'THREE_MASK_BAND_WIRES': '256', 'THREE_MASK_UNIQUE_COVER': '0', 'THREE_MASK_BANKS': '8', 'THREE_MASK_MAX_RETIRING': '3'}, 'none'),
+    'three-mask-knobs': ({'THREE_MASK_BAND_WIRES': '256', 'THREE_MASK_UNIQUE_COVER': '0', 'THREE_MASK_TURNOVER': 'bank', 'THREE_MASK_BANKS': '8', 'THREE_MASK_MAX_RETIRING': '3'}, 'none'),
+    'three-mask-v2': ({'THREE_MASK_TURNOVER': 'bank', 'THREE_MASK_INTERLEAVE': '0', 'THREE_MASK_PREGROW': '0'}, 'none'),
     'balanced': ({}, 'none'),
+    'legacy-shape': (L8, 'L8'),
+    'v-gates': ({}, 'none'),
+    'v-auto': ({}, 'none'),
+    'forward-only': (L8, 'L8'),
+}
+# the stage-1 shape and port contract reach gen only when not its default
+# (auto V at n=4: max(4, round(4 log2 4)) = 8): (env, marker slicing, layer, v_gates, reverse_contract)
+shape = {
+    'nonlinear291': ({'SANDWICH_V_GATES': '0'}, '0', '1', '0', '1'),
+    'nonlinear291-v': ({'SANDWICH_SLICING': '1'}, '1', '1', '8', '1'),
+    'legacy-shape': ({'SANDWICH_SLICING': '1', 'SANDWICH_V_GATES': '0'}, '1', '1', '0', '1'),
+    'v-gates': ({'SANDWICH_V_GATES': '24'}, '0', '1', '24', '1'),
+    'forward-only': ({'STAGE2_REVERSE_CONTRACT': '0'}, '0', '1', '8', '0'),
 }
 for name, (env, preset) in expected.items():
     calls = [json.loads(l) for l in (root / f'{name}.calls').read_text().splitlines()]
@@ -226,20 +282,30 @@ for name, (env, preset) in expected.items():
     got = {k: v for k, v in gen['env'].items() if k.startswith(('EMBEDDED_MASKING_', 'THREE_MASK_'))}
     assert got == env, (name, got)
     # no other recipe variable reaches gen (the balanced construction travels as TDP_SOURCE_CONSTRUCTION)
-    assert not any(k.startswith(('SANDWICH_', 'SLICE_GUARD', 'PROD_')) or k == 'TDP_SOURCE_C' for k in gen['env']), gen['env']
+    assert not any(k.startswith(('SLICE_GUARD', 'PROD_')) or k in ('TDP_SOURCE_C', 'SANDWICH_VARIANT') for k in gen['env']), gen['env']
+    shape_env, slicing, layer, v_gates, reverse = shape.get(name, ({}, '0', '1', '8', '1'))
+    got = {k: v for k, v in gen['env'].items() if k.startswith(('SANDWICH_', 'STAGE2_'))}
+    assert got == shape_env, (name, got)
     assert gen['env'].get('TDP_SOURCE_CONSTRUCTION') == ('balanced' if name == 'balanced' else None), (name, gen['env'])
-    mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking' if name in ('embedded', 'preset-L8', 'preset-A') or name.startswith('custom') else 'three-mask'
+    mode = 'nonlinear291' if name.startswith('nonlinear') else 'embedded-masking' if name in ('embedded', 'preset-L8', 'preset-A', 'legacy-shape', 'forward-only') or name.startswith('custom') else 'three-mask'
     args = gen['args']
     assert args[1:] == ['4', '1', '1', '8', '1', '80'] + [args[7]] * 3 + ([mode] if mode != 'embedded-masking' else []), args
     # the seeds reach gen through descriptors, never on its argv
     assert gen['argv'][7:10] == ['@/dev/fd/3', '@/dev/fd/4', '@/dev/fd/5'], gen['argv']
     recipe = (root / name / 'stage12.recipe').read_text()
-    assert recipe.startswith('tdp_stage12_recipe=8\n'), recipe
+    assert recipe.startswith('tdp_stage12_recipe=9\n'), recipe
+    for line in (f'sandwich_slicing={slicing}', f'sandwich_layer={layer}', f'sandwich_v_gates={v_gates}',
+                 f'preprocessing_reverse_contract={reverse}'):
+        assert f'\n{line}\n' in recipe, (name, line, recipe)
     assert f'preprocessing_mode={mode}\n' in recipe, recipe
     assert f'preprocessing_preset={preset}\n' in recipe, recipe
     assert f"source_construction={'balanced' if name == 'balanced' else 'random'}\n" in recipe, recipe
     if mode == 'three-mask':
         assert f"three_mask_banks={'8' if 'knobs' in name else '0'}\n" in recipe and 'three_mask_outer_blocks=L8\n' in recipe, recipe
+        bank = 'knobs' in name or 'v2' in name
+        assert f"three_mask_turnover={'bank' if bank else 'wire'}\n" in recipe, recipe
+        assert f"three_mask_interleave={'0' if 'v2' in name else '4096'}\n" in recipe, recipe
+        assert f"three_mask_pregrow={'0' if 'v2' in name else '1'}\nthree_mask_outer_blocks=L8\n" in recipe, recipe
         assert f"three_mask_band_wires={'256' if 'knobs' in name else '0'}\n" in recipe, recipe
         assert 'preprocessing_mask_pair_wires' not in recipe, recipe
     else:
@@ -257,9 +323,11 @@ cmp "$tmp/original.recipe" "$tmp/defaults/stage12.recipe"
 # A changed stage-2 recipe must fail before regenerating or replacing its marker.
 # (each case replaces the base --source-gates 1, so a changed |C| reaches the
 # recipe comparison instead of the duplicate-flag check)
-for changed in "--source-gates 1 --preprocessing-mode nonlinear291" "--source-gates 1 --preprocessing-mode embedded-masking" \
+for changed in "--source-gates 1 --preprocessing-mode nonlinear291 --sandwich-v-gates 0" "--source-gates 1 --preprocessing-mode embedded-masking" \
                "--source-gates 1 --preprocessing-mode embedded-masking --preprocessing-preset A" "--source-gates 2" \
-               "--source-gates 1 --three-mask-banks 8" "--source-gates 1 --source-construction balanced"; do
+               "--source-gates 1 --three-mask-turnover bank --three-mask-banks 8" "--source-gates 1 --source-construction balanced" \
+               "--source-gates 1 --three-mask-pregrow 0" "--source-gates 1 --sandwich-slicing 1" "--source-gates 1 --sandwich-v-gates 0" \
+               "--source-gates 1 --preprocessing-reverse-contract 0"; do
   # shellcheck disable=SC2086
   if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --run-directory "$tmp/defaults" --run-stop-after-stage 2 $changed >"$tmp/changed.log" 2>&1; then
     echo "changed preprocessing recipe unexpectedly resumed: $changed" >&2; exit 1
@@ -270,4 +338,27 @@ for changed in "--source-gates 1 --preprocessing-mode nonlinear291" "--source-ga
   fi
   cmp "$tmp/original.recipe" "$tmp/defaults/stage12.recipe"
 done
+# layered sampling (n=9: layers of up to three wire-disjoint gates) reaches gen
+# as SANDWICH_LAYER and the marker records it
+if ! bash "$root/scripts/tdp_gen.sh" --source-wires 9 --source-gates 5 --run-directory "$tmp/layered" \
+     --run-stop-after-stage 2 --sandwich-layer 3 >"$tmp/layered.log" 2>&1; then
+  cat "$tmp/layered.log" >&2; exit 1
+fi
+grep -q '"SANDWICH_LAYER": "3"' "$tmp/layered.calls" || { cat "$tmp/layered.calls" >&2; exit 1; }
+grep -qx 'sandwich_layer=3' "$tmp/layered/stage12.recipe"
+if bash "$root/scripts/tdp_gen.sh" --source-wires 9 --source-gates 5 --run-directory "$tmp/layer4" \
+     --run-stop-after-stage 2 --sandwich-layer 4 >"$tmp/error" 2>&1; then
+  echo "unexpected success: layer 4 at n=9" >&2; exit 1
+fi
+grep -q 'need 1 <= W <= n/3 = 3 ' "$tmp/error" || { cat "$tmp/error" >&2; exit 1; }
+# a gen that does not build the requested shape (one that predates SANDWICH_*)
+# is caught by its banner, and its artifact is not kept
+printf 'gen_ignore_shape=1\n' > "$tmp/stale.mock"
+if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --run-directory "$tmp/stale" \
+     --run-stop-after-stage 2 --sandwich-slicing 1 >"$tmp/error" 2>&1; then
+  echo "unexpected success: gen ignored the stage-1 shape" >&2; exit 1
+fi
+grep -q 'gen built another stage-1 shape or port contract than requested' "$tmp/error" || { cat "$tmp/error" >&2; exit 1; }
+test ! -e "$tmp/stale/tdp.mpmct1"
+test ! -e "$tmp/stale/stage12.recipe"
 echo 'TDP preprocessing flag shell regression tests passed'

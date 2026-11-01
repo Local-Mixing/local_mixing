@@ -3,7 +3,9 @@ mod parse;
 mod validate;
 pub(crate) use crate::stages::preprocessing::PreprocessingMode;
 use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
-use crate::stages::sandwich::sandwich_default_s;
+use crate::stages::sandwich::{
+    SandwichShape, sandwich_default_s, sandwich_default_v, shaped_sandwich_gate_range,
+};
 use crate::tdp::paths::*;
 pub(crate) use parse::*;
 use std::collections::BTreeMap;
@@ -410,9 +412,109 @@ impl SourceConstruction {
     }
 }
 
+/// `[sandwich]`: the stage-1 shape (`stages::sandwich::SandwichShape`, RC
+/// 2026-11-01). The defaults are gen's (`SandwichShape::default_for`): no
+/// slice blocks, fully random sequences and a V gadget of round(n log2 n)
+/// gates; [`SandwichConfig::LEGACY`] is the construction of recipes v13 and
+/// earlier (slice blocks, the N column of copy CNOTs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SandwichConfig {
+    /// Interleave the slice blocks S1 (with C) and S2 (with D).
+    pub(crate) slicing: bool,
+    /// Wire-disjoint gates per layer when sampling the random C, D and V
+    /// (1 = the fully random sequence; at most n/3).
+    pub(crate) layer: u64,
+    /// Gates of the V gadget's random circuit: `None` = auto
+    /// ([`sandwich_default_v`], round(n log2 n)); `Some(0)` = no gadget (the
+    /// N column of n copy CNOTs).
+    pub(crate) v_gates: Option<u64>,
+}
+
+impl Default for SandwichConfig {
+    fn default() -> Self {
+        SandwichConfig {
+            slicing: false,
+            layer: 1,
+            v_gates: None,
+        }
+    }
+}
+
+impl SandwichConfig {
+    /// The construction before 2026-11-01 (`SandwichShape::LEGACY`): slice
+    /// blocks, fully random sequences, the N column; the validated runs'.
+    pub(crate) const LEGACY: SandwichConfig = SandwichConfig {
+        slicing: true,
+        layer: 1,
+        v_gates: Some(0),
+    };
+
+    /// The V gadget's size at `n` source wires, auto resolved.
+    pub(crate) fn v_gates_at(&self, n: usize) -> u64 {
+        self.v_gates.unwrap_or(sandwich_default_v(n) as u64)
+    }
+
+    /// The shape gen builds for `n` source wires.
+    pub(crate) fn shape(&self, n: usize) -> SandwichShape {
+        SandwichShape {
+            slicing: self.slicing,
+            layer: self.layer as usize,
+            v_gates: self.v_gates_at(n) as usize,
+        }
+    }
+
+    /// `(config key, script flag suffix, value, default)` in the manifest
+    /// order, with `v_gates` resolved at `n` (its default is the auto value,
+    /// so an explicit `v_gates` equal to it is no flag, as gen builds the
+    /// same shape either way).
+    pub(crate) fn fields(&self, n: usize) -> [(&'static str, &'static str, String, String); 3] {
+        let d = SandwichConfig::default();
+        [
+            (
+                "slicing",
+                "slicing",
+                u8::from(self.slicing).to_string(),
+                u8::from(d.slicing).to_string(),
+            ),
+            (
+                "layer",
+                "layer",
+                self.layer.to_string(),
+                d.layer.to_string(),
+            ),
+            (
+                "v_gates",
+                "v-gates",
+                self.v_gates_at(n).to_string(),
+                d.v_gates_at(n).to_string(),
+            ),
+        ]
+    }
+
+    /// `default`, `legacy` or `custom`, by the shape gen builds at `n`.
+    pub(crate) fn params_name(&self, n: usize) -> &'static str {
+        if self.shape(n) == SandwichConfig::default().shape(n) {
+            "default"
+        } else if self.shape(n) == SandwichConfig::LEGACY.shape(n) {
+            "legacy"
+        } else {
+            "custom"
+        }
+    }
+
+    /// The stage-1 circuit's gate count `(min, max)` (see
+    /// `shaped_sandwich_gate_range`), `None` on overflow.
+    pub(crate) fn gate_range(&self, n: usize, mcd: usize) -> Option<(usize, usize)> {
+        shaped_sandwich_gate_range(n, mcd, mcd, sandwich_default_s(n), self.shape(n))
+    }
+}
+
 /// `[three_mask]`: the knobs of the three-mask stage-2 compute
-/// (`preprocessing.mode = "three-mask"`). The defaults are the campaign
-/// configuration "three-mask modified / v2" (random helpers, unique cover).
+/// (`preprocessing.mode = "three-mask"`). The defaults are gen's
+/// (`ThreeMaskParams::v3`, recipe v14): the campaign configuration
+/// "three-mask modified / v2" (random helpers, unique cover) with per-wire
+/// turnover, fire interleaving in a 4096-gate window and pre-growth of the
+/// serving half.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ThreeMaskConfig {
     /// 0 = auto: the larger of 2n and 128, rounded up to a multiple of 32
@@ -431,11 +533,15 @@ pub(crate) struct ThreeMaskConfig {
     pub(crate) mask_count: u64,
     pub(crate) random_helpers: bool,
     pub(crate) unique_cover: bool,
-    /// `"bank"` (the design's bank rotation) or `"wire"` (per-wire turnover
-    /// in cohorts of 16; `banks` must be 0).
+    /// `"wire"` (per-wire turnover in cohorts of 16, the default since
+    /// recipe v14; `banks` must be 0) or `"bank"` (the design's bank
+    /// rotation).
     pub(crate) turnover: String,
     /// Fire-interleaving window in gates; 0 = off.
     pub(crate) interleave: u64,
+    /// Pre-grow the serving half of the band (`warmup` rewrites per wire)
+    /// before the first masks reference it.
+    pub(crate) pregrow: bool,
 }
 
 impl Default for ThreeMaskConfig {
@@ -454,15 +560,16 @@ impl Default for ThreeMaskConfig {
             mask_count: 3,
             random_helpers: true,
             unique_cover: true,
-            turnover: "bank".to_string(),
-            interleave: 0,
+            turnover: "wire".to_string(),
+            interleave: 4096,
+            pregrow: true,
         }
     }
 }
 
 impl ThreeMaskConfig {
     /// `(config key, script flag suffix, value, default)` in the manifest order.
-    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String, String); 15] {
+    pub(crate) fn fields(&self) -> [(&'static str, &'static str, String, String); 16] {
         let d = ThreeMaskConfig::default();
         let b = |v: bool| u8::from(v).to_string();
         [
@@ -556,6 +663,7 @@ impl ThreeMaskConfig {
                 self.interleave.to_string(),
                 d.interleave.to_string(),
             ),
+            ("pregrow", "pregrow", b(self.pregrow), b(d.pregrow)),
         ]
     }
 
@@ -777,8 +885,15 @@ pub(crate) struct ResolvedConfig {
     pub(crate) adopt_existing_run: bool,
     pub(crate) frozen_db: SourcedPath,
     pub(crate) preprocessing_mode: PreprocessingMode,
+    /// `preprocessing.reverse_contract`: the stage-2 port guards keep the
+    /// reverse payload (true, the default) or only the forward one (false:
+    /// the opening guard covers all data wires, no closing guard; guarded
+    /// modes only).
+    pub(crate) reverse_contract: bool,
     /// `[three_mask]` (its defaults when the mode is not three-mask).
     pub(crate) three_mask: ThreeMaskConfig,
+    /// `[sandwich]`: the stage-1 shape.
+    pub(crate) sandwich: SandwichConfig,
     /// `source.construction` (random unless `balanced`; irrelevant with a
     /// supplied `source.path`).
     pub(crate) source_construction: SourceConstruction,

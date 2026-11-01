@@ -3,8 +3,11 @@
 # at n=16 with |C|=|D|=32, gen_sandwich_gadget run exactly as val_chain.sh runs
 # it (argv and environment, CONFIG L8 and A) and scripts/tdp_gen.sh with the
 # same seeds produce byte-identical tdp.mpmct1, .source_c.g57 and
-# .sandwich.mpmct1. Binaries: $TDP_STAGE_BIN (default target/debug, then
-# target/release); skipped with a message when none is built.
+# .sandwich.mpmct1. Then the recipe-v14 knobs: gen run with the variables the
+# stage-1 shape, port-contract and three-mask flags stand for (the legacy
+# shape forward-only under L8; a layered V gadget with recipe v13's
+# three-mask policy) against the flags. Binaries: $TDP_STAGE_BIN (default
+# target/debug, then target/release); skipped with a message when none is built.
 set -euo pipefail
 if [[ ${1-} != --isolated-environment ]]; then
   exec env -i PATH="$PATH" HOME="${HOME:-/tmp}" TDP_STAGE_BIN="${TDP_STAGE_BIN:-}" \
@@ -44,4 +47,37 @@ for cfg in L8 A; do
   cmp <(sed "1d; s|$ref/||g" "$ref/gen.log") <(sed "1d; s|$tmp/man_$cfg/||g" "$tmp/man_$cfg/stage12.log")
   echo "stage-2 parity $cfg: tdp.mpmct1, source C, sandwich identical ($(head -1 "$ref/tdp.mpmct1" | awk '{print $3}') gates)"
 done
+# CASE: gen's variables | the driver's flags (each case's mode positional
+# follows the driver: embedded-masking takes none)
+L8_ENV="EMBEDDED_MASKING_SHUFFLING=8 EMBEDDED_MASKING_SHUFFLING_RETURN_HOME=0 EMBEDDED_MASKING_PREMASK=1 EMBEDDED_MASKING_SEED_AVOID_C1=1 EMBEDDED_MASKING_CHAIN=2 EMBEDDED_MASKING_CHAIN_LEN=8"
+cases=(
+  "legacy-forward|$L8_ENV SANDWICH_SLICING=1 SANDWICH_V_GATES=0 STAGE2_REVERSE_CONTRACT=0|--preprocessing-mode embedded-masking --sandwich-slicing 1 --sandwich-v-gates 0 --preprocessing-reverse-contract 0"
+  "layered-v13-three-mask|SANDWICH_LAYER=3 SANDWICH_V_GATES=40 THREE_MASK_TURNOVER=bank THREE_MASK_INTERLEAVE=0 THREE_MASK_PREGROW=0|--sandwich-layer 3 --sandwich-v-gates 40 --three-mask-turnover bank --three-mask-interleave 0 --three-mask-pregrow 0"
+)
+for c in "${cases[@]}"; do
+  IFS='|' read -r label gen_env flags <<< "$c"
+  ref=$tmp/ref_$label; mkdir -p "$ref"
+  mode=(); [[ $flags == *"--preprocessing-mode embedded-masking"* ]] || mode=(three-mask)
+  # shellcheck disable=SC2086
+  env -i HOME="$HOME" PATH="$PATH" $gen_env \
+    "$BIN/gen_sandwich_gadget" "$ref/tdp.mpmct1" 16 32 32 64 1 320 "$GS" "$GS" "$GS" ${mode[@]+"${mode[@]}"} > "$ref/gen.log" 2>&1 ||
+    { cat "$ref/gen.log" >&2; exit 1; }
+  # shellcheck disable=SC2086
+  env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" \
+    bash "$root/scripts/tdp_gen.sh" --source-wires 16 --source-gates 32 --run-directory "$tmp/man_$label" \
+      --seed-file "$sf" $flags --run-stop-after-stage 2 > "$tmp/man_$label.log" 2>&1 ||
+    { cat "$tmp/man_$label.log" >&2; exit 1; }
+  for f in tdp.mpmct1 tdp.mpmct1.source_c.g57 tdp.mpmct1.sandwich.mpmct1; do
+    cmp "$ref/$f" "$tmp/man_$label/$f" || { echo "stage-2 parity FAILED ($label): $f" >&2; exit 1; }
+  done
+  cmp <(sed "1d; s|$ref/||g" "$ref/gen.log") <(sed "1d; s|$tmp/man_$label/||g" "$tmp/man_$label/stage12.log")
+  echo "stage-2 parity $label: tdp.mpmct1, source C, sandwich identical ($(head -1 "$ref/tdp.mpmct1" | awk '{print $3}') gates)"
+done
+# the shape and port contract changed the circuits: the sandwiches differ from
+# the default shape's, and the forward-only stage 2 skipped the reverse check
+if cmp -s "$tmp/ref_L8/tdp.mpmct1.sandwich.mpmct1" "$tmp/ref_legacy-forward/tdp.mpmct1.sandwich.mpmct1"; then
+  echo "the legacy shape built the default sandwich" >&2; exit 1
+fi
+grep -q 'reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0' "$tmp/man_legacy-forward/stage12.log"
+grep -q 'reverse verify PASSED' "$tmp/man_L8/stage12.log"
 echo 'TDP stage 1+2 parity tests passed'

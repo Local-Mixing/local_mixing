@@ -105,6 +105,7 @@ fn omitted_values_resolve_to_the_chosen_l8_runs() {
         assert!(
             !arg.starts_with("--source-gates")
                 && !arg.starts_with("--source-construction")
+                && !arg.starts_with("--sandwich")
                 && !arg.starts_with("--three-mask")
                 && !arg.starts_with("--db-mixing")
                 && !arg.starts_with("--packing")
@@ -173,19 +174,32 @@ fn default_source_gates_table() {
     assert!(at("source.wires = 32\nsource.gates_rule = \"guess\"").is_err());
 }
 
+/// The legacy stage 1 (slice blocks, the N column) for nonlinear291 cases
+/// whose numbers predate the V gadget.
+const NL_LEGACY: &str =
+    "preprocessing.mode = \"nonlinear291\"\nsandwich.slicing = true\nsandwich.v_gates = 0\n";
+
 #[test]
 fn nonlinear_capacity_is_validated_before_launch() {
-    let too_large =
-        parse("source.wires = 64\nsource.gates = 2304\npreprocessing.mode = \"nonlinear291\"");
+    let too_large = parse(&format!(
+        "source.wires = 64\nsource.gates = 2304\n{NL_LEGACY}"
+    ));
     let error = resolve_for_test(&too_large).err().unwrap();
     assert!(error.contains("wire capacity"), "{error}");
-    let formula_fit = parse(
-        "source.wires = 63\nsource.gates_rule = \"formula\"\npreprocessing.mode = \"nonlinear291\"\nrun.stop_after_stage = 3",
-    );
+    let formula_fit = parse(&format!(
+        "source.wires = 63\nsource.gates_rule = \"formula\"\n{NL_LEGACY}run.stop_after_stage = 3",
+    ));
     assert!(resolve_for_test(&formula_fit).is_ok());
-    let explicit_fit = parse(
-        "source.wires = 128\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nrun.stop_after_stage = 3",
-    );
+    // the V gadget's copy, V, V* and recovery (at most 943 more gates) do not fit
+    let error = resolve_body(
+        "source.wires = 63\nsource.gates_rule = \"formula\"\npreprocessing.mode = \"nonlinear291\"\nsandwich.slicing = true\nrun.stop_after_stage = 3",
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("wire capacity"), "{error}");
+    let explicit_fit = parse(&format!(
+        "source.wires = 128\nsource.gates = 1\n{NL_LEGACY}run.stop_after_stage = 3",
+    ));
     assert!(resolve_for_test(&explicit_fit).is_ok());
 }
 
@@ -203,18 +217,34 @@ fn packing_budgets_are_bounded_by_the_resource_limit() {
     }
 }
 
-/// nonlinear291's width (24n + 12(2|C|+2s+n) + 29) is checked against stage
-/// 4's 1024 state wires before anything runs, not after stage 3.
+/// nonlinear291's width (24n + 12·|sandwich| + 29; the legacy sandwich has
+/// 2|C| + 2s + n gates) is checked against stage 6's 1024 state wires before
+/// anything runs, not after stage 3.
 #[test]
 fn nonlinear_width_beyond_stage_four_is_refused_up_front() {
-    let wide = "source.wires = 16\nsource.gates = 64\npreprocessing.mode = \"nonlinear291\"\n";
-    let error = resolve_for_test(&parse(wide)).err().unwrap();
+    let wide = format!("source.wires = 16\nsource.gates = 64\n{NL_LEGACY}");
+    let error = resolve_for_test(&parse(&wide)).err().unwrap();
     assert!(error.contains("3677-wire"), "{error}");
     assert!(error.contains("at most 1024 state wires"), "{error}");
     assert!(resolve_for_test(&parse(&format!("{wide}run.stop_after_stage = 3"))).is_ok());
-    // n=4, |C|=1, s=8: 389 wires, within stage 4
-    let narrow = "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\n";
-    assert!(resolve_for_test(&parse(narrow)).is_ok());
+    // with the V gadget the recovery's corrections are drawn: the maximum,
+    // 2|C| + 2s + 2n + 2t + 3n - 5 floor(n/3) + (n - floor(n/3)) = 450 gates
+    let error = resolve_body(
+        "source.wires = 16\nsource.gates = 64\npreprocessing.mode = \"nonlinear291\"\nsandwich.slicing = true\n",
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("a stage-2 circuit of up to 5813 wires"),
+        "{error}"
+    );
+    // n=4, |C|=1, s=8: 389 wires, within stage 6 (with the V gadget at most 749)
+    let narrow = format!("source.wires = 4\nsource.gates = 1\n{NL_LEGACY}");
+    assert!(resolve_for_test(&parse(&narrow)).is_ok());
+    resolve_body(
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.slicing = true\n",
+    )
+    .unwrap();
     // embedded masking is bounded by n <= 256 alone
     assert!(resolve_for_test(&parse("source.wires = 16\nsource.gates = 64\n")).is_ok());
 }
@@ -478,12 +508,37 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "adaptive.census_batches = 10",
         "adaptive.term_cap = 64",
         "adaptive.term_cap = 511",
-        // the turnover mode and the interleaving window
+        // the turnover mode and the interleaving window (wire turnover is
+        // the default since recipe v14: explicit banks need "bank")
         "three_mask.turnover = \"cohort\"",
         "three_mask.turnover = \"wire\"\nthree_mask.banks = 8",
+        "three_mask.banks = 8",
         "source.wires = 64\nthree_mask.turnover = \"wire\"\nthree_mask.max_retiring = 4",
+        "source.wires = 64\nthree_mask.max_retiring = 4",
         "three_mask.interleave = -1",
         "preprocessing.mode = \"embedded-masking\"\npreprocessing.preset = \"L8\"\nthree_mask.interleave = 4096",
+        // pre-growth
+        "three_mask.pregrow = 1",
+        "preprocessing.mode = \"embedded-masking\"\nthree_mask.pregrow = false",
+        // the stage-1 shape: layers of at most n/3 gates (42 at n = 128)
+        "sandwich.slicing = 1",
+        "sandwich.slicing = \"true\"",
+        "sandwich.layer = 0",
+        "sandwich.layer = 43",
+        "source.wires = 64\nsandwich.layer = 22",
+        "sandwich.layer = -1",
+        "sandwich.v_gates = -1",
+        "sandwich.v_gates = 1000000001",
+        "sandwich.v_gates = \"auto\"",
+        "sandwich.variant = \"balanced\"",
+        // nonlinear291: the V gadget only zero-preserving, no port guards
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"",
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 5",
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\npreprocessing.reverse_contract = false\nrun.skip_stages = [6]",
+        // the reverse contract: a bool; false not with the adaptive stage 6
+        "preprocessing.reverse_contract = 0",
+        "preprocessing.reverse_contract = false",
+        "preprocessing.reverse_contract = false\nrun.skip_stages = [4, 5]",
     ] {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
@@ -494,34 +549,35 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         .unwrap();
     resolve_body("source.wires = 64\nthree_mask.band_wires = 1024\nrun.skip_stages = [6]").unwrap();
     resolve_body("adaptive.census_batches = 11\nadaptive.term_cap = 512").unwrap();
-    let wire = resolve_body(
-        "three_mask.turnover = \"wire\"\nthree_mask.max_retiring = 3\nthree_mask.interleave = 4096",
+    // the v13 policy (bank turnover, no interleaving, no pre-growth) is
+    // three explicit non-defaults since recipe v14
+    let bank = resolve_body(
+        "three_mask.turnover = \"bank\"\nthree_mask.max_retiring = 3\nthree_mask.interleave = 0\nthree_mask.pregrow = false",
     )
     .unwrap();
-    assert!(!wire.three_mask.is_default());
-    let args = strings(&script_args(&wire));
-    assert!(
-        args.windows(2)
-            .any(|w| w == ["--three-mask-turnover", "wire"]),
-        "{args:?}"
-    );
-    assert!(
-        args.windows(2)
-            .any(|w| w == ["--three-mask-interleave", "4096"]),
-        "{args:?}"
-    );
+    assert!(!bank.three_mask.is_default());
+    let args = strings(&script_args(&bank));
+    for pair in [
+        ["--three-mask-turnover", "bank"],
+        ["--three-mask-interleave", "0"],
+        ["--three-mask-pregrow", "0"],
+        ["--three-mask-max-retiring", "3"],
+    ] {
+        assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+    }
     assert!(
         !args.iter().any(|a| a == "--three-mask-random-helpers"),
         "defaults are not passed"
     );
-    let m = recipe_manifest(&wire, &[], 1);
+    let m = recipe_manifest(&bank, &[], 1);
     assert!(m.contains("\nthree_mask_params=custom\n"), "{m}");
     assert!(
-        m.contains("\nthree_mask_turnover=wire\nthree_mask_interleave=4096\n"),
+        m.contains("\nthree_mask_turnover=bank\nthree_mask_interleave=0\nthree_mask_pregrow=0\n"),
         "{m}"
     );
     resolve_body("source.wires = 64\nthree_mask.turnover = \"wire\"\nthree_mask.band_wires = 160")
         .unwrap();
+    resolve_body("source.wires = 64\nthree_mask.max_retiring = 3").unwrap();
     let error = resolve_body("source.wires = 64\nthree_mask.band_wires = 1024")
         .err()
         .unwrap();
@@ -529,11 +585,35 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         error.contains("1152-wire") && error.contains("1024"),
         "{error}"
     );
+    let error = resolve_body(
+        "source.wires = 64\nthree_mask.turnover = \"bank\"\nthree_mask.band_wires = 144",
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("9 banks") && error.contains("multiple of 32"),
+        "{error}"
+    );
+    // under wire turnover (the default) the cohorts need the same multiple of 32
     let error = resolve_body("source.wires = 64\nthree_mask.band_wires = 144")
         .err()
         .unwrap();
     assert!(
-        error.contains("9 banks") && error.contains("multiple of 32"),
+        error.contains("(three_mask.band_wires)")
+            && error.contains("wire turnover")
+            && error.contains("multiple of 32"),
+        "{error}"
+    );
+    let error = resolve_body("three_mask.banks = 8").err().unwrap();
+    assert!(
+        error.contains("(three_mask.banks)") && error.contains("turnover = \"bank\""),
+        "{error}"
+    );
+    let error = resolve_body("source.wires = 64\nthree_mask.max_retiring = 4")
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("(three_mask.max_retiring)") && error.contains("cohort"),
         "{error}"
     );
     let error = resolve_body("adaptive.term_cap = 64").err().unwrap();
@@ -714,7 +794,9 @@ fn checked_in_toml_recipe_is_the_l8_default() {
     assert!(config.three_mask.is_default());
     assert_eq!(config.schedule, Schedule::Validated);
     assert_eq!((config.n, config.mcd), (128, 3000));
-    assert_eq!(config.recipe_version, 13);
+    assert_eq!(config.recipe_version, 14);
+    assert_eq!(config.sandwich, SandwichConfig::default());
+    assert!(config.reverse_contract);
     assert_eq!(config.stop_after_stage(), 6);
     assert_eq!(config.stages_text(), "1-6");
     assert!(config.delivery.is_default() && config.adaptive.is_default());
@@ -844,7 +926,7 @@ fn schedule_field_conflict_rejected() {
 
 #[test]
 fn preset_rejected_for_nonlinear291() {
-    let base = "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\n";
+    let base = "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\n";
     let config = resolve_body(base).unwrap();
     assert_eq!(config.preset, Preset::None);
     assert!(!recipe_manifest(&config, &[], 1).contains("preprocessing_mask_pair_wires"));
@@ -920,15 +1002,18 @@ fn dangerous_run_destinations_are_rejected() {
 fn the_exact_default_manifest_text() {
     let config = resolve_for_test(&parse("source.wires = 64")).unwrap();
     let expected = concat!(
-        "tdp_command_recipe=13\npinned_recipe=none\nn=64\n",
+        "tdp_command_recipe=14\npinned_recipe=none\nn=64\n",
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "source_construction=random\n",
-        "sandwich_variant=classic\npreprocessing_mode=three-mask\npreprocessing_preset=none\n",
+        "sandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\n",
+        "sandwich_v_gates=384\n",
+        "preprocessing_mode=three-mask\npreprocessing_preset=none\npreprocessing_reverse_contract=1\n",
         "three_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\n",
         "three_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\n",
         "three_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\n",
         "three_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\n",
-        "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=bank\nthree_mask_interleave=0\nthree_mask_outer_blocks=L8\n",
+        "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=wire\n",
+        "three_mask_interleave=4096\nthree_mask_pregrow=1\nthree_mask_outer_blocks=L8\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
         "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
         "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
@@ -1430,9 +1515,11 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     ))
     .unwrap();
     assert_eq!(pinned(&resynth), "none");
-    let body = format!(
+    // the chain's stage 1 is the legacy shape (gen's default before recipe v14)
+    let chain = format!(
         "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
     );
+    let body = format!("{chain}sandwich.slicing = true\nsandwich.v_gates = 0\n");
     // the default stage 2 (three-mask) is not the chain
     let default_stage2 = resolve_body(&format!(
         "source.wires = 64\ndatabase.regular_dir = {store:?}\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
@@ -1441,6 +1528,20 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     assert_eq!(pinned(&default_stage2), "none");
     let l8 = resolve_body(&body).unwrap();
     assert_eq!(pinned(&l8), "val_chain-L8-20261007");
+    assert!(recipe_manifest(&l8, &[], 1).contains("\nsandwich_params=legacy\n"));
+    // gen's default stage 1 (no slicing, the V gadget), a layered or a
+    // forward-only stage 1-2 are not the chain
+    let default_shape = resolve_body(&chain).unwrap();
+    assert_eq!(pinned(&default_shape), "none");
+    for extra in [
+        "sandwich.layer = 2\n",
+        "preprocessing.reverse_contract = false\n",
+    ] {
+        let changed = resolve_body(&format!("{body}{extra}")).unwrap();
+        assert_eq!(pinned(&changed), "none", "{extra}");
+    }
+    let only_column = resolve_body(&format!("{chain}sandwich.v_gates = 0\n")).unwrap();
+    assert_eq!(pinned(&only_column), "none", "no slice blocks");
     // the balanced source and the three-mask stage 2 are not the chain
     let balanced = resolve_body(&format!("{body}source.construction = \"balanced\"\n")).unwrap();
     assert_eq!(pinned(&balanced), "none");
@@ -1628,8 +1729,18 @@ fn v9_manifest_rejected_with_message() {
         ),
         "{error:?}"
     );
+    // recipe v13: gen's former stage-1/2 defaults; the pointer names the
+    // settings that restore them in a fresh run
     fs::write(&path, "tdp_command_recipe=13\n").unwrap();
-    assert_eq!(read_recipe_version(&path).unwrap(), 13);
+    let error = read_recipe_version(&path).unwrap_err();
+    assert!(error.message.contains("recipe v13 run ("), "{error:?}");
+    assert!(
+        error.message.contains("slicing = true, v_gates = 0")
+            && error.message.contains("pregrow = false"),
+        "{error:?}"
+    );
+    fs::write(&path, "tdp_command_recipe=14\n").unwrap();
+    assert_eq!(read_recipe_version(&path).unwrap(), 14);
     fs::remove_file(path).unwrap();
 }
 
@@ -1787,7 +1898,7 @@ fn embedded_masking_rejects_insufficient_band() {
 
 #[test]
 fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchanged() {
-    for version in [3, 4, 5, 6, 7, 8, 9, 10, 11] {
+    for version in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
         let base = temp_path("unsupported-version");
         let run_dir = base.join("run");
         let target_dir = base.join("target");
@@ -1816,7 +1927,9 @@ fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchang
                 error.message.contains("unsupported recipe version")
                     || error.message.contains("recipe v9 run")
                     || error.message.contains("recipe v10 run")
-                    || error.message.contains("recipe v11 run"),
+                    || error.message.contains("recipe v11 run")
+                    || error.message.contains("recipe v12 run")
+                    || error.message.contains("recipe v13 run"),
                 "{error:?}"
             );
             assert!(!target_dir.exists());
@@ -1944,8 +2057,14 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         let run_dir = base.join("run");
         let target_dir = base.join("target");
         mock_binaries(&target_dir);
+        // nonlinear291 takes the V gadget only with slicing: the N column here
+        let shape = if mode == "nonlinear291" {
+            "sandwich.v_gates = 0\n"
+        } else {
+            ""
+        };
         let recipe = format!(
-            "config_version = 5\nsource.wires = 4\nsource.gates = 1\npreprocessing.mode = {mode:?}\nrun.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.build_binaries = false\nrun.stop_after_stage = 2\n"
+            "config_version = 5\nsource.wires = 4\nsource.gates = 1\npreprocessing.mode = {mode:?}\n{shape}run.directory = {run_dir:?}\nrun.build_directory = {target_dir:?}\nrun.build_binaries = false\nrun.stop_after_stage = 2\n"
         );
         let config_path = base.join("recipe.toml");
         fs::write(&config_path, recipe).unwrap();
@@ -1959,7 +2078,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         run_inner(&matches).unwrap();
         let manifest_path = run_dir.join("tdp_command.conf");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
-        assert!(manifest.starts_with("tdp_command_recipe=13\n"));
+        assert!(manifest.starts_with("tdp_command_recipe=14\n"));
         assert!(manifest.contains(&format!("preprocessing_mode={mode}\n")));
         let seeds_path = run_dir.join("SEEDS");
         let seeds = fs::read_to_string(&seeds_path).unwrap();
@@ -1992,8 +2111,32 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
             }
         }
         let marker = fs::read_to_string(run_dir.join("stage12.recipe")).unwrap();
+        assert!(marker.starts_with("tdp_stage12_recipe=9\n"), "{marker}");
         assert!(marker.contains(&format!("preprocessing_mode={mode}\n")));
         assert!(marker.contains("gadget_seed_rule=gen\n"));
+        // the shape the manifest records is the one the marker records
+        let v = if mode == "nonlinear291" { "0" } else { "8" };
+        assert!(
+            marker.contains(&format!(
+                "sandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates={v}\n"
+            )),
+            "{marker}"
+        );
+        assert!(manifest.contains(&format!(
+            "sandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates={v}\n"
+        )));
+        assert!(
+            marker.contains("preprocessing_reverse_contract=1\n"),
+            "{marker}"
+        );
+        // ... and the one gen was given: a non-default shape only
+        let calls = fs::read_to_string(base.join("run.calls")).unwrap();
+        assert_eq!(
+            calls.contains("\"SANDWICH_V_GATES\": \"0\""),
+            mode == "nonlinear291",
+            "{calls}"
+        );
+        assert!(!calls.contains("SANDWICH_SLICING") && !calls.contains("STAGE2_REVERSE"));
         let calls = mock_calls(&base.join("run.calls"));
         let (name, args) = &calls[0];
         assert_eq!(name, "gen_sandwich_gadget");
@@ -2132,7 +2275,7 @@ fn three_mask_table_follows_its_mode() {
     assert!(m.contains("\npreprocessing_mode=three-mask\npreprocessing_preset=none\n"));
     assert!(
         m.contains(
-            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=bank\nthree_mask_interleave=0\nthree_mask_outer_blocks=L8\n"
+            "\nthree_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\nthree_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\nthree_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\nthree_mask_warmup=4\nthree_mask_segments=6\nthree_mask_mask_count=3\nthree_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=wire\nthree_mask_interleave=4096\nthree_mask_pregrow=1\nthree_mask_outer_blocks=L8\n"
         ),
         "{m}"
     );
@@ -2230,4 +2373,310 @@ fn adaptive_table_follows_the_delivery_mode() {
         crate::tdp::env_registry::classify("THREE_MASK_INVENTED")
             .is_some_and(|e| e.class == crate::tdp::env_registry::EnvClass::Forbidden)
     );
+}
+
+/// Recipe v14: the `[sandwich]` table (gen's stage-1 shape). Defaults are
+/// gen's; non-defaults travel as separate script flags (an explicit
+/// `v_gates` equal to the auto value is none); the manifest records the
+/// shape gen builds, auto resolved.
+#[test]
+fn sandwich_table_defaults_flags_and_manifest() {
+    use crate::stages::sandwich::{SandwichVariant, sandwich_default_s, sandwich_default_v};
+    let d = resolve_body("source.wires = 64").unwrap();
+    assert_eq!(d.sandwich, SandwichConfig::default());
+    assert_eq!(
+        d.sandwich.shape(64),
+        crate::stages::sandwich::SandwichShape::default_for(64)
+    );
+    assert_eq!(d.sandwich.v_gates_at(64), 384);
+    assert_eq!(d.sandwich.params_name(64), "default");
+    let args = strings(&script_args(&d));
+    assert!(
+        !args.iter().any(|a| a.starts_with("--sandwich-")),
+        "{args:?}"
+    );
+    let m = recipe_manifest(&d, &[], 1);
+    assert!(
+        m.contains("\nsandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\nsandwich_v_gates=384\npreprocessing_mode="),
+        "{m}"
+    );
+    // an explicit v_gates equal to the auto value builds the same shape:
+    // no flag, the same manifest
+    let explicit = resolve_body("source.wires = 64\nsandwich.v_gates = 384").unwrap();
+    assert_eq!(explicit.sandwich.v_gates, Some(384));
+    assert!(
+        !strings(&script_args(&explicit))
+            .iter()
+            .any(|a| a.starts_with("--sandwich-"))
+    );
+    assert_eq!(recipe_manifest(&explicit, &[], 1), m);
+    // the legacy shape: slice blocks and the N column
+    let legacy =
+        resolve_body("source.wires = 64\n[sandwich]\nslicing = true\nv_gates = 0").unwrap();
+    assert_eq!(legacy.sandwich, SandwichConfig::LEGACY);
+    assert_eq!(
+        legacy.sandwich.shape(64),
+        crate::stages::sandwich::SandwichShape::LEGACY
+    );
+    let args = strings(&script_args(&legacy));
+    for pair in [["--sandwich-slicing", "1"], ["--sandwich-v-gates", "0"]] {
+        assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+    }
+    assert!(!args.iter().any(|a| a == "--sandwich-layer"));
+    assert!(recipe_manifest(&legacy, &[], 1).contains(
+        "\nsandwich_params=legacy\nsandwich_slicing=1\nsandwich_layer=1\nsandwich_v_gates=0\n"
+    ));
+    // layered sampling and an explicit V size
+    let custom =
+        resolve_body("source.wires = 64\nsandwich.layer = 21\nsandwich.v_gates = 500").unwrap();
+    let args = strings(&script_args(&custom));
+    for pair in [["--sandwich-layer", "21"], ["--sandwich-v-gates", "500"]] {
+        assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+    }
+    assert!(!args.iter().any(|a| a == "--sandwich-slicing"));
+    assert!(recipe_manifest(&custom, &[], 1).contains(
+        "\nsandwich_params=custom\nsandwich_slicing=0\nsandwich_layer=21\nsandwich_v_gates=500\n"
+    ));
+    // the layer bound is n/3, with the reason
+    let error = resolve_body("source.wires = 64\nsandwich.layer = 22")
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("(sandwich.layer)") && error.contains("1..=21 = n/3"),
+        "{error}"
+    );
+    assert!(resolve_body("source.wires = 5\nsource.gates = 4\nsandwich.layer = 2").is_err());
+    resolve_body("source.wires = 6\nsource.gates = 4\nsandwich.layer = 2").unwrap();
+    // the validation agrees with gen's SandwichShape::validate (classic)
+    for n in [3usize, 4, 9, 64, 128] {
+        for layer in [1, n / 3, n / 3 + 1] {
+            for v in ["", "sandwich.v_gates = 0\n"] {
+                let body = format!(
+                    "source.wires = {n}\nsource.gates = 10\nsandwich.layer = {layer}\n{v}run.stop_after_stage = 3\n"
+                );
+                let shape = SandwichConfig {
+                    layer: layer as u64,
+                    v_gates: (!v.is_empty()).then_some(0),
+                    ..SandwichConfig::default()
+                }
+                .shape(n);
+                assert_eq!(
+                    resolve_body(&body).is_ok(),
+                    shape.validate(n, SandwichVariant::Classic).is_ok(),
+                    "n {n} layer {layer} {v}"
+                );
+            }
+        }
+    }
+    // scripts/tdp_gen.sh takes the auto V size as its s (V_AUTO=$S_SL)
+    for n in [3usize, 4, 5, 16, 63, 64, 65, 128, 256, 4095] {
+        assert_eq!(sandwich_default_v(n), sandwich_default_s(n), "n {n}");
+    }
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
+            .unwrap();
+    assert!(script.contains("V_AUTO=$S_SL\n"));
+    assert!(script.contains("SW_SLICING=0; SW_LAYER=1; SW_V_GATES=auto\n"));
+    // the legacy sandwich's size: |C| + |D| + 2s + n (2,832 gates at n=64)
+    assert_eq!(
+        SandwichConfig::LEGACY.gate_range(64, 1000),
+        Some((2832, 2832))
+    );
+    // the registry's defaults are these (the V size's is "auto")
+    let registry = |name: &str| crate::tdp::env_registry::classify(name).unwrap();
+    for (key, _, _, default) in SandwichConfig::default().fields(64) {
+        let entry = registry(&format!("SANDWICH_{}", key.to_uppercase()));
+        assert_eq!(entry.class, crate::tdp::env_registry::EnvClass::Driver);
+        let expected = if key == "v_gates" { "auto" } else { &default };
+        assert_eq!(entry.default, expected, "{key}");
+    }
+}
+
+/// Recipe v14: `preprocessing.reverse_contract` (STAGE2_REVERSE_CONTRACT).
+/// False is refused under nonlinear291 (no port guards) and with the
+/// adaptive stage 6, whose fail-fast payload contract checks the stage-5
+/// circuit against the sandwich in both directions: pinned below on a real
+/// forward-only stage 2.
+#[test]
+fn reverse_contract_follows_the_mode_and_stage_six() {
+    let d = resolve_body("source.wires = 64").unwrap();
+    assert!(d.reverse_contract);
+    assert!(
+        !strings(&script_args(&d))
+            .iter()
+            .any(|a| a == "--preprocessing-reverse-contract")
+    );
+    assert!(recipe_manifest(&d, &[], 1).contains("\npreprocessing_reverse_contract=1\n"));
+    for body in [
+        "delivery.mode = \"windowed\"",
+        "run.skip_stages = [6]",
+        "run.stop_after_stage = 5",
+        "preprocessing.mode = \"embedded-masking\"\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true",
+    ] {
+        let c = resolve_body(&format!(
+            "source.wires = 64\npreprocessing.reverse_contract = false\n{body}"
+        ))
+        .unwrap();
+        assert!(!c.reverse_contract);
+        assert!(
+            strings(&script_args(&c))
+                .windows(2)
+                .any(|w| w == ["--preprocessing-reverse-contract", "0"]),
+            "{body}"
+        );
+        assert!(recipe_manifest(&c, &[], 1).contains("\npreprocessing_reverse_contract=0\n"));
+    }
+    let error = resolve_body("source.wires = 64\npreprocessing.reverse_contract = false")
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("(preprocessing.reverse_contract)") && error.contains("both directions"),
+        "{error}"
+    );
+    let error = resolve_body(
+        "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\npreprocessing.reverse_contract = false\nrun.skip_stages = [6]",
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("guarded mode"), "{error}");
+    assert_eq!(
+        crate::tdp::env_registry::classify("STAGE2_REVERSE_CONTRACT").map(|e| (e.class, e.default)),
+        Some((crate::tdp::env_registry::EnvClass::Driver, "1"))
+    );
+
+    // tdp_adaptive's payload contract on a real stage 2 (n = 8, the default
+    // stage-1 shape, three-mask v3): kept passes, forward-only fails
+    use crate::stages::adaptive::driver::payload_contract;
+    use crate::stages::preprocessing::embedded_masking::EmbeddedMaskingParams;
+    use crate::stages::preprocessing::three_mask::ThreeMaskParams;
+    use crate::stages::preprocessing::{PreprocessingParams, preprocess_sandwich_ports};
+    use crate::stages::sandwich::{
+        SandwichShape, SandwichVariant, SourceConstruction, construct_shaped_sandwich,
+        prepare_source,
+    };
+    use rand::SeedableRng;
+    let n = 8;
+    let (source_seed, gadget_seed, sandwich_seed) = (61, 67, 71);
+    let source = prepare_source(n, 24, source_seed, None, SourceConstruction::Random).unwrap();
+    let (sandwich, _) = construct_shaped_sandwich(
+        &source,
+        n,
+        24,
+        24,
+        SandwichVariant::Classic,
+        sandwich_seed,
+        SandwichShape::default_for(n),
+    )
+    .unwrap();
+    for reverse_contract in [true, false] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E);
+        let stage2 = preprocess_sandwich_ports(
+            &sandwich,
+            n,
+            160,
+            SandwichVariant::Classic,
+            &PreprocessingParams::ThreeMask {
+                params: ThreeMaskParams::v3(gadget_seed, 0),
+                outer: EmbeddedMaskingParams::preset_l8(gadget_seed, n),
+                balanced_seed: true,
+                seed_fill_nl: 4,
+            },
+            reverse_contract,
+            &mut rng,
+        )
+        .unwrap();
+        let checked = payload_contract(
+            &sandwich.gates,
+            sandwich.num_wires,
+            &stage2.circuit.gates,
+            stage2.circuit.num_wires,
+            n,
+        );
+        assert_eq!(checked.is_ok(), reverse_contract, "{checked:?}");
+        if let Err(error) = checked {
+            assert!(format!("{error:?}").contains("inverse"), "{error:?}");
+        }
+    }
+}
+
+/// Recipe v14: the `[three_mask]` defaults are gen's (`ThreeMaskParams::v3`:
+/// wire turnover, interleave 4096, pre-growth), which is why the drivers pass
+/// only non-defaults; the bash driver and the environment registry carry the
+/// same defaults.
+#[test]
+fn three_mask_defaults_are_gens_v3() {
+    use crate::stages::preprocessing::three_mask::ThreeMaskParams;
+    let d = ThreeMaskConfig::default();
+    let v3 = ThreeMaskParams::v3(1, 0);
+    assert_eq!(
+        (
+            d.band_wires as usize,
+            d.banks as usize,
+            d.retire_budget as usize,
+            d.max_retiring as usize,
+            d.rotation as usize,
+            d.maturity as usize,
+            d.visit_sweeps as usize,
+            d.growth as usize,
+            d.warmup as usize,
+            d.segments as usize,
+            d.mask_count as usize,
+        ),
+        (
+            v3.band_wires,
+            v3.banks,
+            v3.retirement_budget,
+            v3.max_retiring,
+            v3.rotation_interval,
+            v3.maturity_sweeps,
+            v3.growth_sweeps_per_visit,
+            v3.growth_per_fire,
+            v3.warmup_sweeps,
+            v3.migration_segments,
+            v3.mask_count,
+        )
+    );
+    assert_eq!(
+        (
+            d.random_helpers,
+            d.unique_cover,
+            d.turnover == "wire",
+            d.interleave as usize,
+            d.pregrow
+        ),
+        (
+            v3.random_helpers,
+            v3.unique_cover,
+            v3.wire_turnover,
+            v3.interleave_window,
+            v3.pregrow
+        )
+    );
+    // pre-growth off: a flag, a custom manifest
+    let off = resolve_body("three_mask.pregrow = false").unwrap();
+    assert!(
+        strings(&script_args(&off))
+            .windows(2)
+            .any(|w| w == ["--three-mask-pregrow", "0"])
+    );
+    let m = recipe_manifest(&off, &[], 1);
+    assert!(m.contains("\nthree_mask_params=custom\n") && m.contains("\nthree_mask_pregrow=0\n"));
+    // the registry and scripts/tdp_gen.sh start from the same values
+    for (key, _, _, default) in d.fields() {
+        let name = format!("THREE_MASK_{}", key.to_uppercase());
+        let entry = crate::tdp::env_registry::classify(&name).unwrap();
+        assert_eq!(entry.class, crate::tdp::env_registry::EnvClass::Recipe);
+        assert_eq!(entry.default, default, "{name}");
+    }
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
+            .unwrap();
+    let base = &script[script.find("declare -A TM_BASE=(").unwrap()..];
+    let base = &base[..base.find(")\n").unwrap()];
+    for (key, flag, _, default) in d.fields() {
+        assert!(
+            base.contains(&format!("[{flag}]={default}")),
+            "TM_BASE lacks [{flag}]={default} ({key})"
+        );
+    }
 }

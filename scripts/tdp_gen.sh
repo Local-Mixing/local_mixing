@@ -5,12 +5,15 @@
 #
 # Stages (every stage after the first is optional: --run-skip-stages; the
 # default runs all six):
-#   1+2  gen_sandwich_gadget: sliced sandwich S of a secret source C (any
+#   1+2  gen_sandwich_gadget: the sandwich S of a secret source C (any
 #        reversible gates with up to two controls, taken in the g57 form
 #        a ^= x OR NOT y through --source-path, or generated: uniformly random
-#        or, with --source-construction balanced, RC's balanced construction),
+#        or, with --source-construction balanced, RC's balanced construction;
+#        since recipe v14 no slice blocks, the V gadget on the payload
+#        register and random circuits sampled gate by gate: --sandwich-*),
 #        then the three-mask compute inside the L8 outer blocks (the DEFAULT
-#        since recipe v13; knobs --three-mask-*), embedded masking
+#        since recipe v13; knobs --three-mask-*; since v14 wire turnover,
+#        interleave 4096 and pre-growth), embedded masking
 #        (--preprocessing-mode embedded-masking, preset L8 by default; A = no
 #        bounded chains) or nonlinear291.
 #        The later stages mix this structure built around C, not C itself.
@@ -47,12 +50,14 @@
 #        object and is unpacked by the recipient.
 #
 # With --preprocessing-mode embedded-masking the defaults of stages 1-3 and
-# the windowed packer reproduce scripts/windowed_delivery/waist/val_chain.sh
-# CONFIG=L8 as run for the chosen validation runs vL64a/b, vL128a/b: same gen
-# argv and stage-2 environment, same mixer argv and environment (serial), the
-# same packer (bit-exact port of the Python oracle); `--preprocessing-mode
-# embedded-masking --run-skip-stages 4,5 --delivery-mode windowed
-# --delivery-anf-only` is that four-stage chain exactly. Stages 4 and 5 run with the flags of the archive-era driver
+# the windowed packer run scripts/windowed_delivery/waist/val_chain.sh
+# CONFIG=L8 on the same binaries: same gen argv and stage-2 environment, same
+# mixer argv and environment (serial), the same packer (bit-exact port of the
+# Python oracle); `--preprocessing-mode embedded-masking --run-skip-stages
+# 4,5 --delivery-mode windowed --delivery-anf-only` is that four-stage chain
+# exactly, and with `--sandwich-slicing 1 --sandwich-v-gates 0` (the stage 1
+# of recipe v13 and earlier) it reproduces the chosen validation runs
+# vL64a/b, vL128a/b. Stages 4 and 5 run with the flags of the archive-era driver
 # (ea2e516f). Seeds are fresh CSPRNG draws kept in the private $RUN/SEEDS
 # (format 3: gen, mix, split, cross and unpack seeds; the unpack seed is the
 # delivery stage's); explicit seeds (--seed-file) are for calibration and
@@ -101,7 +106,17 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
   --source-construction C  random (default) or balanced (RC's construction: every
                            internal value of C read exactly twice); exclusive with
                            --source-path
+  stage-1 shape (the sandwich around C; defaults since recipe v14):
+    --sandwich-slicing 0|1     [0; 1 = slice blocks S1/S2 interleaved with C and D]
+    --sandwich-layer W         [1; sample the random C, D and V in layers of W
+                               wire-disjoint gates, 1..n/3]
+    --sandwich-v-gates N|auto  [auto = round(n·log2 n); 0 = no V gadget (the N column of
+                               copy CNOTs); with nonlinear291 only 0 or --sandwich-slicing 1]
   --preprocessing-mode M   three-mask (default), embedded-masking or nonlinear291
+  --preprocessing-reverse-contract 0|1
+                           [1; 0 = forward payload only: the opening guard covers all
+                           data wires, no closing guard; not with nonlinear291, not with
+                           the adaptive stage 6 (it checks the payload both ways)]
   --preprocessing-preset P L8 (default) | A | custom (embedded-masking only; the three-mask
                            default has no preset: its outer blocks are L8)
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
@@ -117,12 +132,13 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --preprocessing-seed-avoid-c1 0|1      [0]
     --preprocessing-chain K                [0; 0 = off, 0..64]
     --preprocessing-chain-len L            [0; 0..1000000]
-    three-mask only (defaults = the campaign configuration "three-mask modified / v2";
+    three-mask only (defaults = gen's ThreeMaskParams::v3: the campaign configuration
+    "three-mask modified / v2" with wire turnover, interleave 4096 and pre-growth;
     the outer blocks are preset L8):
     --three-mask-band-wires R     [0 = auto: max(2n, 128) rounded up to a multiple of 32]
-    --three-mask-banks B          [0 = auto: banks of 16 wires; else even, >= 4]
+    --three-mask-banks B          [0 = auto: banks of 16 wires; else even, >= 4 (bank turnover)]
     --three-mask-retire-budget K  [2]
-    --three-mask-max-retiring K   [0 = auto; else < banks/2]
+    --three-mask-max-retiring K   [0 = auto; else < banks/2 (wire turnover: < cohorts/2)]
     --three-mask-rotation I       [1]
     --three-mask-maturity S       [2]
     --three-mask-visit-sweeps S   [2]
@@ -132,8 +148,10 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --three-mask-mask-count K     [3; 1..3]
     --three-mask-random-helpers 0|1  [1]
     --three-mask-unique-cover 0|1    [1]
-    --three-mask-turnover bank|wire  [bank; wire = per-wire turnover in cohorts of 16, banks must be 0]
-    --three-mask-interleave W        [0 = off; else the fire-interleaving window in gates]
+    --three-mask-turnover wire|bank  [wire = per-wire turnover in cohorts of 16 (banks must be 0);
+                                     bank = the design's bank rotation]
+    --three-mask-interleave W        [4096; the fire-interleaving window in gates, 0 = off]
+    --three-mask-pregrow 0|1         [1; pre-grow the serving half of the band before the first masks]
   --db-mixing-schedule S   validated (default: profile 2,2,2,2,2, moves int(4·G·1.3))
                            or custom:
     --db-mixing-growth-work-units G        [3]  profile n0
@@ -250,7 +268,8 @@ if [ "${#refused[@]}" -gt 0 ]; then
 fi
 
 N=""; RUN=""; SEED_FILE=""; MCD=""; MCD_RULE=validated; SOURCE_PATH=""; SOURCE_CONSTRUCTION=random
-PREPROCESSING_MODE=three-mask; PRESET=""
+SW_SLICING=0; SW_LAYER=1; SW_V_GATES=auto
+PREPROCESSING_MODE=three-mask; PRESET=""; REV_CONTRACT=1
 declare -A KNOB=()
 declare -A TM=()
 DELIV_MODE=adaptive
@@ -269,7 +288,7 @@ PACK_SPLIT_BUDGET=65536; PACK_FIX_ITERATIONS=4; PACK_FALLBACK_ITERATIONS=4; PACK
 PACK_ALLOW_FLOOR=0; PACK_ALLOW_BUDGET=0
 declare -A SEEN=()
 KNOB_FLAGS=" --preprocessing-mask-pair-wires --preprocessing-max-open-masks --preprocessing-min-open-masks --preprocessing-balanced-masks --preprocessing-shuffling-segments --preprocessing-shuffling-return-home --preprocessing-premask --preprocessing-seed-avoid-c1 --preprocessing-chain --preprocessing-chain-len "
-TM_FLAGS=" --three-mask-band-wires --three-mask-banks --three-mask-retire-budget --three-mask-max-retiring --three-mask-rotation --three-mask-maturity --three-mask-visit-sweeps --three-mask-growth --three-mask-warmup --three-mask-segments --three-mask-mask-count --three-mask-random-helpers --three-mask-unique-cover --three-mask-turnover --three-mask-interleave "
+TM_FLAGS=" --three-mask-band-wires --three-mask-banks --three-mask-retire-budget --three-mask-max-retiring --three-mask-rotation --three-mask-maturity --three-mask-visit-sweeps --three-mask-growth --three-mask-warmup --three-mask-segments --three-mask-mask-count --three-mask-random-helpers --three-mask-unique-cover --three-mask-turnover --three-mask-interleave --three-mask-pregrow "
 while [ $# -gt 0 ]; do
   case "$1" in
     -n) set -- --source-wires "${@:2}" ;;
@@ -317,7 +336,11 @@ while [ $# -gt 0 ]; do
     --source-gates-rule) MCD_RULE=$2; shift 2 ;;
     --source-path) SOURCE_PATH=$2; shift 2 ;;
     --source-construction) SOURCE_CONSTRUCTION=$2; shift 2 ;;
+    --sandwich-slicing) SW_SLICING=$2; shift 2 ;;
+    --sandwich-layer) SW_LAYER=$2; shift 2 ;;
+    --sandwich-v-gates) SW_V_GATES=$2; shift 2 ;;
     --preprocessing-mode) PREPROCESSING_MODE=$2; shift 2 ;;
+    --preprocessing-reverse-contract) REV_CONTRACT=$2; shift 2 ;;
     --three-mask-*)
       [[ $TM_FLAGS == *" $1 "* ]] || fatal "unknown argument $1"
       TM[${1#--three-mask-}]=$2; shift 2 ;;
@@ -482,18 +505,20 @@ KNOB_ORDER=(mask-pair-wires max-open-masks min-open-masks balanced-masks shuffli
   shuffling-return-home premask seed-avoid-c1 chain chain-len)
 declare -A EFF=()
 GEN_ENV=()
-# ---- three-mask knobs (--preprocessing-mode three-mask only; defaults = the
-# campaign configuration "three-mask modified / v2"; the outer blocks are L8) ----
+# ---- three-mask knobs (--preprocessing-mode three-mask only; defaults = gen's
+# ThreeMaskParams::v3: the campaign configuration "three-mask modified / v2"
+# with wire turnover, interleave 4096 and pre-growth; the outer blocks are L8) ----
 declare -A TM_BASE=([band-wires]=0 [banks]=0 [retire-budget]=2 [max-retiring]=0 [rotation]=1 [maturity]=2
   [visit-sweeps]=2 [growth]=8 [warmup]=4 [segments]=6 [mask-count]=3 [random-helpers]=1 [unique-cover]=1
-  [turnover]=bank [interleave]=0)
+  [turnover]=wire [interleave]=4096 [pregrow]=1)
 declare -A TM_VAR=([band-wires]=THREE_MASK_BAND_WIRES [banks]=THREE_MASK_BANKS [retire-budget]=THREE_MASK_RETIRE_BUDGET
   [max-retiring]=THREE_MASK_MAX_RETIRING [rotation]=THREE_MASK_ROTATION [maturity]=THREE_MASK_MATURITY
   [visit-sweeps]=THREE_MASK_VISIT_SWEEPS [growth]=THREE_MASK_GROWTH [warmup]=THREE_MASK_WARMUP
   [segments]=THREE_MASK_SEGMENTS [mask-count]=THREE_MASK_MASK_COUNT [random-helpers]=THREE_MASK_RANDOM_HELPERS
-  [unique-cover]=THREE_MASK_UNIQUE_COVER [turnover]=THREE_MASK_TURNOVER [interleave]=THREE_MASK_INTERLEAVE)
+  [unique-cover]=THREE_MASK_UNIQUE_COVER [turnover]=THREE_MASK_TURNOVER [interleave]=THREE_MASK_INTERLEAVE
+  [pregrow]=THREE_MASK_PREGROW)
 TM_ORDER=(band-wires banks retire-budget max-retiring rotation maturity visit-sweeps growth warmup segments
-  mask-count random-helpers unique-cover turnover interleave)
+  mask-count random-helpers unique-cover turnover interleave pregrow)
 declare -A TM_EFF=()
 if [ "$PREPROCESSING_MODE" != three-mask ] && [ "${#TM[@]}" -gt 0 ]; then
   for k in "${!TM[@]}"; do fatal "--three-mask-$k is only valid with --preprocessing-mode three-mask"; done
@@ -523,16 +548,24 @@ if [ "$PREPROCESSING_MODE" != embedded-masking ]; then
       *) fatal "--three-mask-turnover must be bank or wire" ;;
     esac
     TM_EFF[interleave]=$(bounded_uint --three-mask-interleave "$(tv interleave)" 0 100000000)
+    TM_EFF[pregrow]=$(bounded_uint --three-mask-pregrow "$(tv pregrow)" 0 1)
     [ "${TM_EFF[turnover]}" != wire ] || [ "${TM_EFF[banks]}" -eq 0 ] ||
-      fatal "--three-mask-banks must be 0 under --three-mask-turnover wire (cohorts of 16 wires)"
+      fatal "--three-mask-banks must be 0 under --three-mask-turnover wire (the default since recipe v14: cohorts of 16 wires); explicit banks need --three-mask-turnover bank"
     r=${TM_EFF[band-wires]}
     [ "$r" -eq 0 ] || { [ "$r" -ge 64 ] && [ $((r % 16)) -eq 0 ]; } ||
       fatal "--three-mask-band-wires must be 0 (auto) or at least 64 and a multiple of 16"
     [ "${TM_EFF[banks]}" -eq 0 ] || { [ "${TM_EFF[banks]}" -ge 4 ] && [ $((TM_EFF[banks] % 2)) -eq 0 ]; } ||
       fatal "--three-mask-banks must be 0 (auto: banks of 16 wires) or even and at least 4"
-    # the resolved geometry the compute requires (an even bank count, even banks of >= 8 wires)
+    # the resolved geometry the compute requires (an even bank or cohort count,
+    # even banks of >= 8 wires); the auto band, max(2n, 128) rounded up to a
+    # multiple of 32, always qualifies
     [ "$r" -eq 0 ] || [ "${TM_EFF[banks]}" -ne 0 ] || [ $((r % 32)) -eq 0 ] ||
-      fatal "--three-mask-band-wires must be a multiple of 32 under --three-mask-banks 0 (auto: banks of 16 wires, an even count)"
+      fatal "--three-mask-band-wires must be a multiple of 32 under --three-mask-banks 0 (auto banks of 16 wires, or the cohorts of 16 of --three-mask-turnover wire, in an even count)"
+    if [ "${TM_EFF[turnover]}" = wire ] && [ "${TM_EFF[max-retiring]}" -ne 0 ]; then
+      band=$r; [ "$band" -ne 0 ] || { band=$((2 * N)); [ "$band" -ge 128 ] || band=128; band=$(( (band + 31) / 32 * 32 )); }
+      [ "${TM_EFF[max-retiring]}" -lt $((band / 32)) ] ||
+        fatal "--three-mask-max-retiring must be 0 (auto) or less than half the cohort count under --three-mask-turnover wire ($((band / 16)) cohorts of 16 in a $band-wire band)"
+    fi
     [ "$r" -eq 0 ] || [ "${TM_EFF[banks]}" -eq 0 ] ||
       { [ $((r % TM_EFF[banks])) -eq 0 ] && [ $((r / TM_EFF[banks])) -ge 8 ] && [ $(((r / TM_EFF[banks]) % 2)) -eq 0 ]; } ||
       fatal "--three-mask-band-wires must divide into --three-mask-banks even banks of at least 8 wires"
@@ -725,11 +758,41 @@ l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
+
+# ---- stage-1 shape (gen's SandwichShape: SANDWICH_SLICING, SANDWICH_LAYER,
+# SANDWICH_V_GATES) and the stage-2 port contract (STAGE2_REVERSE_CONTRACT) ----
+SW_SLICING=$(bounded_uint --sandwich-slicing "$SW_SLICING" 0 1)
+SW_LAYER=$(bounded_uint --sandwich-layer "$SW_LAYER" 1 4095)
+[ $((3 * SW_LAYER)) -le "$N" ] ||
+  fatal "--sandwich-layer $SW_LAYER: need 1 <= W <= n/3 = $((N / 3)) (each gate of a layer takes three distinct wires)"
+# auto = sandwich_default_v(n) = sandwich_default_s(n) = max(n, round(n log2 n)) = S_SL
+V_AUTO=$S_SL
+if [ "$SW_V_GATES" = auto ]; then V_EFF=$V_AUTO; else V_EFF=$(bounded_uint --sandwich-v-gates "$SW_V_GATES" 0 1000000000); fi
+# nonlinear291's templates take r57, nab, positive-AND and positive-copy gates:
+# the V gadget's copy qualifies only zero-preserving, i.e. with the slice blocks
+[ "$PREPROCESSING_MODE" != nonlinear291 ] || [ "$V_EFF" -eq 0 ] || [ "$SW_SLICING" = 1 ] ||
+  fatal "nonlinear291 takes the V gadget ($V_EFF gates) only with --sandwich-slicing 1: without the slice blocks its copy writes two-control conjunctions of either polarity, which nonlinear291's templates do not cover; set --sandwich-v-gates 0 (the N column of copy CNOTs) or --sandwich-slicing 1"
+REV_CONTRACT=$(bounded_uint --preprocessing-reverse-contract "$REV_CONTRACT" 0 1)
+[ "$REV_CONTRACT" = 1 ] || [ "$PREPROCESSING_MODE" != nonlinear291 ] ||
+  fatal "--preprocessing-reverse-contract 0 needs a guarded mode (embedded-masking or three-mask): nonlinear291 has no port guards"
+# tdp_adaptive checks the stage-5 circuit against the sandwich forward and inverse
+[ "$REV_CONTRACT" = 1 ] || ! adaptive_on ||
+  fatal "--preprocessing-reverse-contract 0 keeps only the forward payload, but the adaptive stage 6 checks the payload contract against the sandwich in both directions; use --delivery-mode windowed, or skip stage 6 or stop before it"
+# the sandwich's gate count (shaped_sandwich_gate_range): exact without the V
+# gadget; with it the maximum (the recovery's polarity corrections are drawn)
+if [ "$V_EFF" -eq 0 ]; then
+  SW_GATES=$(( 2 * M_CD + 2 * S_SL * SW_SLICING + N )); SW_EXACT=1
+else
+  SW_GROUPS=$(( N / 3 )); SW_FREE=$(( N - SW_GROUPS ))
+  SW_GATES=$(( 2 * M_CD + 2 * S_SL * SW_SLICING + 2 * N + 2 * V_EFF + SW_GROUPS + 3 * (SW_FREE - SW_GROUPS) + SW_FREE * (2 - SW_SLICING) ))
+  SW_EXACT=0
+fi
 if [ "$PREPROCESSING_MODE" = nonlinear291 ] && stage_on 6; then
-  # nonlinear_tdp_wire_count(2n, 2|C|+2s+n): 12 per logical wire, 12 per gate, 29 shared
-  NL_WIRES=$(( 12 * 2 * N + 12 * (2 * M_CD + 2 * S_SL + N) + 29 ))
+  # nonlinear_tdp_wire_count(2n, sandwich gates): 12 per logical wire, 12 per gate, 29 shared
+  NL_WIRES=$(( 12 * 2 * N + 12 * SW_GATES + 29 ))
+  if [ "$SW_EXACT" = 1 ]; then NL_TEXT="a $NL_WIRES-wire stage-2 circuit"; else NL_TEXT="a stage-2 circuit of up to $NL_WIRES wires"; fi
   [ "$NL_WIRES" -le 1024 ] ||
-    fatal "nonlinear291 makes a $NL_WIRES-wire stage-2 circuit; stage 6 (delivery) supports at most 1024 state wires; stop before stage 6 or use --preprocessing-mode embedded-masking"
+    fatal "nonlinear291 makes $NL_TEXT; stage 6 (delivery) supports at most 1024 state wires; stop before stage 6 or use --preprocessing-mode embedded-masking"
 fi
 
 # Renamed stage artifacts must not make an existing legacy run look fresh.
@@ -809,7 +872,7 @@ read_seed_file() { # PATH -> sets EXPL_GEN EXPL_MIX EXPL_SPLIT EXPL_CROSS EXPL_U
   [ $((8#$mode & 8#077)) -eq 0 ] || fatal "--seed-file $f must not be accessible by group/other (chmod 600)"
   mapfile -t lines < "$f"
   if [ "${#lines[@]}" -eq 1 ] && [[ ${lines[0]} =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
-    fatal "seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
+    fatal "seed file format 1 holds one seed; recipe v14 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)"
   fi
   EXPL_GEN=""; EXPL_MIX=""; EXPL_SPLIT=""; EXPL_CROSS=""; EXPL_UNPACK=""
   for l in "${lines[@]}"; do
@@ -881,14 +944,19 @@ gates_of() { head -1 "$1" | awk '{print $3}'; }
 mac() { python3 -I "$LIB/run_mac.py" "$SEEDS" "$@"; }
 sha_of() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 
-# ---- stage-2 identity marker (tdp_stage12_recipe=7) ----
+# ---- stage-2 identity marker (tdp_stage12_recipe=9: recipe v14's stage-1
+# shape and port contract) ----
 STAGE12_RECIPE=(
-  "tdp_stage12_recipe=8"
+  "tdp_stage12_recipe=9"
   "gen_binary_sha256=$(sha_of "$BIN/gen_sandwich_gadget")"
   "sandwich_variant=classic"
+  "sandwich_slicing=$SW_SLICING"
+  "sandwich_layer=$SW_LAYER"
+  "sandwich_v_gates=$V_EFF"
   "source_construction=$SOURCE_CONSTRUCTION"
   "preprocessing_mode=$PREPROCESSING_MODE"
   "preprocessing_preset=$PRESET"
+  "preprocessing_reverse_contract=$REV_CONTRACT"
 )
 if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
   for k in "${KNOB_ORDER[@]}"; do STAGE12_RECIPE+=("preprocessing_${k//-/_}=${EFF[$k]}"); done
@@ -919,7 +987,7 @@ if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
 fi
 
 size_note=""; [ "$MCD_RULE" != formula ] || size_note=" UNVALIDATED SIZE"
-note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) source=$SOURCE_CONSTRUCTION s=$S_SL slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION delivery=$DELIV_MODE"
+note "run=$RUN n=$N |C|=|D|=$M_CD (rule $MCD_RULE$size_note) source=$SOURCE_CONSTRUCTION s=$S_SL slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF slice_gates=$SLICE_G mode=$PREPROCESSING_MODE preset=$PRESET reverse_contract=$REV_CONTRACT schedule=$SCHEDULE profile=$PROFILE stage3=$PIECE_DESCRIPTION delivery=$DELIV_MODE"
 note "seeds: $SEED_SRC (values never printed)"
 for v in ${ignored[@]+"${ignored[@]}"}; do note "inherited $v ignored: cache sizes are set by the driver (exact memo caches; stage-3 bytes matched the reference runs under the built-in sizes)"; done
 
@@ -928,6 +996,11 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   RECIPE_ENV=(${GEN_ENV[@]+"${GEN_ENV[@]}"})
   [ -z "$SOURCE_PATH" ] || RECIPE_ENV+=(TDP_SOURCE_C="$SOURCE_PATH")
   [ "$SOURCE_CONSTRUCTION" = random ] || RECIPE_ENV+=(TDP_SOURCE_CONSTRUCTION="$SOURCE_CONSTRUCTION")
+  # the stage-1 shape and the port contract, each only when not gen's default
+  [ "$SW_SLICING" = 0 ] || RECIPE_ENV+=(SANDWICH_SLICING="$SW_SLICING")
+  [ "$SW_LAYER" = 1 ] || RECIPE_ENV+=(SANDWICH_LAYER="$SW_LAYER")
+  [ "$V_EFF" = "$V_AUTO" ] || RECIPE_ENV+=(SANDWICH_V_GATES="$V_EFF")
+  [ "$REV_CONTRACT" = 1 ] || RECIPE_ENV+=(STAGE2_REVERSE_CONTRACT=0)
   # val_chain.sh's argv, except that the three seeds (all = the gen seed) arrive
   # as @/dev/fd/N here-strings: a seed on argv is visible in ps to every local
   # user, and the gen seed regenerates C. gen prints them as "(file)".
@@ -944,6 +1017,10 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   else
     rm -f "$GADGET"; fatal "gen used a different seed than SEEDS (its banner does not show the three driver-supplied seeds); stage-2 artifact removed"
   fi
+  # the banner's last fields: the shape and port contract gen built (a gen
+  # that ignores SANDWICH_* would build another stage 1 than the marker says)
+  [[ $banner == *" slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT" ]] ||
+    { rm -f "$GADGET"; fatal "gen built another stage-1 shape or port contract than requested (its banner does not end with slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT); stage-2 artifact removed"; }
   printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
   mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
   [ "$FORCE_FROM" -le 3 ] || FORCE_FROM=3

@@ -52,6 +52,41 @@ where
             &format!("expected \"random\" or \"balanced\"; got {construction_value:?}"),
         )
     })?;
+    // [sandwich]: the stage-1 shape (gen's SANDWICH_*; SandwichShape::validate
+    // with the classic variant, the only one the managed driver builds)
+    let sd = SandwichConfig::default();
+    let layer_max = (n / 3) as u64;
+    let layer = match raw.value("sandwich_layer") {
+        None => sd.layer,
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|w| (1..=layer_max).contains(w))
+            .ok_or_else(|| {
+                config_error(
+                    raw,
+                    "sandwich_layer",
+                    &format!(
+                        "must be in 1..={layer_max} = n/3 (each gate of a layer takes three distinct wires), got {value}"
+                    ),
+                )
+            })?,
+    };
+    let sandwich = SandwichConfig {
+        slicing: parse_bool(raw, "sandwich_slicing", sd.slicing)?,
+        layer,
+        v_gates: parse_optional_u64(raw, "sandwich_v_gates", 0, 1_000_000_000)?
+            .map(|v| v.parse().expect("validated")),
+    };
+    // preprocessing.reverse_contract: the port guards of the guarded modes
+    let reverse_contract = parse_bool(raw, "reverse_contract", true)?;
+    if !reverse_contract && preprocessing_mode == PreprocessingMode::Nonlinear291 {
+        return Err(config_error(
+            raw,
+            "reverse_contract",
+            "false needs a guarded mode (embedded-masking or three-mask): nonlinear291 has no port guards",
+        ));
+    }
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
         .value("calibration_seed_file")
@@ -208,7 +243,7 @@ where
         }
     };
     // [three_mask]: only under preprocessing.mode = "three-mask"
-    const THREE_MASK_KEYS: [&str; 15] = [
+    const THREE_MASK_KEYS: [&str; 16] = [
         "three_mask_band_wires",
         "three_mask_banks",
         "three_mask_retire_budget",
@@ -224,6 +259,7 @@ where
         "three_mask_unique_cover",
         "three_mask_turnover",
         "three_mask_interleave",
+        "three_mask_pregrow",
     ];
     if preprocessing_mode != PreprocessingMode::ThreeMask
         && let Some(key) = THREE_MASK_KEYS
@@ -268,6 +304,7 @@ where
             }
         },
         interleave: tm_u64("three_mask_interleave", tm.interleave, 0, 100_000_000)?,
+        pregrow: parse_bool(raw, "three_mask_pregrow", tm.pregrow)?,
     };
     if preprocessing_mode == PreprocessingMode::ThreeMask {
         let r = three_mask.band_wires;
@@ -319,21 +356,27 @@ where
             ));
         }
         if three_mask.turnover == "wire" {
-            // cohorts of 16 wires are formed by the compute; banks must stay 0
+            // cohorts of 16 wires are formed by the compute; banks must stay
+            // 0 and the band (auto: always) a multiple of 32
             if let Err(error) = validate_wire_geometry(
                 band,
                 three_mask.banks as usize,
                 three_mask.max_retiring as usize,
             ) {
-                let key = if three_mask.banks != 0 {
-                    "three_mask_banks"
+                let (key, hint) = if three_mask.banks != 0 {
+                    (
+                        "three_mask_banks",
+                        "; explicit banks need three_mask.turnover = \"bank\" (\"wire\" is the default since recipe v14)",
+                    )
+                } else if band < 64 || !band.is_multiple_of(32) {
+                    ("three_mask_band_wires", "")
                 } else {
-                    "three_mask_band_wires"
+                    ("three_mask_max_retiring", "")
                 };
                 return Err(config_error(
                     raw,
                     key,
-                    &format!("wire turnover, resolved band {band} wires: {error}"),
+                    &format!("wire turnover, resolved band {band} wires: {error}{hint}"),
                 ));
             }
         } else if let Err(error) = validate_geometry(band, banks, three_mask.max_retiring as usize)
@@ -422,18 +465,28 @@ where
             }
         },
     };
-    // nonlinear291's state width (embedded masking's is 4n <= 1024 for n <= 256)
+    // nonlinear291's state width (embedded masking's is 4n <= 1024 for n <= 256),
+    // sized by the sandwich's gate count: exact without the V gadget, its
+    // maximum with it (the recovery's polarity corrections are drawn)
     let mut nonlinear_state_wires = None;
+    let mut nonlinear_width_exact = true;
     if preprocessing_mode == PreprocessingMode::Nonlinear291 {
-        let m = mcd;
-        let s = sandwich_default_s(n);
-        let gate_count = m
-            .checked_mul(2)
-            .and_then(|count| count.checked_add(s.checked_mul(2)?))
-            .and_then(|count| count.checked_add(n))
-            .ok_or_else(|| {
-                config_error(raw, "preprocessing_mode", "sandwich gate-count overflow")
-            })?;
+        // its templates take r57, nab, positive-AND and positive-copy gates:
+        // the V gadget's copy qualifies only zero-preserving (with slicing)
+        if sandwich.v_gates_at(n) > 0 && !sandwich.slicing {
+            return Err(config_error(
+                raw,
+                "sandwich_v_gates",
+                &format!(
+                    "nonlinear291 takes the V gadget ({} gates) only with sandwich.slicing = true: without the slice blocks its copy writes two-control conjunctions of either polarity, which nonlinear291's templates do not cover; set sandwich.v_gates = 0 (the N column of copy CNOTs) or sandwich.slicing = true",
+                    sandwich.v_gates_at(n)
+                ),
+            ));
+        }
+        let (fewest, gate_count) = sandwich.gate_range(n, mcd).ok_or_else(|| {
+            config_error(raw, "preprocessing_mode", "sandwich gate-count overflow")
+        })?;
+        nonlinear_width_exact = fewest == gate_count;
         let logical_n = n.checked_mul(2).ok_or_else(|| {
             config_error(raw, "preprocessing_mode", "logical wire-count overflow")
         })?;
@@ -555,11 +608,16 @@ where
         && stage_on(6)
         && state_wires > STAGE4_MAX_STATE_WIRES
     {
+        let width = if nonlinear_width_exact {
+            format!("a {state_wires}-wire stage-2 circuit")
+        } else {
+            format!("a stage-2 circuit of up to {state_wires} wires")
+        };
         return Err(config_error(
             raw,
             "preprocessing_mode",
             &format!(
-                "nonlinear291 makes a {state_wires}-wire stage-2 circuit; stage 6 (delivery) supports at most {STAGE4_MAX_STATE_WIRES} state wires; stop before stage 6, skip it, or use embedded-masking"
+                "nonlinear291 makes {width}; stage 6 (delivery) supports at most {STAGE4_MAX_STATE_WIRES} state wires; stop before stage 6, skip it, or use embedded-masking"
             ),
         ));
     }
@@ -660,6 +718,16 @@ where
             raw,
             key,
             "applies only to delivery.mode = \"adaptive\"",
+        ));
+    }
+    // tdp_adaptive checks the stage-5 circuit against the sandwich forward and
+    // inverse (`payload_contract`, before round 1): a forward-only stage 2
+    // fails it, so refuse that before stages 1-5 run
+    if !reverse_contract && stage_on(6) && delivery_mode == DeliveryMode::Adaptive {
+        return Err(config_error(
+            raw,
+            "reverse_contract",
+            "false keeps only the forward payload, but the adaptive stage 6 checks the payload contract against the sandwich in both directions; use delivery.mode = \"windowed\", or skip stage 6 or stop before it",
         ));
     }
     let ad = AdaptiveConfig::default();
@@ -880,7 +948,9 @@ where
         adopt_existing_run,
         frozen_db,
         preprocessing_mode,
+        reverse_contract,
         three_mask,
+        sandwich,
         source_construction,
         calibration_only,
         seeds,
@@ -1085,7 +1155,7 @@ pub(crate) fn read_seed_file(path: &Path) -> Result<ExplicitSeeds, String> {
 pub(crate) fn parse_seed_text(contents: &str) -> Result<ExplicitSeeds, String> {
     let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
     if lines.len() == 1 && lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
-        return Err("seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
+        return Err("seed file format 1 holds one seed; recipe v14 needs gen_seed= and mix_seed= lines (the old seed was the gen seed; the old mix seed was gen+2)".into());
     }
     const LINES: &str = "only gen_seed=, mix_seed=, split_seed=, cross_seed=, unpack_seed=";
     let mut gen_seed = None;

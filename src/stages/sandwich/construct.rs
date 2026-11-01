@@ -368,6 +368,47 @@ pub fn construct_shaped_sandwich(
     ))
 }
 
+/// The gate count of [`construct_shaped_sandwich`]'s circuit as `(min, max)`
+/// for a source of `source_gates` gates, `companion_gates` D gates and slice
+/// blocks of `slice_gates`; `None` on overflow. Exact without the V gadget
+/// (C, D, the slice blocks when `shape.slicing`, the N column of n CNOTs).
+/// With it: the copy (two conjunctions per register wire), V and V*, and the
+/// register's recovery per copy group of k wires ([`group_copy`]): one CNOT,
+/// k - 2 controlled swaps of three gates, and the drawn polarity corrections,
+/// none to one per non-selector wire (two without slicing, whose copy is not
+/// zero-preserving). Preflight checks sized by the gate count (nonlinear291's
+/// layout) take the maximum.
+pub fn shaped_sandwich_gate_range(
+    n: usize,
+    source_gates: usize,
+    companion_gates: usize,
+    slice_gates: usize,
+    shape: SandwichShape,
+) -> Option<(usize, usize)> {
+    let slices = if shape.slicing {
+        slice_gates.checked_mul(2)?
+    } else {
+        0
+    };
+    let base = source_gates
+        .checked_add(companion_gates)?
+        .checked_add(slices)?;
+    if shape.v_gates == 0 {
+        let exact = base.checked_add(n)?;
+        return Some((exact, exact));
+    }
+    let groups = n / 3;
+    // non-selector wires over all groups: k - 1 per group of k
+    let free = n.checked_sub(groups)?;
+    let recovery = groups.checked_add(free.checked_sub(groups)?.checked_mul(3)?)?;
+    let fixed = base
+        .checked_add(n.checked_mul(2)?)?
+        .checked_add(shape.v_gates.checked_mul(2)?)?
+        .checked_add(recovery)?;
+    let corrections = free.checked_mul(if shape.slicing { 1 } else { 2 })?;
+    Some((fixed, fixed.checked_add(corrections)?))
+}
+
 /// The shaped sandwich on an explicit stream (see [`construct_shaped_sandwich`]).
 pub fn shaped_sandwich(
     main: &CircuitSeq,

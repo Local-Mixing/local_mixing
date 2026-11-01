@@ -120,7 +120,7 @@ grep -q '"--seed", "2525"' "$tmp/e5.calls"
 grep -q '^split_seed=2323$' "$tmp/e5/SEEDS"
 # legacy and malformed inputs
 printf '42\n' > "$tmp/v1"; chmod 600 "$tmp/v1"
-expect_fail 'seed file format 1 holds one seed; recipe v13 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
+expect_fail 'seed file format 1 holds one seed; recipe v14 needs gen_seed= and mix_seed=' "$tmp/x1" --seed-file "$tmp/v1"
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x2" -s 42
 expect_fail 'seeds on argv are no longer accepted' "$tmp/x3" --calibration-seed 42
 chmod 644 "$sf"; expect_fail 'chmod 600' "$tmp/x4" --seed-file "$sf"; chmod 600 "$sf"

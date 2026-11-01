@@ -83,6 +83,24 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "string",
     ),
     (
+        "sandwich.slicing",
+        "sandwich.slicing",
+        "sandwich_slicing",
+        "bool",
+    ),
+    (
+        "sandwich.layer",
+        "sandwich.layer",
+        "sandwich_layer",
+        "integer",
+    ),
+    (
+        "sandwich.v_gates",
+        "sandwich.v_gates",
+        "sandwich_v_gates",
+        "integer",
+    ),
+    (
         "database.regular_dir",
         "database.regular_dir",
         "frozen_db_dir",
@@ -111,6 +129,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "preprocessing.preset",
         "preset",
         "string",
+    ),
+    (
+        "preprocessing.reverse_contract",
+        "preprocessing.reverse_contract",
+        "reverse_contract",
+        "bool",
     ),
     (
         "preprocessing.premask",
@@ -439,6 +463,12 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "three_mask_interleave",
         "integer",
     ),
+    (
+        "three_mask.pregrow",
+        "three_mask.pregrow",
+        "three_mask_pregrow",
+        "bool",
+    ),
     ("delivery.mode", "delivery.mode", "delivery_mode", "string"),
     (
         "adaptive.max_rounds",
@@ -633,6 +663,7 @@ pub(crate) fn parse_toml(document: &str) -> Result<RawConfig, String> {
             && ![
                 "run",
                 "source",
+                "sandwich",
                 "database",
                 "preprocessing",
                 "phase_a",

@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 13;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 14;
 /// The managed binaries, fingerprinted in the manifest and built for fresh runs.
 pub(crate) const PRODUCTION_BINARIES: [&str; 5] = [
     "gen_sandwich_gadget",
@@ -257,7 +257,9 @@ pub(crate) fn store_fingerprint_text(config: &ResolvedConfig) -> String {
 /// or A as run for the chosen runs (vL64a/b, vL128a/b, vA64a, vA128a). Only
 /// a run whose every recipe setting is that chain's: embedded masking with
 /// preset L8 or A, the validated |C| for a generated source, schedule
-/// validated in one piece, no leakage repair, default packing, stages 4 and
+/// validated in one piece, no leakage repair, default packing, the legacy
+/// stage-1 shape (slice blocks, the N column: `sandwich.slicing = true`,
+/// `sandwich.v_gates = 0`) with both port guards, stages 4 and
 /// 5 off and stage 6 ending after the packer's deliverable
 /// (`delivery.anf_only`: the chain had four stages and no resynthesis; the
 /// unused unpacking parameters do not matter), and stage 3
@@ -286,6 +288,10 @@ pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) 
         && !config.qc_enabled
         && config.packing.is_default()
         && config.source_construction == SourceConstruction::Random
+        // the validated runs' stage 1 and port guards (recipe v13 and earlier;
+        // gen's default shape changed with recipe v14)
+        && config.sandwich.shape(config.n) == SandwichConfig::LEGACY.shape(config.n)
+        && config.reverse_contract
         // the recipe's stages, not the lifecycle stop point: a stop before
         // stage 4 must not pin a run whose recipe includes stages 4-6
         && [4, 5].iter().all(|k| config.skip_stages.contains(k))
@@ -332,11 +338,19 @@ pub(crate) fn recipe_manifest(
     kv("source_path", &path_or_unset(&config.source_path));
     kv("source_construction", config.source_construction.name());
     kv("sandwich_variant", "classic");
+    kv("sandwich_params", config.sandwich.params_name(config.n));
+    for (key, _, value, _) in config.sandwich.fields(config.n) {
+        kv(&format!("sandwich_{key}"), &value);
+    }
     kv(
         "preprocessing_mode",
         config.preprocessing_mode.canonical_name(),
     );
     kv("preprocessing_preset", config.preset.name());
+    kv(
+        "preprocessing_reverse_contract",
+        &u8::from(config.reverse_contract).to_string(),
+    );
     if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
         for (key, _, value) in config.knobs.fields() {
             kv(&format!("preprocessing_{key}"), &value);
@@ -517,7 +531,10 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=13") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=14") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=13") => Err(TdpError::config(
+            "recipe v13 run (stage 1 with slice blocks and the N column; the three-mask stage 2 with bank turnover, no interleaving, no pre-growth): resume with the checkout that created it (recipe v14 made gen's 2026-11-01 stage-1/2 policy the default: no slicing, the V gadget, wire turnover, interleave 4096, pre-growth; in a fresh run, [sandwich] slicing = true, v_gates = 0 and [three_mask] turnover = \"bank\", interleave = 0, pregrow = false restore v13's stages 1-2); the original run is unchanged",
+        )),
         Some("tdp_command_recipe=12") => Err(TdpError::config(
             "recipe v12 run (the six-stage driver whose only stage 6 was the windowed delivery): resume with the checkout that created it (recipe v13 added the adaptive stage 6, the three-mask stage 2 and the balanced source); the original run is unchanged",
         )),
@@ -531,7 +548,7 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
             "recipe v9 run: resume with the checkout that created it (recipe v10 changed the defaults to the chosen L8 runs and added stage 4); the original run is unchanged",
         )),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v13 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v14 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

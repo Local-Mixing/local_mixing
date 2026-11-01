@@ -499,3 +499,58 @@ fn dependency_depth_matches_the_interleaver() {
         assert_eq!(dependency_depth(&gates), stats.depth, "seed {seed}");
     }
 }
+
+/// `shaped_sandwich_gate_range` brackets the shaped sandwich's gate count
+/// (exactly without the V gadget), for every group remainder and both
+/// copy polarities; driver preflights size nonlinear291's layout by it.
+#[test]
+fn shaped_sandwich_gate_range_brackets_the_construction() {
+    for n in [3usize, 4, 5, 7, 8, 16] {
+        let main = small_source(n, 3 * n, 0x7301 + n as u64);
+        let (m_d, s) = (2 * n + 1, 3 * n);
+        for (slicing, v_gates) in [(true, 0), (false, 0), (true, 11), (false, 11)] {
+            let shape = SandwichShape {
+                slicing,
+                layer: 1,
+                v_gates,
+            };
+            let (lo, hi) = shaped_sandwich_gate_range(n, main.gates.len(), m_d, s, shape).unwrap();
+            if v_gates == 0 {
+                assert_eq!(lo, hi, "exact without the V gadget");
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for seed in 0..24u64 {
+                let (a, layout) = construct_shaped_sandwich(
+                    &main,
+                    n,
+                    m_d,
+                    s,
+                    SandwichVariant::Classic,
+                    0x7300_0000 + seed,
+                    shape,
+                )
+                .unwrap();
+                let count = a.gates.len();
+                assert!(
+                    (lo..=hi).contains(&count),
+                    "n {n} slicing {slicing} v {v_gates}: {count} outside {lo}..={hi}"
+                );
+                assert_eq!(
+                    count,
+                    layout.c_gates
+                        + layout.s1_gates
+                        + layout.copy_gates
+                        + 2 * layout.v_gates
+                        + layout.recovery_gates
+                        + layout.d_gates
+                        + layout.s2_gates
+                );
+                seen.insert(count);
+            }
+            if v_gates > 0 {
+                assert!(seen.len() > 1, "the corrections are drawn (n {n})");
+            }
+        }
+    }
+    assert!(shaped_sandwich_gate_range(8, usize::MAX, 1, 0, SandwichShape::LEGACY).is_none());
+}
