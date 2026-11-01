@@ -1,9 +1,11 @@
 # The TDP Pipeline: An Introduction
 
-*Release `ran/pipeline-v2` (recipe schema `config_version = 5`, saved recipe
-v13), October 2026; stages 1 and 2 updated for recipe v14 (2026-11-01: the V
-gadget without slice blocks, the three-mask compute with wire turnover,
-interleaving and pre-growth). This is the entry point for a reader who has not seen the
+*Release of 2026-11-01 (recipe schema `config_version = 5`, saved recipe
+v14; the changes since the October release of recipe v13 are listed in
+`docs/PIPELINE_V14_CHANGES.md`): stage 1 is the sandwich without slice blocks,
+with the V gadget on its register; stage 2 is the three-mask compute with
+wire turnover, fire interleaving and pre-growth, and by default without the
+reverse contract. This is the entry point for a reader who has not seen the
 pipeline before. The operational manual (`docs/tdp_pipeline.md`), the full
 reference (`docs/TDP_PIPELINE_REFERENCE.md`) and the design notes listed in
 section 6 hold the details and the evidence. Every number below is taken from
@@ -29,7 +31,9 @@ contract"):
 
 ```text
 𝒢(x, 0^n, 0^{2n})    = (junk, C(x), junk)         forward:  C(x) appears on wires n..2n
-𝒢⁻¹(a, 0^n, 0^{2n})  carries D⁻¹(a) on wires n..2n   backward: an unrelated random function
+𝒢⁻¹(a, 0^n, 0^{2n})  = junk (the default since recipe v14: no reverse contract)
+                     with preprocessing.reverse_contract = true: a fixed bijection
+                     of D⁻¹(a) on wires n..2n, an unrelated random function
 
 wires    0 .......... n-1 | n .......... 2n-1 | 2n ................... 4n-1
 input    x  (free)        | 0^n   (pinned)    | 0^{2n}   (pinned)
@@ -43,9 +47,10 @@ circuit asked to reproduce C, and only the middle n output bits are the
 answer. Fixing the auxiliary inputs and projecting the outputs are part of
 the application contract. For a preimage problem the target is an n-bit t
 and the witness an x with C(x) = t: whoever knows C reverses its gates on t,
-while reversing the published gate list on the slice yields the random decoy
-D⁻¹, not C⁻¹, and the junk outputs that would allow reversing 𝒢 are not
-part of the target (section 3.1).
+while reversing the published gate list on the slice yields junk (or, with
+the reverse contract kept, the random decoy D⁻¹), not C⁻¹, and the junk
+outputs that would allow reversing 𝒢 are not part of the target (sections
+3.1 and 3.2).
 
 ### 1.2 What the adversary sees
 
@@ -118,8 +123,8 @@ exposures in the census (§3, §5 of the same note).
 
 ```text
 C (n wires, g57)
- |  stage 1  sandwich                  gen_sandwich_gadget   tdp.mpmct1.sandwich.mpmct1  2n wires; 2,832 gates at n=64 (v13)
- |  stage 2  preprocessing             (same process)        tdp.mpmct1                  4n wires; 777k (L8) / 505k (three-mask)
+ |  stage 1  sandwich                  gen_sandwich_gadget   tdp.mpmct1.sandwich.mpmct1  2n wires; 2,390 gates at n=64 (v14; 2,832 in v13)
+ |  stage 2  preprocessing             (same process)        tdp.mpmct1                  4n wires; 777k (L8) / 505k (three-mask v13) / 401k (v14)
  |  stage 3  database mixing   [opt]   circuit_mixer         db_mixing.mpmct1            ~2x: 1.60M / 1.06M
  |  stage 4  splitting         [opt]   circuit_mixer         split.mpmct1 + split.state  ~1.9x: 3.02M / 1.89M
  |  stage 5  crossing walk     [opt]   circuit_mixer         crossing.mpmct1             ~1.8x: 5.51M / 3.50M
@@ -131,7 +136,9 @@ Gate counts are the n = 64 campaign figures for the embedded-masking baseline
 and the three-mask modified arm
 (`docs/notes/stage2_stage6_campaign_20261021.md`), made with recipe v13's
 stages 1-2 (slice blocks and the N column; bank turnover, no interleaving);
-the v14 sandwich has 2,983 to 3,069 gates at n = 64. Every stage after the
+the v14 defaults give a 2,390-gate sandwich and a 400,935-gate stage 2 at
+n = 64 (1,146,183 at n = 128; `docs/notes/stage12_trials_20261101.md`), and
+the later stages have not yet been run on them. Every stage after the
 first is optional (`run.skip_stages`); each stage reads the output of the
 last stage that ran (`docs/tdp_pipeline.md`). Stages 1 and 2 run in one
 process, `gen_sandwich_gadget`; `circuit_mixer` runs stages 3, 4 and 5 as
@@ -274,7 +281,18 @@ compute block (`~/Codex/output/pdf/stage2_three_mask_20261020/stage2_three_mask_
   no gate runs more than 4,096 positions ahead of the earliest waiting gate,
   so a 250-gate window holds pieces of 9.6 fires on average at n = 64
   (2.4 without interleaving, where a fire is contiguous;
-  `docs/THREE_MASK_STAGE2.md`).
+  `docs/THREE_MASK_STAGE2.md`). Interleaving switches on three changes that
+  remove the chaining between consecutive fires: the cubic refresh becomes
+  read-only on the band (the same 15 gates in bracket form), dirty helpers
+  come from per-fire lanes of a reserve that growth never writes (a quarter
+  of the band, four wires per lane: 8 lanes at n = 64, 16 at n = 128), and
+  the carrier migration moves roles in one fire box per lane cycle. The
+  fires a window holds are then bounded by the lanes, not by the sandwich
+  (`docs/notes/stage2_interleaving_20261101.md`). Against the narrow factor
+  attack on the fully mixed circuit this cut the exposed deeper C births
+  threefold (254 to 89) and the per-read recovery probability from 18 % to
+  7 % (same note, from the variants campaign,
+  `docs/notes/pipeline_variants_report_20261101.md`).
 
 The defaults are the campaign configuration "three-mask modified / v2"
 (plus, since recipe v14, wire turnover, interleaving and pre-growth):
@@ -284,8 +302,8 @@ drops the share of band writes landing on the four busiest wires from
 cubic label is live is rejected); `false` for both gives the generator's
 "as-is" package (`docs/notes/three_mask_review_20261021.md`, findings 1 and
 4). The three-mask circuit is about 35 % smaller than embedded masking:
-505 k against 777-779 k gates at n = 64, 177 against 272 gates per logical
-fire; 77 % of that saving comes from not restoring the helpers, and a
+505 k against 777-779 k gates at n = 64 with recipe v13's stage 1 (401 k with
+v14's), 177 against 272 gates per logical fire; 77 % of that saving comes from not restoring the helpers, and a
 serving bank's coordinates are constants for about 103 fires, roughly
 16,300 gates (review, findings 2-3). The construction claims circuit-level
 concealment under the tested rewriting observers, not information-theoretic
@@ -398,8 +416,10 @@ The run ends when two consecutive rounds compress jointly by less than
 `max_rounds` (0 = until the plateau). The smallest round output, in
 canonical commuting gate order (`canonical_order = true`, so no block
 boundary survives), is written as `adaptive/final.mpmct1` after a zero-slice
-check against C and the sandwich payload contract in both directions
-(`configs/tdp.toml`, `[adaptive]`; `scripts/tdp_gen.sh`, stage 6).
+check against C and the sandwich payload contract, in both directions, or
+forward only (`--forward-only`, which the driver passes when stage 2 keeps no
+reverse contract, the default since recipe v14) (`configs/tdp.toml`,
+`[adaptive]`; `scripts/tdp_gen.sh`, stage 6).
 
 Why v2 rather than boundary choice alone: in RC's matched experiment a
 round whose 3,370 boundaries were all proxy-free still exposed 319 internal
@@ -556,8 +576,14 @@ of the published circuit.
   exposure is per control read.
 - `docs/notes/stage2_stage6_campaign_20261021.md` and
   `docs/notes/campaign_summary_20261026/summary.md`: the matched campaign,
-  the resilience attacks and the final tables (in `docs/notes/` of the main
-  checkout).
+  the resilience attacks and the final tables.
+- `docs/PIPELINE_V14_CHANGES.md`: what changed in recipe v14 and why;
+  `docs/notes/stage2_interleaving_20261101.md` (the interleaving
+  investigation and the stage-1/2 recommendations it led to),
+  `docs/notes/pipeline_variants_report_20261101.md` (the variants campaign
+  that measured them), `docs/notes/preimage_campaign_report_20261029.md` (the
+  degree-2 midpoint replica) and `docs/notes/stage12_trials_20261101.md` (the
+  stage-1/2 trial sweep).
 - `docs/STAGE2_LINKABILITY.md`: the embedded-masking redesign and the
   metrics behind preset L8.
 - `docs/DELIVERY_STAGE.md`, `docs/STAGE7_UNPACKING.md`,
@@ -577,9 +603,14 @@ of the published circuit.
   the frozen store.
 - **honest slice** (zero slice, public slice): inputs with x on wires 0..n
   and zeros on wires n..4n; there the circuit computes C(x) onto wires n..2n
-  forward and D⁻¹ backward.
-- **sandwich**: the stage-1 circuit `[C ⧢ S1]; N; [D ⧢ S2]` on 2n wires;
-  **D** is the random decoy of C's size and design.
+  forward (and, with the reverse contract kept, a bijection of D⁻¹ backward).
+- **sandwich**: the stage-1 circuit on 2n wires; since recipe v14
+  `C ; copy ; [D beside V, V*, recovery]` (the slice blocks S1, S2 of
+  `[C ⧢ S1]; N; [D ⧢ S2]` optional); **D** is the random decoy of C's size and
+  design.
+- **V gadget**: the nonlinear copy of C's outputs into the register in groups
+  of three wires, V and V* (t = n random gates each by default) on the
+  register beside D, and the register's own inverse of the copy.
 - **band**: the 2n extra wires of stage 2, zero on the slice, filled from the
   input by the band seed, the source of every mask; in the three-mask
   construction organized in serving, retiring and growing banks.

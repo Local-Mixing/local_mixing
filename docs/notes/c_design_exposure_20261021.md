@@ -303,3 +303,53 @@ Update 2026-10-26 08:25 UTC. C-blind adaptive resynthesis of the round-21 output
 balanced 1/1 -> 4/4 -> 9/9 (rounds 1-3, 2.67M -> 2.62M gates); burst 1/1 -> 1/1 -> 0/0 (2.61M -> 2.57M). Original C
 reference: 3/3 -> 4/4 -> 6/6, plateau 6/6 after round 6. The v2 runs themselves are at rounds 23-24, still 0/0 and
 still not at plateau. Disk 41 GB.
+
+Update 2026-10-26 20:35 UTC. C-blind adaptive resynthesis of the round-21 outputs after six rounds, deeper
+direct/affine per round: balanced 1, 4, 9, 10, 10, 10 (2.67M -> 2.58M gates); burst 1, 1, 0, 1, 3, 2 (2.61M -> 2.53M);
+original reference 3, 4, 6, 6, 6, 6 (plateau at round 6). Same ordering as every other family. The v2 runs are at
+round 26, 0/0, still not at the plateau rule. Disk 36 GB.
+
+Update 2026-10-27 14:50 UTC. C-blind adaptive resynthesis of the round-21 outputs after ten rounds, deeper per
+round: balanced 1, 4, 9, 10, 10, 10, 12, 12, 13, 14 (2.67M -> 2.53M gates); burst 1, 1, 0, 1, 3, 2, 2, 2, 2, 2
+(2.61M -> 2.51M); original 6/6 at its plateau (round 6). The v2 runs are at rounds 30-31, 0/0, still not at the
+plateau rule. Disk was down to 30 GB; synthesis intermediates (synth0, refine*, candidate files) of all completed
+rounds in ~/cdesign were deleted (23 GB -> 13 GB), 42 GB free now.
+
+Update 2026-10-28 08:35 UTC. C-blind attacks at eleven rounds: balanced 16/16 (2.49M gates), burst 2/2 (2.47M);
+v2 runs at rounds 34-35, 0/0. Intermediates of completed rounds trimmed again; disk 36 GB (another session's
+~/variants tree is also running "bal attacker" jobs there). No decision yet on stopping the v2 rounds.
+
+Update 2026-10-28 22:25 UTC. The two early C-blind attacks were stopped after twelve rounds (disk at 30 GB with
+several sessions writing; the answer had stabilised): balanced 1, 4, 9, 10, 10, 10, 12, 12, 13, 14, 16, 17
+(2.45M gates); burst 1, 1, 0, 1, 3, 2, 2, 2, 2, 2, 2, 3 (2.40M); original 6 at its plateau (round 6). The v2 runs
+(rounds 37-38, 0/0) continue under the plateau rule.
+
+Update 2026-10-29 10:25 UTC. v2 runs at rounds 40-41 (balanced 2,626,652 gates, burst 2,540,887), 0/0 deeper every
+round, gains now 0.1-0.3% per round; plateau rule still not met. Disk 28 GB after trimming completed-round
+intermediates.
+
+Update 2026-10-29 22:45 UTC. v2 runs at round 43 (balanced 2,623,122 gates, gain 0.03% in the last round; burst
+2,530,525, 0.2%), 0/0 deeper; plateau rule still not met. Disk 26 GB after trimming.
+
+Update 2026-10-30 11:00 UTC. v2 runs at round 46 (balanced 2,620,044 gates, gains 0.03-0.05% per round; burst
+2,519,240, 0.15%), 0/0 deeper throughout; plateau rule still not met. The server disk fell to 18 GB (other
+sessions' trees); pruned this campaign's reproducible intermediates (compressed attack circuits, stage 3-4 outputs
+and mixer states, round outputs other than rounds 14, 15, 21 and the last two; all result.json files and censuses
+kept): 27 GB free. If free space drops below ~10 GB the two v2 drivers will be stopped to avoid a crash.
+
+Update 2026-10-30 23:00 UTC. v2 runs at rounds 48-49 (balanced 2,616,422 gates, burst 2,510,500), 0/0 deeper;
+gains 0.05-0.1% per round; plateau rule still not met. Disk 26 GB after trimming.
+
+Update 2026-10-31 11:05 UTC. v2 runs at rounds 51-52 (balanced 2,612,556 gates, burst 2,501,381), 0/0 deeper;
+plateau rule still not met. Disk 21 GB (other sessions' resilience campaigns are the main consumers).
+
+Update 2026-10-31 23:05 UTC. v2 runs at rounds 54-55 (balanced 2,610,774 gates, one round gained only 129 gates;
+burst 2,494,861), 0/0 deeper; plateau rule still not met. RC deleted the frozen DB on the server at 13:05 UTC to
+free 299 GB for the variants campaign (README_DELETED.txt; a watcher re-fetches it afterwards), so no stage-3
+remix can run on machine1 until it is restored; the stage-6 runs here do not need it. Disk 325 GB free.
+
+Update 2026-11-01 11:05 UTC. v2 runs at rounds 57-58 (balanced 2,608,853 gates, burst 2,488,153), 0/0 deeper,
+gains 0.02-0.1% per round; plateau rule still not met. Frozen DB still absent on the server; disk 325 GB free.
+
+Update 2026-11-01 23:05 UTC. v2 runs at rounds 60-61 (balanced 2,606,385 gates, burst 2,484,921), 0/0 deeper,
+gains 0.01-0.06% per round; plateau rule still not met. DB still absent; disk 314 GB free.

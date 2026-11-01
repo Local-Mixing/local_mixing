@@ -33,8 +33,11 @@ stages; a first-time reader starts with
 [PIPELINE_INTRODUCTION.md](docs/PIPELINE_INTRODUCTION.md); the full
 reference for all six stages is
 [TDP_PIPELINE_REFERENCE.md](docs/TDP_PIPELINE_REFERENCE.md); what this
-release changed is in [PIPELINE_V2_CHANGES.md](docs/PIPELINE_V2_CHANGES.md).
-Everything described here is on `main` (2026-10-26); retired components and
+release changed is in [PIPELINE_V2_CHANGES.md](docs/PIPELINE_V2_CHANGES.md),
+and the update of 2026-11-01 (recipe v14: the updated sandwich with the V
+gadget, the interleaved three-mask stage 2, no reverse contract by default)
+in [PIPELINE_V14_CHANGES.md](docs/PIPELINE_V14_CHANGES.md).
+Everything described here is on `main` (2026-11-01); retired components and
 the earlier pipelines are recorded in
 [Local Mixing History](docs/local_mixing_history.md).
 

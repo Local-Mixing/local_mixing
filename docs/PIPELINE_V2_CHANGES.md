@@ -236,6 +236,10 @@ the server campaigns of October 2026 ran the prototypes this code ports.
 
 ## Recipe v14: the stage-1/2 defaults of 2026-11-01
 
+*The full account of this update, with the evidence behind each change, is
+[PIPELINE_V14_CHANGES.md](PIPELINE_V14_CHANGES.md); this section is the short
+version for readers of this document.*
+
 RC's stage-1 redesign and the clear-cut stage-2 suggestions of
 [notes/stage2_interleaving_20261101.md](notes/stage2_interleaving_20261101.md)
 became gen's defaults (`SandwichShape::default_for`, `ThreeMaskParams::v3`;
