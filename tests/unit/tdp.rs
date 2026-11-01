@@ -535,10 +535,8 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"",
         "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 5",
         "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\npreprocessing.reverse_contract = false\nrun.skip_stages = [6]",
-        // the reverse contract: a bool; false not with the adaptive stage 6
+        // the reverse contract: a bool
         "preprocessing.reverse_contract = 0",
-        "preprocessing.reverse_contract = false",
-        "preprocessing.reverse_contract = false\nrun.skip_stages = [4, 5]",
     ] {
         assert!(resolve_body(body).is_err(), "unexpectedly accepted {body}");
     }
@@ -549,6 +547,9 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         .unwrap();
     resolve_body("source.wires = 64\nthree_mask.band_wires = 1024\nrun.skip_stages = [6]").unwrap();
     resolve_body("adaptive.census_batches = 11\nadaptive.term_cap = 512").unwrap();
+    // a forward-only stage 2 runs the adaptive stage 6 with --forward-only
+    resolve_body("preprocessing.reverse_contract = false").unwrap();
+    resolve_body("preprocessing.reverse_contract = false\nrun.skip_stages = [4, 5]").unwrap();
     // the v13 policy (bank turnover, no interleaving, no pre-growth) is
     // three explicit non-defaults since recipe v14
     let bank = resolve_body(
@@ -2493,10 +2494,10 @@ fn sandwich_table_defaults_flags_and_manifest() {
 }
 
 /// Recipe v14: `preprocessing.reverse_contract` (STAGE2_REVERSE_CONTRACT).
-/// False is refused under nonlinear291 (no port guards) and with the
-/// adaptive stage 6, whose fail-fast payload contract checks the stage-5
-/// circuit against the sandwich in both directions: pinned below on a real
-/// forward-only stage 2.
+/// False is refused under nonlinear291 (no port guards); with the adaptive
+/// stage 6 the script runs `tdp_adaptive --forward-only`, whose payload
+/// contract then checks the forward direction only: pinned below on a real
+/// forward-only stage 2 (both directions fail, forward only passes).
 #[test]
 fn reverse_contract_follows_the_mode_and_stage_six() {
     let d = resolve_body("source.wires = 64").unwrap();
@@ -2508,6 +2509,7 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
     );
     assert!(recipe_manifest(&d, &[], 1).contains("\npreprocessing_reverse_contract=1\n"));
     for body in [
+        "",
         "delivery.mode = \"windowed\"",
         "run.skip_stages = [6]",
         "run.stop_after_stage = 5",
@@ -2526,13 +2528,6 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
         );
         assert!(recipe_manifest(&c, &[], 1).contains("\npreprocessing_reverse_contract=0\n"));
     }
-    let error = resolve_body("source.wires = 64\npreprocessing.reverse_contract = false")
-        .err()
-        .unwrap();
-    assert!(
-        error.contains("(preprocessing.reverse_contract)") && error.contains("both directions"),
-        "{error}"
-    );
     let error = resolve_body(
         "source.wires = 4\nsource.gates = 1\npreprocessing.mode = \"nonlinear291\"\nsandwich.v_gates = 0\npreprocessing.reverse_contract = false\nrun.skip_stages = [6]",
     )
@@ -2545,8 +2540,9 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
     );
 
     // tdp_adaptive's payload contract on a real stage 2 (n = 8, the default
-    // stage-1 shape, three-mask v3): kept passes, forward-only fails
-    use crate::stages::adaptive::driver::payload_contract;
+    // stage-1 shape, three-mask v3): kept passes both directions; forward-only
+    // fails the inverse direction and passes `--forward-only`'s check
+    use crate::stages::adaptive::driver::{payload_contract, payload_contract_dirs};
     use crate::stages::preprocessing::embedded_masking::EmbeddedMaskingParams;
     use crate::stages::preprocessing::three_mask::ThreeMaskParams;
     use crate::stages::preprocessing::{PreprocessingParams, preprocess_sandwich_ports};
@@ -2596,6 +2592,17 @@ fn reverse_contract_follows_the_mode_and_stage_six() {
         if let Err(error) = checked {
             assert!(format!("{error:?}").contains("inverse"), "{error:?}");
         }
+        assert!(
+            payload_contract_dirs(
+                &sandwich.gates,
+                sandwich.num_wires,
+                &stage2.circuit.gates,
+                stage2.circuit.num_wires,
+                n,
+                false,
+            )
+            .is_ok()
+        );
     }
 }
 

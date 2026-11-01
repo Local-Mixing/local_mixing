@@ -290,11 +290,12 @@ New refusals, all before anything runs:
   gadget's at its maximum (`shaped_sandwich_gate_range`: the recovery's
   polarity corrections are drawn).
 * `preprocessing.reverse_contract = false` with nonlinear291 (no port
-  guards), and with the adaptive stage 6: `tdp_adaptive` checks the
-  stage-5 circuit against the sandwich in both directions before round 1
-  (`payload_contract`), which a forward-only stage 2 fails (pinned by
-  `reverse_contract_follows_the_mode_and_stage_six`). The windowed stage 6,
-  or a run that skips or stops before stage 6, takes it.
+  guards). With the adaptive stage 6 the driver passes `tdp_adaptive run
+  --forward-only`: its payload contract (before round 1 and on the published
+  circuit) then checks the forward direction only, which a forward-only stage
+  2 passes and the inverse direction would not (pinned by
+  `reverse_contract_follows_the_mode_and_stage_six`); the report records
+  `check.payload_directions=forward`.
 
 `val_chain.sh` sets no `SANDWICH_*` variable, so on today's binaries it
 builds the v14 stage 1 too: the managed embedded-masking defaults still

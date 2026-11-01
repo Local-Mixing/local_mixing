@@ -720,16 +720,8 @@ where
             "applies only to delivery.mode = \"adaptive\"",
         ));
     }
-    // tdp_adaptive checks the stage-5 circuit against the sandwich forward and
-    // inverse (`payload_contract`, before round 1): a forward-only stage 2
-    // fails it, so refuse that before stages 1-5 run
-    if !reverse_contract && stage_on(6) && delivery_mode == DeliveryMode::Adaptive {
-        return Err(config_error(
-            raw,
-            "reverse_contract",
-            "false keeps only the forward payload, but the adaptive stage 6 checks the payload contract against the sandwich in both directions; use delivery.mode = \"windowed\", or skip stage 6 or stop before it",
-        ));
-    }
+    // a forward-only stage 2 runs the adaptive stage 6 with --forward-only
+    // (tdp_gen.sh): its payload contract then checks the forward direction
     let ad = AdaptiveConfig::default();
     let ad_u64 = |key: &str, default: u64, min: u64, max: u64| -> Result<u64, String> {
         Ok(parse_optional_u64(raw, key, min, max)?

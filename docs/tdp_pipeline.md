@@ -355,7 +355,7 @@ asked for (`slicing= layer= v_gates= reverse_contract=`).
 | Setting | Type and default | What it changes and constraints |
 | --- | --- | --- |
 | `preprocessing.mode` | string, `"three-mask"` | `"three-mask"` (the default: the three-mask compute inside the embedded-masking L8 outer blocks; no preset, knobs in `[three_mask]`; [THREE_MASK_STAGE2.md](THREE_MASK_STAGE2.md)), `"embedded-masking"` (preset L8 by default, the validated chain's stage 2) or `"nonlinear291"` (no preset, no knobs). nonlinear291 circuits are wide (24n + 12·\|sandwich\| + 29 wires; the legacy sandwich has 2\|C\| + 2s + n gates: 3,677 wires at n=16, \|C\|=64; with the V gadget the driver takes the largest count its drawn recovery can reach), and stage 6 takes at most 1,024 state wires, so the driver refuses nonlinear291 with stage 6 up front unless the planned width fits; stop before stage 6 or skip it. |
-| `preprocessing.reverse_contract` | bool, `true` | The stage-2 port guards. `true`: both junk-half guards; reversed, the circuit still carries $D^{-1}$ of its input on wires $n..2n$ and gen verifies it. `false`: forward payload only: the opening guard covers all data wires (same gate count; its Feistel rounds alternate halves), there is no closing guard and no reverse verification. Guarded modes only (refused with nonlinear291), and refused with the adaptive stage 6, whose fail-fast payload contract checks the stage-5 circuit against the sandwich in both directions: use `delivery.mode = "windowed"`, or skip or stop before stage 6. Reaches gen as `STAGE2_REVERSE_CONTRACT=0`; manifest `preprocessing_reverse_contract`. |
+| `preprocessing.reverse_contract` | bool, `true` | The stage-2 port guards. `true`: both junk-half guards; reversed, the circuit still carries $D^{-1}$ of its input on wires $n..2n$ and gen verifies it. `false`: forward payload only: the opening guard covers all data wires (same gate count; its Feistel rounds alternate halves), there is no closing guard and no reverse verification. Guarded modes only (refused with nonlinear291). With the adaptive stage 6 the driver runs `tdp_adaptive --forward-only`, whose payload contract then checks the forward direction only (`check.payload_directions=forward` in `adaptive.report`). Reaches gen as `STAGE2_REVERSE_CONTRACT=0`; manifest `preprocessing_reverse_contract`. |
 | `preprocessing.preset` | string, `"L8"` (embedded-masking only) | `"L8"`: `EMBEDDED_MASKING_SHUFFLING=8 SHUFFLING_RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1 CHAIN=2 CHAIN_LEN=8` and nothing else, exactly val_chain.sh's L8 environment ([STAGE2_LINKABILITY.md](STAGE2_LINKABILITY.md) §6). `"A"`: the same without the chains. `"custom"`: every knob below is required. |
 | `preprocessing.mask_pair_wires` | integer, custom only | Band wires per mask, `2..64` (base 2). |
 | `preprocessing.max_open_masks` | integer, custom only | Open-mask cap, `2..64` (base 3). |
@@ -741,8 +741,8 @@ default) keeps both junk-half guards, so the reversed circuit still carries
 $D^{-1}$ of its input on wires $n..2n$ (gen verifies it); `false` makes the
 opening guard cover all data wires with the same gate count and drops the
 closing guard, keeping the forward payload only (gen skips the reverse
-verification; the adaptive stage 6, which checks both directions, refuses
-it). `three_mask.pregrow` rewrites the serving half of the band `warmup`
+verification, and the adaptive stage 6 runs with `--forward-only`, checking
+the payload contract forward only). `three_mask.pregrow` rewrites the serving half of the band `warmup`
 times before the first masks reference it.
 
 Start at `preprocess_sandwich` in

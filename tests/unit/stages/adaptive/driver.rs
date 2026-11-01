@@ -125,12 +125,36 @@ fn payload_contract_holds_and_fails() {
 }
 
 #[test]
+fn forward_only_payload_contract_skips_the_inverse_direction() {
+    let n = 4;
+    let mut rng = Rng::new(9);
+    let sandwich = random_gates(2 * n as u16, 30, &mut rng);
+    // a front gate keyed on a register wire: dead forward (the register
+    // starts at zero), live under reverse evaluation, where it runs last on
+    // the reverse payload -- the shape of a forward-only stage 2
+    let mut c = vec![XGate::cnot(n as u16, n as u16 + 1)];
+    c.extend(sandwich.iter().cloned());
+    let e = payload_contract(&sandwich, 2 * n, &c, 4 * n, n).unwrap_err();
+    assert!(format!("{e}").contains("inverse"), "{e}");
+    let one = 8192 + 2 + 2 * n + n * (n - 1) / 2;
+    assert_eq!(
+        payload_contract_dirs(&sandwich, 2 * n, &c, 4 * n, n, false).unwrap(),
+        one
+    );
+    // the forward direction is still enforced
+    let mut c = sandwich.clone();
+    c.push(XGate::x_gate(n as u16));
+    assert!(payload_contract_dirs(&sandwich, 2 * n, &c, 4 * n, n, false).is_err());
+}
+
+#[test]
 fn final_report_lists_rounds_and_checks() {
     let inputs = DriverInputs {
         input: PathBuf::from("G.mpmct1"),
         source_c: PathBuf::from("C.g57"),
         n: 8,
         sandwich: None,
+        forward_only: false,
         out_dir: PathBuf::from("out"),
         seed: 987_654_321,
         threads: 4,
@@ -184,6 +208,7 @@ fn final_report_lists_rounds_and_checks() {
             canonical_reason: "ordered".into(),
             zero_slice: 4096,
             payload_contract: None,
+            payload_forward_only: false,
         },
         seconds: 3.0,
     };
@@ -206,6 +231,7 @@ fn final_report_lists_rounds_and_checks() {
         "check.equiv_canonical=ok(8192)",
         "check.zero_slice=ok(4096)",
         "check.payload_contract=skipped",
+        "check.payload_directions=both",
         "final_reloaded=false",
         "check.input_zero_slice=ok(4096)",
         "check.input_payload_contract=skipped",

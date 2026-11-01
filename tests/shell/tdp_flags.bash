@@ -129,16 +129,7 @@ for value in 2 abc; do reject 'preprocessing-reverse-contract' --preprocessing-r
 reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291
 reject 'only with --sandwich-slicing 1' --preprocessing-mode nonlinear291 --sandwich-v-gates 5
 reject 'needs a guarded mode' --preprocessing-mode nonlinear291 --sandwich-v-gates 0 --preprocessing-reverse-contract 0
-# the adaptive stage 6 checks the payload in both directions (reject() stops
-# after stage 2, so this case runs with the default stop); the windowed stage 6
-# or a stop before stage 6 takes a forward-only stage 2
-if bash "$root/scripts/tdp_gen.sh" --source-wires 4 --source-gates 1 --preprocessing-reverse-contract 0 \
-     --run-directory "$tmp/fwd-adaptive" >"$tmp/error" 2>&1; then
-  echo "unexpected success: forward-only stage 2 with the adaptive stage 6" >&2; exit 1
-fi
-test ! -e "$tmp/fwd-adaptive"
-grep -q 'FATAL: --preprocessing-reverse-contract 0 keeps only the forward payload, but the adaptive stage 6' "$tmp/error" ||
-  { cat "$tmp/error" >&2; exit 1; }
+# (a forward-only stage 2 with the adaptive stage 6: tdp_block_size.bash)
 # packing budgets are resource bounds (MAX_MONOMIAL_BUDGET = 2^18)
 reject 'packing-monomial-budget' --delivery-mode windowed --packing-monomial-budget 262145
 reject 'packing-split-budget' --delivery-mode windowed --packing-split-budget 262145

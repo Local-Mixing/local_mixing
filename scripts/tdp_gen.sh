@@ -775,9 +775,8 @@ if [ "$SW_V_GATES" = auto ]; then V_EFF=$V_AUTO; else V_EFF=$(bounded_uint --san
 REV_CONTRACT=$(bounded_uint --preprocessing-reverse-contract "$REV_CONTRACT" 0 1)
 [ "$REV_CONTRACT" = 1 ] || [ "$PREPROCESSING_MODE" != nonlinear291 ] ||
   fatal "--preprocessing-reverse-contract 0 needs a guarded mode (embedded-masking or three-mask): nonlinear291 has no port guards"
-# tdp_adaptive checks the stage-5 circuit against the sandwich forward and inverse
-[ "$REV_CONTRACT" = 1 ] || ! adaptive_on ||
-  fatal "--preprocessing-reverse-contract 0 keeps only the forward payload, but the adaptive stage 6 checks the payload contract against the sandwich in both directions; use --delivery-mode windowed, or skip stage 6 or stop before it"
+# a forward-only stage 2: tdp_adaptive checks the payload contract forward only
+[ "$REV_CONTRACT" = 1 ] || ! adaptive_on || ADFLAGS+=(--forward-only)
 # the sandwich's gate count (shaped_sandwich_gate_range): exact without the V
 # gadget; with it the maximum (the recovery's polarity corrections are drawn)
 if [ "$V_EFF" -eq 0 ]; then
