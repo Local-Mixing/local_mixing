@@ -143,6 +143,8 @@ fn sample_result(round: usize, input_gates: usize, output_gates: usize) -> Round
         round,
         input_gates,
         output_gates,
+        input_cost: input_gates,
+        output_cost: output_gates,
         blocks: 5,
         initial_blocks: 4,
         refinement: vec![
@@ -515,4 +517,20 @@ fn candidate_census_is_discovery_only_and_stamped() {
     let _ = load_or_census(&ctx, &input, &cdir, false, &log2).unwrap();
     assert!(lines.lock().unwrap().iter().any(|l| l.contains("reloaded")));
     let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cost_model_parses_and_measures() {
+    assert_eq!(Cost::parse("gates"), Some(Cost::Gates));
+    assert_eq!(Cost::parse("two-control"), Some(Cost::TwoControl));
+    assert_eq!(Cost::parse("nope"), None);
+    let wide = XGate::conj(5, (0..4u16).map(|w| (w, true))).unwrap(); // k=4
+    let g = vec![XGate::cnot(1, 0), wide];
+    assert_eq!(Cost::Gates.of(&g), 2);
+    assert_eq!(Cost::TwoControl.of(&g), 1 + 8);
+    // a 2-control rewrite with more raw gates can still be cheaper under
+    // TwoControl (the case the raw rule rejects as growing)
+    let rewrite = vec![XGate::cnot(1, 0); 5];
+    assert!(Cost::Gates.of(&rewrite) > Cost::Gates.of(&g));
+    assert!(Cost::TwoControl.of(&rewrite) < Cost::TwoControl.of(&g));
 }

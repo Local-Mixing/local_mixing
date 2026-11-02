@@ -156,3 +156,21 @@ fn phase_c_composition_ends_in_two_control_gate_set() {
         equal_on(&final_c, &gates, width);
     }
 }
+
+#[test]
+fn lowered_cost_counts_wide_gates_as_their_barenco_ladder() {
+    let narrow = vec![
+        XGate::x_gate(0),
+        XGate::cnot(1, 0),
+        XGate::conj(2, [(0, true), (1, false)]).unwrap(),
+    ];
+    assert_eq!(lowered_cost(&narrow), 3); // <= 2 controls: 1 each
+    let k3 = XGate::conj(4, [(0, true), (1, true), (2, false)]).unwrap();
+    let k6 = XGate::conj(9, (0..6u16).map(|w| (w, true))).unwrap();
+    assert_eq!(lowered_cost(std::slice::from_ref(&k3)), 4); // 4k-8, k=3
+    assert_eq!(lowered_cost(std::slice::from_ref(&k6)), 16); // k=6
+    // and the actual lowering never exceeds it (NOT-push absorbs the
+    // polarity NOTs; positive controls and no complement here)
+    let (low, _) = lower_wide_gates(std::slice::from_ref(&k6), 16, 2);
+    assert_eq!(low.len(), lowered_cost(std::slice::from_ref(&k6)));
+}

@@ -164,6 +164,8 @@ fn final_report_lists_rounds_and_checks() {
         round: 1,
         input_gates: 100,
         output_gates: 80,
+        input_cost: 100,
+        output_cost: 80,
         blocks: 3,
         initial_blocks: 3,
         refinement: vec![],

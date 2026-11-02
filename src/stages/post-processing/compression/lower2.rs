@@ -32,6 +32,21 @@ pub struct LowerReport {
     pub gates_delta: i64,
 }
 
+/// The size of `gates` in the deliverable's 2-control gate set: a gate with
+/// `k <= 2` controls counts 1, a wider one `4k - 8` (its Barenco ladder; the
+/// NOTs that conjugate negative controls are left out, NOT-pushing absorbs
+/// them). The metric stage 6 judges compression by when its output must be
+/// lowered (`--cost two-control`).
+pub fn lowered_cost(gates: &[XGate]) -> usize {
+    gates
+        .iter()
+        .map(|g| {
+            let k = g.ctrls.len();
+            if k <= 2 { 1 } else { 4 * k - 8 }
+        })
+        .sum()
+}
+
 /// The positive-control Barenco ladder (`synth::barenco`, ported to XGate):
 /// `t ^= c_0 ... c_{k-1}` with dirty helpers `h_0 .. h_{k-3}`, all controls
 /// positive, `4(k-2)` Toffolis, helpers restored.

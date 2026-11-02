@@ -28,6 +28,7 @@ use super::synth::{BlockParams, BlockResult, same_function, synthesize_block};
 use super::types::{Census, FamilyMetrics, LeakageMetrics, PlanParams, Source};
 use crate::circuit::formats::{read_mpmct, write_mpmct_atomic};
 use crate::circuit::xgate::XGate;
+use crate::stages::post_processing::compression::lowered_cost;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
@@ -161,6 +162,43 @@ impl Accept {
     }
 }
 
+/// What "smaller" means: the acceptance, the stop rules and the cleanups
+/// compare circuits by this size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cost {
+    /// Raw gate count (the classic rule; a k-control gate counts 1).
+    Gates,
+    /// The deliverable's 2-control gate set: a gate with more than 2 controls
+    /// counts `4k - 8` (its Barenco ladder). Under raw counting a <= 2-control
+    /// resynthesis of a block holding wide gates looks "growing" although it
+    /// is cheaper once the output is lowered; this rule accepts it.
+    TwoControl,
+}
+
+impl Cost {
+    pub fn name(self) -> &'static str {
+        match self {
+            Cost::Gates => "gates",
+            Cost::TwoControl => "two-control",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Cost> {
+        match s {
+            "gates" => Some(Cost::Gates),
+            "two-control" | "two_control" | "2c" => Some(Cost::TwoControl),
+            _ => None,
+        }
+    }
+
+    pub fn of(self, gates: &[XGate]) -> usize {
+        match self {
+            Cost::Gates => gates.len(),
+            Cost::TwoControl => lowered_cost(gates),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoundParams {
     pub plan: PlanParams,
@@ -174,6 +212,8 @@ pub struct RoundParams {
     pub min_refine_gates: usize,
     pub census_batches: usize,
     pub accept: Accept,
+    /// The size the acceptance compares (raw gates, or the 2-control cost).
+    pub cost: Cost,
     /// Plan and split against the empty census (the C-blind attacker's
     /// view); the acceptance still measures exposure on real censuses.
     pub blind: bool,
@@ -192,6 +232,7 @@ impl Default for RoundParams {
             min_refine_gates: 128,
             census_batches: census::DEFAULT_BATCHES,
             accept: Accept::SmallerNotLeakier,
+            cost: Cost::Gates,
             blind: false,
             equiv_batches: 8,
         }
@@ -304,6 +345,11 @@ pub struct RoundResult {
     pub round: usize,
     pub input_gates: usize,
     pub output_gates: usize,
+    /// The input and output sizes under the round's cost model (equal to the
+    /// gate counts under `Cost::Gates`); the driver's shrink and stop rules
+    /// use these.
+    pub input_cost: usize,
+    pub output_cost: usize,
     /// Leaves after refinement.
     pub blocks: usize,
     pub initial_blocks: usize,
@@ -1093,6 +1139,10 @@ pub fn run_round(
     }
     let mut picks = Picks::new(seeds);
     let mut chosen: Vec<Option<usize>> = Vec::with_capacity(leaves.len());
+    // Sizes under the round's cost model: the original block's, and each
+    // candidate's (a synthesis is <= 2-control, so under TwoControl its cost
+    // is its gate count, but compute it from the gates to stay exact).
+    let cost = p.cost;
     for (i, &l) in leaves.iter().enumerate() {
         let cands: Vec<Candidate> = res
             .iter()
@@ -1100,13 +1150,16 @@ pub fn run_round(
             .filter_map(|(k, slot)| {
                 slot.get(&l).filter(|row| row.is_ok()).map(|row| Candidate {
                     seed: k,
-                    gates: row.syn_gates,
+                    gates: row
+                        .gates
+                        .as_deref()
+                        .map_or(row.syn_gates, |g| cost.of(g)),
                     exposure: exposure_cand.get(k).map_or(0, |e| e[i]),
                 })
             })
             .collect();
         chosen.push(choose(
-            l.1 - l.0,
+            cost.of(&input[l.0..l.1]),
             exposure_in.as_ref().map(|e| e[i]),
             &cands,
             &mut picks,
@@ -1149,10 +1202,14 @@ pub fn run_round(
         let _ = writeln!(bs, "{b}");
     }
     write_text_atomic(&out_dir.join("bounds.out"), &bs)?;
+    let input_cost = p.cost.of(input);
+    let output_cost = p.cost.of(&output);
     let result = RoundResult {
         round: r,
         input_gates: m,
         output_gates: output.len(),
+        input_cost,
+        output_cost,
         blocks: leaves.len(),
         initial_blocks,
         refinement,
@@ -1167,8 +1224,13 @@ pub fn run_round(
         output: Some(output),
     };
     write_text_atomic(&report_path, &round_report(&result, ctx, width))?;
+    let cost_note = if p.cost == Cost::Gates {
+        String::new()
+    } else {
+        format!(" ({} cost {input_cost} -> {output_cost})", p.cost.name())
+    };
     log(&format!(
-        "round {r} done: {m} -> {} gates, {} blocks ({} synthesized), picks orig {} seeds {:?} rejected leakier {} growing {}; deeper affine {} -> {} (validated); {:.1}s",
+        "round {r} done: {m} -> {} gates{cost_note}, {} blocks ({} synthesized), picks orig {} seeds {:?} rejected leakier {} growing {}; deeper affine {} -> {} (validated); {:.1}s",
         result.output_gates,
         result.blocks,
         result.coverage.synthesized_blocks,
@@ -1219,6 +1281,8 @@ pub fn round_report(res: &RoundResult, ctx: &RoundContext<'_>, width: usize) -> 
     let _ = writeln!(s, "width={width}");
     let _ = writeln!(s, "input_gates={}", res.input_gates);
     let _ = writeln!(s, "output_gates={}", res.output_gates);
+    let _ = writeln!(s, "input_cost={}", res.input_cost);
+    let _ = writeln!(s, "output_cost={}", res.output_cost);
     let _ = writeln!(s, "blocks={}", res.blocks);
     let _ = writeln!(s, "initial_blocks={}", res.initial_blocks);
     let _ = writeln!(s, "refinement_levels={}", res.refinement.len());
@@ -1261,6 +1325,7 @@ pub fn round_report(res: &RoundResult, ctx: &RoundContext<'_>, width: usize) -> 
     let _ = writeln!(s, "param.min_refine_gates={}", p.min_refine_gates);
     let _ = writeln!(s, "param.census_batches={}", p.census_batches);
     let _ = writeln!(s, "param.accept={}", p.accept.name());
+    let _ = writeln!(s, "param.cost={}", p.cost.name());
     let _ = writeln!(s, "param.blind={}", p.blind);
     let _ = writeln!(s, "seconds={:.3}", res.seconds);
     s
@@ -1361,6 +1426,11 @@ pub fn parse_round_report(text: &str) -> Result<RoundResult, String> {
         round: kv_usize(&m, "round")?,
         input_gates: kv_usize(&m, "input_gates")?,
         output_gates: kv_usize(&m, "output_gates")?,
+        // reports written before the cost model fall back to the gate counts
+        input_cost: kv_usize(&m, "input_cost")
+            .or_else(|_| kv_usize(&m, "input_gates"))?,
+        output_cost: kv_usize(&m, "output_cost")
+            .or_else(|_| kv_usize(&m, "output_gates"))?,
         blocks: kv_usize(&m, "blocks")?,
         initial_blocks: kv_usize(&m, "initial_blocks")?,
         refinement,

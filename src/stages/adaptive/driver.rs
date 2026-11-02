@@ -34,7 +34,7 @@
 //! ```
 use super::boundary;
 use super::round::{
-    AdaptiveError, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams, RoundResult,
+    AdaptiveError, Cost, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams, RoundResult,
     gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file, reload_round,
     run_round, write_text_atomic,
 };
@@ -416,6 +416,9 @@ struct Current {
     round: Option<usize>,
     /// Gate count, known from the reports without reading the circuit.
     count: usize,
+    /// Size under the run's cost model (= `count` under `Cost::Gates`); the
+    /// shrink and stop rules compare this.
+    cost: usize,
 }
 
 impl Current {
@@ -653,6 +656,7 @@ pub fn final_report_text(
             .lower_controls
             .map_or_else(|| "none".to_string(), |c| c.to_string())
     );
+    let _ = writeln!(s, "param.cost={}", p.cost.name());
     let _ = writeln!(s, "param.seeds_per_block={}", p.seeds_per_block);
     let _ = writeln!(s, "param.time_limit={}", p.base_time_limit);
     let _ = writeln!(s, "param.restarts={}", p.block.synth.restarts);
@@ -814,20 +818,26 @@ fn prune_round_circuits(out_dir: &Path, rounds: &[RoundResult], final_round: Opt
 fn cleanup_pass(
     current: &mut Current,
     width: usize,
+    cost: Cost,
     fcompress_iters: usize,
     equiv_batches: usize,
     dir: &Path,
     log: Log<'_>,
 ) -> Result<Option<Vec<XGate>>, AdaptiveError> {
     let in_count = current.count;
+    let in_cost = current.cost;
     let out_path = dir.join("output.mpmct1");
     let report = dir.join("cleanup.report");
     if let Ok(t) = fs::read_to_string(&report) {
         let kv = parse_kv(&t);
-        if kv.get("input_gates").and_then(|s| s.parse::<usize>().ok()) == Some(in_count)
-            && let Some(out_gates) = kv.get("output_gates").and_then(|s| s.parse::<usize>().ok())
+        let num = |k: &str| kv.get(k).and_then(|s| s.parse::<usize>().ok());
+        if num("input_gates") == Some(in_count)
+            && let Some(out_gates) = num("output_gates")
         {
-            if out_gates >= in_count {
+            // reports written before the cost model compare gate counts
+            let out_cost = num("output_cost").unwrap_or(out_gates);
+            let rec_in_cost = num("input_cost").unwrap_or(in_count);
+            if out_cost >= rec_in_cost {
                 log(&format!(
                     "cleanup {} reloaded: {in_count} gates, not smaller (kept)",
                     dir.display(),
@@ -876,9 +886,11 @@ fn cleanup_pass(
     write_text_atomic(
         &report,
         &format!(
-            "cleanup_report=1\ninput_digest={digest}\ninput_gates={}\noutput_gates={}\nnots_absorbed={}\nnoops_dropped={}\ntrailing_nots={}\n",
+            "cleanup_report=1\ninput_digest={digest}\ninput_gates={}\noutput_gates={}\ncost={}\ninput_cost={in_cost}\noutput_cost={}\nnots_absorbed={}\nnoops_dropped={}\ntrailing_nots={}\n",
             input.len(),
             cleaned.len(),
+            cost.name(),
+            cost.of(&cleaned),
             nr.nots_absorbed,
             nr.noops_dropped,
             nr.trailing_nots,
@@ -894,7 +906,9 @@ fn cleanup_pass(
         fcompress_iters,
         t0.elapsed().as_secs_f64(),
     ));
-    if cleaned.len() < input.len() {
+    // Accepted only when smaller under the run's cost model (fcompress may
+    // merge into wide cubes, fewer raw gates but a higher 2-control cost).
+    if cost.of(&cleaned) < in_cost {
         Ok(Some(cleaned))
     } else {
         Ok(None)
@@ -1164,11 +1178,14 @@ pub fn run(
 
     // ---- rounds
     let input_gates = gates.len();
+    let cost_model = params.round.cost;
+    let input_cost = cost_model.of(&gates);
     let mut current = Current {
         gates: Some(gates),
         path: inputs.input.clone(),
         round: None,
         count: input_gates,
+        cost: input_cost,
     };
     let mut rounds: Vec<RoundResult> = Vec::new();
     let mut stop_reason = String::from("round cap");
@@ -1238,8 +1255,8 @@ pub fn run(
                 }
             };
             let output = res.output.take();
-            pairs.push((res.input_gates, res.output_gates));
-            let shrank = res.output_gates < res.input_gates;
+            pairs.push((res.input_cost, res.output_cost));
+            let shrank = res.output_cost < res.input_cost;
             if shrank {
                 prev_bounds = if res.reloaded {
                     read_bounds_file(&rdir.join("bounds.out"))?
@@ -1248,6 +1265,7 @@ pub fn run(
                 };
             }
             let count = res.output_gates;
+            let ocost = res.output_cost;
             rounds.push(res);
             write_text_atomic(
                 &inputs.out_dir.join("progress.txt"),
@@ -1259,6 +1277,7 @@ pub fn run(
                     path: rdir.join("output.mpmct1"),
                     round: Some(r),
                     count,
+                    cost: ocost,
                 };
             }
             if let Some(reason) = stop_rule(&pairs, &mut stalled, level.stop_fraction) {
@@ -1275,6 +1294,7 @@ pub fn run(
             if let Some(cleaned) = cleanup_pass(
                 &mut current,
                 width,
+                cost_model,
                 params.cleanup_fcompress_iters,
                 params.round.equiv_batches,
                 &cdir,
@@ -1282,6 +1302,7 @@ pub fn run(
             )? {
                 current = Current {
                     count: cleaned.len(),
+                    cost: cost_model.of(&cleaned),
                     gates: Some(cleaned),
                     path: cdir.join("output.mpmct1"),
                     round,
@@ -1314,6 +1335,7 @@ pub fn run(
         )? {
             current = Current {
                 count: lowered.len(),
+                cost: cost_model.of(&lowered),
                 gates: Some(lowered),
                 path: ldir.join("output.mpmct1"),
                 round,
