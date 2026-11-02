@@ -627,6 +627,10 @@ fn descent_runs_cleanups_and_stays_equivalent() {
             // exercises the wiring and the no-op path (wide_in = 0).
             "--lower-controls",
             "2",
+            // the pre-cleanup and the cost model, with the cleanup leak guard
+            "--pre-cleanup",
+            "--cost",
+            "two-control",
         ]);
         v
     };
@@ -646,6 +650,11 @@ fn descent_runs_cleanups_and_stays_equivalent() {
     assert_eq!(kv(&report, "param.descent"), "120,40");
     assert_eq!(kv(&report, "param.cleanup_fcompress_iters"), "4");
     assert_eq!(kv(&report, "param.lower_controls"), "2");
+    assert_eq!(kv(&report, "param.pre_cleanup"), "true");
+    assert_eq!(kv(&report, "param.cost"), "two-control");
+    // the pre-cleanup ran with the guard on (smaller-not-leakier)
+    let pre = fs::read_to_string(out.join("precleanup").join("cleanup.report")).unwrap();
+    assert_eq!(kv(&pre, "guard"), "on");
 
     // Phase C ran (the stage-2 fixture has no wide gates: a recorded no-op).
     let lower = fs::read_to_string(out.join("lower").join("lower.report")).unwrap();

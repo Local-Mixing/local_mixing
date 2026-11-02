@@ -34,7 +34,8 @@
 //! ```
 use super::boundary;
 use super::round::{
-    AdaptiveError, Cost, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams, RoundResult,
+    Accept, AdaptiveError, Cost, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams,
+    RoundResult,
     gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file, reload_round,
     run_round, write_text_atomic,
 };
@@ -106,6 +107,11 @@ pub struct DriverParams {
     pub descent_stop_fraction: f64,
     /// fcompress iterations in the between-cap cleanup (0 = NOT-push only).
     pub cleanup_fcompress_iters: usize,
+    /// Run one exact cleanup (NOT-push + fcompress) on the input BEFORE
+    /// phase A. On the n=64 stage-5 output it removed 63% in 78 s; the ANF
+    /// rounds then work on a far smaller circuit (and fcompress acts on the
+    /// crossing walk's local redundancy before the synthesizer rewrites it).
+    pub pre_cleanup: bool,
     /// Phase C: after the descent, rewrite every gate wider than this many
     /// controls into 2-control gates (the exact dirty-ancilla Barenco
     /// decomposition) and run one more exact cleanup, so the published
@@ -130,6 +136,7 @@ impl Default for DriverParams {
             descent: Vec::new(),
             descent_stop_fraction: 0.01,
             cleanup_fcompress_iters: 10,
+            pre_cleanup: false,
             lower_controls: None,
             canonical_order: true,
             keep_round_circuits: false,
@@ -657,6 +664,7 @@ pub fn final_report_text(
             .map_or_else(|| "none".to_string(), |c| c.to_string())
     );
     let _ = writeln!(s, "param.cost={}", p.cost.name());
+    let _ = writeln!(s, "param.pre_cleanup={}", params.pre_cleanup);
     let _ = writeln!(s, "param.seeds_per_block={}", p.seeds_per_block);
     let _ = writeln!(s, "param.time_limit={}", p.base_time_limit);
     let _ = writeln!(s, "param.restarts={}", p.block.synth.restarts);
@@ -815,6 +823,7 @@ fn prune_round_circuits(out_dir: &Path, rounds: &[RoundResult], final_round: Opt
 /// COUNT (`current.count`, known from the reports), never on the input
 /// circuit, which a completed run prunes. The input circuit is loaded only
 /// on the compute path.
+#[allow(clippy::too_many_arguments)]
 fn cleanup_pass(
     current: &mut Current,
     width: usize,
@@ -822,6 +831,7 @@ fn cleanup_pass(
     fcompress_iters: usize,
     equiv_batches: usize,
     dir: &Path,
+    guard: Option<&RoundContext<'_>>,
     log: Log<'_>,
 ) -> Result<Option<Vec<XGate>>, AdaptiveError> {
     let in_count = current.count;
@@ -837,6 +847,13 @@ fn cleanup_pass(
             // reports written before the cost model compare gate counts
             let out_cost = num("output_cost").unwrap_or(out_gates);
             let rec_in_cost = num("input_cost").unwrap_or(in_count);
+            if kv.get("rejected").map(String::as_str) == Some("leakier") {
+                log(&format!(
+                    "cleanup {} reloaded: rejected (exposure increased), kept {in_count} gates",
+                    dir.display(),
+                ));
+                return Ok(None);
+            }
             if out_cost >= rec_in_cost {
                 log(&format!(
                     "cleanup {} reloaded: {in_count} gates, not smaller (kept)",
@@ -881,12 +898,44 @@ fn cleanup_pass(
             input.len()
         )));
     }
+    // The leak guard: fcompress is C-blind, so census both sides and reject a
+    // cleanup that exposes more (validated deeper affine / direct births, or
+    // C outputs before EARLY_OUTPUT_FRAC) than its input did.
+    let mut guard_kv = String::from("guard=off\n");
+    let mut rejected = false;
+    if let Some(ctx) = guard {
+        let cin = load_or_census(ctx, input, &dir.join("input_census"), true, log)?;
+        let cout = load_or_census(ctx, &cleaned, &dir.join("output_census"), true, log)?;
+        let (li, lo) = (Leakage::of(&cin, ctx.source), Leakage::of(&cout, ctx.source));
+        let e_in = (
+            li.validated.affine.deeper_births,
+            li.validated.direct.deeper_births,
+            cin.early_output_count(EARLY_OUTPUT_FRAC),
+        );
+        let e_out = (
+            lo.validated.affine.deeper_births,
+            lo.validated.direct.deeper_births,
+            cout.early_output_count(EARLY_OUTPUT_FRAC),
+        );
+        rejected = e_out.0 > e_in.0 || e_out.1 > e_in.1 || e_out.2 > e_in.2;
+        guard_kv = format!(
+            "guard=on\ndeeper_affine_in={}\ndeeper_affine_out={}\ndeeper_direct_in={}\ndeeper_direct_out={}\nearly_outputs_in={}\nearly_outputs_out={}\n",
+            e_in.0, e_out.0, e_in.1, e_out.1, e_in.2, e_out.2
+        );
+        if rejected {
+            log(&format!(
+                "cleanup {} REJECTED: exposure increased (deeper affine {} -> {}, direct {} -> {}, early outputs {} -> {}); kept the input",
+                dir.display(),
+                e_in.0, e_out.0, e_in.1, e_out.1, e_in.2, e_out.2
+            ));
+        }
+    }
     write_mpmct_atomic(path_str(&out_path)?, &cleaned, width)
         .map_err(|e| AdaptiveError::io(&out_path, e))?;
     write_text_atomic(
         &report,
         &format!(
-            "cleanup_report=1\ninput_digest={digest}\ninput_gates={}\noutput_gates={}\ncost={}\ninput_cost={in_cost}\noutput_cost={}\nnots_absorbed={}\nnoops_dropped={}\ntrailing_nots={}\n",
+            "cleanup_report=1\ninput_digest={digest}\ninput_gates={}\noutput_gates={}\ncost={}\ninput_cost={in_cost}\noutput_cost={}\nnots_absorbed={}\nnoops_dropped={}\ntrailing_nots={}\n{guard_kv}rejected={}\n",
             input.len(),
             cleaned.len(),
             cost.name(),
@@ -894,6 +943,7 @@ fn cleanup_pass(
             nr.nots_absorbed,
             nr.noops_dropped,
             nr.trailing_nots,
+            if rejected { "leakier" } else { "none" },
         ),
     )?;
     log(&format!(
@@ -906,9 +956,10 @@ fn cleanup_pass(
         fcompress_iters,
         t0.elapsed().as_secs_f64(),
     ));
-    // Accepted only when smaller under the run's cost model (fcompress may
-    // merge into wide cubes, fewer raw gates but a higher 2-control cost).
-    if cost.of(&cleaned) < in_cost {
+    // Accepted only when not leakier and smaller under the run's cost model
+    // (fcompress may merge into wide cubes: fewer raw gates, but a higher
+    // 2-control cost).
+    if !rejected && cost.of(&cleaned) < in_cost {
         Ok(Some(cleaned))
     } else {
         Ok(None)
@@ -1215,6 +1266,29 @@ pub fn run(
         });
     }
     let cleanup_on = !params.descent.is_empty();
+    // The pre-cleanup: one exact cleanup of the input before phase A.
+    if params.pre_cleanup {
+        let cdir = inputs.out_dir.join("precleanup");
+        let guard = (params.round.accept == Accept::SmallerNotLeakier).then_some(&ctx);
+        if let Some(cleaned) = cleanup_pass(
+            &mut current,
+            width,
+            cost_model,
+            params.cleanup_fcompress_iters,
+            params.round.equiv_batches,
+            &cdir,
+            guard,
+            say,
+        )? {
+            current = Current {
+                count: cleaned.len(),
+                cost: cost_model.of(&cleaned),
+                gates: Some(cleaned),
+                path: cdir.join("output.mpmct1"),
+                round: None,
+            };
+        }
+    }
     'levels: for (si, level) in levels.iter().enumerate() {
         let mut rp = params.round.clone();
         rp.plan.max_block_gates = level.cap;
@@ -1291,6 +1365,7 @@ pub fn run(
         if cleanup_on {
             let cdir = inputs.out_dir.join(format!("cleanup{si}"));
             let round = current.round;
+            let guard = (params.round.accept == Accept::SmallerNotLeakier).then_some(&sctx);
             if let Some(cleaned) = cleanup_pass(
                 &mut current,
                 width,
@@ -1298,6 +1373,7 @@ pub fn run(
                 params.cleanup_fcompress_iters,
                 params.round.equiv_batches,
                 &cdir,
+                guard,
                 say,
             )? {
                 current = Current {

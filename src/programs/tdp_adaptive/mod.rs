@@ -60,14 +60,15 @@ pub fn run() {
     std::process::exit(code);
 }
 
-const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--descent 512,128,48,32,16,8] [--descent-stop-fraction 0.01] [--cleanup-fcompress-iters 10] [--lower-controls 2] [--cost gates|two-control] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
+const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--descent 512,128,48,32,16,8] [--descent-stop-fraction 0.01] [--cleanup-fcompress-iters 10] [--lower-controls 2] [--cost gates|two-control] [--pre-cleanup] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96] [--probe-inputs 8192] [--threads T] [--label tdp]
 tdp_adaptive help";
 
 // ---------------------------------------------------------------- argv
 
-const SWITCHES: [&str; 6] = [
+const SWITCHES: [&str; 7] = [
     "--forward-only",
+    "--pre-cleanup",
     "--blind",
     "--no-canonical-order",
     "--keep-round-circuits",
@@ -75,7 +76,7 @@ const SWITCHES: [&str; 6] = [
     "--help",
 ];
 
-const RUN_OPTIONS: [&str; 38] = [
+const RUN_OPTIONS: [&str; 39] = [
     "input",
     "source-c",
     "n",
@@ -92,6 +93,7 @@ const RUN_OPTIONS: [&str; 38] = [
     "cleanup-fcompress-iters",
     "lower-controls",
     "cost",
+    "pre-cleanup",
     "seeds-per-block",
     "time-limit",
     "restarts",
@@ -267,6 +269,7 @@ fn params_of(a: &Args) -> Result<DriverParams, AdaptiveError> {
     }
     p.descent_stop_fraction = a.f64_or("descent-stop-fraction", p.descent_stop_fraction)?;
     p.cleanup_fcompress_iters = a.usize_or("cleanup-fcompress-iters", p.cleanup_fcompress_iters)?;
+    p.pre_cleanup = a.flag("pre-cleanup");
     if let Some(v) = a.num("lower-controls")? {
         p.lower_controls = Some(v as usize);
     }
