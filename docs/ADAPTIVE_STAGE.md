@@ -128,24 +128,32 @@ width before a run starts.
 
 ## 3. The run
 
-The run is a pipeline of **stages**, each a sequence of rounds at one block
-size, run to its own stall:
+The run is a sequence of **levels** (steps inside stage 6, not pipeline
+stages), each a sequence of rounds at one block size, run to its own stall:
 
+* **Pre-cleanup** (`pre_cleanup`, flag `--pre-cleanup`) — one exact cleanup
+  (below) of the input before phase A. On a stage-5 output it is the dominant
+  lever (n = 64: 3,537,140 -> 1,311,745 gates in 78 s, census unchanged), and
+  it must come first: ANF rounds rewrite blocks into the synthesizer's form
+  and destroy the crossing walk's local redundancy that fcompress removes.
 * **Phase A** — the large-block rounds above (block cap `max_block_gates`,
   the run's own `blind` flag and `stop_fraction`). This is the whole run
   when `descent` is empty (the classic behaviour).
 * **Phase B, the multi-scale descent** (`descent`, a list of strictly
   decreasing block-gate caps such as `512,128,48,32,16,8`) — after phase A
-  plateaus, each cap is a stage, planned **C-blind** (cut anywhere; the leak
+  plateaus, each cap is a level, planned **C-blind** (cut anywhere; the leak
   guard still vetoes a leakier block, so compression, not exposure, is the
   caps' job) and run to `descent_stop_fraction`. The lever the shortening
   campaigns found: under a fixed cap blocks grow across rounds while
-  compression stalls, so the cap must shrink. Between stages an exact
+  compression stalls, so the cap must shrink. After every level an exact
   **cleanup** runs — NOT-pushing (absorb the interior NOTs the synthesizer
   and reorderings leave, drop no-ops) then `cleanup_fcompress_iters` of
   fcompress (gather/reduce + Toffoli-sliding transport) — verified
   equivalent on `equiv_batches` × 1,024 random full states and resumable in
-  `cleanup<i>/`.
+  `cleanup<i>/`. fcompress is C-blind, so under `smaller-not-leakier` every
+  cleanup (and the pre-cleanup) is **guarded**: its input and output are
+  censused and the cleanup is rejected when the validated deeper affine or
+  direct births, or the early C outputs, increase.
 * **Phase C, 2-control lowering** (`lower_controls`, e.g. 2) — after the
   descent, every gate wider than that many controls (stage 5 leaves some up
   to its k-max) is rewritten into 2-control gates by the exact dirty-ancilla
@@ -154,14 +162,25 @@ size, run to its own stall:
   is unconditional (not size-gated) and verified equivalent; resumable in
   `lower/`. `None` leaves the wide gates in place.
 
-A stage's rounds end (`stop_reason`) on `two consecutive rounds without size
+**Cost model** (`cost`, flag `--cost gates|two-control`). "Smaller" in the
+acceptance, the stop rules and the cleanups means the raw gate count
+(`gates`, the classic rule) or the size in the deliverable's 2-control gate
+set (`two-control`: 1 per gate with at most 2 controls, 4k - 8 per gate with
+k > 2 controls, its Barenco ladder). With phase C on, `two-control` is the
+honest metric: under raw counting a <= 2-control resynthesis of a block that
+holds wide gates is rejected as growing although it is cheaper once lowered
+(n = 64, fcompress first: 99 of 1,697 blocks synthesized in round 1 under
+`gates`, 1,381 under `two-control`, which cut the 2-control cost by 32 % in
+that round).
+
+A level's rounds end (`stop_reason`) on `two consecutive rounds without size
 decrease`, `two consecutive rounds with joint compression below f`
 (`stop_fraction` / `descent_stop_fraction`, output$_r \ge (1-f)$input$_{r-1}$),
 or the global `max_rounds` cap (0 = no cap).
 
-The **final circuit** is the smallest circuit the pipeline reaches (phase C's
-output when it ran, else the smallest round output or cleanup output; the
-input when nothing shrank). It is put into the canonical commuting gate order
+The **final circuit** is the smallest circuit (under the cost model) the
+run reaches (phase C's output when it ran, else the smallest round, cleanup
+or pre-cleanup output; the input when nothing shrank). It is put into the canonical commuting gate order
 (`xgate_canonicalize`, `canonical_order = true`; checked equivalent on
 8 × 1,024 random full states) under a guard: the reordered circuit is
 censused, and if its validated deeper exposure (affine or direct) exceeds
@@ -193,7 +212,7 @@ attempt of the same recipe in place (`adaptive/attempt.recipe`) and removes
 tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1]
     [--seed S | --seed-file PATH] [--threads T] [--max-rounds N=0] [--stop-fraction F=0.02]
     [--descent 512,128,48,32,16,8] [--descent-stop-fraction F=0.01] [--cleanup-fcompress-iters 10]
-    [--lower-controls 2]
+    [--lower-controls 2] [--cost gates|two-control] [--pre-cleanup]
     [--seeds-per-block K=2] [--time-limit S=60] [--restarts R=16] [--beam B=6]
     [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64]
     [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192]
@@ -219,8 +238,11 @@ round<r>/output_census/          the census of the round's output
 round<r>/output.mpmct1           the round's output (non-final rounds pruned at the end unless --keep-round-circuits)
 round<r>/bounds.out              the output's interior block cuts, one per line
 round<r>/result.report           the round's completion record (a round with it is reloaded, never recomputed)
-cleanup<i>/output.mpmct1         phase B: the circuit after stage i's exact NOT-push + fcompress cleanup
-cleanup<i>/cleanup.report        that cleanup's record (reloaded on resume, keyed on the input gate count)
+precleanup/                      the pre-cleanup (same files as cleanup<i>/)
+cleanup<i>/output.mpmct1         the circuit after level i's exact NOT-push + fcompress cleanup
+cleanup<i>/cleanup.report        that cleanup's record (reloaded on resume, keyed on the input gate count;
+                                 costs, the guard's before/after exposure, rejected=leakier|none)
+cleanup<i>/{input,output}_census/ the guard's censuses
 lower/output.mpmct1              phase C: the circuit after 2-control lowering + a final cleanup
 lower/lower.report               phase C's record (wide gates lowered, max controls seen)
 progress.txt                     per-round gate counts and deeper births, rewritten after every round
