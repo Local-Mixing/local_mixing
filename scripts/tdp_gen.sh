@@ -161,6 +161,12 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
     --db-mixing-growth-work-units G        [3]  profile n0
     --db-mixing-hold-work-units E          [27] profile n1 = n2 = n0 + E
     --db-mixing-target-size-factor R       [2]  profile r1 = r2
+  stage-3 wire-swap twists (circuit_mixer's own preset: 0.0005, 64, log):
+    --db-mixing-twist-rate P               [0.001] twists per mixer round, in (0, 1]
+    --db-mixing-twist-min-span L           [100000] shortest twist window, in gates
+    --db-mixing-twist-spans uniform|log    [uniform: spans uniform over [L, size], each
+                                           window wholly inside the circuit; log = the
+                                           preset's log-uniform spans, truncated at the ends]
   --database-lookup-miss-filter F   auto (default) | on | off (FROZEN_FILTER)
   --leakage-repair                  sampled gate-wise audit + DB repair after stage 3 (off by
                                     default; the packer's order repair in stage 6 always runs)
@@ -281,6 +287,7 @@ AD_MAX_ROUNDS=0; AD_STOP_FRACTION=0.02; AD_SEEDS=2; AD_TIME_LIMIT=60; AD_RESTART
 AD_TERM_CAP=131072; AD_MAX_BLOCK_GATES=65536; AD_SEGMENTS=16; AD_AVOID_RADIUS=64; AD_REFINEMENT_LEVELS=2
 AD_MIN_REFINE_GATES=128; AD_CENSUS_BATCHES=96; AD_ACCEPT=smaller-not-leakier; AD_CANON=1
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
+TW_RATE=0.001; TW_MIN=100000; TW_SPANS=uniform
 STOP_AFTER=6; FORCE_FROM=99; SKIP_LIST=""
 XR=2; XB=3; XC=1; XTDIV=25; XMF=3; XMOVES=""
 DELIV_ANF_ONLY=0
@@ -353,6 +360,9 @@ while [ $# -gt 0 ]; do
       [[ $KNOB_FLAGS == *" $1 "* ]] || fatal "unknown argument $1"
       KNOB[${1#--preprocessing-}]=$2; shift 2 ;;
     --db-mixing-schedule) SCHEDULE=$2; shift 2 ;;
+    --db-mixing-twist-rate) TW_RATE=$2; shift 2 ;;
+    --db-mixing-twist-min-span) TW_MIN=$2; shift 2 ;;
+    --db-mixing-twist-spans) TW_SPANS=$2; shift 2 ;;
     --db-mixing-growth-work-units) GROWTH=$2; shift 2 ;;
     --db-mixing-hold-work-units) HOLD=$2; shift 2 ;;
     --db-mixing-target-size-factor) EXPAND=$2; shift 2 ;;
@@ -636,6 +646,16 @@ case "$SCHEDULE" in
     PROFILE=$(python3 -I -c "import sys; n0,h,r=map(float,sys.argv[1:]); n1=n0+h; print(f'{n0:g},{n1:g},{n1:g},{r:g},{r:g}')" "$GROWTH" "$HOLD" "$EXPAND") ;;
   *) fatal "--db-mixing-schedule must be validated or custom" ;;
 esac
+# stage-3 wire-swap twists: passed to circuit_mixer only where they differ from
+# its db_mixing preset (p_twist 0.0005, twist_min_len 64, log-uniform spans), so
+# the preset's values give val_chain.sh's stage-3 command exactly
+TW_RATE=$(bounded_number --db-mixing-twist-rate "$TW_RATE" 0 1 1) || exit 2
+TW_MIN=$(bounded_uint --db-mixing-twist-min-span "$TW_MIN" 2 1000000000)
+case "$TW_SPANS" in uniform|log) ;; *) fatal "--db-mixing-twist-spans must be uniform or log" ;; esac
+TWISTFLAGS=()
+[ "$TW_RATE" = 0.0005 ] || TWISTFLAGS+=(--p-twist "$TW_RATE")
+[ "$TW_MIN" = 64 ] || TWISTFLAGS+=(--twist-min-len "$TW_MIN")
+[ "$TW_SPANS" = log ] || TWISTFLAGS+=(--twist-span-uniform)
 
 # ---- stage-5 (crossing walk) parameters ----
 XR=$(bounded_number --crossing-target-size-factor "$XR" 1 16 0) || exit 2
@@ -1124,7 +1144,7 @@ fi
 STAGE3_MARKER=$RUN/stage3.recipe
 expected_stage3_marker() {
   echo "tdp_stage3_recipe=1"
-  echo "stage3_args=--profile $PROFILE --moves $A_MOVES${PIECEFLAGS[*]:+ ${PIECEFLAGS[*]}}${QCFLAGS[*]:+ ${QCFLAGS[*]}}"
+  echo "stage3_args=--profile $PROFILE --moves $A_MOVES${PIECEFLAGS[*]:+ ${PIECEFLAGS[*]}}${QCFLAGS[*]:+ ${QCFLAGS[*]}}${TWISTFLAGS[*]:+ ${TWISTFLAGS[*]}}"
   mac stage2="$CUR"
 }
 stage3_done=0
@@ -1193,12 +1213,12 @@ if [ "$stage3_done" -eq 0 ]; then
     note "WARNING: empty-store plumbing mode — db_mixing performs NO re-encoding"
   fi
   [ "$QC" != 1 ] || note "stage 3: leakage repair enabled; report $RUN/db_mixing.leakage_repair.txt"
-  note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES (schedule $SCHEDULE, $PIECE_DESCRIPTION)$FILTER_NOTE"
+  note "stage 3: circuit_mixer --tdp --db-mixing --profile $PROFILE --moves $A_MOVES${TWISTFLAGS[*]:+ ${TWISTFLAGS[*]}} (schedule $SCHEDULE, twists rate $TW_RATE min span $TW_MIN $TW_SPANS, $PIECE_DESCRIPTION)$FILTER_NOTE"
   # val_chain.sh's argv, in its order (the seed as --seed-file /dev/fd/3, off argv); optional flags only when enabled.
   stage_exec "$BIN/circuit_mixer" --input "$CUR" --output "$DB_MIXING" --tdp --db-mixing \
       --profile "$PROFILE" --moves "$A_MOVES" "${DBFLAGS[@]}" \
       --db-max-degree 9 --db-max-span 30 --db-wire-terms 1024 --db-total-terms 2048 \
-      --no-local-verify --seed-file /dev/fd/3 \
+      --no-local-verify --seed-file /dev/fd/3 ${TWISTFLAGS[@]+"${TWISTFLAGS[@]}"} \
       ${QCFLAGS[@]+"${QCFLAGS[@]}"} ${PIECEFLAGS[@]+"${PIECEFLAGS[@]}"} 3<<< "$MIX_SEED" > "$RUN/stage3.log" 2>&1 ||
     { note "stage 3 FAILED; see $RUN/stage3.log"; exit 1; }
   # Why the chain ended. An operator stop flag ($RUN/stage3.stop) ends it

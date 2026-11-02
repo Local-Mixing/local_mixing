@@ -327,8 +327,14 @@ compute the canonical key of its function, look it up, splice in a randomly
 chosen stored spelling of the same function after verifying it, and push the
 new gates outward through the gates they commute with so that replacements
 overlap (`docs/local_mixing_documentation.md`, "Database mixing"). A size
-controller alternates growing (MIX) and shrinking (COMP) rounds; a rare g57
-twist swaps two wire labels across a long window. The validated schedule
+controller alternates growing (MIX) and shrinking (COMP) rounds; a g57 twist
+swaps two wire labels across a long window. Since 2026-11-01 (RC) a round is
+a twist with probability 0.001 (circuit_mixer's preset: 0.0005), and each
+twist window is uniform between 100,000 gates and the whole circuit and lies
+wholly inside it (preset: log-uniform from 64 gates, truncated at the ends):
+the doubled rate makes up for the carrier hops the interleaved stage 2 gave
+up, and no twist fits inside one stage-6 block (at most 65,536 gates)
+(`db_mixing.twist_*`, `docs/tdp_pipeline.md`). The validated schedule
 (profile `2,2,2,2,2`, int(G·2·2·1.3) moves for G stage-2 gates) doubles the
 circuit (ratio 2.04-2.13) and leaves it about 88 % g57 gates, in about 34
 minutes at n = 64 (`docs/TDP_PIPELINE_REFERENCE.md` §3.8). Campaign sizes:

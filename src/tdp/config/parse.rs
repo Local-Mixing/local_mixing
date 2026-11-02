@@ -220,6 +220,24 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "hold",
         "number",
     ),
+    (
+        "db_mixing.twist_rate",
+        "db_mixing.twist_rate",
+        "twist_rate",
+        "number",
+    ),
+    (
+        "db_mixing.twist_min_span",
+        "db_mixing.twist_min_span",
+        "twist_min_span",
+        "integer",
+    ),
+    (
+        "db_mixing.twist_spans",
+        "db_mixing.twist_spans",
+        "twist_spans",
+        "string",
+    ),
     ("run.threads", "run.threads", "threads", "integer"),
     (
         "packing.window_gates",

@@ -2,8 +2,9 @@
 
 This document is for everyone on the project who knows the October release (recipe v13, `main` at ec8474c4) and
 needs to know what changed in this update, why, and how to get the old behaviour back. It covers every commit
-between ec8474c4 and this push: the review fixes of 2026-10-28, the stage-2 interleaving work of 2026-10-28 to
-2026-11-01, and the stage-1/2 update decided by RC on 2026-11-01. The pipeline itself is described from scratch in
+between ec8474c4 and the pushes of 2026-11-01: the review fixes of 2026-10-28, the stage-2 interleaving work of
+2026-10-28 to 2026-11-01, the stage-1/2 update decided by RC on 2026-11-01, and the stage-3 twist settings that
+followed it the same day (section 2.5). The pipeline itself is described from scratch in
 [PIPELINE_INTRODUCTION.md](PIPELINE_INTRODUCTION.md); the settings are in [tdp_pipeline.md](tdp_pipeline.md).
 
 ## Summary
@@ -16,6 +17,7 @@ between ec8474c4 and this push: the review fixes of 2026-10-28, the stage-2 inte
 | Stage-2 fire order | each fire contiguous | fires interleaved (window 4,096 gates), with read-only refresh, helper lanes and grouped migration | narrow-window exposure threefold lower (section 2.1) |
 | Stage-2 warm-up | grows the growing half of the band only | also pre-grows the serving half before the first masks | half of the remaining recoveries sat on raw band-seed coordinates (section 2.2) |
 | Stage-2 port guards | two junk-half guards: the reverse contract | by default no reverse contract: one opening guard over all data wires, no closing guard; band seed and reseed unchanged at both ends | RC, 2026-11-01 (section 2.3) |
+| Stage-3 twists | rate 0.0005 per mixer round, spans log-uniform from 64 gates (circuit_mixer's preset) | rate 0.001, spans uniform from 100,000 gates to the circuit size, every window inside the circuit | compensates the carrier hops of 2.1; no twist inside one stage-6 block (section 2.5) |
 | Stage 6 | payload contract checked in both directions | `tdp_adaptive --forward-only` checks the forward direction only; the driver passes it when the reverse contract is off | follows from 2.3 (section 3) |
 | Recipe bookkeeping | recipe v13, stage-1/2 marker 8 | recipe v14, marker 9, config schema still 5; v13 runs are refused on resume | section 4 |
 
@@ -152,6 +154,27 @@ oracle `*.log` fixtures were git-ignored (CI on a clean checkout); the auto band
 odd n gave 9 banks) and the resolved geometry is validated up front; a three-mask stage 2 wider than 1,024 wires is
 refused when stage 6 runs; the adaptive census batches and term cap are checked against the stage-2 width.
 
+### 2.5 Stage 3: more and longer wire-swap twists
+
+**What.** The managed stage 3 now runs circuit_mixer with `--p-twist 0.001 --twist-min-len 100000
+--twist-span-uniform`: a mixer round is a wire-swap twist with probability 0.001 instead of the db_mixing preset's
+0.0005, and each twist's window is drawn uniformly between 100,000 gates and the whole circuit and placed wholly
+inside it, so no twist spans less than 100,000 gates. The preset drew log-uniform lengths from 64 gates and
+truncated windows at the circuit ends: in the n = 64 default run its 1,301 twists averaged about 54,800 gates, the
+median a few thousand. New settings `db_mixing.twist_rate`, `db_mixing.twist_min_span`, `db_mixing.twist_spans`
+(flags `--db-mixing-twist-*`), passed to circuit_mixer only where they differ from its preset; circuit_mixer's own
+default is unchanged (the new mode is the switch `--twist-span-uniform`). Code: `uniform_twist_window` in
+[src/engine/mixer/transformations.rs](../src/engine/mixer/transformations.rs).
+
+**Why.** RC, 2026-11-01. Fire interleaving (2.1) moved the stage-2 carrier migration to one fire box per lane
+cycle: 1,778 carrier switches at n = 64 instead of about 16,750 (n = 128: 2,534), so wires hop less; doubling the
+stage-3 wire-swap twists compensates. The minimum span exceeds a stage-6 block (adaptive blocks are at most
+65,536 gates), so a twist's two seams never fall in the same block, where resynthesis could cancel them.
+
+**Cost.** About 2,600 twists per n = 64 run instead of 1,300, each over a window of hundreds of thousands of
+gates (relabelling only the gates on the two swapped wires); each twist adds its two seam brackets. The effect on
+the stage-3 time and on exposure is not measured yet.
+
 ## 3. Stage 6: `--forward-only`
 
 `tdp_adaptive run --forward-only` checks the sandwich payload contract (on the input before round 1 and on the
@@ -171,8 +194,10 @@ nothing else in stage 6 changed. Code: `payload_contract_dirs` in
 - `tdp_command_recipe=14` and `tdp_stage12_recipe=9`; the config schema stays 5, so an existing v5 file without
   the new keys now gets the v14 stages 1-2. A v13 run directory is refused on resume, with a message naming the
   settings that rebuild v13's stages 1-2.
-- The validated-chain pin (`val_chain-L8/A-20261007`) now also requires the legacy stage 1 and the reverse
-  contract.
+- The validated-chain pin (`val_chain-L8/A-20261007`) now also requires the legacy stage 1, the reverse
+  contract and circuit_mixer's own stage-3 twists.
+- Stage 3: `db_mixing.twist_rate` (0.001), `db_mixing.twist_min_span` (100000), `db_mixing.twist_spans`
+  (`"uniform"`), recorded in the manifest and in `stage3.recipe`.
 - nonlinear291 takes the V gadget only with slicing (its templates cover the zero-preserving copy only).
 
 To build v13's stages 1-2 in a fresh run:
@@ -187,6 +212,10 @@ reverse_contract = true   # both junk-half guards
 turnover = "bank"
 interleave = 0
 pregrow = false
+[db_mixing]               # circuit_mixer's own twist preset
+twist_rate = 0.0005
+twist_min_span = 64
+twist_spans = "log"
 ```
 
 This reproduces the old circuits byte for byte (`stage2_three_mask_parity`, `stage2_typed_params` and

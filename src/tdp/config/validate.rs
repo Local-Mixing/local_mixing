@@ -573,6 +573,32 @@ where
             ));
         }
     };
+    // Stage-3 wire-swap twists (db_mixing.twist_*; RC 2026-11-01)
+    let td = TwistConfig::default();
+    let twist = TwistConfig {
+        rate: parse_optional_f64(
+            raw,
+            "twist_rate",
+            |value| value > 0.0 && value <= 1.0,
+            "must be in (0, 1]",
+        )?
+        .unwrap_or(td.rate.clone()),
+        min_span: parse_optional_u64(raw, "twist_min_span", 2, 1_000_000_000)?
+            .map(|v| v.parse().expect("validated"))
+            .unwrap_or(td.min_span),
+        uniform: match raw.value("twist_spans") {
+            None => td.uniform,
+            Some("uniform") => true,
+            Some("log") => false,
+            Some(other) => {
+                return Err(config_error(
+                    raw,
+                    "twist_spans",
+                    &format!("expected \"uniform\" or \"log\"; got {other:?}"),
+                ));
+            }
+        },
+    };
     let stop_after = parse_optional_stage(raw, "stop_after")?;
     let force_from = parse_optional_stage(raw, "force_from")?;
     // Optional stages (every stage after the first): run.skip_stages.
@@ -955,6 +981,7 @@ where
         mcd,
         mcd_rule,
         schedule,
+        twist,
         packing,
         crossing,
         delivery,

@@ -292,6 +292,8 @@ pub(crate) fn pinned_recipe_for_store(config: &ResolvedConfig, reference: u128) 
         // gen's default shape changed with recipe v14)
         && config.sandwich.shape(config.n) == SandwichConfig::LEGACY.shape(config.n)
         && config.reverse_contract
+        // the stage-3 twists of circuit_mixer's own db_mixing preset
+        && config.twist == TwistConfig::preset()
         // the recipe's stages, not the lifecycle stop point: a stop before
         // stage 4 must not pin a run whose recipe includes stages 4-6
         && [4, 5].iter().all(|k| config.skip_stages.contains(k))
@@ -390,6 +392,12 @@ pub(crate) fn recipe_manifest(
             kv("stage3_moves_rule", "int((n0+hold)*r*G*1.3)");
         }
     }
+    kv("db_mixing_twist_rate", &config.twist.rate);
+    kv(
+        "db_mixing_twist_min_span",
+        &config.twist.min_span.to_string(),
+    );
+    kv("db_mixing_twist_spans", config.twist.spans_name());
     kv("stage3_verify_every", "default(10000)");
     kv("stage3_report_every", "default(50000)");
     // Which stages the recipe runs (lifecycle stop/rerun points are not here).

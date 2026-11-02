@@ -155,6 +155,12 @@ pub struct MixParams {
     // the all-scales dial that decorrelates computational progress at every
     // window scale, the structured analog of ssg's long-range shooting.
     pub twist_min_len: usize,
+    // twist_span_uniform (RC 2026-11-01): draw the window length UNIFORMLY
+    // over [twist_min_len, circuit size] and place the window wholly inside
+    // the circuit (start uniform over the positions where it fits), so every
+    // twist spans exactly the drawn length, never less than twist_min_len.
+    // Off: the log-uniform length with symmetric truncation at the ends.
+    pub twist_span_uniform: bool,
     // Frozen-DB replacement moves. Both sample a contiguous window of
     // [db_min_window, db_max_window] gates, key it by its exact function, and
     // look it up in the store; they differ in how they pick a replacement.
@@ -601,6 +607,7 @@ impl Default for MixParams {
             shuffle_rate: 2.0,
             twist_g57: false,
             twist_min_len: 64,
+            twist_span_uniform: false,
             // Store-free by default: MixParams::default() is the test/base
             // value, and any positive DB rate here would make every construction
             // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the circuit_mixer

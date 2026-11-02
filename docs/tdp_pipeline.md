@@ -300,7 +300,9 @@ else. It requires every recipe setting of that chain (a random generated
 source, embedded masking with preset L8 or A, the validated |C|, schedule
 `validated` in one piece, no leakage repair, default packing, the legacy
 stage 1 (`sandwich.slicing = true`, `sandwich.v_gates = 0`, `sandwich.layer =
-1`) with both port guards (`preprocessing.reverse_contract = true`), stages 4
+1`) with both port guards (`preprocessing.reverse_contract = true`),
+circuit_mixer's own stage-3 twists (`db_mixing.twist_rate = 0.0005`,
+`twist_min_span = 64`, `twist_spans = "log"`), stages 4
 and 5 off and the windowed stage 6 ending after the packer's deliverable:
 `run.skip_stages = [4, 5]`, `delivery.mode = "windowed"` and
 `delivery.anf_only = true`; the then-unused unpacking parameters do not
@@ -419,6 +421,9 @@ generator's for the same seed (`tests/integration/three_mask_parity.rs`).
 | `db_mixing.growth_work_units` | number, custom only | Profile $n_0$. |
 | `db_mixing.hold_work_units` | number, custom only | Profile $n_1 = n_2 = n_0 + $ hold. |
 | `db_mixing.target_size_factor` | number, custom only | Profile $r_1 = r_2$, in `(1, 16]`; moves `int((n0+hold)·r·G·1.3)`. |
+| `db_mixing.twist_rate` | number, `0.001` | Probability that a mixer round is a wire-swap twist (`--p-twist`), in `(0, 1]`. RC, 2026-11-01: twice circuit_mixer's db_mixing preset (0.0005), compensating the carrier hops the interleaved stage 2 gave up (1,778 instead of about 16,750 at n = 64). |
+| `db_mixing.twist_min_span` | integer, `100000` | Shortest twist window in gates (`--twist-min-len`, preset 64): more than a stage-6 block (at most 65,536 gates), so no twist fits inside one block. |
+| `db_mixing.twist_spans` | string, `"uniform"` | `"uniform"` (`--twist-span-uniform`): window lengths uniform over [`twist_min_span`, circuit size], every window wholly inside the circuit, so every twist spans at least the minimum. `"log"`: the preset's log-uniform lengths, truncated at the circuit ends. The three twist settings reach circuit_mixer only where they differ from its preset (0.0005, 64, `"log"`), so the preset's values give val_chain.sh's stage-3 command; recorded in the manifest (`db_mixing_twist_*`) and in `stage3.recipe` (`stage3_args`). |
 
 The mixer runs with `FROZEN_REGULAR_VALUE_CONVENTION=native` and the
 cache sizes `LOOKUP_CACHE_MB=2048 CANON_CACHE_MB=256

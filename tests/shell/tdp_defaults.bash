@@ -72,10 +72,13 @@ run_pair() { # LABEL N MC CFG GATES GEN MIX [managed size flags...]
   local sf=$tmp/$label.seeds; seedfile "$sf" "$gs" "$ms"
   mkdir -p "$tmp/m"; printf 'gen_gates=%s\n' "$gates" > "$tmp/m/$label.mock"
   local preset=(); [ "$cfg" = A ] && preset=(--preprocessing-preset A)
-  # --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only: the oracle chain has four stages
+  # --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only: the oracle chain has four stages;
+  # its stage 3 ran circuit_mixer's own db_mixing twists (0.0005, 64, log-uniform), which the
+  # pipeline's defaults (0.001, 100000, uniform; RC 2026-11-01) no longer are
   env -i HOME="$HOME" PATH="$PATH" TDP_BIN_DIR="$BIN" FROZEN_DB_DIR="$STORE" \
     bash "$root/scripts/tdp_gen.sh" --source-wires "$n" --run-directory "$tmp/m/$label" \
-      --seed-file "$sf" --preprocessing-mode embedded-masking --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
+      --seed-file "$sf" --preprocessing-mode embedded-masking --run-skip-stages 4,5 --delivery-mode windowed --delivery-anf-only \
+      --db-mixing-twist-rate 0.0005 --db-mixing-twist-min-span 64 --db-mixing-twist-spans log ${preset[@]+"${preset[@]}"} "$@" > "$tmp/$label.m.log" 2>&1 ||
     { cat "$tmp/$label.m.log" >&2; exit 1; }
 }
 python_compare() { # LABEL N MANAGED_CALLS
@@ -225,6 +228,10 @@ skip_stages = [4, 5]
 wires = $n
 [database]
 regular_dir = "$STORE"
+[db_mixing]
+twist_rate = 0.0005
+twist_min_span = 64
+twist_spans = "log"
 [preprocessing]
 mode = "embedded-masking"
 $preset

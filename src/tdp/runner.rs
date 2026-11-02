@@ -723,6 +723,22 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         push("--hold", hold.clone());
         push("--expand", expand.clone());
     }
+    let td = TwistConfig::default();
+    if config.twist.rate != td.rate {
+        push("--db-mixing-twist-rate", config.twist.rate.clone());
+    }
+    if config.twist.min_span != td.min_span {
+        push(
+            "--db-mixing-twist-min-span",
+            config.twist.min_span.to_string(),
+        );
+    }
+    if config.twist.uniform != td.uniform {
+        push(
+            "--db-mixing-twist-spans",
+            config.twist.spans_name().to_owned(),
+        );
+    }
     match config.frozen_filter {
         FrozenFilter::Auto => {}
         FrozenFilter::On => push("--database-lookup-miss-filter", "on".into()),

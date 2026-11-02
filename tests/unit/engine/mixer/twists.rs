@@ -403,3 +403,47 @@ fn twist_weights_zero_is_inert() {
         0
     );
 }
+
+// twist_span_uniform (RC 2026-11-01): lengths uniform over [twist_min_len,
+// size] and every window wholly inside the circuit, so no twist spans less
+// than the minimum (the log-uniform default truncates at the ends). Both
+// twist paths keep the function.
+#[test]
+fn uniform_twist_spans_never_fall_below_the_minimum() {
+    for g57 in [false, true] {
+        let gates = random_mixed_circuit(41, 16, 400);
+        let base = MixParams {
+            k_max: 6,
+            moves: 10_000,
+            target_size: 600,
+            temp: 20.0,
+            p_twist: 0.05,
+            twist_min_len: 200,
+            twist_g57: g57,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 11,
+            ..MixParams::default()
+        };
+        let mut uniform = Mixer::new(
+            gates.clone(),
+            16,
+            MixParams {
+                twist_span_uniform: true,
+                ..base.clone()
+            },
+        );
+        uniform.run();
+        let twists = uniform.counters.twist_swaps
+            + uniform.counters.twist_negs
+            + uniform.counters.twist_cnots;
+        assert!(twists > 20, "g57 {g57}: twists barely ran: {twists}");
+        let mean = uniform.counters.twist_span as f64 / twists as f64;
+        assert!(mean >= 200.0, "g57 {g57}: mean span {mean} below the minimum");
+        uniform.global_check();
+        // the default draws (log-uniform, truncated) are unchanged
+        let mut log = Mixer::new(gates, 16, base);
+        log.run();
+        log.global_check();
+    }
+}

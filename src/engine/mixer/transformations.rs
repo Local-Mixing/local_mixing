@@ -542,11 +542,38 @@ impl Mixer {
     // pure 1->1 relabel (no case-splits, no width change), so the whole family
     // is function-preserving by commutation, verified per gate under
     // local_verify (P^-1 . g . P == g').
+    /// The uniform-span window (`twist_span_uniform`): a length uniform over
+    /// [twist_min_len, n] and a start uniform over the positions where the
+    /// whole window fits, so the span is exactly the drawn length.
+    fn uniform_twist_window(&mut self, n: usize) -> (u32, usize) {
+        let lmin = self.params.twist_min_len.max(2).min(n);
+        let len = self.rng.random_range(lmin..=n);
+        let k = self.rng.random_range(0..=n - len);
+        let start = self
+            .arena
+            .ids_in_order_iter()
+            .nth(k)
+            .expect("a window start inside the circuit");
+        (start, len)
+    }
+
     pub(super) fn twist_move(&mut self) {
         let n = self.arena.len();
         if n < 2 {
             return;
         }
+        let (start, len) = if self.params.twist_span_uniform {
+            self.uniform_twist_window(n)
+        } else {
+            self.log_uniform_twist_window(n)
+        };
+        self.twist_move_at(start, len);
+    }
+
+    /// The default window of [`Self::twist_move`]: a log-uniform length,
+    /// symmetrically truncated at the circuit ends, the start possibly biased
+    /// by `find_twist_site`.
+    fn log_uniform_twist_window(&mut self, n: usize) -> (u32, usize) {
         let cap = n;
         let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
         let len = (self
@@ -569,7 +596,7 @@ impl Mixer {
                 self.counters.twist_place_fallback += 1;
             }
         }
-        let (start, len) = match site {
+        match site {
             Some((at, _)) => (at, len),
             None => {
                 let draw = self.rng.random_range(0..n + len - 1);
@@ -579,8 +606,11 @@ impl Mixer {
                     (self.arena.random_linked(&mut self.rng), len)
                 }
             }
-        };
+        }
+    }
 
+    /// The swap-family twist on the window of `len` gates from `start`.
+    fn twist_move_at(&mut self, start: u32, len: usize) {
         // Pass 1: locate the window end (truncated at the tail) and collect the
         // wires it touches, so `a` can be a wire the window actually uses (a T
         // acting on none of them is a no-op twist).
@@ -985,20 +1015,24 @@ impl Mixer {
         for _ in 0..attempts {
             draws += 1;
             let n = self.arena.len();
-            let cap = n;
-            let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
-            let len = (self
-                .rng
-                .random_range(lmin.ln()..=(cap as f64).ln())
-                .exp()
-                .round() as usize)
-                .clamp(2, cap);
-            // Symmetric truncation, exactly as in twist_move.
-            let draw = self.rng.random_range(0..n + len - 1);
-            let (start, len) = if draw < len - 1 {
-                (self.arena.head(), draw + 1)
+            let (start, len) = if self.params.twist_span_uniform {
+                self.uniform_twist_window(n)
             } else {
-                (self.arena.random_linked(&mut self.rng), len)
+                let cap = n;
+                let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
+                let len = (self
+                    .rng
+                    .random_range(lmin.ln()..=(cap as f64).ln())
+                    .exp()
+                    .round() as usize)
+                    .clamp(2, cap);
+                // Symmetric truncation, exactly as in twist_move.
+                let draw = self.rng.random_range(0..n + len - 1);
+                if draw < len - 1 {
+                    (self.arena.head(), draw + 1)
+                } else {
+                    (self.arena.random_linked(&mut self.rng), len)
+                }
             };
 
             // Pass 1: window end + touched wires (a must touch the window or

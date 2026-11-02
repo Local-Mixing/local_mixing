@@ -35,8 +35,9 @@
 # (n=64) / 3000 (n=128); that mode with skip_stages = [4, 5], delivery.mode =
 # "windowed" and delivery.anf_only = true is the four-stage chain exactly, and
 # with [sandwich] slicing = true, v_gates = 0 (the stage 1 of recipe v13 and
-# earlier) and preprocessing.reverse_contract = true it reproduces the chosen
-# runs vL64a/b, vL128a/b. Stages 4 and 5 use the archive-era
+# earlier), preprocessing.reverse_contract = true and [db_mixing] twist_rate =
+# 0.0005, twist_min_span = 64, twist_spans = "log" (circuit_mixer's own preset)
+# it reproduces the chosen runs vL64a/b, vL128a/b. Stages 4 and 5 use the archive-era
 # driver's flags (ea2e516f). No stage-2 or stage-3 knob is set here: a preset
 # or schedule field next to `L8` / `validated` is an error, so an old
 # template cannot silently produce a hybrid recipe.
@@ -129,6 +130,10 @@ mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear2
 
 [db_mixing]
 schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) or "custom"
+# twist_rate = 0.001       # wire-swap twists per mixer round, (0, 1] (circuit_mixer's preset: 0.0005)
+# twist_min_span = 100000  # shortest twist window in gates (preset: 64), more than a stage-6 block
+# twist_spans = "uniform"  # "uniform" over [min span, size], windows wholly inside the circuit;
+#                          # "log" = the preset's log-uniform spans truncated at the ends
 # schedule = "custom" requires growth_work_units, hold_work_units, target_size_factor.
 
 [crossing]

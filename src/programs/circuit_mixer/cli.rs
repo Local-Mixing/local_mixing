@@ -120,6 +120,12 @@ pub struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     pub(super) twist_min_len: usize,
+    /// Draw twist window lengths uniformly over [twist-min-len, circuit size]
+    /// and place each window wholly inside the circuit, so every twist spans
+    /// exactly the drawn length (default: log-uniform lengths, windows
+    /// truncated at the circuit ends).
+    #[arg(long, default_value_t = false)]
+    pub(super) twist_span_uniform: bool,
     /// LAYER-2 db_mixing preset: sets the db_mixing default block (--twist-g57
     /// --p-twist 0.0005 --db-advance --p-mingen 0.6 --mix-pay-random, COMP
     /// p_mingen 0) unless individually overridden. p_convex is no longer set

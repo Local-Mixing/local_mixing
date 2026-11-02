@@ -238,7 +238,9 @@ the server campaigns of October 2026 ran the prototypes this code ports.
 
 *The full account of this update, with the evidence behind each change, is
 [PIPELINE_V14_CHANGES.md](PIPELINE_V14_CHANGES.md); this section is the short
-version for readers of this document.*
+version for readers of this document. Not covered here: the stage-3 twist
+settings of the same day (`db_mixing.twist_rate` 0.001, `twist_min_span`
+100000, `twist_spans = "uniform"`; that document's section 2.5).*
 
 RC's stage-1 redesign and the clear-cut stage-2 suggestions of
 [notes/stage2_interleaving_20261101.md](notes/stage2_interleaving_20261101.md)

@@ -1017,7 +1017,7 @@ fn the_exact_default_manifest_text() {
         "three_mask_random_helpers=1\nthree_mask_unique_cover=1\nthree_mask_turnover=wire\n",
         "three_mask_interleave=4096\nthree_mask_pregrow=1\nthree_mask_outer_blocks=L8\n",
         "gadget_seed_rule=gen\ndb_mixing_schedule=validated\nstage3_profile=2,2,2,2,2\n",
-        "stage3_moves_rule=int(G*2*2*1.3)\nstage3_verify_every=default(10000)\n",
+        "stage3_moves_rule=int(G*2*2*1.3)\ndb_mixing_twist_rate=0.001\ndb_mixing_twist_min_span=100000\ndb_mixing_twist_spans=uniform\nstage3_verify_every=default(10000)\n",
         "stage3_report_every=default(50000)\nskip_stages=none\nstage4_split_args=archive(ea2e516f)\n",
         "crossing_target_size_factor=2\ncrossing_width_penalty_base=3\ncrossing_width_penalty_threshold=1\n",
         "crossing_size_tolerance_divisor=25\ncrossing_move_budget_factor=3\ncrossing_move_attempts=factor*target\n",
@@ -1518,8 +1518,9 @@ fn pinned_recipe_and_resolved_filter_follow_the_run() {
     .unwrap();
     assert_eq!(pinned(&resynth), "none");
     // the chain's stage 1 is the legacy shape (gen's default before recipe v14)
+    // (and circuit_mixer's own db_mixing twists: 0.0005, 64, log-uniform)
     let chain = format!(
-        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\n"
+        "source.wires = 64\ndatabase.regular_dir = {store:?}\npreprocessing.mode = \"embedded-masking\"\nrun.skip_stages = [4, 5]\ndelivery.mode = \"windowed\"\ndelivery.anf_only = true\ndb_mixing.twist_rate = 0.0005\ndb_mixing.twist_min_span = 64\ndb_mixing.twist_spans = \"log\"\n"
     );
     // the legacy stage 1 at the v14 default port contract (forward only) ...
     let legacy_shape = format!("{chain}sandwich.slicing = true\nsandwich.v_gates = 0\n");
@@ -2728,4 +2729,61 @@ fn three_mask_defaults_are_gens_v3() {
             "TM_BASE lacks [{flag}]={default} ({key})"
         );
     }
+}
+
+/// RC 2026-11-01: the stage-3 wire-swap twists are recipe settings: rate
+/// 0.001 and spans uniform over [100,000, size] by default, passed to the
+/// script (and from it to circuit_mixer) only when they differ; the
+/// validated chain needs circuit_mixer's own preset (0.0005, 64, log).
+#[test]
+fn stage_three_twists_defaults_flags_manifest_and_refusals() {
+    let d = resolve_body("source.wires = 64").unwrap();
+    assert_eq!(d.twist, TwistConfig::default());
+    assert_eq!(
+        (d.twist.rate.as_str(), d.twist.min_span, d.twist.uniform),
+        ("0.001", 100_000, true)
+    );
+    let args = strings(&script_args(&d));
+    assert!(
+        !args.iter().any(|a| a.starts_with("--db-mixing-twist")),
+        "{args:?}"
+    );
+    let m = recipe_manifest(&d, &[], 1);
+    assert!(m.contains(
+        "\ndb_mixing_twist_rate=0.001\ndb_mixing_twist_min_span=100000\ndb_mixing_twist_spans=uniform\n"
+    ));
+    let preset = resolve_body(
+        "source.wires = 64\ndb_mixing.twist_rate = 5e-4\ndb_mixing.twist_min_span = 64\ndb_mixing.twist_spans = \"log\"",
+    )
+    .unwrap();
+    assert_eq!(preset.twist, TwistConfig::preset());
+    let args = strings(&script_args(&preset));
+    for pair in [
+        ["--db-mixing-twist-rate", "0.0005"],
+        ["--db-mixing-twist-min-span", "64"],
+        ["--db-mixing-twist-spans", "log"],
+    ] {
+        assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+    }
+    for bad in [
+        "db_mixing.twist_rate = 0",
+        "db_mixing.twist_rate = 1.5",
+        "db_mixing.twist_rate = \"fast\"",
+        "db_mixing.twist_min_span = 1",
+        "db_mixing.twist_spans = \"normal\"",
+    ] {
+        assert!(
+            resolve_body(&format!("source.wires = 64\n{bad}")).is_err(),
+            "accepted {bad}"
+        );
+    }
+    // the script starts from the same defaults and keeps circuit_mixer's
+    // preset command when given the preset's values
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tdp_gen.sh"))
+            .unwrap();
+    assert!(script.contains("TW_RATE=0.001; TW_MIN=100000; TW_SPANS=uniform\n"));
+    assert!(script.contains("[ \"$TW_RATE\" = 0.0005 ] || TWISTFLAGS+=(--p-twist \"$TW_RATE\")"));
+    assert!(script.contains("[ \"$TW_MIN\" = 64 ] || TWISTFLAGS+=(--twist-min-len \"$TW_MIN\")"));
+    assert!(script.contains("[ \"$TW_SPANS\" = log ] || TWISTFLAGS+=(--twist-span-uniform)"));
 }

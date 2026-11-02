@@ -355,8 +355,8 @@ pub fn run(matches: clap::ArgMatches) {
     }
     if args.p_twist > 0.0 {
         println!(
-            "[circuit_mixer] twists ON (swap family): p_twist={} twist_min_len={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips) (w_twist_* retired/ignored)",
-            args.p_twist, args.twist_min_len, args.twist_neg_p
+            "[circuit_mixer] twists ON (swap family): p_twist={} twist_min_len={} twist_span_uniform={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips) (w_twist_* retired/ignored)",
+            args.p_twist, args.twist_min_len, args.twist_span_uniform, args.twist_neg_p
         );
     }
     if args.twist_g57 {
@@ -503,6 +503,7 @@ pub fn run(matches: clap::ArgMatches) {
         twist_neg_p: args.twist_neg_p,
         twist_g57: args.twist_g57,
         twist_min_len: args.twist_min_len,
+        twist_span_uniform: args.twist_span_uniform,
         p_comp: args.p_comp,
         p_any: args.p_any,
         db_mode: crate::stages::db_mixing::replacement::DbMode::parse(&args.db_mode)

@@ -509,6 +509,51 @@ impl SandwichConfig {
     }
 }
 
+/// Stage-3 (database mixing) wire-swap twists (RC, 2026-11-01): the rate per
+/// mixer round and the span of each twist. The defaults are the pipeline's:
+/// rate 0.001 (twice circuit_mixer's db_mixing preset, compensating the
+/// carrier hops stage 2 gave up under fire interleaving) and spans uniform
+/// over [100,000 gates, circuit size], every window wholly inside the circuit,
+/// so no twist fits inside one stage-6 block (at most 65,536 gates).
+/// [`TwistConfig::preset`] is circuit_mixer's own preset (rate 0.0005,
+/// log-uniform spans from 64 gates, truncated at the ends), which the
+/// validated chain ran.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TwistConfig {
+    /// `p_twist`, in (0, 1], as normalized text.
+    pub(crate) rate: String,
+    /// `twist_min_len`, in gates.
+    pub(crate) min_span: u64,
+    /// `twist_span_uniform`: uniform spans placed wholly inside the circuit.
+    pub(crate) uniform: bool,
+}
+
+impl Default for TwistConfig {
+    fn default() -> Self {
+        TwistConfig {
+            rate: "0.001".to_string(),
+            min_span: 100_000,
+            uniform: true,
+        }
+    }
+}
+
+impl TwistConfig {
+    /// circuit_mixer's db_mixing preset: what it does with no twist flag.
+    pub(crate) fn preset() -> Self {
+        TwistConfig {
+            rate: "0.0005".to_string(),
+            min_span: 64,
+            uniform: false,
+        }
+    }
+
+    /// `"uniform"` or `"log"`.
+    pub(crate) fn spans_name(&self) -> &'static str {
+        if self.uniform { "uniform" } else { "log" }
+    }
+}
+
 /// `[three_mask]`: the knobs of the three-mask stage-2 compute
 /// (`preprocessing.mode = "three-mask"`). The defaults are gen's
 /// (`ThreeMaskParams::v3`, recipe v14): the campaign configuration
@@ -903,6 +948,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) mcd: usize,
     pub(crate) mcd_rule: SourceGatesRule,
     pub(crate) schedule: Schedule,
+    /// Stage-3 wire-swap twists (`db_mixing.twist_*`).
+    pub(crate) twist: TwistConfig,
     pub(crate) packing: PackingConfig,
     pub(crate) crossing: CrossingConfig,
     pub(crate) delivery: DeliveryConfig,
