@@ -1175,32 +1175,33 @@ pub fn run(
     let mut r = 0usize;
     let mut plateau = false;
     let mut hit_round_cap = false;
-    // The stages: phase A (the classic large-block rounds, with the run's
-    // own blind flag and stop fraction) followed by phase B, one stall per
-    // descent cap (planned C-blind). An exact NOT-push + fcompress cleanup
-    // runs after a stage when phase B is active.
-    struct Stage {
+    // The block-cap LEVELS of this stage (not pipeline stages): level 0 is
+    // phase A (the classic large-block rounds, with the run's own blind flag
+    // and stop fraction), levels 1.. are phase B's descent caps (planned
+    // C-blind), each run to its own stall. An exact NOT-push + fcompress
+    // cleanup runs after a level when phase B is active.
+    struct Level {
         cap: usize,
         blind: bool,
         stop_fraction: f64,
     }
-    let mut stages: Vec<Stage> = vec![Stage {
+    let mut levels: Vec<Level> = vec![Level {
         cap: params.round.plan.max_block_gates,
         blind: params.round.blind,
         stop_fraction: params.stop_fraction,
     }];
     for &cap in &params.descent {
-        stages.push(Stage {
+        levels.push(Level {
             cap,
             blind: true,
             stop_fraction: params.descent_stop_fraction,
         });
     }
     let cleanup_on = !params.descent.is_empty();
-    'stages: for (si, stage) in stages.iter().enumerate() {
+    'levels: for (si, level) in levels.iter().enumerate() {
         let mut rp = params.round.clone();
-        rp.plan.max_block_gates = stage.cap;
-        rp.blind = stage.blind;
+        rp.plan.max_block_gates = level.cap;
+        rp.blind = level.blind;
         let sctx = RoundContext {
             source: &source,
             width,
@@ -1209,10 +1210,10 @@ pub fn run(
         };
         if si > 0 {
             say(&format!(
-                "descent cap {} gates (stage {si}/{}), blind, stop fraction {}",
-                stage.cap,
-                stages.len() - 1,
-                stage.stop_fraction
+                "phase B descent level {si}/{}: block cap {} gates, blind, stop fraction {}",
+                levels.len() - 1,
+                level.cap,
+                level.stop_fraction
             ));
         }
         let mut pairs: Vec<(usize, usize)> = Vec::new();
@@ -1222,7 +1223,7 @@ pub fn run(
             r += 1;
             if params.max_rounds > 0 && r > params.max_rounds {
                 hit_round_cap = true;
-                break 'stages;
+                break 'levels;
             }
             let rdir = inputs.out_dir.join(format!("round{r}"));
             // a completed round is reloaded from its report alone; only a
@@ -1260,7 +1261,7 @@ pub fn run(
                     count,
                 };
             }
-            if let Some(reason) = stop_rule(&pairs, &mut stalled, stage.stop_fraction) {
+            if let Some(reason) = stop_rule(&pairs, &mut stalled, level.stop_fraction) {
                 stop_reason = reason;
                 break;
             }
