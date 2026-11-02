@@ -11,10 +11,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
 pub mod downhill;
+pub mod lower2;
 pub mod notpush;
 pub mod packing;
 pub mod reduce;
 pub mod transport;
+pub use lower2::{LowerReport, lower_wide_gates};
 pub use notpush::{NotPushReport, push_nots};
 pub use packing::{compact, compact_gate, pack, pack_census};
 use reduce::*;
