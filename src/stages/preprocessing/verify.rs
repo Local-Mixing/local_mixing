@@ -31,6 +31,34 @@ pub fn verify_payload_ports(
     seed: u64,
     reverse_contract: bool,
 ) -> (usize, usize, bool) {
+    verify_payload_inputs(
+        sandwich,
+        gadget,
+        n,
+        guarded,
+        variant,
+        seed,
+        reverse_contract,
+        sandwich.num_wires,
+    )
+}
+
+/// [`verify_payload_ports`] with the forward samples random on the data
+/// wires `0..data_inputs` only, zeros elsewhere: all sandwich wires for the
+/// band-keyed guards (they leave the data alone whenever the band is zero),
+/// the input register `0..n` (the honest slice) for the two-layer opening
+/// guard, which scrambles A whenever B is nonzero.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_payload_inputs(
+    sandwich: &Circuit,
+    gadget: &Circuit,
+    n: usize,
+    guarded: bool,
+    variant: SandwichVariant,
+    seed: u64,
+    reverse_contract: bool,
+    data_inputs: usize,
+) -> (usize, usize, bool) {
     let sandwich_n = sandwich.num_wires;
     // state[w] = lane word for wire w; bit L = wire w's value in sample L.
     fn eval_lanes(gates: &[crate::circuit::xgate::XGate], state: &mut [u64]) {
@@ -66,7 +94,7 @@ pub fn verify_payload_ports(
     for round in 0..4 {
         use rand::RngCore;
         let mut ga = vec![0u64; total_wires];
-        for w in 0..sandwich_n {
+        for w in 0..data_inputs.min(sandwich_n) {
             ga[w] = vrng.next_u64(); // upper wires stay pinned to 0
         }
         let mut sa = ga.clone();

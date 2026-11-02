@@ -54,7 +54,7 @@ use crate::stages::preprocessing::embedded_masking::{
 };
 use crate::stages::preprocessing::nonlinear291::nonlinear_tdp_resource_plan;
 use crate::stages::preprocessing::three_mask::ThreeMaskParams;
-use crate::stages::preprocessing::verify::verify_payload_ports;
+use crate::stages::preprocessing::verify::verify_payload_inputs;
 use crate::stages::preprocessing::{
     PreprocessingMode, PreprocessingParams, preprocess_sandwich_ports,
 };
@@ -529,6 +529,18 @@ pub fn run() {
         eprintln!("gen_sandwich_gadget: {error}");
         std::process::exit(2)
     });
+    // The opening guard follows from the port contract (no choice: RC
+    // 2026-11-02): two-layer without the reverse contract (keyed on the
+    // register B and the band), the junk-half guards with it, none in
+    // nonlinear291. The banner names it so the driver can refuse a gen that
+    // builds another.
+    let opening_guard = if gadgetization_mode == PreprocessingMode::Nonlinear291 {
+        "none"
+    } else if reverse_contract {
+        "junk-half"
+    } else {
+        "two-layer"
+    };
     let (shuffling_segments, shuffling_return_home, shuffling_jit_gap) = parse_shuffling_controls(
         gadgetization_mode,
         std::env::var("EMBEDDED_MASKING_SHUFFLING").ok().as_deref(),
@@ -549,7 +561,7 @@ pub fn run() {
     // The driver pattern-matches the middle of this line: new fields go at
     // the end only.
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={} source_construction={} slicing={} layer={} v_gates={} reverse_contract={}",
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={} gadget_seed={} sandwich_seed={} gadgetization_mode={} sandwich_variant={} source_construction={} slicing={} layer={} v_gates={} reverse_contract={} opening_guard={}",
         shown(seed, seed_private),
         shown(gadget_seed, gadget_seed_private),
         shown(sandwich_seed, sandwich_seed_private),
@@ -559,7 +571,8 @@ pub fn run() {
         u8::from(shape.slicing),
         shape.layer,
         shape.v_gates,
-        u8::from(reverse_contract)
+        u8::from(reverse_contract),
+        opening_guard
     );
 
     let source_path = std::env::var("TDP_SOURCE_C").ok();
@@ -882,7 +895,15 @@ pub fn run() {
         gadget.num_wires
     );
 
-    let (verify_from, verify_to, reverse_verified) = verify_payload_ports(
+    // The two-layer guard scrambles A whenever B is nonzero: its forward
+    // samples are the honest slice (x on 0..n); the band-keyed guards leave
+    // the data alone on any data input with a zero band.
+    let data_inputs = if opening_guard == "two-layer" {
+        n
+    } else {
+        sandwich_n
+    };
+    let (verify_from, verify_to, reverse_verified) = verify_payload_inputs(
         &sandwich,
         &gadget,
         n,
@@ -890,9 +911,10 @@ pub fn run() {
         variant,
         seed,
         reverse_contract,
+        data_inputs,
     );
     println!(
-        "[gen] verify PASSED (256 bit-sliced samples, payload wires {verify_from}..{verify_to})"
+        "[gen] verify PASSED (256 bit-sliced samples on data wires 0..{data_inputs}, payload wires {verify_from}..{verify_to})"
     );
     if reverse_verified {
         println!(
@@ -900,7 +922,7 @@ pub fn run() {
         );
     } else if guarded && !reverse_contract {
         println!(
-            "[gen] reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0: the opening guard covers all data wires, no closing guard)"
+            "[gen] reverse verify SKIPPED (STAGE2_REVERSE_CONTRACT=0: no closing guard, forward payload only)"
         );
     } else if guarded && variant.is_balanced() {
         println!(

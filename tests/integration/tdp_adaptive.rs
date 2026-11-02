@@ -623,8 +623,8 @@ fn descent_runs_cleanups_and_stays_equivalent() {
             "0.99",
             "--cleanup-fcompress-iters",
             "4",
-            // phase C: the stage-2 fixture is already <= 2 controls, so this
-            // exercises the wiring and the no-op path (wide_in = 0).
+            // phase C: the stage-2 fixture is <= 2 controls; whatever the
+            // cleanups widened is lowered again.
             "--lower-controls",
             "2",
             // the pre-cleanup and the cost model, with the cleanup leak guard
@@ -656,9 +656,14 @@ fn descent_runs_cleanups_and_stays_equivalent() {
     let pre = fs::read_to_string(out.join("precleanup").join("cleanup.report")).unwrap();
     assert_eq!(kv(&pre, "guard"), "on");
 
-    // Phase C ran (the stage-2 fixture has no wide gates: a recorded no-op).
+    // Phase C ran and recorded what it found: the stage-2 fixture has no
+    // wide gates, but the cleanups' fcompress merges can create some (the
+    // published circuit's <= 2 controls is asserted below).
     let lower = fs::read_to_string(out.join("lower").join("lower.report")).unwrap();
-    assert_eq!(kv(&lower, "wide_in"), "0");
+    assert!(
+        kv(&lower, "wide_in").parse::<u64>().is_ok(),
+        "lower.report without wide_in:\n{lower}"
+    );
 
     // Two descent stages => cleanup0 and cleanup1 directories, each with a
     // cleaned circuit and its report.

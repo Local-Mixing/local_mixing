@@ -135,3 +135,84 @@ fn feistel_guard_is_dead_only_on_zero_slice_and_width_bounded() {
         }
     }
 }
+
+/// The two-layer opening guard (RC 2026-11-02), checked independently of its
+/// own draw-time check, on every state at n = 3 and 4 (band 2n): the
+/// identity on A and B exactly when B and the band are zero; every nonzero
+/// (B, band) disturbs A for some A; every nonzero band disturbs B for some
+/// (A, B); no gate wider than two controls; the size is two prologue gates
+/// per helper wire, two gates per layer-1 and three per layer-2 three-control
+/// gate.
+#[test]
+fn two_layer_guard_is_the_identity_exactly_on_the_honest_slice() {
+    for n in [3usize, 4] {
+        let nondata = 2 * n;
+        let total = 2 * n + nondata;
+        let a_mask = (1u64 << n) - 1;
+        let data_mask = (1u64 << (2 * n)) - 1;
+        for seed in 0..4u64 {
+            let mut rng = StdRng::seed_from_u64(0x2_1a7e_0000 + seed);
+            let guard = two_layer_opening_guard_dims(n, nondata, &mut rng);
+            assert_eq!(guard.num_wires, total);
+            assert!(guard.gates.iter().all(|g| g.ctrls.len() <= 2), "width <= 2");
+            let helpers = (nondata / 16).clamp(1, n.min(nondata - 1));
+            let per1 = two_layer_guard_gates_per_layer(n, nondata - helpers);
+            let per2 = two_layer_guard_gates_per_layer(n, n);
+            assert_eq!(guard.gates.len(), 2 * helpers + 2 * per1 + 3 * per2);
+            let mut a_hit = vec![false; 1 << (n + nondata)];
+            let mut b_hit = vec![false; 1 << nondata];
+            for state in 0..(1u64 << total) {
+                let out = eval_u64(&guard.gates, state);
+                if state >> n == 0 {
+                    assert_eq!(out & data_mask, state & data_mask, "slice moved at n={n}");
+                }
+                if (out ^ state) & a_mask != 0 {
+                    a_hit[(state >> n) as usize] = true;
+                }
+                if (out ^ state) & data_mask & !a_mask != 0 {
+                    b_hit[(state >> (2 * n)) as usize] = true;
+                }
+            }
+            assert!(
+                a_hit.iter().skip(1).all(|&h| h),
+                "a nonzero key left A alone at n={n}"
+            );
+            assert!(
+                b_hit.iter().skip(1).all(|&h| h),
+                "a nonzero band left B alone at n={n}"
+            );
+        }
+    }
+}
+
+/// At a production-like width (n = 64, band 128) the guard draws, passes its
+/// spot check, and has n * ceil(log2 n) = 384 three-control gates per layer;
+/// on the honest slice the key wires of the band stay zero and B comes out
+/// zero (the layer-2 helpers are restored), while the band's helper wires
+/// hold products of x (layer 1 does not restore them).
+#[test]
+fn two_layer_guard_at_n64_restores_b_and_leaves_products_on_band_helpers() {
+    let (n, nondata) = (64usize, 128usize);
+    let mut rng = StdRng::seed_from_u64(0x2_1a7e_0064);
+    let guard = two_layer_opening_guard_dims(n, nondata, &mut rng);
+    assert_eq!(two_layer_guard_gates_per_layer(n, nondata - 8), 384);
+    assert_eq!(guard.gates.len(), 2 * 8 + 2 * 384 + 3 * 384);
+    let mut state = vec![0u64; guard.num_wires];
+    for lane in state.iter_mut().take(n) {
+        *lane = rng.random();
+    }
+    let input = state.clone();
+    for g in &guard.gates {
+        g.apply_lanes(&mut state);
+    }
+    assert_eq!(
+        state[..2 * n],
+        input[..2 * n],
+        "A and B unchanged on the slice"
+    );
+    let dirty = (2 * n..guard.num_wires).filter(|&w| state[w] != 0).count();
+    assert!(
+        (1..=8).contains(&dirty),
+        "{dirty} band wires dirty (8 helpers)"
+    );
+}

@@ -913,7 +913,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     );
     let sw = &config.sandwich;
     println!(
-        "[tdp_gen] stage 1-2: source.gates={} ({}{}) source.construction={} sandwich={} (slicing={} layer={} v_gates={}{}) preset={} reverse_contract={}",
+        "[tdp_gen] stage 1-2: source.gates={} ({}{}) source.construction={} sandwich={} (slicing={} layer={} v_gates={}{}) preset={} reverse_contract={} opening_guard={}",
         config.mcd,
         config.mcd_rule.name(),
         if config.mcd_rule == SourceGatesRule::Formula {
@@ -932,7 +932,8 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             ""
         },
         config.preset.name(),
-        config.reverse_contract
+        config.reverse_contract,
+        config.opening_guard_text()
     );
     if config.preprocessing_mode == PreprocessingMode::ThreeMask {
         println!(

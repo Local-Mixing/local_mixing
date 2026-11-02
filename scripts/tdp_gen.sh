@@ -123,11 +123,12 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                                --sandwich-slicing 1]
   --preprocessing-mode M   three-mask (default), embedded-masking or nonlinear291
   --preprocessing-reverse-contract 0|1
-                           [0 in the guarded modes = forward payload only: the opening
-                           guard covers all data wires, no closing guard, and the
-                           adaptive stage 6 checks the payload forward only; 1 = both
-                           junk-half guards, the reverse payload kept; nonlinear291 has
-                           no guards (1, and 0 is refused)]
+                           [0 in the guarded modes = forward payload only: the two-layer
+                           opening guard (keyed on the register B and the band: the
+                           identity on the data exactly on the honest slice), no closing
+                           guard, and the adaptive stage 6 checks the payload forward
+                           only; 1 = both junk-half guards, the reverse payload kept;
+                           nonlinear291 has no guards (1, and 0 is refused)]
   --preprocessing-preset P L8 (default) | A | custom (embedded-masking only; the three-mask
                            default has no preset: its outer blocks are L8)
                            L8 = SHUFFLING=8 RETURN_HOME=0 PREMASK=1 SEED_AVOID_C1=1
@@ -856,6 +857,12 @@ fi
 REV_CONTRACT=$(bounded_uint --preprocessing-reverse-contract "$REV_CONTRACT" 0 1)
 [ "$REV_CONTRACT" = 1 ] || [ "$PREPROCESSING_MODE" != nonlinear291 ] ||
   fatal "--preprocessing-reverse-contract 0 needs a guarded mode (embedded-masking or three-mask): nonlinear291 has no port guards"
+# the opening guard follows from the port contract (no setting, RC
+# 2026-11-02): two-layer without the reverse contract (keyed on the register B
+# and the band), the junk-half guards with it, none in nonlinear291
+if [ "$PREPROCESSING_MODE" = nonlinear291 ]; then OG_EFF=none
+elif [ "$REV_CONTRACT" = 1 ]; then OG_EFF=junk-half
+else OG_EFF=two-layer; fi
 # the sandwich's gate count (shaped_sandwich_gate_range): exact without the V
 # gadget; with it the maximum (the recovery's polarity corrections are drawn)
 if [ "$V_EFF" -eq 0 ]; then
@@ -1022,10 +1029,10 @@ gates_of() { head -1 "$1" | awk '{print $3}'; }
 mac() { python3 -I "$LIB/run_mac.py" "$SEEDS" "$@"; }
 sha_of() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 
-# ---- stage-2 identity marker (tdp_stage12_recipe=9: recipe v14's stage-1
+# ---- stage-2 identity marker (tdp_stage12_recipe=10: recipe v15's stage-1
 # shape and port contract) ----
 STAGE12_RECIPE=(
-  "tdp_stage12_recipe=9"
+  "tdp_stage12_recipe=10"
   "gen_binary_sha256=$(sha_of "$BIN/gen_sandwich_gadget")"
   "sandwich_variant=classic"
   "sandwich_slicing=$SW_SLICING"
@@ -1035,6 +1042,7 @@ STAGE12_RECIPE=(
   "preprocessing_mode=$PREPROCESSING_MODE"
   "preprocessing_preset=$PRESET"
   "preprocessing_reverse_contract=$REV_CONTRACT"
+  "preprocessing_opening_guard=$OG_EFF"
 )
 if [ "$PREPROCESSING_MODE" = embedded-masking ]; then
   for k in "${KNOB_ORDER[@]}"; do STAGE12_RECIPE+=("preprocessing_${k//-/_}=${EFF[$k]}"); done
@@ -1098,8 +1106,8 @@ if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
   fi
   # the banner's last fields: the shape and port contract gen built (a gen
   # that ignores SANDWICH_* would build another stage 1 than the marker says)
-  [[ $banner == *" slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT" ]] ||
-    { rm -f "$GADGET"; fatal "gen built another stage-1 shape or port contract than requested (its banner does not end with slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT); stage-2 artifact removed"; }
+  [[ $banner == *" slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT opening_guard=$OG_EFF" ]] ||
+    { rm -f "$GADGET"; fatal "gen built another stage-1 shape or port contract than requested (its banner does not end with slicing=$SW_SLICING layer=$SW_LAYER v_gates=$V_EFF reverse_contract=$REV_CONTRACT opening_guard=$OG_EFF); stage-2 artifact removed"; }
   printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
   mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
   [ "$FORCE_FROM" -le 3 ] || FORCE_FROM=3

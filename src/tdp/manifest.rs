@@ -353,6 +353,7 @@ pub(crate) fn recipe_manifest(
         "preprocessing_reverse_contract",
         &u8::from(config.reverse_contract).to_string(),
     );
+    kv("preprocessing_opening_guard", config.opening_guard_text());
     if config.preprocessing_mode == PreprocessingMode::EmbeddedMasking {
         for (key, _, value) in config.knobs.fields() {
             kv(&format!("preprocessing_{key}"), &value);

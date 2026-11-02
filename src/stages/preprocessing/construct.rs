@@ -7,9 +7,8 @@ use super::embedded_masking::{
 };
 use super::nonlinear291::preprocess_nonlinear291;
 use super::slice_guards::{
-    slice_zero_feistel_guard_dims, slice_zero_feistel_guard_dims_all,
-    slice_zero_feistel_guard_dims_high, slice_zero_junk_guard_dims, slice_zero_junk_guard_dims_all,
-    slice_zero_junk_guard_dims_high,
+    slice_zero_feistel_guard_dims, slice_zero_feistel_guard_dims_high, slice_zero_junk_guard_dims,
+    slice_zero_junk_guard_dims_high, two_layer_opening_guard_dims,
 };
 use super::three_mask::{self, ThreeMaskParams};
 use super::types::*;
@@ -31,9 +30,11 @@ struct OuterBlocks {
 /// compute itself never touches `rng`, so the blocks do not depend on it.
 ///
 /// `reverse_contract` false (stage-2 `reverse_contract`, RC 2026-11-01):
-/// the opening guard covers all data wires with the same gate count and
 /// there is no closing guard (`close` is empty), so only the forward
-/// payload is kept.
+/// payload is kept, and the opening guard is the two-layer guard keyed on
+/// the register B and the band (RC 2026-11-02, recipe v15; recipe v14's
+/// guard was keyed on the band only, so with the band zero it let every
+/// value of B through).
 #[allow(clippy::too_many_arguments)]
 fn outer_blocks(
     sandwich: &Circuit,
@@ -66,11 +67,13 @@ fn outer_blocks(
     // (width <= 2 everywhere) is the default; SLICE_GUARD_LEGACY=1
     // restores the width-3 quad generator for comparison arms.
     let legacy_guard = params.legacy_slice_guard;
+    // The two-layer guard has its own size (n log n three-control gates per
+    // layer) and is width <= 2 by construction; SLICE_GUARD_LEGACY applies
+    // to the junk-half guards of the reverse contract only.
     let open = match (reverse_contract, legacy_guard) {
         (true, true) => slice_zero_junk_guard_dims(np, nondata, gc, rng),
         (true, false) => slice_zero_feistel_guard_dims(np, nondata, gc, rng),
-        (false, true) => slice_zero_junk_guard_dims_all(np, nondata, gc, rng),
-        (false, false) => slice_zero_feistel_guard_dims_all(np, nondata, gc, rng),
+        (false, _) => two_layer_opening_guard_dims(n, nondata, rng),
     };
     let close = match (reverse_contract, variant.is_balanced(), legacy_guard) {
         (false, _, _) => Circuit {
@@ -169,9 +172,9 @@ pub fn preprocess_sandwich(
 
 /// [`preprocess_sandwich`] with the port contract explicit:
 /// `reverse_contract` true keeps both junk-half guards (the reversed
-/// artifact reproduces the reversed sandwich's payload half); false makes
-/// the opening guard cover all data wires and drops the closing guard
-/// (forward payload only). Nonlinear291 has no guards and ignores it.
+/// artifact reproduces the reversed sandwich's payload half); false opens
+/// with the two-layer guard and drops the closing guard (forward payload
+/// only). Nonlinear291 has no guards and ignores it.
 pub fn preprocess_sandwich_ports(
     sandwich: &Circuit,
     source_wires: usize,

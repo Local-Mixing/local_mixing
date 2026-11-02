@@ -96,11 +96,20 @@ if name == "gen_sandwich_gadget":
              "STAGE2_REVERSE_CONTRACT": "1" if mode == "nonlinear291" else "0"}
     if "gen_ignore_shape" not in opts:
         shape = {k: os.environ.get(k, v) for k, v in shape.items()}
+    # the opening guard follows from the port contract (RC 2026-11-02):
+    # two-layer without the reverse contract, junk-half with it, none in
+    # nonlinear291
+    if mode == "nonlinear291":
+        guard = "none"
+    elif shape["STAGE2_REVERSE_CONTRACT"] == "1":
+        guard = "junk-half"
+    else:
+        guard = "two-layer"
     print(f"[gen] n={n} |C|={args[2]} |D|={args[3]} s={args[4]} rg_freq={args[5]} slice_gates={args[6]} "
           f"seed={seed} gadget_seed={gseed} sandwich_seed={sseed} gadgetization_mode={mode} "
           f"sandwich_variant=classic source_construction={construction} slicing={shape['SANDWICH_SLICING']} "
           f"layer={shape['SANDWICH_LAYER']} v_gates={shape['SANDWICH_V_GATES']} "
-          f"reverse_contract={shape['STAGE2_REVERSE_CONTRACT']}")
+          f"reverse_contract={shape['STAGE2_REVERSE_CONTRACT']} opening_guard={guard}")
     g = int(opts.get("gen_gates", "1"))
     Path(out).write_text(f"mpmct1 {4 * n} {g}\n" + "0 0 0\n" * g)
     Path(out + ".sandwich.mpmct1").write_text(f"mpmct1 {2 * n} 1\n0 0 0\n")

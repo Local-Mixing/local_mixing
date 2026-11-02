@@ -1025,6 +1025,21 @@ impl ResolvedConfig {
     }
 
     /// Whether stage `k` runs: not past the stop point and not skipped.
+    /// `preprocessing_opening_guard=` of the manifest and the stage-1/2
+    /// marker, which follows from the port contract (no setting, RC
+    /// 2026-11-02): `two-layer` without the reverse contract (keyed on the
+    /// register B and the band, recipe v15), `junk-half` with it, `none` in
+    /// nonlinear291.
+    pub(crate) fn opening_guard_text(&self) -> &'static str {
+        if self.preprocessing_mode == PreprocessingMode::Nonlinear291 {
+            "none"
+        } else if self.reverse_contract {
+            "junk-half"
+        } else {
+            "two-layer"
+        }
+    }
+
     pub(crate) fn stage_on(&self, k: u64) -> bool {
         k <= self.stop_after_stage() && !self.skip_stages.contains(&k)
     }

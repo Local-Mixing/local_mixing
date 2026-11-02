@@ -1308,88 +1308,85 @@ fn fire_spans_are_measured_under_interleaving() {
     );
 }
 
-/// Without the reverse contract the opening guard covers both data halves
-/// (same gate count), there is no closing guard, the forward payload still
-/// verifies, and the reversed artifact no longer reproduces the reversed
-/// sandwich's payload half.
+/// Recipe v15's default without the reverse contract: the two-layer opening
+/// guard (RC 2026-11-02). No closing guard; no gate wider than two controls;
+/// the forward payload verifies on the honest slice; and, unlike the band
+/// guard, an input with the register B nonzero (band zero) no longer
+/// evaluates the sandwich: A is scrambled before the compute.
 #[test]
-fn no_reverse_contract_guards_all_data_wires_and_drops_the_closing_guard() {
+fn no_reverse_contract_two_layer_guard_keys_on_the_register_and_the_band() {
     use crate::stages::preprocessing::construct::preprocess_sandwich_ports;
-    use crate::stages::preprocessing::verify::verify_payload_ports;
+    use crate::stages::preprocessing::verify::verify_payload_inputs;
     let n = 8;
     let (source_seed, gadget_seed, sandwich_seed) = (51, 53, 59);
     let source = prepare_source(n, 24, source_seed, None, SourceConstruction::Random).unwrap();
     let sandwich =
         construct_seeded_sandwich(&source, n, 24, 24, SandwichVariant::Classic, sandwich_seed);
-    let build = |reverse_contract: bool| {
-        let mut rng = StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E);
-        preprocess_sandwich_ports(
-            &sandwich,
-            n,
-            160,
-            SandwichVariant::Classic,
-            &PreprocessingParams::ThreeMask {
-                params: ThreeMaskParams::v3(gadget_seed, 0),
-                outer: EmbeddedMaskingParams::preset_l8(gadget_seed, n),
-                balanced_seed: true,
-                seed_fill_nl: 4,
-            },
-            reverse_contract,
-            &mut rng,
-        )
-        .unwrap()
-    };
-    let kept = build(true);
-    let forward_only = build(false);
-    let (rk, rf) = (
-        kept.three_mask_report.as_ref().unwrap(),
-        forward_only.three_mask_report.as_ref().unwrap(),
-    );
-    assert_eq!(rk.guard_gates, rf.guard_gates, "same opening-guard size");
+    let mut rng = StdRng::seed_from_u64(gadget_seed ^ 0x6AD6_E75E);
+    let out = preprocess_sandwich_ports(
+        &sandwich,
+        n,
+        160,
+        SandwichVariant::Classic,
+        &PreprocessingParams::ThreeMask {
+            params: ThreeMaskParams::v3(gadget_seed, 0),
+            outer: EmbeddedMaskingParams::preset_l8(gadget_seed, n),
+            balanced_seed: true,
+            seed_fill_nl: 4,
+        },
+        false,
+        &mut rng,
+    )
+    .unwrap();
+    let r = out.three_mask_report.as_ref().unwrap();
     assert_eq!(
-        forward_only.circuit.gates.len(),
-        rf.guard_gates + rf.band_seed_gates + rf.compute_gates + rf.band_reseed_gates,
+        out.circuit.gates.len(),
+        r.guard_gates + r.band_seed_gates + r.compute_gates + r.band_reseed_gates,
         "no closing guard"
     );
-    assert_eq!(
-        kept.circuit.gates.len(),
-        forward_only.circuit.gates.len() + rk.guard_gates
-    );
-    let open = &forward_only.circuit.gates[..rf.guard_gates];
     let np = 2 * n;
-    assert!(
-        open.iter().any(|g| (g.target as usize) < n),
-        "low half guarded"
-    );
+    let open = &out.circuit.gates[..r.guard_gates];
+    assert!(open.iter().all(|g| g.ctrls.len() <= 2), "width <= 2");
+    assert!(open.iter().any(|g| (g.target as usize) < n), "A scrambled");
     assert!(
         open.iter().any(|g| (n..np).contains(&(g.target as usize))),
-        "high half guarded"
+        "B scrambled (layer 1) and B helpers (layer 2)"
     );
-    // band targets are the accumulators, which read data wires only
-    assert!(
-        open.iter()
-            .filter(|g| (g.target as usize) >= np)
-            .all(|g| g.ctrls.iter().all(|&(w, _)| (w as usize) < np)),
-        "a band target is an accumulator"
-    );
-    // forward payload verifies, the reverse check is skipped
+    // the forward payload on the honest slice
     assert_eq!(
-        verify_payload_ports(
+        verify_payload_inputs(
             &sandwich,
-            &forward_only.circuit,
+            &out.circuit,
             n,
             true,
             SandwichVariant::Classic,
             source_seed,
-            false
+            false,
+            n
         ),
         (n, np, false)
     );
-    // and the reversed artifact does junk the reverse payload
-    let rev_gadget: Vec<XGate> = forward_only.circuit.gates.iter().rev().cloned().collect();
+    // (x, B = e_j, band 0): the band guard would compute the sandwich here
+    // (the copy group of j only); the two-layer guard scrambles A first
+    let mut vrng = StdRng::seed_from_u64(11);
+    for j in n..np {
+        let mut ga = vec![0u64; out.circuit.num_wires];
+        for w in ga.iter_mut().take(n) {
+            *w = vrng.random();
+        }
+        ga[j] = !0u64;
+        let mut sa = ga[..np].to_vec();
+        eval_lanes(&out.circuit.gates, &mut ga);
+        eval_lanes(&sandwich.gates, &mut sa);
+        assert!(
+            (n..np).any(|w| ga[w] != sa[w]),
+            "register bit {j} set: the payload still equals the sandwich's"
+        );
+    }
+    // the reversed artifact junks the reverse payload (no reverse contract)
+    let rev_gadget: Vec<XGate> = out.circuit.gates.iter().rev().cloned().collect();
     let rev_sandwich: Vec<XGate> = sandwich.gates.iter().rev().cloned().collect();
-    let mut vrng = StdRng::seed_from_u64(7);
-    let mut ga = vec![0u64; forward_only.circuit.num_wires];
+    let mut ga = vec![0u64; out.circuit.num_wires];
     for w in ga.iter_mut().take(n) {
         *w = vrng.random();
     }
@@ -1398,57 +1395,8 @@ fn no_reverse_contract_guards_all_data_wires_and_drops_the_closing_guard() {
     eval_lanes(&rev_sandwich, &mut sa);
     assert!(
         (n..np).any(|w| ga[w] != sa[w]),
-        "the reverse payload survived a guard over all data wires"
+        "the reverse payload survived the two-layer guard"
     );
-    // with the contract kept the reverse payload survives
-    assert_eq!(
-        verify_payload_ports(
-            &sandwich,
-            &kept.circuit,
-            n,
-            true,
-            SandwichVariant::Classic,
-            source_seed,
-            true
-        ),
-        (n, np, true)
-    );
-}
-
-/// The all-data Feistel guard is a valid zero-slice guard: dead on the zero
-/// band, and every single-wire band slice disturbs the data.
-#[test]
-fn all_data_feistel_guard_is_dead_exactly_on_the_zero_slice() {
-    use crate::stages::preprocessing::slice_guards::slice_zero_feistel_guard_dims_all;
-    let (np, band) = (16, 64);
-    for seed in 0..4u64 {
-        let mut rng = StdRng::seed_from_u64(0x9a00 + seed);
-        let guard = slice_zero_feistel_guard_dims_all(np, band, 160, &mut rng);
-        assert_eq!(guard.gates.len(), 160);
-        assert!(guard.gates.iter().all(|g| g.ctrls.len() <= 2));
-        let mut state: Vec<u64> = (0..np + band).map(|_| rng.random()).collect();
-        state[np..].fill(0);
-        let before = state.clone();
-        eval_lanes(&guard.gates, &mut state);
-        assert_eq!(state, before, "dead on the zero band");
-        for w in np..np + band {
-            let mut s: Vec<u64> = before.clone();
-            s[w] = !0;
-            let input = s.clone();
-            eval_lanes(&guard.gates, &mut s);
-            assert!(
-                (0..np).any(|d| s[d] != input[d]),
-                "band wire {w} disturbs nothing"
-            );
-        }
-        // the accumulate rounds restore their accumulators exactly
-        let touched_high = guard
-            .gates
-            .iter()
-            .any(|g| (np / 2..np).contains(&(g.target as usize)));
-        let touched_low = guard.gates.iter().any(|g| (g.target as usize) < np / 2);
-        assert!(touched_high && touched_low);
-    }
 }
 
 /// Pre-growth rewrites every serving wire `warmup_sweeps` times before the

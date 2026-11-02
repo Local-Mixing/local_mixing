@@ -1124,7 +1124,12 @@ pub(crate) fn parse_descent(value: &str) -> Result<String, String> {
     let expectation = "expected \"none\" or strictly decreasing block caps in 2..=100000000, comma-separated (e.g. \"128,32,16\")";
     let caps = value
         .split(',')
-        .map(|t| t.trim().parse::<u64>().ok().filter(|c| (2..=100_000_000).contains(c)))
+        .map(|t| {
+            t.trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|c| (2..=100_000_000).contains(c))
+        })
         .collect::<Option<Vec<_>>>()
         .filter(|caps| caps.windows(2).all(|w| w[0] > w[1]))
         .ok_or_else(|| format!("{expectation}; got {value:?}"))?;

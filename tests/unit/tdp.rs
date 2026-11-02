@@ -1024,6 +1024,7 @@ fn the_exact_default_manifest_text() {
         "sandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\n",
         "sandwich_v_gates=64\n",
         "preprocessing_mode=three-mask\npreprocessing_preset=none\npreprocessing_reverse_contract=0\n",
+        "preprocessing_opening_guard=two-layer\n",
         "three_mask_params=default\nthree_mask_band_wires=0\nthree_mask_banks=0\n",
         "three_mask_retire_budget=2\nthree_mask_max_retiring=0\nthree_mask_rotation=1\n",
         "three_mask_maturity=2\nthree_mask_visit_sweeps=2\nthree_mask_growth=8\n",
@@ -1767,7 +1768,9 @@ fn v9_manifest_rejected_with_message() {
     assert!(error.message.contains("recipe v14 run ("), "{error:?}");
     assert!(
         error.message.contains("twist_rate = 0.0005")
-            && error.message.contains("descent = \"none\", lower_controls = 0"),
+            && error
+                .message
+                .contains("descent = \"none\", lower_controls = 0"),
         "{error:?}"
     );
     fs::write(&path, "tdp_command_recipe=15\n").unwrap();
@@ -2143,8 +2146,19 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
             }
         }
         let marker = fs::read_to_string(run_dir.join("stage12.recipe")).unwrap();
-        assert!(marker.starts_with("tdp_stage12_recipe=9\n"), "{marker}");
+        assert!(marker.starts_with("tdp_stage12_recipe=10\n"), "{marker}");
         assert!(marker.contains(&format!("preprocessing_mode={mode}\n")));
+        // the opening guard follows from the port contract (no setting)
+        let guard = if mode == "nonlinear291" {
+            "none"
+        } else {
+            "two-layer"
+        };
+        assert!(
+            marker.contains(&format!("preprocessing_opening_guard={guard}\n")),
+            "{marker}"
+        );
+        assert!(manifest.contains(&format!("preprocessing_opening_guard={guard}\n")));
         assert!(marker.contains("gadget_seed_rule=gen\n"));
         // the shape the manifest records is the one the marker records
         let v = if mode == "nonlinear291" { "0" } else { "4" };
@@ -2350,7 +2364,11 @@ fn adaptive_table_follows_the_delivery_mode() {
     // recipe v15: the 2026-11-02 stage 6 (docs/notes/stage6_config_search_20261102.md)
     assert!(d.pre_cleanup);
     assert_eq!(
-        (d.cost.as_str(), d.descent.as_str(), d.descent_stop_fraction.as_str()),
+        (
+            d.cost.as_str(),
+            d.descent.as_str(),
+            d.descent_stop_fraction.as_str()
+        ),
         ("two-control", "128,32,16", "0.2")
     );
     assert_eq!((d.cleanup_fcompress_iters, d.lower_controls), (10, 2));
