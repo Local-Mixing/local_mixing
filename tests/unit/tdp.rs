@@ -480,6 +480,20 @@ fn invalid_numbers_enums_and_booleans_fail_before_launch() {
         "adaptive.census_batches = 0",
         "adaptive.accept = \"largest\"",
         "adaptive.canonical_order = 1",
+        "adaptive.pre_cleanup = 1",
+        "adaptive.cost = \"raw\"",
+        "adaptive.descent = \"32,128\"",
+        "adaptive.descent = \"128,128\"",
+        "adaptive.descent = \"128,1\"",
+        "adaptive.descent = \"128,,32\"",
+        "adaptive.descent = \"off\"",
+        "adaptive.descent = [128, 32]",
+        "adaptive.descent_stop_fraction = 1",
+        "adaptive.cleanup_fcompress_iters = 1001",
+        "adaptive.lower_controls = 1",
+        "adaptive.lower_controls = 65",
+        "delivery.mode = \"windowed\"\nadaptive.descent = \"none\"",
+        "delivery.mode = \"windowed\"\nadaptive.pre_cleanup = false",
         // the source construction
         "source.construction = \"tidy\"",
         "source.construction = \"balanced\"\nsource.path = \"circuits/source.g57\"",
@@ -796,7 +810,7 @@ fn checked_in_toml_recipe_is_the_l8_default() {
     assert!(config.three_mask.is_default());
     assert_eq!(config.schedule, Schedule::Validated);
     assert_eq!((config.n, config.mcd), (128, 3000));
-    assert_eq!(config.recipe_version, 14);
+    assert_eq!(config.recipe_version, 15);
     assert_eq!(config.sandwich, SandwichConfig::default());
     assert!(!config.reverse_contract);
     assert_eq!(config.stop_after_stage(), 6);
@@ -1004,7 +1018,7 @@ fn dangerous_run_destinations_are_rejected() {
 fn the_exact_default_manifest_text() {
     let config = resolve_for_test(&parse("source.wires = 64")).unwrap();
     let expected = concat!(
-        "tdp_command_recipe=14\npinned_recipe=none\nn=64\n",
+        "tdp_command_recipe=15\npinned_recipe=none\nn=64\n",
         "source_gates=1000\nsource_gates_rule=validated\nsource=generated\nsource_path=unset\n",
         "source_construction=random\n",
         "sandwich_variant=classic\nsandwich_params=default\nsandwich_slicing=0\nsandwich_layer=1\n",
@@ -1031,11 +1045,14 @@ fn the_exact_default_manifest_text() {
         "packing_allow_floor_miss=false\npacking_allow_over_budget=false\n",
         "delivery_mode=adaptive\ndelivery_params=default\ndelivery_anf_only=false\ndelivery_time_limit=30\n",
         "delivery_restarts=16\ndelivery_beam=6\ndelivery_max_rounds=16\n",
-        "adaptive_params=default\nadaptive_max_rounds=0\nadaptive_stop_fraction=0.02\nadaptive_seeds_per_block=2\n",
+        "adaptive_params=default\nadaptive_max_rounds=0\nadaptive_stop_fraction=0.2\nadaptive_seeds_per_block=2\n",
         "adaptive_time_limit=60\nadaptive_restarts=16\nadaptive_beam=6\nadaptive_term_cap=131072\n",
-        "adaptive_max_block_gates=65536\nadaptive_segments=16\nadaptive_avoid_radius=64\n",
+        "adaptive_max_block_gates=512\nadaptive_segments=16\nadaptive_avoid_radius=64\n",
         "adaptive_refinement_levels=2\nadaptive_min_refine_gates=128\nadaptive_census_batches=96\n",
-        "adaptive_accept=smaller-not-leakier\nadaptive_canonical_order=true\nseed_record=SEEDS\n",
+        "adaptive_accept=smaller-not-leakier\nadaptive_canonical_order=true\n",
+        "adaptive_pre_cleanup=true\nadaptive_cost=two-control\nadaptive_descent=128,32,16\n",
+        "adaptive_descent_stop_fraction=0.2\nadaptive_cleanup_fcompress_iters=10\n",
+        "adaptive_lower_controls=2\nseed_record=SEEDS\n",
         "seed_source=random\nseed_bits=63\nseeds_format=3\ncalibration_only=false\nqc_enabled=false\nqc_seed=20803\n",
         "qc_reference=unset\nbinary_tdp_packing_xxh3=00000000000000000000000000000003\n",
         "stage2_span_report=skipped\nscript_tdp_gen_xxh3=00000000000000000000000000000001\n",
@@ -1743,8 +1760,18 @@ fn v9_manifest_rejected_with_message() {
             && error.message.contains("pregrow = false"),
         "{error:?}"
     );
+    // recipe v14: main's stage 3 twists and the classic stage 6; the pointer
+    // names the settings that restore them in a fresh run
     fs::write(&path, "tdp_command_recipe=14\n").unwrap();
-    assert_eq!(read_recipe_version(&path).unwrap(), 14);
+    let error = read_recipe_version(&path).unwrap_err();
+    assert!(error.message.contains("recipe v14 run ("), "{error:?}");
+    assert!(
+        error.message.contains("twist_rate = 0.0005")
+            && error.message.contains("descent = \"none\", lower_controls = 0"),
+        "{error:?}"
+    );
+    fs::write(&path, "tdp_command_recipe=15\n").unwrap();
+    assert_eq!(read_recipe_version(&path).unwrap(), 15);
     fs::remove_file(path).unwrap();
 }
 
@@ -1902,7 +1929,7 @@ fn embedded_masking_rejects_insufficient_band() {
 
 #[test]
 fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchanged() {
-    for version in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+    for version in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] {
         let base = temp_path("unsupported-version");
         let run_dir = base.join("run");
         let target_dir = base.join("target");
@@ -1933,7 +1960,8 @@ fn unsupported_recipe_versions_fail_before_building_and_leave_saved_runs_unchang
                     || error.message.contains("recipe v10 run")
                     || error.message.contains("recipe v11 run")
                     || error.message.contains("recipe v12 run")
-                    || error.message.contains("recipe v13 run"),
+                    || error.message.contains("recipe v13 run")
+                    || error.message.contains("recipe v14 run"),
                 "{error:?}"
             );
             assert!(!target_dir.exists());
@@ -2082,7 +2110,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
         run_inner(&matches).unwrap();
         let manifest_path = run_dir.join("tdp_command.conf");
         let manifest = fs::read_to_string(&manifest_path).unwrap();
-        assert!(manifest.starts_with("tdp_command_recipe=14\n"));
+        assert!(manifest.starts_with("tdp_command_recipe=15\n"));
         assert!(manifest.contains(&format!("preprocessing_mode={mode}\n")));
         let seeds_path = run_dir.join("SEEDS");
         let seeds = fs::read_to_string(&seeds_path).unwrap();
@@ -2315,10 +2343,17 @@ fn adaptive_table_follows_the_delivery_mode() {
     let d = AdaptiveConfig::default();
     assert_eq!(
         (d.max_rounds, d.stop_fraction.as_str(), d.seeds_per_block),
-        (0, "0.02", 2)
+        (0, "0.2", 2)
     );
     assert_eq!((d.time_limit.as_str(), d.restarts, d.beam), ("60", 16, 6));
-    assert_eq!((d.term_cap, d.max_block_gates), (131_072, 65_536));
+    assert_eq!((d.term_cap, d.max_block_gates), (131_072, 512));
+    // recipe v15: the 2026-11-02 stage 6 (docs/notes/stage6_config_search_20261102.md)
+    assert!(d.pre_cleanup);
+    assert_eq!(
+        (d.cost.as_str(), d.descent.as_str(), d.descent_stop_fraction.as_str()),
+        ("two-control", "128,32,16", "0.2")
+    );
+    assert_eq!((d.cleanup_fcompress_iters, d.lower_controls), (10, 2));
     assert_eq!((d.segments, d.avoid_radius), (16, 64));
     assert_eq!((d.refinement_levels, d.min_refine_gates), (2, 128));
     assert_eq!(d.census_batches, 96);

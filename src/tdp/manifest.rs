@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub(crate) const CURRENT_RECIPE_VERSION: u8 = 14;
+pub(crate) const CURRENT_RECIPE_VERSION: u8 = 15;
 /// The managed binaries, fingerprinted in the manifest and built for fresh runs.
 pub(crate) const PRODUCTION_BINARIES: [&str; 5] = [
     "gen_sandwich_gadget",
@@ -498,6 +498,15 @@ pub(crate) fn recipe_manifest(
     kv("adaptive_census_batches", &ad.census_batches.to_string());
     kv("adaptive_accept", &ad.accept);
     kv("adaptive_canonical_order", &ad.canonical_order.to_string());
+    kv("adaptive_pre_cleanup", &ad.pre_cleanup.to_string());
+    kv("adaptive_cost", &ad.cost);
+    kv("adaptive_descent", &ad.descent);
+    kv("adaptive_descent_stop_fraction", &ad.descent_stop_fraction);
+    kv(
+        "adaptive_cleanup_fcompress_iters",
+        &ad.cleanup_fcompress_iters.to_string(),
+    );
+    kv("adaptive_lower_controls", &ad.lower_controls.to_string());
     kv("seed_record", "SEEDS");
     kv(
         "seed_source",
@@ -539,7 +548,10 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
     let text = fs::read_to_string(path)
         .map_err(|e| TdpError::io(format!("cannot read {}: {e}", path.display())))?;
     match text.lines().next() {
-        Some("tdp_command_recipe=14") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=15") => Ok(CURRENT_RECIPE_VERSION),
+        Some("tdp_command_recipe=14") => Err(TdpError::config(
+            "recipe v14 run (stage 3 with circuit_mixer's twist preset or the 2026-11-01 twists; stage 6 with large-block rounds only, judged by the raw gate count, wide gates kept): resume with the checkout that created it (recipe v15 made the stage-3 twists rate 0.001, spans uniform from 100,000 gates, and the 2026-11-02 stage 6 the default: pre-cleanup, 2-control cost, phase-A blocks of 512 gates, descent 128 / 32 / 16, stop fractions 0.2, every gate lowered to <= 2 controls; in a fresh run, [db_mixing] twist_rate = 0.0005, twist_min_span = 64, twist_spans = \"log\" and [adaptive] pre_cleanup = false, cost = \"gates\", max_block_gates = 65536, descent = \"none\", lower_controls = 0, stop_fraction = 0.02 restore main's v14); the original run is unchanged",
+        )),
         Some("tdp_command_recipe=13") => Err(TdpError::config(
             "recipe v13 run (stage 1 with slice blocks and the N column; the three-mask stage 2 with bank turnover, no interleaving, no pre-growth): resume with the checkout that created it (recipe v14 made gen's 2026-11-01 stage-1/2 policy the default: no slicing, the V gadget, wire turnover, interleave 4096, pre-growth; in a fresh run, [sandwich] slicing = true, v_gates = 0 and [three_mask] turnover = \"bank\", interleave = 0, pregrow = false restore v13's stages 1-2); the original run is unchanged",
         )),
@@ -556,7 +568,7 @@ pub(crate) fn read_recipe_version(path: &Path) -> Result<u8, TdpError> {
             "recipe v9 run: resume with the checkout that created it (recipe v10 changed the defaults to the chosen L8 runs and added stage 4); the original run is unchanged",
         )),
         _ => Err(TdpError::config(
-            "unsupported recipe version; tdp_gen requires a TDP v14 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
+            "unsupported recipe version; tdp_gen requires a TDP v15 run; use a fresh run.directory or the checkout that created this run (v8 and older: branch ran/archive/curated-and-postmix); the original run is unchanged",
         )),
     }
 }

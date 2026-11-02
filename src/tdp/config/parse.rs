@@ -574,6 +574,37 @@ pub(crate) const TOML_FIELDS: &[(&str, &str, &str, &str)] = &[
         "bool",
     ),
     (
+        "adaptive.pre_cleanup",
+        "adaptive.pre_cleanup",
+        "adaptive_pre_cleanup",
+        "bool",
+    ),
+    ("adaptive.cost", "adaptive.cost", "adaptive_cost", "string"),
+    (
+        "adaptive.descent",
+        "adaptive.descent",
+        "adaptive_descent",
+        "string",
+    ),
+    (
+        "adaptive.descent_stop_fraction",
+        "adaptive.descent_stop_fraction",
+        "adaptive_descent_stop_fraction",
+        "number",
+    ),
+    (
+        "adaptive.cleanup_fcompress_iters",
+        "adaptive.cleanup_fcompress_iters",
+        "adaptive_cleanup_fcompress_iters",
+        "integer",
+    ),
+    (
+        "adaptive.lower_controls",
+        "adaptive.lower_controls",
+        "adaptive_lower_controls",
+        "integer",
+    ),
+    (
         "calibration.enabled",
         "calibration.enabled",
         "calibration_only",

@@ -3,8 +3,9 @@
 This document is for everyone on the project who knows the October release (recipe v13, `main` at ec8474c4) and
 needs to know what changed in this update, why, and how to get the old behaviour back. It covers every commit
 between ec8474c4 and the pushes of 2026-11-01: the review fixes of 2026-10-28, the stage-2 interleaving work of
-2026-10-28 to 2026-11-01, the stage-1/2 update decided by RC on 2026-11-01, and the stage-3 twist settings that
-followed it the same day (section 2.5). The pipeline itself is described from scratch in
+2026-10-28 to 2026-11-01 and the stage-1/2 update decided by RC on 2026-11-01. The stage-3 twist settings that
+followed it the same day (section 2.5) were not in the v14 push to `main`; they ship with recipe v15
+([PIPELINE_V15_CHANGES.md](PIPELINE_V15_CHANGES.md)). The pipeline itself is described from scratch in
 [PIPELINE_INTRODUCTION.md](PIPELINE_INTRODUCTION.md); the settings are in [tdp_pipeline.md](tdp_pipeline.md).
 
 ## Summary
@@ -154,7 +155,7 @@ oracle `*.log` fixtures were git-ignored (CI on a clean checkout); the auto band
 odd n gave 9 banks) and the resolved geometry is validated up front; a three-mask stage 2 wider than 1,024 wires is
 refused when stage 6 runs; the adaptive census batches and term cap are checked against the stage-2 width.
 
-### 2.5 Stage 3: more and longer wire-swap twists
+### 2.5 Stage 3: more and longer wire-swap twists (recipe v15, not in main's v14)
 
 **What.** The managed stage 3 now runs circuit_mixer with `--p-twist 0.001 --twist-min-len 100000
 --twist-span-uniform`: a mixer round is a wire-swap twist with probability 0.001 instead of the db_mixing preset's

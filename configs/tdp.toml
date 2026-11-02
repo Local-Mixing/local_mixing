@@ -41,7 +41,7 @@
 # driver's flags (ea2e516f). No stage-2 or stage-3 knob is set here: a preset
 # or schedule field next to `L8` / `validated` is an error, so an old
 # template cannot silently produce a hybrid recipe.
-config_version = 5  # required TOML schema version (distinct from the saved recipe v14)
+config_version = 5  # required TOML schema version (distinct from the saved recipe v15)
 
 [run]
 # directory = "runs/my-run"  # string; omit for a new timestamped runs/ directory
@@ -179,28 +179,46 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 #                  # reported as NOT recommended, not fatal)
 
 [adaptive]
-# Stage 6 in its ADAPTIVE mode (tdp_adaptive run; docs/ADAPTIVE_STAGE.md):
-# every round plans large blocks (exact ANF composition up to term_cap terms
-# at an endpoint, at most max_block_gates gates, segments planned in
+# Stage 6 in its ADAPTIVE mode (tdp_adaptive run; docs/ADAPTIVE_STAGE.md;
+# recipe v15's settings: docs/notes/stage6_config_search_20261102.md).
+# pre_cleanup: one exact NOT-push + fcompress cleanup of the stage-5 circuit.
+# Phase A: every round plans blocks (exact ANF composition up to term_cap
+# terms at an endpoint, at most max_block_gates gates, segments planned in
 # parallel) with boundaries away from cuts where an internal value of C is
 # affinely recoverable (and away from the previous round's boundaries within
 # avoid_radius), synthesizes every block with seeds_per_block synthesizer
 # seeds under a size-scaled budget (time_limit s up to 1000 gates, x2 up to
 # 4000, x4 above), splits blocks that do not synthesize (refinement_levels
-# levels, never below min_refine_gates gates), keeps per block the smallest
-# candidate that is not leakier than the original (accept), checks the
-# assembly and measures its exposure (census_batches x 64 honest inputs).
-# The run ends when two consecutive rounds compress jointly by less than
-# stop_fraction, after two rounds without decrease, or after max_rounds
-# rounds (0 = until the plateau); the smallest round output, canonically
-# reordered (canonical_order), is adaptive/final.mpmct1. Any key here is an
-# error under the windowed mode.
+# levels, never below min_refine_gates gates), keeps per block the cheapest
+# candidate (cost: "two-control" counts a gate with k > 2 controls as its
+# 4k - 8 Toffolis, "gates" the raw count) that is not leakier than the
+# original (accept), checks the assembly and measures its exposure
+# (census_batches x 64 honest inputs), until two consecutive rounds compress
+# jointly by less than stop_fraction (or two rounds without decrease).
+# Phase B: the same at each block cap of descent (planned C-blind, the leak
+# guard still on), each to its own descent_stop_fraction stall and followed
+# by an exact cleanup (cleanup_fcompress_iters fcompress iterations). Phase
+# C: every gate with more than lower_controls controls lowered (Barenco) and
+# cleaned, so the published circuit has at most that many controls per gate.
+# max_rounds caps the rounds of all phases (0 = until the plateaus); the
+# result, canonically reordered (canonical_order), is adaptive/final.mpmct1.
+# Recipe v14's stage 6: pre_cleanup = false, cost = "gates",
+# max_block_gates = 65536, descent = "none", lower_controls = 0,
+# stop_fraction = 0.02. Any key here is an error under the windowed mode.
+# pre_cleanup = true  # bool
+# cost = "two-control"  # or "gates"
 # max_rounds = 0  # integer 0..1000; 0 = until the size plateaus
-# stop_fraction = 0.02  # number in [0, 1)
+# stop_fraction = 0.2  # number in [0, 1): phase A's two-round stop rule
+# max_block_gates = 512  # integer 2..100000000: phase A's block cap
+# descent = "128,32,16"  # strictly decreasing block caps in 2..100000000, or "none"
+# descent_stop_fraction = 0.2  # number in [0, 1)
+# cleanup_fcompress_iters = 10  # integer 0..1000 (0 = NOT-push only)
+# lower_controls = 2  # integer 0 or 2..64 (0 = keep wide gates)
 # seeds_per_block = 2  # integer 1..16
 # time_limit = 60  # number in (0, 86400]: seconds per block of at most 1000 gates
 # restarts = 16  beam = 6  # the synthesizer's restarts and lookahead width
-# term_cap = 131072  max_block_gates = 65536  segments = 16  avoid_radius = 64
+#                          # (restarts = 2, time_limit = 12: ~3.4x faster, ~6 % larger)
+# term_cap = 131072  segments = 16  avoid_radius = 64
 # refinement_levels = 2  min_refine_gates = 128  census_batches = 96
 # accept = "smaller-not-leakier"  # or "smaller" (size only)
 # canonical_order = true  # bool; false publishes the assembly as is

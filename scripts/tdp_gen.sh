@@ -27,14 +27,21 @@
 #        target = round(G * factor), temperature target/divisor, 3*target moves
 #   6    delivery, in one of two modes (--delivery-mode):
 #        adaptive (DEFAULT since recipe v13): tdp_adaptive run = the C-aware
-#        adaptive resynthesis (docs/ADAPTIVE_STAGE.md): the stage-5 circuit is
-#        resynthesized in large variable-length blocks whose boundaries avoid
-#        cuts where an internal value of C is recoverable, two synthesizer
-#        seeds per block, the smaller-and-not-leakier candidate kept, round
-#        after round until two consecutive rounds compress jointly by less
-#        than --adaptive-stop-fraction (or --adaptive-max-rounds rounds), the
-#        smallest round output canonically reordered -> adaptive/final.mpmct1
-#        (THE PUBLISHED CIRCUIT).
+#        adaptive resynthesis (docs/ADAPTIVE_STAGE.md; recipe v15's settings:
+#        docs/notes/stage6_config_search_20261102.md): an exact NOT-push +
+#        fcompress cleanup of the stage-5 circuit, then phase A: rounds that
+#        resynthesize it in variable-length blocks of at most
+#        --adaptive-max-block-gates gates whose boundaries avoid cuts where an
+#        internal value of C is recoverable, two synthesizer seeds per block,
+#        the cheaper-and-not-leakier candidate kept (--adaptive-cost: a gate
+#        with k > 2 controls costs 4k - 8), round after round until two
+#        consecutive rounds compress jointly by less than
+#        --adaptive-stop-fraction; phase B: the same at each smaller block cap
+#        of --adaptive-descent, each followed by an exact cleanup; phase C:
+#        every gate with more than --adaptive-lower-controls controls lowered
+#        (Barenco) and cleaned; canonically reordered -> adaptive/final.mpmct1
+#        (THE PUBLISHED CIRCUIT). Every acceptance and every cleanup is
+#        refused if it raises the C exposure (deeper births, early outputs).
 #        windowed (recipe v12's stage 6; RC, 2026-10-12: the former stages 6
 #        packing and 7 unpacking as ONE stage): tdp_packing run (pack G=512, the order repair, which
 #        runs in every packing run, ANF serialization with budget 65536) ->
@@ -193,16 +200,25 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                                     (either is added to the resumed split counter)
   --delivery-mode M                 adaptive (default) or windowed
     adaptive only:
-    --adaptive-max-rounds N         rounds at most; 0 = until the size plateaus  [0]
-    --adaptive-stop-fraction F      end of mixing when two consecutive rounds compress
-                                    jointly by less than F, in [0, 1)          [0.02]
+    --adaptive-max-rounds N         rounds at most (all phases); 0 = until the size plateaus [0]
+    --adaptive-stop-fraction F      end of phase A when two consecutive rounds compress
+                                    jointly by less than F, in [0, 1)          [0.2]
+    --adaptive-no-pre-cleanup       no exact NOT-push + fcompress cleanup before phase A
+    --adaptive-cost C               two-control (a gate with k > 2 controls costs 4k - 8)
+                                    or gates (the raw count)                   [two-control]
+    --adaptive-descent L            phase B block caps, strictly decreasing, or none
+                                                                               [128,32,16]
+    --adaptive-descent-stop-fraction F  the stop fraction of each descent level  [0.2]
+    --adaptive-cleanup-fcompress-iters I  fcompress iterations per cleanup (0 = NOT-push only) [10]
+    --adaptive-lower-controls K     phase C: lower every gate with more than K controls
+                                    (K >= 2; 0 = keep wide gates)              [2]
     --adaptive-seeds-per-block K    synthesizer seeds per block (1..16)         [2]
     --adaptive-time-limit S         synthesis wall limit per block of <= 1000 gates,
                                     seconds (x2 up to 4000 gates, x4 above)    [60]
     --adaptive-restarts R           synthesis restarts per block                [16]
     --adaptive-beam B               synthesis lookahead width                   [6]
     --adaptive-term-cap T           ANF terms at an eligible block endpoint     [131072]
-    --adaptive-max-block-gates G    longest block                               [65536]
+    --adaptive-max-block-gates G    longest phase-A block                       [512]
     --adaptive-segments S           planner segments (parallel)                 [16]
     --adaptive-avoid-radius D       cuts within D of the previous round's boundaries
                                     are penalized (0 = off)                    [64]
@@ -283,9 +299,11 @@ PREPROCESSING_MODE=three-mask; PRESET=""; REV_CONTRACT=""
 declare -A KNOB=()
 declare -A TM=()
 DELIV_MODE=adaptive
-AD_MAX_ROUNDS=0; AD_STOP_FRACTION=0.02; AD_SEEDS=2; AD_TIME_LIMIT=60; AD_RESTARTS=16; AD_BEAM=6
-AD_TERM_CAP=131072; AD_MAX_BLOCK_GATES=65536; AD_SEGMENTS=16; AD_AVOID_RADIUS=64; AD_REFINEMENT_LEVELS=2
+AD_MAX_ROUNDS=0; AD_STOP_FRACTION=0.2; AD_SEEDS=2; AD_TIME_LIMIT=60; AD_RESTARTS=16; AD_BEAM=6
+AD_TERM_CAP=131072; AD_MAX_BLOCK_GATES=512; AD_SEGMENTS=16; AD_AVOID_RADIUS=64; AD_REFINEMENT_LEVELS=2
 AD_MIN_REFINE_GATES=128; AD_CENSUS_BATCHES=96; AD_ACCEPT=smaller-not-leakier; AD_CANON=1
+AD_PRE_CLEANUP=1; AD_COST=two-control; AD_DESCENT=128,32,16; AD_DESCENT_STOP_FRACTION=0.2
+AD_CLEANUP_ITERS=10; AD_LOWER_CONTROLS=2
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
 TW_RATE=0.001; TW_MIN=100000; TW_SPANS=uniform
 STOP_AFTER=6; FORCE_FROM=99; SKIP_LIST=""
@@ -334,7 +352,7 @@ while [ $# -gt 0 ]; do
       SEEN[$1]=1 ;;
   esac
   case "$1" in
-    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget|--delivery-anf-only|--adaptive-no-canonical-order) ;;
+    -h|--help|--leakage-repair|--packing-allow-floor-miss|--packing-allow-over-budget|--delivery-anf-only|--adaptive-no-canonical-order|--adaptive-no-pre-cleanup) ;;
     --*)
       if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ $2 == -* ]]; then fatal "$1 requires an argument"; fi ;;
   esac
@@ -402,6 +420,12 @@ while [ $# -gt 0 ]; do
     --adaptive-census-batches) AD_CENSUS_BATCHES=$2; shift 2 ;;
     --adaptive-accept) AD_ACCEPT=$2; shift 2 ;;
     --adaptive-no-canonical-order) AD_CANON=0; shift ;;
+    --adaptive-no-pre-cleanup) AD_PRE_CLEANUP=0; shift ;;
+    --adaptive-cost) AD_COST=$2; shift 2 ;;
+    --adaptive-descent) AD_DESCENT=$2; shift 2 ;;
+    --adaptive-descent-stop-fraction) AD_DESCENT_STOP_FRACTION=$2; shift 2 ;;
+    --adaptive-cleanup-fcompress-iters) AD_CLEANUP_ITERS=$2; shift 2 ;;
+    --adaptive-lower-controls) AD_LOWER_CONTROLS=$2; shift 2 ;;
     --delivery-anf-only) DELIV_ANF_ONLY=1; shift ;;
     --delivery-time-limit) DELIV_TIME_LIMIT=$2; shift 2 ;;
     --delivery-restarts) DELIV_RESTARTS=$2; shift 2 ;;
@@ -676,7 +700,8 @@ WINDOWED_FLAGS=(--delivery-anf-only --delivery-time-limit --delivery-restarts --
 ADAPTIVE_FLAGS=(--adaptive-max-rounds --adaptive-stop-fraction --adaptive-seeds-per-block --adaptive-time-limit
   --adaptive-restarts --adaptive-beam --adaptive-term-cap --adaptive-max-block-gates --adaptive-segments
   --adaptive-avoid-radius --adaptive-refinement-levels --adaptive-min-refine-gates --adaptive-census-batches
-  --adaptive-accept --adaptive-no-canonical-order)
+  --adaptive-accept --adaptive-no-canonical-order --adaptive-no-pre-cleanup --adaptive-cost --adaptive-descent
+  --adaptive-descent-stop-fraction --adaptive-cleanup-fcompress-iters --adaptive-lower-controls)
 if [ "$DELIV_MODE" = adaptive ]; then
   for f in "${WINDOWED_FLAGS[@]}"; do
     [ "${SEEN[$f]+x}" != x ] || fatal "$f applies only to --delivery-mode windowed (the adaptive mode's parameters are --adaptive-*)"
@@ -701,11 +726,40 @@ AD_REFINEMENT_LEVELS=$(bounded_uint --adaptive-refinement-levels "$AD_REFINEMENT
 AD_MIN_REFINE_GATES=$(bounded_uint --adaptive-min-refine-gates "$AD_MIN_REFINE_GATES" 1 100000000)
 AD_CENSUS_BATCHES=$(bounded_uint --adaptive-census-batches "$AD_CENSUS_BATCHES" 1 4096)
 case "$AD_ACCEPT" in smaller-not-leakier|smaller) ;; *) fatal "--adaptive-accept must be smaller-not-leakier or smaller" ;; esac
-# the binary's knobs only when not at their defaults (the marker records the list)
+case "$AD_COST" in two-control|gates) ;; *) fatal "--adaptive-cost must be two-control or gates" ;; esac
+if [ "$AD_DESCENT" != none ]; then
+  # strictly decreasing caps in 2..100000000, normalized (no spaces, no leading zeros)
+  AD_DESCENT=$(python3 -I - "$AD_DESCENT" <<'PY'
+import sys
+try:
+    caps = [int(t) for t in sys.argv[1].split(',')]
+except ValueError:
+    caps = []
+if not caps or any(not 2 <= c <= 100_000_000 for c in caps) or any(a <= b for a, b in zip(caps, caps[1:])):
+    sys.stderr.write("FATAL: --adaptive-descent must be none or strictly decreasing block caps in 2..100000000, comma-separated\n")
+    sys.exit(2)
+print(','.join(map(str, caps)))
+PY
+  ) || exit 2
+fi
+AD_DESCENT_STOP_FRACTION=$(bounded_number --adaptive-descent-stop-fraction "$AD_DESCENT_STOP_FRACTION" 0 0.999999 0) || exit 2
+AD_CLEANUP_ITERS=$(bounded_uint --adaptive-cleanup-fcompress-iters "$AD_CLEANUP_ITERS" 0 1000)
+AD_LOWER_CONTROLS=$(bounded_uint --adaptive-lower-controls "$AD_LOWER_CONTROLS" 0 64)
+[ "$AD_LOWER_CONTROLS" != 1 ] || fatal "--adaptive-lower-controls must be 0 (off) or in 2..64"
+# the binary's knobs only when not at its own defaults (the marker records the
+# list): tdp_adaptive's defaults are recipe v14's stage 6 (stop fraction 0.02,
+# blocks of 65536 gates, raw-count cost, no pre-cleanup, descent or lowering),
+# so recipe v15's settings are passed explicitly
 ADFLAGS=()
 afl() { [ "$2" = "$3" ] || ADFLAGS+=("$1" "$2"); }
 afl --max-rounds "$AD_MAX_ROUNDS" 0
 afl --stop-fraction "$AD_STOP_FRACTION" 0.02
+[ "$AD_PRE_CLEANUP" = 0 ] || ADFLAGS+=(--pre-cleanup)
+afl --cost "$AD_COST" gates
+[ "$AD_DESCENT" = none ] || ADFLAGS+=(--descent "$AD_DESCENT")
+[ "$AD_DESCENT" = none ] || afl --descent-stop-fraction "$AD_DESCENT_STOP_FRACTION" 0.01
+afl --cleanup-fcompress-iters "$AD_CLEANUP_ITERS" 10
+[ "$AD_LOWER_CONTROLS" = 0 ] || ADFLAGS+=(--lower-controls "$AD_LOWER_CONTROLS")
 afl --seeds-per-block "$AD_SEEDS" 2
 afl --time-limit "$AD_TIME_LIMIT" 60
 afl --restarts "$AD_RESTARTS" 16

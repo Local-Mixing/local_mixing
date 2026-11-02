@@ -108,10 +108,12 @@ tdp_adaptive run ... --pre-cleanup --cost two-control --max-block-gates 512 --de
 
 plus the leak guard, which is on whenever `--accept smaller-not-leakier` (the default): every block
 acceptance and every cleanup is rejected if it raises the validated deeper exposure or the early C
-outputs. All of this is OFF by default in the code (`descent` empty, `pre_cleanup` false, `cost =
-gates`, `lower_controls = None`), so the pipeline's default stage 6 is unchanged until RC decides; making
-it the default means a recipe bump (v15) and wiring the new knobs through `scripts/tdp_gen.sh`, the
-config schema and the manifest, which has not been done.
+outputs. **Recipe v15 (RC, 2026-11-02) makes this the managed driver's default stage 6** (with the
+production effort, 16 restarts and 60 s budgets): `[adaptive]` `pre_cleanup`, `cost`, `descent`,
+`descent_stop_fraction`, `cleanup_fcompress_iters`, `lower_controls` and the new defaults of
+`stop_fraction` (0.2) and `max_block_gates` (512); see `docs/PIPELINE_V15_CHANGES.md`. `tdp_adaptive`'s
+own defaults stay recipe v14's (`descent` empty, `pre_cleanup` false, `cost = gates`, `lower_controls =
+None`), so the driver passes the v15 settings explicitly.
 
 ## Caveats
 

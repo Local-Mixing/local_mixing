@@ -107,6 +107,17 @@ reject 'adaptive-segments' --adaptive-segments 0
 reject 'adaptive-refinement-levels' --adaptive-refinement-levels 17
 reject 'adaptive-min-refine-gates' --adaptive-min-refine-gates 0
 reject 'adaptive-census-batches' --adaptive-census-batches 0
+reject 'adaptive-cost' --adaptive-cost raw
+reject 'adaptive-descent' --adaptive-descent 32,128
+reject 'adaptive-descent' --adaptive-descent 128,128
+reject 'adaptive-descent' --adaptive-descent 128,1
+reject 'adaptive-descent' --adaptive-descent off
+reject 'adaptive-descent-stop-fraction' --adaptive-descent-stop-fraction 1
+reject 'adaptive-cleanup-fcompress-iters' --adaptive-cleanup-fcompress-iters 1001
+reject 'adaptive-lower-controls' --adaptive-lower-controls 1
+reject 'adaptive-lower-controls' --adaptive-lower-controls 65
+reject 'applies only to --delivery-mode adaptive' --delivery-mode windowed --adaptive-no-pre-cleanup
+reject 'applies only to --delivery-mode adaptive' --delivery-mode windowed --adaptive-descent none
 # the three-mask geometry the compute requires: a multiple of 32 under auto banks, even banks of >= 8 wires
 reject 'multiple of 32' --three-mask-band-wires 144
 reject 'even banks of at least 8' --three-mask-turnover bank --three-mask-band-wires 160 --three-mask-banks 6

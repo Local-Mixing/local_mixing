@@ -823,6 +823,9 @@ pub(crate) fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
     if !config.adaptive.canonical_order {
         args.push(OsString::from("--adaptive-no-canonical-order"));
     }
+    if !config.adaptive.pre_cleanup {
+        args.push(OsString::from("--adaptive-no-pre-cleanup"));
+    }
     args
 }
 
@@ -976,7 +979,9 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
     if config.delivery.mode == DeliveryMode::Adaptive {
         let a = &config.adaptive;
         println!(
-            "[tdp_gen] delivery (stage 6): adaptive C-aware resynthesis: max_rounds={} stop_fraction={} seeds_per_block={} time_limit={} restarts={} beam={} term_cap={} max_block_gates={} segments={} avoid_radius={} refinement_levels={} min_refine_gates={} census_batches={} accept={} canonical_order={}",
+            "[tdp_gen] delivery (stage 6): adaptive C-aware resynthesis: pre_cleanup={} cost={} max_rounds={} stop_fraction={} seeds_per_block={} time_limit={} restarts={} beam={} term_cap={} max_block_gates={} descent={} descent_stop_fraction={} cleanup_fcompress_iters={} lower_controls={} segments={} avoid_radius={} refinement_levels={} min_refine_gates={} census_batches={} accept={} canonical_order={}",
+            a.pre_cleanup,
+            a.cost,
             if a.max_rounds == 0 {
                 "plateau".to_owned()
             } else {
@@ -989,6 +994,14 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             a.beam,
             a.term_cap,
             a.max_block_gates,
+            a.descent,
+            a.descent_stop_fraction,
+            a.cleanup_fcompress_iters,
+            if a.lower_controls == 0 {
+                "off".to_owned()
+            } else {
+                a.lower_controls.to_string()
+            },
             a.segments,
             a.avoid_radius,
             a.refinement_levels,

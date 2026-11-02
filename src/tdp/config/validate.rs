@@ -711,7 +711,7 @@ where
         "packing_allow_floor_miss",
         "packing_allow_over_budget",
     ];
-    const ADAPTIVE_KEYS: [&str; 15] = [
+    const ADAPTIVE_KEYS: [&str; 21] = [
         "adaptive_max_rounds",
         "adaptive_stop_fraction",
         "adaptive_seeds_per_block",
@@ -727,6 +727,12 @@ where
         "adaptive_census_batches",
         "adaptive_accept",
         "adaptive_canonical_order",
+        "adaptive_pre_cleanup",
+        "adaptive_cost",
+        "adaptive_descent",
+        "adaptive_descent_stop_fraction",
+        "adaptive_cleanup_fcompress_iters",
+        "adaptive_lower_controls",
     ];
     if delivery_mode == DeliveryMode::Adaptive
         && let Some(key) = WINDOWED_KEYS
@@ -810,6 +816,44 @@ where
             }
         },
         canonical_order: parse_bool(raw, "adaptive_canonical_order", ad.canonical_order)?,
+        pre_cleanup: parse_bool(raw, "adaptive_pre_cleanup", ad.pre_cleanup)?,
+        cost: match raw.value("adaptive_cost").unwrap_or(&ad.cost) {
+            v @ ("two-control" | "gates") => v.to_string(),
+            other => {
+                return Err(config_error(
+                    raw,
+                    "adaptive_cost",
+                    &format!("expected \"two-control\" or \"gates\"; got {other:?}"),
+                ));
+            }
+        },
+        descent: match raw.value("adaptive_descent") {
+            None => ad.descent.clone(),
+            Some(v) => parse_descent(v).map_err(|m| config_error(raw, "adaptive_descent", &m))?,
+        },
+        descent_stop_fraction: parse_optional_f64(
+            raw,
+            "adaptive_descent_stop_fraction",
+            |value| (0.0..1.0).contains(&value),
+            "must be in [0, 1)",
+        )?
+        .unwrap_or(ad.descent_stop_fraction),
+        cleanup_fcompress_iters: ad_u64(
+            "adaptive_cleanup_fcompress_iters",
+            ad.cleanup_fcompress_iters,
+            0,
+            1000,
+        )?,
+        lower_controls: match ad_u64("adaptive_lower_controls", ad.lower_controls, 0, 64)? {
+            1 => {
+                return Err(config_error(
+                    raw,
+                    "adaptive_lower_controls",
+                    "must be 0 (off) or in 2..=64, got 1",
+                ));
+            }
+            v => v,
+        },
     };
     // The stage-2 circuit's width (data plus band) is known up front: refuse
     // what stage 6 would refuse, or the adaptive planner would panic on, only
@@ -1069,6 +1113,26 @@ pub(crate) fn parse_optional_f64(
         ));
     }
     Ok(Some(parsed.to_string()))
+}
+
+/// `adaptive.descent`: `"none"` or block caps in 2..=100000000, strictly
+/// decreasing and comma-separated; normalized to `"a,b,c"` (no spaces).
+pub(crate) fn parse_descent(value: &str) -> Result<String, String> {
+    if value.trim() == "none" {
+        return Ok("none".to_string());
+    }
+    let expectation = "expected \"none\" or strictly decreasing block caps in 2..=100000000, comma-separated (e.g. \"128,32,16\")";
+    let caps = value
+        .split(',')
+        .map(|t| t.trim().parse::<u64>().ok().filter(|c| (2..=100_000_000).contains(c)))
+        .collect::<Option<Vec<_>>>()
+        .filter(|caps| caps.windows(2).all(|w| w[0] > w[1]))
+        .ok_or_else(|| format!("{expectation}; got {value:?}"))?;
+    Ok(caps
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
 }
 
 pub(crate) fn parse_bool(raw: &RawConfig, key: &str, default: bool) -> Result<bool, String> {

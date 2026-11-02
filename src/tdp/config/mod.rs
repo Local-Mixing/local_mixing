@@ -718,8 +718,13 @@ impl ThreeMaskConfig {
 }
 
 /// `[adaptive]`: stage 6 in its adaptive mode (`tdp_adaptive run`,
-/// docs/ADAPTIVE_STAGE.md). The defaults are the server prototype's policy
-/// (variant v2, 2 % two-round stop rule).
+/// docs/ADAPTIVE_STAGE.md). The defaults since recipe v15 are the 2026-11-02
+/// configuration (docs/notes/stage6_config_search_20261102.md): a pre-cleanup,
+/// the 2-control cost, phase-A blocks of at most 512 gates, the descent 128 /
+/// 32 / 16, 20 % two-round stop rules, and phase C to <= 2 controls. Recipe
+/// v14's stage 6 (the server prototype's v2 policy) is `pre_cleanup = false`,
+/// `cost = "gates"`, `max_block_gates = 65536`, `descent = "none"`,
+/// `lower_controls = 0`, `stop_fraction = 0.02`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AdaptiveConfig {
     /// Rounds to run at most; 0 = until the size plateaus.
@@ -743,19 +748,33 @@ pub(crate) struct AdaptiveConfig {
     /// `smaller-not-leakier` (v2) or `smaller`.
     pub(crate) accept: String,
     pub(crate) canonical_order: bool,
+    /// One exact NOT-push + fcompress cleanup of the input before phase A.
+    pub(crate) pre_cleanup: bool,
+    /// What "smaller" means for the acceptance, the stop rules and the
+    /// cleanups: `two-control` (a k-control gate costs 4k - 8) or `gates`.
+    pub(crate) cost: String,
+    /// The descent's block caps, strictly decreasing and comma-separated, or
+    /// `none` (phase A only).
+    pub(crate) descent: String,
+    /// The two-round stop fraction of each descent level.
+    pub(crate) descent_stop_fraction: String,
+    /// fcompress iterations of every cleanup (0 = NOT-push only).
+    pub(crate) cleanup_fcompress_iters: u64,
+    /// Phase C: lower every gate with more than this many controls (0 = off).
+    pub(crate) lower_controls: u64,
 }
 
 impl Default for AdaptiveConfig {
     fn default() -> Self {
         AdaptiveConfig {
             max_rounds: 0,
-            stop_fraction: "0.02".into(),
+            stop_fraction: "0.2".into(),
             seeds_per_block: 2,
             time_limit: "60".into(),
             restarts: 16,
             beam: 6,
             term_cap: 131_072,
-            max_block_gates: 65_536,
+            max_block_gates: 512,
             segments: 16,
             avoid_radius: 64,
             refinement_levels: 2,
@@ -763,6 +782,12 @@ impl Default for AdaptiveConfig {
             census_batches: 96,
             accept: "smaller-not-leakier".into(),
             canonical_order: true,
+            pre_cleanup: true,
+            cost: "two-control".into(),
+            descent: "128,32,16".into(),
+            descent_stop_fraction: "0.2".into(),
+            cleanup_fcompress_iters: 10,
+            lower_controls: 2,
         }
     }
 }
@@ -835,6 +860,23 @@ impl AdaptiveConfig {
                 d.census_batches.to_string(),
             ),
             ("--adaptive-accept", self.accept.clone(), d.accept),
+            ("--adaptive-cost", self.cost.clone(), d.cost),
+            ("--adaptive-descent", self.descent.clone(), d.descent),
+            (
+                "--adaptive-descent-stop-fraction",
+                self.descent_stop_fraction.clone(),
+                d.descent_stop_fraction,
+            ),
+            (
+                "--adaptive-cleanup-fcompress-iters",
+                self.cleanup_fcompress_iters.to_string(),
+                d.cleanup_fcompress_iters.to_string(),
+            ),
+            (
+                "--adaptive-lower-controls",
+                self.lower_controls.to_string(),
+                d.lower_controls.to_string(),
+            ),
         ]
     }
 

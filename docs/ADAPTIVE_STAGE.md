@@ -128,6 +128,13 @@ width before a run starts.
 
 ## 3. The run
 
+Defaults: `tdp_adaptive`'s own defaults are recipe v14's stage 6 (phase A
+only, blocks of up to 65,536 gates, raw gate count, stop fraction 0.02, wide
+gates kept). The managed driver's default since recipe v15 passes `--pre-cleanup
+--cost two-control --max-block-gates 512 --descent 128,32,16
+--descent-stop-fraction 0.2 --stop-fraction 0.2 --lower-controls 2`
+(docs/notes/stage6_config_search_20261102.md, docs/PIPELINE_V15_CHANGES.md).
+
 The run is a sequence of **levels** (steps inside stage 6, not pipeline
 stages), each a sequence of rounds at one block size, run to its own stall:
 
