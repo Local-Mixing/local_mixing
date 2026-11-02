@@ -194,6 +194,7 @@ fn final_report_lists_rounds_and_checks() {
         stop_reason: "round cap".into(),
         plateau: false,
         final_leakage: Leakage::default(),
+        final_early_outputs: 0,
         boundary: BoundaryCounts {
             internal: 5,
             excluded: 2,

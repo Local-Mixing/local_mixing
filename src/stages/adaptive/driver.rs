@@ -34,9 +34,9 @@
 //! ```
 use super::boundary;
 use super::round::{
-    AdaptiveError, Leakage, Log, RoundContext, RoundParams, RoundResult, gates_digest, leakage_kv,
-    load_or_census, parse_kv, path_str, read_bounds_file, reload_round, run_round,
-    write_text_atomic,
+    AdaptiveError, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams, RoundResult,
+    gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file, reload_round,
+    run_round, write_text_atomic,
 };
 use super::synth::same_function;
 use super::types::{Census, Source};
@@ -223,6 +223,9 @@ pub struct FinalReport {
     pub stop_reason: String,
     pub plateau: bool,
     pub final_leakage: Leakage,
+    /// C outputs affinely exposed before EARLY_OUTPUT_FRAC of the published
+    /// circuit (a copy of an output deep before its delivery region).
+    pub final_early_outputs: usize,
     pub boundary: BoundaryCounts,
     pub checks: FinalChecks,
     pub seconds: f64,
@@ -722,6 +725,7 @@ pub fn final_report_text(
         leakage_kv(&mut s, "stage5_leakage", &first.leakage_in);
     }
     leakage_kv(&mut s, "final_leakage", &rep.final_leakage);
+    let _ = writeln!(s, "final_leakage.early_outputs={}", rep.final_early_outputs);
     let _ = writeln!(s, "final_reloaded={}", rep.final_reloaded);
     let okn = |v: Option<usize>| v.map_or("skipped".to_string(), |x| format!("ok({x})"));
     let _ = writeln!(
@@ -1478,6 +1482,7 @@ pub fn run(
         None => load_or_census(&ctx, &final_gates, &final_census_dir, true, say)?,
     };
     let final_leakage = Leakage::of(&fc, &source);
+    let final_early_outputs = fc.early_output_count(EARLY_OUTPUT_FRAC);
     drop(fc);
     let rep = FinalReport {
         input_gates,
@@ -1488,6 +1493,7 @@ pub fn run(
         stop_reason,
         plateau,
         final_leakage,
+        final_early_outputs,
         boundary: boundary_counts,
         checks,
         seconds: t0.elapsed().as_secs_f64(),

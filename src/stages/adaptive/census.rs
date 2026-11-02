@@ -824,6 +824,66 @@ impl Census {
         }
         sets
     }
+
+    /// Per block of `edges`, the leak-guard exposure count = the deeper
+    /// internal births affinely exposed strictly inside the block PLUS, when
+    /// `early_output_frac` is set, the distinct C OUTPUT births affinely
+    /// exposed at an interior cut earlier than that fraction of the circuit.
+    /// The outputs are public, but a copy of an output deep BEFORE the
+    /// payload region gives separate black-box access to C and is treated as
+    /// a leak (anf-resynthesis 2026-10-08: early outputs at the C/D junction
+    /// are "very bad"). `None` reproduces `interior_sets(...).len()`.
+    pub fn interior_exposure(
+        &self,
+        edges: &[usize],
+        source: &Source,
+        early_output_frac: Option<f64>,
+    ) -> Vec<usize> {
+        assert!(edges.len() >= 2, "edges = [0] + bounds + [m]");
+        let his = &edges[1..];
+        let early_cut = early_output_frac.map(|f| (f * self.gates as f64) as usize);
+        let mut deeper: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); his.len()];
+        let mut outs: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); his.len()];
+        for iv in &self.affine {
+            let gid = iv.source_gate;
+            let is_internal_deeper =
+                !iv.is_output && source.internal.contains(&gid) && !source.excluded.contains(&gid);
+            let is_early_output = early_cut.is_some_and(|c| iv.is_output && iv.start_cut < c);
+            if !(is_internal_deeper || is_early_output) {
+                continue;
+            }
+            let (s, e) = (iv.start_cut, iv.end_cut);
+            let mut k = his.partition_point(|&hi| hi < s + 1);
+            while k < his.len() && edges[k] + 2 <= e {
+                if edges[k] + 2 <= his[k] {
+                    if is_internal_deeper {
+                        deeper[k].insert(gid);
+                    } else {
+                        outs[k].insert(gid);
+                    }
+                }
+                k += 1;
+            }
+        }
+        deeper
+            .iter()
+            .zip(&outs)
+            .map(|(d, o)| d.len() + o.len())
+            .collect()
+    }
+
+    /// Distinct C output births affinely exposed anywhere before
+    /// `frac` of the circuit (a whole-circuit version of the early-output
+    /// term of [`Self::interior_exposure`], for the final report).
+    pub fn early_output_count(&self, frac: f64) -> usize {
+        let cut = (frac * self.gates as f64) as usize;
+        self.affine
+            .iter()
+            .filter(|iv| iv.is_output && iv.start_cut < cut)
+            .map(|iv| iv.source_gate)
+            .collect::<BTreeSet<usize>>()
+            .len()
+    }
 }
 
 // ---------------------------------------------------------------------------

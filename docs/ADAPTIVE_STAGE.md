@@ -104,14 +104,21 @@ width before a run starts.
    candidate assembly (its converged syntheses, the original block where it
    failed) is censused (discovery only, as the prototype did; the input and
    output censuses are audited); per block, among the original and the
-   strictly smaller converged syntheses, the one that exposes the fewest
-   deeper births at cuts strictly inside the block wins, size breaking
-   ties; a synthesis that exposes more deeper births than the original is
-   rejected as leakier, one that does not shrink as growing. The honest-slice
-   state at every retained boundary is fixed, so a block's interior exposure
-   depends on that block's candidate alone, which makes the per-block choice
-   sound. `accept = "smaller"` keeps the smallest converged synthesis
-   regardless of exposure (the "as-is" acceptance).
+   strictly smaller converged syntheses, the one with the smallest
+   leak-guard **exposure** at cuts strictly inside the block wins, size
+   breaking ties; a synthesis exposing more than the original is rejected as
+   leakier, one that does not shrink as growing. The exposure of a block is
+   the number of deeper internal births affinely recoverable at an interior
+   cut **plus** the number of C outputs affinely recoverable at an interior
+   cut before `EARLY_OUTPUT_FRAC` (0.9) of the circuit: C's outputs are
+   public, but a copy of an output deep before the payload-delivery region
+   gives separate black-box access to C and is treated as a leak (the
+   2026-10-08 ANF-resynthesis finding that outputs reappearing at the C/D
+   junction are "very bad"). The honest-slice state at every retained
+   boundary is fixed, so a block's interior exposure depends on that block's
+   candidate alone, which makes the per-block choice sound. `accept =
+   "smaller"` keeps the smallest converged synthesis regardless of exposure
+   (the "as-is" acceptance).
 6. **Assemble and check.** The chosen blocks are concatenated; the output is
    checked equivalent to the round's input on 8 × 1,024 random full states
    (a mismatch is exit 4), censused and measured (`metrics`: internal and
@@ -121,16 +128,40 @@ width before a run starts.
 
 ## 3. The run
 
-Rounds continue while the circuit shrinks. The run ends (`stop_reason`):
+The run is a pipeline of **stages**, each a sequence of rounds at one block
+size, run to its own stall:
 
-* `two consecutive rounds without size decrease`;
-* `two consecutive rounds with joint compression below f` when
-  $\text{output}_r \ge (1 - f)\,\text{input}_{r-1}$ (`stop_fraction`, 2 % by
-  default; the campaign's attacker rule used 1 %);
-* `capped` after `max_rounds` rounds (0 = no cap).
+* **Phase A** — the large-block rounds above (block cap `max_block_gates`,
+  the run's own `blind` flag and `stop_fraction`). This is the whole run
+  when `descent` is empty (the classic behaviour).
+* **Phase B, the multi-scale descent** (`descent`, a list of strictly
+  decreasing block-gate caps such as `512,128,48,32,16,8`) — after phase A
+  plateaus, each cap is a stage, planned **C-blind** (cut anywhere; the leak
+  guard still vetoes a leakier block, so compression, not exposure, is the
+  caps' job) and run to `descent_stop_fraction`. The lever the shortening
+  campaigns found: under a fixed cap blocks grow across rounds while
+  compression stalls, so the cap must shrink. Between stages an exact
+  **cleanup** runs — NOT-pushing (absorb the interior NOTs the synthesizer
+  and reorderings leave, drop no-ops) then `cleanup_fcompress_iters` of
+  fcompress (gather/reduce + Toffoli-sliding transport) — verified
+  equivalent on `equiv_batches` × 1,024 random full states and resumable in
+  `cleanup<i>/`.
+* **Phase C, 2-control lowering** (`lower_controls`, e.g. 2) — after the
+  descent, every gate wider than that many controls (stage 5 leaves some up
+  to its k-max) is rewritten into 2-control gates by the exact dirty-ancilla
+  Barenco decomposition, then one more exact cleanup, so the published
+  circuit is in the deliverable's gate set. The gate set changes, so phase C
+  is unconditional (not size-gated) and verified equivalent; resumable in
+  `lower/`. `None` leaves the wide gates in place.
 
-The **final circuit** is the smallest round output (the input when no round
-shrank). It is put into the canonical commuting gate order
+A stage's rounds end (`stop_reason`) on `two consecutive rounds without size
+decrease`, `two consecutive rounds with joint compression below f`
+(`stop_fraction` / `descent_stop_fraction`, output$_r \ge (1-f)$input$_{r-1}$),
+or the global `max_rounds` cap (0 = no cap).
+
+The **final circuit** is the smallest circuit the pipeline reaches (phase C's
+output when it ran, else the smallest round output or cleanup output; the
+input when nothing shrank). It is put into the canonical commuting gate order
 (`xgate_canonicalize`, `canonical_order = true`; checked equivalent on
 8 × 1,024 random full states) under a guard: the reordered circuit is
 censused, and if its validated deeper exposure (affine or direct) exceeds
@@ -161,6 +192,8 @@ attempt of the same recipe in place (`adaptive/attempt.recipe`) and removes
 ```text
 tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1]
     [--seed S | --seed-file PATH] [--threads T] [--max-rounds N=0] [--stop-fraction F=0.02]
+    [--descent 512,128,48,32,16,8] [--descent-stop-fraction F=0.01] [--cleanup-fcompress-iters 10]
+    [--lower-controls 2]
     [--seeds-per-block K=2] [--time-limit S=60] [--restarts R=16] [--beam B=6]
     [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64]
     [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192]
@@ -186,6 +219,10 @@ round<r>/output_census/          the census of the round's output
 round<r>/output.mpmct1           the round's output (non-final rounds pruned at the end unless --keep-round-circuits)
 round<r>/bounds.out              the output's interior block cuts, one per line
 round<r>/result.report           the round's completion record (a round with it is reloaded, never recomputed)
+cleanup<i>/output.mpmct1         phase B: the circuit after stage i's exact NOT-push + fcompress cleanup
+cleanup<i>/cleanup.report        that cleanup's record (reloaded on resume, keyed on the input gate count)
+lower/output.mpmct1              phase C: the circuit after 2-control lowering + a final cleanup
+lower/lower.report               phase C's record (wide gates lowered, max controls seen)
 progress.txt                     per-round gate counts and deeper births, rewritten after every round
 final_census/                    the census of the published circuit
 final.mpmct1                     the published circuit
@@ -203,7 +240,9 @@ adaptive.log                     every progress line, appended across resumes
 the leakage of the stage input and of the published circuit
 (`stage5_leakage.*`, `final_leakage.*`:
 `{discovery,validated}.{direct,affine}.{all_internal_births,deeper_births,cut_exposure_fraction}`
-and `audit_passed`), the checks `check.input_zero_slice`,
+and `audit_passed`; `final_leakage.early_outputs` = C outputs affinely
+exposed before `EARLY_OUTPUT_FRAC` of the published circuit), the checks
+`check.input_zero_slice`,
 `check.input_payload_contract`, `check.equiv_canonical`,
 `check.zero_slice`, `check.payload_contract` (`ok(N)`, `skipped`, or
 `reloaded` for a completed run's rerun), `canonical_order_applied`,

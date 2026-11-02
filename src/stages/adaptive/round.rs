@@ -45,6 +45,11 @@ pub type Log<'a> = &'a (dyn Fn(&str) + Sync);
 /// Seed of the per-round sampled equivalence check (public, fixed).
 pub const EQUIV_SEED: u64 = 20_261_026 ^ 0xE0E0;
 
+/// A C output exposed before this fraction of the circuit (i.e. deep before
+/// the payload-delivery region) counts as a leak in the acceptance and the
+/// final guard; later exposures are the public payload and are ignored.
+pub const EARLY_OUTPUT_FRAC: f64 = 0.9;
+
 // ---------------------------------------------------------------- errors
 
 /// Stage errors and exit codes, the table of `unpacking::Stage7Error`.
@@ -1059,10 +1064,14 @@ pub fn run_round(
 
     // ---- acceptance
     let edges = edges_of(&leaves);
-    let mut exposure_in: Option<Vec<BTreeSet<usize>>> = None;
-    let mut exposure_cand: Vec<Vec<BTreeSet<usize>>> = Vec::new();
+    // The per-block leak-guard exposure: deeper internal births exposed
+    // inside the block, plus C outputs exposed before the payload region
+    // (EARLY_OUTPUT_FRAC of the circuit) -- a copy of an output deep before
+    // its delivery gives separate black-box access to C.
+    let mut exposure_in: Option<Vec<usize>> = None;
+    let mut exposure_cand: Vec<Vec<usize>> = Vec::new();
     if p.accept == Accept::SmallerNotLeakier {
-        exposure_in = Some(cin.interior_sets(&edges, ctx.source));
+        exposure_in = Some(cin.interior_exposure(&edges, ctx.source, Some(EARLY_OUTPUT_FRAC)));
         for (k, slot) in res.iter().enumerate() {
             let (cand, oedges) = assemble(input, &leaves, |_, l| {
                 slot.get(&l).and_then(|row| row.gates.as_deref())
@@ -1079,7 +1088,7 @@ pub fn run_round(
                 log,
             )?;
             drop(cand);
-            exposure_cand.push(cs.interior_sets(&oedges, ctx.source));
+            exposure_cand.push(cs.interior_exposure(&oedges, ctx.source, Some(EARLY_OUTPUT_FRAC)));
         }
     }
     let mut picks = Picks::new(seeds);
@@ -1092,13 +1101,13 @@ pub fn run_round(
                 slot.get(&l).filter(|row| row.is_ok()).map(|row| Candidate {
                     seed: k,
                     gates: row.syn_gates,
-                    exposure: exposure_cand.get(k).map_or(0, |e| e[i].len()),
+                    exposure: exposure_cand.get(k).map_or(0, |e| e[i]),
                 })
             })
             .collect();
         chosen.push(choose(
             l.1 - l.0,
-            exposure_in.as_ref().map(|e| e[i].len()),
+            exposure_in.as_ref().map(|e| e[i]),
             &cands,
             &mut picks,
         ));

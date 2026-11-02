@@ -448,3 +448,44 @@ fn census_timing_100k_gates_32_wires() {
     // unexposed target's residual) is paid either way.
     assert!(lm.affine.all_internal_births >= 1);
 }
+
+#[test]
+fn interior_exposure_counts_deeper_internals_and_early_outputs() {
+    // internal = {0, 1}, outputs = {2, 3}, excluded = {1} => deeper = {0}.
+    let c = vec![
+        XGate::cnot(0, 2),
+        XGate::cnot(1, 2),
+        XGate::cnot(0, 3),
+        XGate::cnot(1, 3),
+    ];
+    let source = Source::new(c, 4, [1].into_iter().collect());
+    assert_eq!(source.internal, [0, 1].into_iter().collect());
+    assert_eq!(source.outputs, [2, 3].into_iter().collect());
+
+    let mut cen = Census::empty(100, 20);
+    cen.affine = vec![
+        iv(0, 10, 40, &[12], false), // deeper internal, inside block 0
+        iv(2, 5, 30, &[13], true),   // output, exposed early (start 5 < 90)
+        iv(3, 95, 100, &[14], true), // output, exposed late (start 95 >= 90)
+    ];
+    let edges = [0usize, 50, 100];
+
+    // Without the early-output term this is interior_sets(...).len().
+    let plain = cen.interior_exposure(&edges, &source, None);
+    assert_eq!(plain, vec![1, 0]);
+    assert_eq!(
+        plain,
+        cen.interior_sets(&edges, &source)
+            .iter()
+            .map(BTreeSet::len)
+            .collect::<Vec<_>>()
+    );
+
+    // With it, block 0 also counts the early output (gid 2) but not the late
+    // one (gid 3).
+    let guarded = cen.interior_exposure(&edges, &source, Some(0.9));
+    assert_eq!(guarded, vec![2, 0]);
+
+    assert_eq!(cen.early_output_count(0.9), 1);
+    assert_eq!(cen.early_output_count(0.04), 0); // cut = 4, nothing before it
+}
