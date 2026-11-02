@@ -14,9 +14,10 @@ stage (`docs/notes/stage6_config_search_20261102.md`). The changes and how they 
 chosen: `docs/PIPELINE_V15_CHANGES.md`. Every default: the table at the end.
 
 **About the worked example.** The n = 128 run below was made on 2026-11-02 before the
-guard change: its stage 2 opened with recipe v14's band-keyed guard (2,560 gates). The
-v15 guard is 4,512 gates at n = 128, so a v15 stage 2 is 1,952 gates larger; the other
-stage-2 numbers are unchanged. Its stage 6 used a bounded synthesizer effort (2
+stage-2 change: its stage 2 opened with recipe v14's band-keyed guard (2,560 gates) and
+seeded the band with about 2,800 gates at each end. In v15 the guard is 9,380 gates
+and each band seed 7,168 at n = 128, so a v15 stage 2 is about 15,500 gates (1.4 %)
+larger; the compute is unchanged. Its stage 6 used a bounded synthesizer effort (2
 restarts, 12 s budgets, census batches 16); the defaults are 16 restarts, 60 s budgets
 and 96 census batches.
 
@@ -29,7 +30,7 @@ with k controls costs 4k - 8 two-control gates when lowered (k > 2).
 | stage | binary | what it produces | n = 128 example | time (Mac, 2026-11-02) |
 |---|---|---|---|---|
 | 1 sandwich | `gen_sandwich_gadget` | C, copy, D, V gadget on 2n wires | 6,761 gates, 256 wires | stages 1-2 together: < 2 min |
-| 2 three-mask preprocessing | (same process) | the masked circuit on 4n wires | 1,141,924 gates, 512 wires (v14 guard; v15: +1,952) | (with stage 1) |
+| 2 three-mask preprocessing | (same process) | the masked circuit on 4n wires | 1,141,924 gates, 512 wires (v14 guard and seeds; v15: about +15,400) | (with stage 1) |
 | 3 database mixing | `circuit_mixer` | DB-respelled, ~2x | 2,566,339 | 58 min |
 | 4 splitting | `circuit_mixer` | complemented gates split, ~1.9x | 4,739,227 | 5 min |
 | 5 crossing walk | `circuit_mixer` | gates crossed, wide gates, ~1.85x | 8,746,933 | 39 min |
@@ -76,35 +77,51 @@ The frame: **opening guard ; band seed ; masked compute ; band reseed.**
 n = 128), 4n wires in all. The band is zero on the honest slice.
 
 **2. Opening guard** (the two-layer guard, RC 2026-11-02). Write A for wires 0..n-1
-(the input x), B for wires n..2n-1 (the register) and the band. As a map the guard is
-G(A, B, band) = (f(A), h(B), band'): the identity on A and B exactly when B and the
-band are zero (the honest slice), A scrambled whenever B or the band is nonzero, B
-scrambled whenever the band is nonzero. It is made of three-control gates, each opened
-into two-control gates through a helper wire:
-- **Layer 1, keyed on the band, scrambles A and B:** n·⌈log2 n⌉ gates t ^= s·u·v (t,
-  u, v data wires, u and v of either polarity, s a band key wire), each emitted as
-  h ^= u·v; t ^= h·s, with h one of a few band helper wires (n/8 of them, 16 at
-  n = 128). The helpers are not restored, since the band is junk; a helper is therefore
-  never a key afterwards, and a short prologue first makes each helper wire a key once,
-  one gate into A and one into B. Every band key wire gates at least two of the
-  three-control gates, alternately into A and B.
-- **Layer 2, keyed on B, scrambles A:** n·⌈log2 n⌉ gates t ^= b·u·v (t, u, v in A, b
-  in B), each emitted as h ^= u·v; t ^= h·b; h ^= u·v, the helper h another B wire,
-  restored, since B carries the payload.
+(the input x), B for wires n..2n-1 (the register) and C, D for the band. The guard is
+the identity on A and B exactly when B and the band are zero (the honest slice). It
+has two blocks:
+- **Block 1 randomizes B (and A) whenever the band is nonzero.**
+  - *Key spreading, universal-hashing style:* 3·⌈log2 2n⌉ rounds of CNOTs between
+    disjoint random pairs of band wires (24 rounds, 3,072 gates at n = 128). This is a
+    random linear map on the band: positive controls only, so it does nothing to the
+    zero band, and it sends a key with a single nonzero bit to about half of the band.
+    It is never undone (the band is junk).
+  - *Three-control gates* t ^= s·u·v, with s a band key wire, t in B (2·n·⌈log2 n⌉ =
+    1,792 at n = 128) or in A (n·⌈log2 n⌉ = 896), and u, v data wires of either
+    polarity. Each is emitted as h ^= u·v; t ^= h·s, with h one of a few band helper
+    wires (n/8 of them, 16 at n = 128), not restored. A helper is therefore never a key
+    afterwards, and a short prologue first makes each helper wire a key once (one gate
+    into B, one into A).
+  - *Coverage:* for every one-hot band key and whatever B holds, every B bit must be
+    liable to flip. Each key is checked on 256 random inputs, and a missed B wire gets
+    one more gate keyed on a wire the spread key sets (a handful of gates in all).
+- **Block 2 randomizes A whenever B is nonzero:** on every B wire b a partition triple
+  t1 ^= b·u·v, t2 ^= b·u·¬v, t3 ^= b·¬u on three different A wires (u, v two other A
+  wires). For a one-hot B key exactly one of the three fires on every input, so one A
+  bit flips whatever A holds, and which one depends on A; C's ripple then changes every
+  output bit. The two three-control gates are emitted as h ^= u·v; t ^= h·b; h ^= u·v
+  with the helper h another B wire, restored, since B carries the payload: 7 gates per B
+  wire (896 at n = 128).
 
-No gate has more than two controls. n = 128: 896 three-control gates per layer,
-4,512 gates in all (2 × 16 prologue + 2 × 896 + 3 × 896). On the honest slice the
-band leaves the guard holding the helpers' products of x, onto which the band seed
-then XORs. Every draw is checked (exhaustively up to 20 wires, by sampling above: the
-slice exact, every single-wire key and 512 weight-2 and 512 random keys disturbing
-A, every nonzero band disturbing B) and redrawn if it fails. v15 keeps no reverse
-contract, so there is no closing guard. The guard is not a setting: recipe v14's
-guard was keyed on the band only, so with the band zero every value of B passed it
-and the circuit evaluated the sandwich off its slice.
+No gate has more than two controls. n = 128: 9,380 gates (block 1: 3,072 + 32 +
+5,376, block 2: 896, plus 4 repair gates); n = 64: 4,120. Measured on 256 random
+inputs per key: a one-hot band key changes all 128 B wires (and 127-128 of the A
+wires), a one-hot B key flips one A bit on every input (one of 3 wires). Every draw is checked (exhaustively up to 20 wires,
+by sampling above: the slice exact, the one-hot coverage, 512 weight-2 and 512 random
+keys disturbing A) and redrawn if it fails. v15 keeps no reverse contract, so there is
+no closing guard. The guard is not a setting: recipe v14's guard was keyed on the band
+only, so with the band zero every value of B passed it and the circuit evaluated the
+sandwich off its slice.
 
-**3. Band seed.** Fill the band from the input x, so that masks are not constants on
-the honest slice; **pre-growth** then rewrites the band coordinates that will serve
-as mask sources before any mask references them.
+**3. Band seed.** 8·n·⌈log2 n⌉ random g57 gates (7,168 at n = 128, 3,072 at n = 64),
+each with its target a band wire and its two controls any two other wires, data or
+band. The band becomes a pseudorandom-like function of the data, F(A, B) = (A,
+R(A, B)), so masks are not constants on the honest slice. One exclusion: no gate's two
+controls are a pair of input wires that a first-layer gate of the sandwich reads raw
+(that closed the first-layer "fringe" leak). The seed is redrawn until every band wire
+comes out non-constant on the honest slice, behind the guard. **Pre-growth** then
+rewrites the band coordinates that will serve as mask sources before any mask
+references them.
 
 **4. Masked compute.** Every sandwich gate becomes a **fire**:
 - each data value is carried as d + M1 + M2 + M3: a physical carrier plus three
@@ -127,13 +144,17 @@ as mask sources before any mask references them.
   dependencies, with no gate more than 4,096 positions ahead of the earliest waiting
   gate, so a 250-gate window holds pieces of ~13 fires (n = 128).
 
-**5. Band reseed and check.** The band is reseeded at the output end (kept at both
-ends), and the circuit is checked on bit-sliced samples of the honest slice: on
-(x, 0, 0) wires n..2n-1 hold C(x).
+**5. Band reseed and check.** The band is reseeded at the output end by an
+independent draw of the same 8·n·⌈log2 n⌉ random g57 gates (7,168 at n = 128), and the
+circuit is checked on bit-sliced samples of the honest slice: on (x, 0, 0) wires
+n..2n-1 hold C(x).
 
-n = 128: 1,141,924 gates on 512 wires, every gate at most two controls; the compute
-is 1,133,642 of them (730,606 fire + 349,419 mask + 45,568 growth + 8,049 migration
-gates), the rest the guard, the seed and the reseed.
+n = 128 (the example run, v14 guard and seeds): 1,141,924 gates on 512 wires, every
+gate at most two controls; the compute is 1,133,642 of them (730,606 fire + 349,419
+mask + 45,568 growth + 8,049 migration gates), the rest the guard, the seed and the
+reseed. A v15 stage 2 at n = 128 has the same compute and outer blocks of about
+23,700 gates: guard 9,380, seed 7,168, reseed 7,168 (a fresh run: 1,159,814 gates,
+compute 1,136,098).
 
 ---
 
@@ -305,7 +326,8 @@ TOML key and the script flag of each setting: `docs/tdp_pipeline.md`.
 |---|---|
 | `preprocessing.mode` | `three-mask` (outer blocks: preset L8; band seed and reseed with 4 nonlinear products per band wire) |
 | `preprocessing.reverse_contract` | false (no closing guard; forward payload only) |
-| opening guard | the two-layer guard (not a setting): n·⌈log2 n⌉ three-control gates per layer |
+| opening guard | the two-layer guard (not a setting): block 1 = band spread + 3·n·⌈log2 n⌉ three-control gates keyed on the band (2/3 into B, 1/3 into A), block 2 = a partition triple keyed on every B wire (7n gates); 9,380 gates at n = 128 |
+| band seed, band reseed | 8·n·⌈log2 n⌉ random g57 gates each (not a setting): 7,168 at n = 128, 3,072 at n = 64 |
 | `three_mask.band_wires` | 0 = auto: the larger of 2n and 128, a multiple of 32 (256 at n = 128) |
 | `three_mask.banks` | 0 (auto; must be 0 under wire turnover) |
 | `three_mask.turnover` | `wire` (cohorts of 16 wires) |

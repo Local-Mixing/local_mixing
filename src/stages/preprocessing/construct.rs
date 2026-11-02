@@ -2,8 +2,8 @@
 //! masked computation, independent reseed and output guard.
 
 use super::embedded_masking::{
-    EmbeddedMaskingParams, band_width, preprocess_embedded_masking_with_execution, seed_band_mode,
-    seed_band_rich,
+    EmbeddedMaskingParams, band_width, preprocess_embedded_masking_with_execution, seed_band_g57,
+    seed_band_g57_gates, seed_band_mode, seed_band_rich,
 };
 use super::nonlinear291::preprocess_nonlinear291;
 use super::slice_guards::{
@@ -114,7 +114,25 @@ fn outer_blocks(
             written[gate.target as usize] = true;
         }
     }
-    let band_seed = if seed_fill_nl > 0 {
+    // Without the reverse contract (recipe v15, RC 2026-11-02): 8 n log n
+    // random g57 gates writing the band, redrawn until every band wire comes
+    // out non-constant on the honest slice behind the opening guard.
+    let band_seed = if !reverse_contract {
+        let mut seed = gadget_seed ^ 0x5EED_B00C;
+        loop {
+            let gates = seed_band_g57(
+                np,
+                nondata,
+                seed_band_g57_gates(n),
+                seed,
+                &first_layer_pairs,
+            );
+            if band_nonconstant_on_slice(&open.gates, &gates, n, np + nondata) {
+                break gates;
+            }
+            seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        }
+    } else if seed_fill_nl > 0 {
         seed_band_rich(
             np,
             nondata,
@@ -131,7 +149,15 @@ fn outer_blocks(
     // hygiene and do NOT discharge stage 4 (see the design doc's "Where it
     // fits in the pipeline"). Not an inverse of module 2 — the band is junk
     // at BOTH ports — so it draws a different seed.
-    let band_reseed = if seed_fill_nl > 0 {
+    let band_reseed = if !reverse_contract {
+        seed_band_g57(
+            np,
+            nondata,
+            seed_band_g57_gates(n),
+            gadget_seed ^ 0xB00C_5EED,
+            &std::collections::HashSet::new(),
+        )
+    } else if seed_fill_nl > 0 {
         seed_band_rich(
             np,
             nondata,
@@ -149,6 +175,30 @@ fn outer_blocks(
         band_reseed,
         close: close.gates,
     }
+}
+
+/// Whether every band wire (`2n..total`) takes both values over 256 random
+/// honest-slice inputs (x on `0..n`, zeros elsewhere) run through `prefix`
+/// and then `seed`.
+fn band_nonconstant_on_slice(prefix: &[XGate], seed: &[XGate], n: usize, total: usize) -> bool {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xBA5D_5EED);
+    let mut ones = vec![false; total];
+    let mut zeros = vec![false; total];
+    for _ in 0..4 {
+        let mut state = vec![0u64; total];
+        for lane in state.iter_mut().take(n) {
+            *lane = rng.random();
+        }
+        for g in prefix.iter().chain(seed) {
+            g.apply_lanes(&mut state);
+        }
+        for w in 2 * n..total {
+            ones[w] |= state[w] != 0;
+            zeros[w] |= state[w] != !0u64;
+        }
+    }
+    (2 * n..total).all(|w| ones[w] && zeros[w])
 }
 
 pub fn preprocess_sandwich(

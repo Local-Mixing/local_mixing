@@ -97,9 +97,10 @@ mode = "three-mask"  # "three-mask" (default), "embedded-masking" or "nonlinear2
 # reverse_contract = false  # bool; default false in the guarded modes (RC 2026-11-01): forward
 #                           # payload only: the two-layer opening guard (recipe v15, RC 2026-11-02;
 #                           # keyed on the register B and the band, the identity on the data exactly
-#                           # on the honest slice; n*ceil(log2 n) three-control gates per layer, not
-#                           # configurable), no closing guard, no reverse check; the adaptive stage 6
-#                           # then checks the payload contract forward only (--forward-only).
+#                           # on the honest slice; 9,380 gates at n = 128; not configurable) and band
+#                           # seeds of 8*n*ceil(log2 n) random g57 gates, no closing guard, no reverse
+#                           # check; the adaptive stage 6 then checks the payload contract forward
+#                           # only (--forward-only).
 #                           # true keeps both junk-half guards and the reverse payload.
 #                           # nonlinear291 has no guards (true; false refused)
 # preset = "L8"  # embedded-masking only: "L8" (recommended), "A" (no bounded chains) or "custom"

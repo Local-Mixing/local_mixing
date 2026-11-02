@@ -1034,6 +1034,43 @@ fn emit_g57_form(
     }
 }
 
+/// Gates of each band seed block without the reverse contract (RC
+/// 2026-11-02): 8 n ceil(log2 n) at source width `n` (3,072 at n = 64, 7,168
+/// at n = 128).
+pub fn seed_band_g57_gates(n: usize) -> usize {
+    let log = ((usize::BITS - n.saturating_sub(1).leading_zeros()) as usize).max(1);
+    8 * n * log
+}
+
+/// The band seed (and reseed) of a stage 2 without the reverse contract (RC
+/// 2026-11-02, recipe v15): `count` random g57 gates `t ^= a OR NOT b`, the
+/// target `t` a band wire (`np..np + r`), the two controls any two other
+/// wires, data or band, so the band becomes a pseudorandom-like function of
+/// the data: F(A, B) = (A, R(A, B)). `avoid` (`seed_avoid_c1`): no gate whose
+/// two controls are a pair of input wires that a first-layer sandwich gate
+/// reads raw (the first-layer fringe leak).
+pub fn seed_band_g57(
+    np: usize,
+    r: usize,
+    count: usize,
+    seed: u64,
+    avoid: &std::collections::HashSet<(u16, u16)>,
+) -> Vec<XGate> {
+    let total = np + r;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let t = rng.random_range(np..total) as u16;
+        let a = rng.random_range(0..total) as u16;
+        let b = rng.random_range(0..total) as u16;
+        if a == t || b == t || a == b || avoid.contains(&(a.min(b), a.max(b))) {
+            continue;
+        }
+        out.push(XGate::from_g57([t, a, b]));
+    }
+    out
+}
+
 /// Rich band seed (punchlist #5): per band wire, a private pivot CNOT,
 /// 1..=7 extra linear source CNOTs, and `fill_nl` nonlinear g57-form
 /// product terms cascading over earlier band wires. Revived from the

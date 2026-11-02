@@ -225,10 +225,16 @@ guard, so only the forward payload is kept, and since recipe v15 (RC,
 register (wires n..2n-1) as well as the band, because the honest slice has
 both at zero: as a map (A, B, band) -> (f(A), h(B), band'), the identity on
 the data exactly on the honest slice, A scrambled whenever B or the band is
-nonzero, B whenever the band is. Layer 1 (keyed on the band) and layer 2
-(keyed on B) each hold n·⌈log2 n⌉ three-control gates opened into
-two-control gates through a helper wire (restored in B, not in the junk
-band); 4,512 gates at n = 128. Recipe v14's guard was keyed on the band only,
+nonzero, B whenever the band is. Block 1 first spreads the band key,
+universal-hashing style (rounds of CNOTs among the band wires, so a key with
+one nonzero bit sets about half of them), then randomizes B (and A) with
+3·n·⌈log2 n⌉ three-control gates keyed on the band, so that every B bit is
+liable to flip for any one-hot band key; block 2 randomizes A with a
+partition triple on every B wire, so a one-hot B key flips one A bit on every
+input. Each three-control gate is opened into two-control gates through a
+helper wire (restored in B, not in the junk band); 9,380 gates at n = 128. The band seed and reseed are 8·n·⌈log2 n⌉
+random g57 gates each writing the band (7,168 at n = 128), so the band is a
+pseudorandom-like function of the data. Recipe v14's guard was keyed on the band only,
 so an input with the band zero and any value of B evaluated the sandwich off
 its slice; it is no longer built and the guard is not a setting. The band
 seed and reseed stay at both ends. The adaptive stage 6 checks the sandwich

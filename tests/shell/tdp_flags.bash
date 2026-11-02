@@ -296,7 +296,7 @@ for name, (env, preset) in expected.items():
     # the seeds reach gen through descriptors, never on its argv
     assert gen['argv'][7:10] == ['@/dev/fd/3', '@/dev/fd/4', '@/dev/fd/5'], gen['argv']
     recipe = (root / name / 'stage12.recipe').read_text()
-    assert recipe.startswith('tdp_stage12_recipe=10\n'), recipe
+    assert recipe.startswith('tdp_stage12_recipe=11\n'), recipe
     # the opening guard follows from the port contract (RC 2026-11-02: no setting)
     guard = 'none' if mode == 'nonlinear291' else 'junk-half' if reverse == '1' else 'two-layer'
     for line in (f'sandwich_slicing={slicing}', f'sandwich_layer={layer}', f'sandwich_v_gates={v_gates}',

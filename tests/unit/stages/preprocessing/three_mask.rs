@@ -1345,6 +1345,25 @@ fn no_reverse_contract_two_layer_guard_keys_on_the_register_and_the_band() {
         "no closing guard"
     );
     let np = 2 * n;
+    // band seed and reseed (RC 2026-11-02): 8 n ceil(log2 n) random g57 gates
+    // each (a ^= x OR NOT y = 1 + (NOT x) y), every target a band wire
+    use crate::stages::preprocessing::embedded_masking::seed_band_g57_gates;
+    assert_eq!(r.band_seed_gates, seed_band_g57_gates(n));
+    assert_eq!(r.band_reseed_gates, seed_band_g57_gates(n));
+    assert_eq!(seed_band_g57_gates(n), 8 * 8 * 3);
+    let seed = &out.circuit.gates[r.guard_gates..r.guard_gates + r.band_seed_gates];
+    let reseed = &out.circuit.gates[out.circuit.gates.len() - r.band_reseed_gates..];
+    for g in seed.iter().chain(reseed) {
+        assert!(
+            (g.target as usize) >= np,
+            "a seed gate writes data wire {}",
+            g.target
+        );
+        assert!(
+            g.comp && g.ctrls.len() == 2 && g.ctrls.iter().filter(|&&(_, p)| p).count() == 1,
+            "not a g57 gate: {g:?}"
+        );
+    }
     let open = &out.circuit.gates[..r.guard_gates];
     assert!(open.iter().all(|g| g.ctrls.len() <= 2), "width <= 2");
     assert!(open.iter().any(|g| (g.target as usize) < n), "A scrambled");

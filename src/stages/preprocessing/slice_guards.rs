@@ -409,43 +409,55 @@ pub fn slice_zero_feistel_guard_dims_high(
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
-/// Three-control gates per layer of the two-layer opening guard at source
-/// width `n` (RC 2026-11-02: a random circuit of n log n gates): n *
-/// ceil(log2 n), and at least twice the layer's key wires so every key wire
-/// gates at least two of them.
-pub fn two_layer_guard_gates_per_layer(n: usize, key_wires: usize) -> usize {
-    let log = usize::BITS - n.saturating_sub(1).leading_zeros();
-    (n * log as usize).max(2 * key_wires)
+/// ceil(log2 m), at least 1.
+fn ceil_log2(m: usize) -> usize {
+    ((usize::BITS - m.saturating_sub(1).leading_zeros()) as usize).max(1)
+}
+
+/// Gate counts of the two-layer opening guard at source width `n` (RC
+/// 2026-11-02): block 1 writes B with 2 n ceil(log2 n) and A with
+/// n ceil(log2 n) three-control gates (a one-hot band key arms about half
+/// of them after the key spreading, about log2 n per B wire); block 2 keys
+/// one partition triple on each of the n B wires, 7 two-control gates each.
+pub fn two_layer_guard_sizes(n: usize) -> (usize, usize, usize) {
+    let log = ceil_log2(n);
+    (2 * n * log, n * log, 7 * n)
 }
 
 /// The two-layer opening guard (RC 2026-11-02; stage 2 without the reverse
 /// contract, recipe v15). Registers: A = `0..n` (the input x), B = `n..2n`
-/// (the payload register), the band = `2n..2n + nondata`. As a map,
-/// G(A, B, band) = (f(A), h(B), band'), the identity on A and B exactly when
-/// B and the band are zero (the honest slice), and scrambling A whenever B or
-/// the band is nonzero and B whenever the band is nonzero:
+/// (the payload register), the band = `2n..2n + nondata`. The identity on A
+/// and B exactly when B and the band are zero (the honest slice); in order:
 ///
-/// - LAYER 1, keyed on the band, scrambles A and B: three-control gates
-///   `t ^= s & lit(u) & lit(v)` (t, u, v data wires, either polarity on u
-///   and v; s a band KEY wire, positive), each opened into two two-control
-///   gates through a band HELPER wire h: `h ^= lit(u) & lit(v)` (not
-///   restored: the band is junk), then `t ^= h & s`. Off the slice the
-///   injection deposits `(h's port value + earlier products + u v) & s`.
-///   Helpers are never keys afterwards (on the slice they hold products of
-///   x); a short prologue first makes every helper wire a key once, into A
-///   and into B (`t ^= h` or `t ^= lit(u) & h`), before its first write.
-///   Every key wire gates at least two injections, alternately into A and B.
-/// - LAYER 2, keyed on B, scrambles A: `t ^= b & lit(u) & lit(v)` (t, u, v
-///   in A, b in B), opened through a B helper h != b and restored, since B
-///   carries the payload: `h ^= lit(u) & lit(v); t ^= h & b;
-///   h ^= lit(u) & lit(v)`.
+/// - BLOCK 1, keyed on the band, randomizes B (and A):
+///   - KEY SPREADING, universal-hashing style: [`spread_rounds`] rounds of
+///     CNOTs between disjoint random pairs of band wires (positive controls,
+///     so dead on the zero band; never undone, the band is junk): a random
+///     linear map that sends a key with a single nonzero bit to about half
+///     of the band.
+///   - a prologue: each band HELPER wire keys one gate into B and one into A
+///     (`t ^= h` or `t ^= lit(u) & h`) before its first write;
+///   - three-control gates `t ^= s & lit(u) & lit(v)` (s a band KEY wire,
+///     positive; t in B, or in A; u, v data wires of either polarity), each
+///     opened into two two-control gates through a helper:
+///     `h ^= lit(u) & lit(v)` (not restored), then `t ^= h & s`. Helpers are
+///     never keys afterwards (on the slice they hold products of x).
+/// - BLOCK 2, keyed on B, randomizes A: on every B wire b a PARTITION
+///   triple, `t1 ^= b & u & v`, `t2 ^= b & u & NOT v`, `t3 ^= b & NOT u`
+///   (t1, t2, t3, u, v in A, the targets distinct where n allows): for a
+///   one-hot B key exactly one of the three fires on every input, so one A
+///   bit flips whatever A holds, and which one depends on A. The two
+///   three-control gates are opened through a B helper h != b and restored,
+///   since B carries the payload: `h ^= u & lit(v); t ^= h & b;
+///   h ^= u & lit(v)`.
 ///
-/// `per_layer` (see [`two_layer_guard_gates_per_layer`]) three-control gates
-/// per layer; no gate has more than two controls. On the honest slice the
-/// band leaves the guard holding the helpers' products of x (the band seed
-/// XORs onto it). Checked exhaustively up to 20 wires and spot-checked above
-/// (every nonzero key disturbs A, every nonzero band disturbs B, the slice
-/// is exact); a draw that fails is redrawn.
+/// Sizes: [`two_layer_guard_sizes`]. COVERAGE (RC): for every one-hot band
+/// key, every B bit must be liable to flip, whatever B holds (sampled over
+/// random A and B; a missed B wire gets one more block-1 gate keyed on a wire
+/// the spread key sets); for every one-hot B key one A bit on every input
+/// (C's ripple does the rest). No gate has more than two controls. Checked
+/// exhaustively up to 20 wires and spot-checked above; a draw that fails is
+/// redrawn.
 pub(crate) fn try_two_layer_opening_guard(
     n: usize,
     nondata: usize,
@@ -469,9 +481,7 @@ pub(crate) fn try_two_layer_opening_guard(
     }
     // Band roles: a few helper wires (re-accumulated), the rest keys.
     let helper_count = (nondata / 16).clamp(1, n.min(nondata - 1));
-    let key_count = nondata - helper_count;
-    let per_layer1 = two_layer_guard_gates_per_layer(n, key_count);
-    let per_layer2 = two_layer_guard_gates_per_layer(n, n);
+    let (into_b, into_a, block2) = two_layer_guard_sizes(n);
     let lit = |w: usize, rng: &mut dyn rand::RngCore| (w as u16, rng.random_bool(0.5));
     // Two distinct wires of lo..hi other than `t`.
     let pair = |lo: usize, hi: usize, t: usize, rng: &mut dyn rand::RngCore| loop {
@@ -487,62 +497,118 @@ pub(crate) fn try_two_layer_opening_guard(
         seq.shuffle(rng);
         seq
     };
+    let a_wires: Vec<u16> = (0..n as u16).collect();
+    let b_wires: Vec<u16> = ((n as u16)..(np as u16)).collect();
     for _ in 0..1000 {
         let mut band: Vec<u16> = ((np as u16)..(total as u16)).collect();
         band.shuffle(rng);
         let (helpers, keys) = band.split_at(helper_count);
-        let mut gates: Vec<XGate> =
-            Vec::with_capacity(2 * helper_count + 2 * per_layer1 + 3 * per_layer2);
-        // Layer-1 prologue: each helper wire a key once into A and once into
-        // B, distinct targets within each register.
-        let mut a_targets: Vec<usize> = (0..n).collect();
-        let mut b_targets: Vec<usize> = (n..np).collect();
+        let band_spread = spread_cnots(&band, spread_rounds(nondata), rng);
+        // Prologue: each helper wire a key once into B and once into A,
+        // distinct targets within each register.
+        let mut prologue: Vec<XGate> = Vec::with_capacity(2 * helper_count);
+        let mut a_targets = a_wires.clone();
+        let mut b_targets = b_wires.clone();
         a_targets.shuffle(rng);
         b_targets.shuffle(rng);
         for (i, &h) in helpers.iter().enumerate() {
-            for t in [a_targets[i], b_targets[i]] {
+            for t in [b_targets[i] as usize, a_targets[i] as usize] {
                 if rng.random_bool(1.0 / 3.0) {
-                    gates.push(XGate::cnot(t as u16, h));
+                    prologue.push(XGate::cnot(t as u16, h));
                 } else {
                     let u = random_wire_except(np, &[t], rng);
-                    gates.push(
+                    prologue.push(
                         XGate::conj(t as u16, [lit(u, rng), (h, true)]).expect("distinct wires"),
                     );
                 }
             }
         }
-        // Layer 1: keyed on the band, targets alternate A / B per key.
-        let mut parity: std::collections::HashMap<u16, bool> =
-            keys.iter().map(|&k| (k, rng.random_bool(0.5))).collect();
-        for s in balanced(keys, per_layer1, rng) {
-            let into_a = parity.get_mut(&s).expect("a key wire");
-            let t = if *into_a {
-                rng.random_range(0..n)
-            } else {
-                rng.random_range(n..np)
-            };
-            *into_a = !*into_a;
-            let (u, v) = pair(0, np, t, rng);
+        // Block 1: the targets (every B wire about 2 log2 n times, every A
+        // wire about log2 n times) against a balanced key sequence.
+        let mut targets = balanced(&b_wires, into_b, rng);
+        targets.extend(balanced(&a_wires, into_a, rng));
+        targets.shuffle(rng);
+        let key_seq = balanced(keys, targets.len(), rng);
+        let mut block1: Vec<XGate> = Vec::with_capacity(2 * targets.len());
+        let block1_gate = |t: usize,
+                           s: u16,
+                           u: usize,
+                           v: usize,
+                           out: &mut Vec<XGate>,
+                           rng: &mut dyn rand::RngCore| {
             let h = helpers[rng.random_range(0..helpers.len())];
-            gates.push(XGate::conj(h, [lit(u, rng), lit(v, rng)]).expect("distinct wires"));
-            gates.push(XGate::conj(t as u16, [(h, true), (s, true)]).expect("distinct wires"));
+            out.push(XGate::conj(h, [lit(u, rng), lit(v, rng)]).expect("distinct wires"));
+            out.push(XGate::conj(t as u16, [(h, true), (s, true)]).expect("distinct wires"));
+        };
+        for (&t, &s) in targets.iter().zip(&key_seq) {
+            let (u, v) = pair(0, np, t as usize, rng);
+            block1_gate(t as usize, s, u, v, &mut block1, rng);
         }
-        // Layer 2: keyed on B, targets in A, B helpers restored.
-        let b_wires: Vec<u16> = ((n as u16)..(np as u16)).collect();
-        for s in balanced(&b_wires, per_layer2, rng) {
-            let t = rng.random_range(0..n);
-            let (u, v) = pair(0, n, t, rng);
+        // Block 2: a partition triple on every B wire, targets in A, B
+        // helpers restored.
+        let mut block2_gates: Vec<XGate> = Vec::with_capacity(block2);
+        let mut b_order = b_wires.clone();
+        b_order.shuffle(rng);
+        for &s in &b_order {
+            let mut a_pool = a_wires.clone();
+            a_pool.shuffle(rng);
+            let (u, v) = (a_pool[0], a_pool[1]);
+            let rest = &a_pool[2..];
+            let t = |i: usize| rest[i % rest.len()];
             let h = loop {
                 let h = rng.random_range(n..np) as u16;
                 if h != s {
                     break h;
                 }
             };
-            let write = XGate::conj(h, [lit(u, rng), lit(v, rng)]).expect("distinct wires");
-            gates.push(write.clone());
-            gates.push(XGate::conj(t as u16, [(h, true), (s, true)]).expect("distinct wires"));
-            gates.push(write);
+            for (target, v_pol) in [(t(0), true), (t(1), false)] {
+                let write = XGate::conj(h, [(u, true), (v, v_pol)]).expect("distinct wires");
+                block2_gates.push(write.clone());
+                block2_gates
+                    .push(XGate::conj(target, [(h, true), (s, true)]).expect("distinct wires"));
+                block2_gates.push(write);
+            }
+            block2_gates.push(XGate::conj(t(2), [(u, false), (s, true)]).expect("distinct wires"));
         }
+        let assemble = |b1: &[XGate]| {
+            let mut gates = band_spread.clone();
+            gates.extend_from_slice(&prologue);
+            gates.extend_from_slice(b1);
+            gates.extend_from_slice(&block2_gates);
+            gates
+        };
+        // Coverage repair for the one-hot band keys (B bits); a one-hot B key
+        // reaching no A bit cannot be repaired here and fails the check.
+        let keyset: std::collections::HashSet<u16> = keys.iter().copied().collect();
+        let mut repaired = true;
+        for _ in 0..8 {
+            let gates = assemble(&block1);
+            let mut added = false;
+            for &w in &band {
+                let (_, b_hit) = one_hot_reach(&gates, n, total, w as usize, rng);
+                let armed: Vec<u16> = spread_image(&band_spread, w, total)
+                    .into_iter()
+                    .filter(|k| keyset.contains(k))
+                    .collect();
+                for x in (0..n).filter(|&x| !b_hit[x]) {
+                    if armed.is_empty() {
+                        break;
+                    }
+                    let s = armed[rng.random_range(0..armed.len())];
+                    let (u, v) = pair(0, n, n + x, rng);
+                    block1_gate(n + x, s, u, v, &mut block1, rng);
+                    added = true;
+                }
+            }
+            repaired = !added;
+            if repaired {
+                break;
+            }
+        }
+        if !repaired {
+            continue;
+        }
+        let gates = assemble(&block1);
         let ok = if total <= 20 {
             two_layer_guard_exhaustive_check(&gates, n, nondata)
         } else {
@@ -560,6 +626,98 @@ pub(crate) fn try_two_layer_opening_guard(
     ))
 }
 
+/// Key-spreading rounds over `m` wires: 3 ceil(log2 m). A one-hot vector
+/// grows about 1.5x per round toward half the wires, but a lone hot wire is
+/// a control only half the time: after 2 ceil(log2 m) rounds 1 % of the
+/// one-hot keys at m = 128 still set only 13 % of the wires, after
+/// 3 ceil(log2 m) rounds 39 % (median 50 %).
+pub fn spread_rounds(m: usize) -> usize {
+    3 * ceil_log2(m)
+}
+
+/// `rounds` rounds of CNOTs `t ^= c` over disjoint random pairs of `wires`
+/// (a fresh matching per round): positive controls only, so dead while the
+/// wires are zero, and a bijection on them.
+fn spread_cnots(wires: &[u16], rounds: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    let mut order = wires.to_vec();
+    let mut gates = Vec::with_capacity(rounds * (wires.len() / 2));
+    for _ in 0..rounds {
+        order.shuffle(rng);
+        for p in order.chunks_exact(2) {
+            gates.push(XGate::cnot(p[1], p[0]));
+        }
+    }
+    gates
+}
+
+/// The wires a CNOT-only spread sets when only `hot` is 1 on entry.
+fn spread_image(spread: &[XGate], hot: u16, total: usize) -> Vec<u16> {
+    let mut v = vec![false; total];
+    v[hot as usize] = true;
+    for g in spread {
+        let c = g.ctrls[0].0 as usize;
+        v[g.target as usize] ^= v[c];
+    }
+    (0..total).filter(|&w| v[w]).map(|w| w as u16).collect()
+}
+
+/// For the single key wire `hot` set to 1: which A wires and which B wires
+/// differ from the key-0 run on some of 4 x 64 random inputs. A band key is
+/// run on random A and random B ("whatever B holds"), a B key on random A
+/// with the rest of B zero.
+pub(crate) fn one_hot_reach(
+    gates: &[XGate],
+    n: usize,
+    total: usize,
+    hot: usize,
+    rng: &mut impl Rng,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut a_hit = vec![false; n];
+    let mut b_hit = vec![false; n];
+    let data = if hot >= 2 * n { 2 * n } else { n };
+    for _ in 0..4 {
+        let mut base = vec![0u64; total];
+        for lane in base.iter_mut().take(data) {
+            *lane = rng.random();
+        }
+        let mut lit = base.clone();
+        lit[hot] = !0u64;
+        for g in gates {
+            g.apply_lanes(&mut base);
+            g.apply_lanes(&mut lit);
+        }
+        for w in 0..n {
+            a_hit[w] |= base[w] != lit[w];
+            b_hit[w] |= base[n + w] != lit[n + w];
+        }
+    }
+    (a_hit, b_hit)
+}
+
+/// Whether the single B wire `hot` set to 1 changes at least one A wire on
+/// each of 4 x 64 random inputs (A random, the rest of B and the band zero).
+pub(crate) fn one_hot_flips_a_on_every_input(
+    gates: &[XGate],
+    n: usize,
+    total: usize,
+    hot: usize,
+    rng: &mut impl Rng,
+) -> bool {
+    (0..4).all(|_| {
+        let mut base = vec![0u64; total];
+        for lane in base.iter_mut().take(n) {
+            *lane = rng.random();
+        }
+        let mut lit = base.clone();
+        lit[hot] = !0u64;
+        for g in gates {
+            g.apply_lanes(&mut base);
+            g.apply_lanes(&mut lit);
+        }
+        (0..n).fold(0u64, |acc, w| acc | (base[w] ^ lit[w])) == !0u64
+    })
+}
+
 /// [`try_two_layer_opening_guard`], panicking on failure (as the other
 /// guards do).
 pub fn two_layer_opening_guard_dims(n: usize, nondata: usize, rng: &mut impl Rng) -> CnotCircuit {
@@ -568,7 +726,9 @@ pub fn two_layer_opening_guard_dims(n: usize, nondata: usize, rng: &mut impl Rng
 
 /// Every state of a guard on at most 20 wires: on the honest slice (B and the
 /// band zero) A and B come out unchanged; every nonzero (B, band) disturbs A
-/// for some A; every nonzero band disturbs B for some (A, B).
+/// for some A; every nonzero band disturbs B for some (A, B); a single band
+/// wire changes every B wire for some (A, B); a single B wire changes some A
+/// wire for every A.
 pub(crate) fn two_layer_guard_exhaustive_check(gates: &[XGate], n: usize, nondata: usize) -> bool {
     let total = 2 * n + nondata;
     let a_mask = (1u64 << n) - 1;
@@ -589,38 +749,51 @@ pub(crate) fn two_layer_guard_exhaustive_check(gates: &[XGate], n: usize, nondat
             b_disturbed[(state >> (2 * n)) as usize] = true;
         }
     }
-    a_disturbed.iter().skip(1).all(|&d| d) && b_disturbed.iter().skip(1).all(|&d| d)
+    if !(a_disturbed.iter().skip(1).all(|&d| d) && b_disturbed.iter().skip(1).all(|&d| d)) {
+        return false;
+    }
+    // one-hot keys: a band wire against every (A, B), a B wire against every A
+    let one_hot = |w: usize, data_bits: usize| {
+        let mut hit = 0u64;
+        for d in 0..(1u64 << data_bits) {
+            let lit_state = d | (1u64 << w);
+            let base = crate::circuit::xgate::eval_u64(gates, d);
+            let lit = crate::circuit::xgate::eval_u64(gates, lit_state);
+            hit |= (base ^ lit) & data_mask;
+        }
+        hit
+    };
+    (2 * n..total).all(|w| (one_hot(w, 2 * n) >> n) & a_mask == a_mask)
+        && (n..2 * n).all(|w| {
+            (0..(1u64 << n)).all(|d| {
+                let base = crate::circuit::xgate::eval_u64(gates, d);
+                let lit = crate::circuit::xgate::eval_u64(gates, d | (1u64 << w));
+                (base ^ lit) & a_mask != 0
+            })
+        })
 }
 
 /// Sampled counterpart of [`two_layer_guard_exhaustive_check`] for wide
 /// states, 64 bit-sliced random data inputs per key: the honest slice
-/// (exact on A and B), every single-wire key on B and the band (the keys
-/// that fire fewest gates), 512 weight-2 keys and 512 random keys. A spot
-/// check, not a proof.
+/// (exact on A and B); every single band wire changing every B wire on some
+/// of 256 inputs, every single B wire some A wire on each of 256 inputs; 512
+/// weight-2 and 512 random keys disturbing A. A spot check, not a proof.
 fn two_layer_guard_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut impl Rng) -> bool {
     let np = 2 * n;
-    // (A disturbed, B disturbed) in some lane, for key wires `hot` held at 1.
+    // A disturbed in some lane, for key wires `hot` held at 1.
     let probe = |hot: &[usize], rng: &mut dyn rand::RngCore| {
         let mut state = vec![0u64; total];
-        for lane in state.iter_mut().take(np) {
+        for lane in state.iter_mut().take(n) {
             *lane = rng.next_u64();
         }
-        for &w in hot {
-            if w < np {
-                state[w] = !0u64;
-            }
-        }
-        let input: Vec<u64> = state[..np].to_vec();
+        let input: Vec<u64> = state[..n].to_vec();
         for &w in hot {
             state[w] = !0u64;
         }
         for g in gates {
             g.apply_lanes(&mut state);
         }
-        (
-            (0..n).any(|w| state[w] != input[w]),
-            (n..np).any(|w| state[w] != input[w]),
-        )
+        (0..n).any(|w| state[w] != input[w])
     };
     // the honest slice: B and the band zero
     {
@@ -636,9 +809,14 @@ fn two_layer_guard_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut
             return false;
         }
     }
-    let wants = |hot: &[usize], (a, b): (bool, bool)| a && (b || hot.iter().all(|&w| w < np));
-    for w in n..total {
-        if !wants(&[w], probe(&[w], rng)) {
+    for w in np..total {
+        let (_, b_hit) = one_hot_reach(gates, n, total, w, rng);
+        if !b_hit.iter().all(|&h| h) {
+            return false;
+        }
+    }
+    for w in n..np {
+        if !one_hot_flips_a_on_every_input(gates, n, total, w, rng) {
             return false;
         }
     }
@@ -650,13 +828,13 @@ fn two_layer_guard_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut
                 break b;
             }
         };
-        if !wants(&[a, b], probe(&[a, b], rng)) {
+        if !probe(&[a, b], rng) {
             return false;
         }
     }
     for _ in 0..512 {
         let hot: Vec<usize> = (n..total).filter(|_| rng.random_bool(0.5)).collect();
-        if !hot.is_empty() && !wants(&hot, probe(&hot, rng)) {
+        if !hot.is_empty() && !probe(&hot, rng) {
             return false;
         }
     }

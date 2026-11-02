@@ -1029,10 +1029,10 @@ gates_of() { head -1 "$1" | awk '{print $3}'; }
 mac() { python3 -I "$LIB/run_mac.py" "$SEEDS" "$@"; }
 sha_of() { python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 
-# ---- stage-2 identity marker (tdp_stage12_recipe=10: recipe v15's stage-1
+# ---- stage-2 identity marker (tdp_stage12_recipe=11: recipe v15's stage-1
 # shape and port contract) ----
 STAGE12_RECIPE=(
-  "tdp_stage12_recipe=10"
+  "tdp_stage12_recipe=11"
   "gen_binary_sha256=$(sha_of "$BIN/gen_sandwich_gadget")"
   "sandwich_variant=classic"
   "sandwich_slicing=$SW_SLICING"

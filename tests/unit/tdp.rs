@@ -2146,7 +2146,7 @@ fn seeds_file_created_before_manifest_and_never_in_narrative_log() {
             }
         }
         let marker = fs::read_to_string(run_dir.join("stage12.recipe")).unwrap();
-        assert!(marker.starts_with("tdp_stage12_recipe=10\n"), "{marker}");
+        assert!(marker.starts_with("tdp_stage12_recipe=11\n"), "{marker}");
         assert!(marker.contains(&format!("preprocessing_mode={mode}\n")));
         // the opening guard follows from the port contract (no setting)
         let guard = if mode == "nonlinear291" {

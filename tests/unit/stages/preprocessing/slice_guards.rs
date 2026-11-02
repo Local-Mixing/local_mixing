@@ -136,13 +136,22 @@ fn feistel_guard_is_dead_only_on_zero_slice_and_width_bounded() {
     }
 }
 
+/// The two-layer opening guard's base size: the band spread, two prologue
+/// gates per helper wire, two gates per block-1 and three per block-2
+/// three-control gate (coverage repairs come on top).
+fn two_layer_base_gates(n: usize, nondata: usize) -> usize {
+    let helpers = (nondata / 16).clamp(1, n.min(nondata - 1));
+    let (into_b, into_a, block2) = two_layer_guard_sizes(n);
+    spread_rounds(nondata) * (nondata / 2) + 2 * helpers + 2 * (into_b + into_a) + block2
+}
+
 /// The two-layer opening guard (RC 2026-11-02), checked independently of its
 /// own draw-time check, on every state at n = 3 and 4 (band 2n): the
 /// identity on A and B exactly when B and the band are zero; every nonzero
 /// (B, band) disturbs A for some A; every nonzero band disturbs B for some
-/// (A, B); no gate wider than two controls; the size is two prologue gates
-/// per helper wire, two gates per layer-1 and three per layer-2 three-control
-/// gate.
+/// (A, B); a single band wire changes every B wire for some (A, B), a single
+/// B wire some A wire on every A; no gate wider than two controls; at least the base
+/// size.
 #[test]
 fn two_layer_guard_is_the_identity_exactly_on_the_honest_slice() {
     for n in [3usize, 4] {
@@ -155,10 +164,7 @@ fn two_layer_guard_is_the_identity_exactly_on_the_honest_slice() {
             let guard = two_layer_opening_guard_dims(n, nondata, &mut rng);
             assert_eq!(guard.num_wires, total);
             assert!(guard.gates.iter().all(|g| g.ctrls.len() <= 2), "width <= 2");
-            let helpers = (nondata / 16).clamp(1, n.min(nondata - 1));
-            let per1 = two_layer_guard_gates_per_layer(n, nondata - helpers);
-            let per2 = two_layer_guard_gates_per_layer(n, n);
-            assert_eq!(guard.gates.len(), 2 * helpers + 2 * per1 + 3 * per2);
+            assert!(guard.gates.len() >= two_layer_base_gates(n, nondata));
             let mut a_hit = vec![false; 1 << (n + nondata)];
             let mut b_hit = vec![false; 1 << nondata];
             for state in 0..(1u64 << total) {
@@ -181,22 +187,75 @@ fn two_layer_guard_is_the_identity_exactly_on_the_honest_slice() {
                 b_hit.iter().skip(1).all(|&h| h),
                 "a nonzero band left B alone at n={n}"
             );
+            for w in n..total {
+                let data_bits = if w >= 2 * n { 2 * n } else { n };
+                let mut diff = 0u64;
+                for d in 0..(1u64 << data_bits) {
+                    diff |= (eval_u64(&guard.gates, d) ^ eval_u64(&guard.gates, d | (1u64 << w)))
+                        & data_mask;
+                }
+                if w >= 2 * n {
+                    assert_eq!(
+                        diff >> n,
+                        a_mask,
+                        "one-hot band key {w} misses a B wire at n={n}"
+                    );
+                } else {
+                    for d in 0..(1u64 << n) {
+                        let flip =
+                            eval_u64(&guard.gates, d) ^ eval_u64(&guard.gates, d | (1u64 << w));
+                        assert_ne!(
+                            flip & a_mask,
+                            0,
+                            "one-hot B key {w} leaves A = {d} unchanged at n={n}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
 
-/// At a production-like width (n = 64, band 128) the guard draws, passes its
-/// spot check, and has n * ceil(log2 n) = 384 three-control gates per layer;
-/// on the honest slice the key wires of the band stay zero and B comes out
-/// zero (the layer-2 helpers are restored), while the band's helper wires
-/// hold products of x (layer 1 does not restore them).
+/// At a production-like width (n = 64, band 128) the guard draws and passes
+/// its spot check; block 1 has 2 n ceil(log2 n) = 768 B-writing and 384
+/// A-writing three-control gates, block 2 two per B wire (128), and
+/// coverage repairs add little; on fresh inputs every single band wire
+/// changes every B wire and every single B wire some A wire on every input
+/// (block 2: one partition triple per B wire, 7 n = 448 gates); on the honest
+/// slice B comes out zero (block 2's helpers are restored) and only the
+/// band's helper wires are dirty (the spread is dead on the zero band;
+/// block 1 does not restore its helpers).
 #[test]
 fn two_layer_guard_at_n64_restores_b_and_leaves_products_on_band_helpers() {
     let (n, nondata) = (64usize, 128usize);
     let mut rng = StdRng::seed_from_u64(0x2_1a7e_0064);
     let guard = two_layer_opening_guard_dims(n, nondata, &mut rng);
-    assert_eq!(two_layer_guard_gates_per_layer(n, nondata - 8), 384);
-    assert_eq!(guard.gates.len(), 2 * 8 + 2 * 384 + 3 * 384);
+    assert_eq!(two_layer_guard_sizes(n), (768, 384, 448));
+    let base = two_layer_base_gates(n, nondata);
+    assert!(guard.gates.len() >= base);
+    assert!(
+        guard.gates.len() - base <= base / 10,
+        "{} repair gates",
+        guard.gates.len() - base
+    );
+    for w in n..guard.num_wires {
+        let (a_hit, b_hit) = one_hot_reach(&guard.gates, n, guard.num_wires, w, &mut rng);
+        if w >= 2 * n {
+            assert!(
+                b_hit.iter().all(|&h| h),
+                "one-hot band key {w} misses a B wire"
+            );
+        } else {
+            assert!(
+                a_hit.iter().any(|&h| h),
+                "one-hot B key {w} reaches no A wire"
+            );
+            assert!(
+                one_hot_flips_a_on_every_input(&guard.gates, n, guard.num_wires, w, &mut rng),
+                "one-hot B key {w} leaves A unchanged on some input"
+            );
+        }
+    }
     let mut state = vec![0u64; guard.num_wires];
     for lane in state.iter_mut().take(n) {
         *lane = rng.random();
@@ -215,4 +274,57 @@ fn two_layer_guard_at_n64_restores_b_and_leaves_products_on_band_helpers() {
         (1..=8).contains(&dirty),
         "{dirty} band wires dirty (8 helpers)"
     );
+}
+
+/// One-hot keys against the two-layer guard (diagnostic, `--ignored
+/// --nocapture`): the B wires a single band wire reaches and the A wires a
+/// single B wire reaches, on 256 random inputs, and the size.
+#[test]
+#[ignore]
+fn two_layer_guard_one_hot_coverage_report() {
+    for (n, nondata) in [(64usize, 128usize), (128, 256)] {
+        let mut rng = StdRng::seed_from_u64(0x0e_407_0000 + n as u64);
+        let guard = two_layer_opening_guard_dims(n, nondata, &mut rng);
+        let total = guard.num_wires;
+        let stats = |v: &mut Vec<usize>| {
+            v.sort_unstable();
+            (v[0], v[v.len() / 2], v[v.len() - 1])
+        };
+        let mut band_b: Vec<usize> = (2 * n..total)
+            .map(|w| {
+                one_hot_reach(&guard.gates, n, total, w, &mut rng)
+                    .1
+                    .iter()
+                    .filter(|&&h| h)
+                    .count()
+            })
+            .collect();
+        let mut band_a: Vec<usize> = (2 * n..total)
+            .map(|w| {
+                one_hot_reach(&guard.gates, n, total, w, &mut rng)
+                    .0
+                    .iter()
+                    .filter(|&&h| h)
+                    .count()
+            })
+            .collect();
+        let mut b_a: Vec<usize> = (n..2 * n)
+            .map(|w| {
+                one_hot_reach(&guard.gates, n, total, w, &mut rng)
+                    .0
+                    .iter()
+                    .filter(|&&h| h)
+                    .count()
+            })
+            .collect();
+        let base = two_layer_base_gates(n, nondata);
+        println!(
+            "n={n} gates={} (base {base}, repairs {}) | one-hot band key: B wires {:?}, A wires {:?} of {n} | one-hot B key: A wires {:?}",
+            guard.gates.len(),
+            guard.gates.len() - base,
+            stats(&mut band_b),
+            stats(&mut band_a),
+            stats(&mut b_a)
+        );
+    }
 }
