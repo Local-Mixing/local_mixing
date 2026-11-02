@@ -946,7 +946,7 @@ fn lower_and_clean(
     fs::create_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
     let t0 = Instant::now();
     let input = current.load(width)?;
-    let (lowered, lrep) = lower_wide_gates(input, width, max_controls);
+    let (l1, lrep) = lower_wide_gates(input, width, max_controls);
     if lrep.wide_in == 0 {
         write_text_atomic(
             &report,
@@ -959,17 +959,35 @@ fn lower_and_clean(
         ));
         return Ok(None);
     }
-    let (pushed, _) = push_nots(&lowered, width);
-    let cleaned = if fcompress_iters == 0 {
-        pushed
+    // Lower FIRST so fcompress compresses the 2-control form, then lower AGAIN
+    // because fcompress may re-introduce multi-control cubes -- lowering is the
+    // last width-changing step, so the output is in the gate set by
+    // construction. push_nots (<= 2-control preserving) tidies the Barenco NOTs.
+    let (p1, _) = push_nots(&l1, width);
+    let compressed = if fcompress_iters == 0 {
+        p1
     } else {
         let params = CompressParams {
             max_iters: fcompress_iters,
             local_verify: true,
             ..CompressParams::default()
         };
-        compress(pushed, width, &params).0
+        compress(p1, width, &params).0
     };
+    let (l2, lrep2) = lower_wide_gates(&compressed, width, max_controls);
+    let (cleaned, _) = push_nots(&l2, width);
+    // The guarantee: nothing wider than max_controls survives (only possible
+    // if a gate had too few spare helper wires, which never happens at a
+    // stage-5 width).
+    if let Some(w) = cleaned.iter().map(|g| g.ctrls.len()).max()
+        && w > max_controls
+    {
+        return Err(AdaptiveError::Internal(format!(
+            "phase C {}: a {w}-control gate survived lowering on {width} wires (wide_kept {})",
+            dir.display(),
+            lrep2.wide_kept
+        )));
+    }
     if !same_function(input, &cleaned, width, equiv_batches, CHECK_SEED ^ 0x10E2) {
         return Err(AdaptiveError::Verify(format!(
             "phase C {}: the lowered circuit ({} gates) differs from its input ({in_count} gates)",
@@ -982,19 +1000,20 @@ fn lower_and_clean(
     write_text_atomic(
         &report,
         &format!(
-            "lower_report=1\ninput_gates={in_count}\noutput_gates={}\nwide_in={}\nmax_controls_in={}\nwide_kept={}\n",
+            "lower_report=1\ninput_gates={in_count}\noutput_gates={}\nwide_in={}\nmax_controls_in={}\nrewidened_by_fcompress={}\nwide_kept={}\n",
             cleaned.len(),
             lrep.wide_in,
             lrep.max_controls_in,
-            lrep.wide_kept,
+            lrep2.wide_in,
+            lrep2.wide_kept,
         ),
     )?;
     log(&format!(
-        "phase C {}: lowered {} wide gates (max {} controls{}), {in_count} -> {} gates (<= {max_controls} controls); {:.1}s",
+        "phase C {}: lowered {} wide gates (max {} controls), fcompress re-widened {}, {in_count} -> {} gates (all <= {max_controls} controls); {:.1}s",
         dir.display(),
         lrep.wide_in,
         lrep.max_controls_in,
-        if lrep.wide_kept > 0 { format!(", {} kept", lrep.wide_kept) } else { String::new() },
+        lrep2.wide_in,
         cleaned.len(),
         t0.elapsed().as_secs_f64(),
     ));

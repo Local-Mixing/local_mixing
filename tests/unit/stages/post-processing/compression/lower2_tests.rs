@@ -1,5 +1,6 @@
 use super::*;
 use crate::circuit::xgate::{XGate, eval_lanes};
+use crate::stages::post_processing::compression::{CompressParams, compress, push_nots};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -104,5 +105,54 @@ fn lowers_a_mixed_circuit_and_is_idempotent() {
         let (out2, rep2) = lower_wide_gates(&out, width, 2);
         assert_eq!(rep2.wide_in, 0);
         assert_eq!(out2, out);
+    }
+}
+
+/// The phase-C composition the driver runs: lower -> NOT-push -> fcompress
+/// -> lower -> NOT-push. fcompress may re-introduce multi-control cubes, so
+/// the SECOND lower is what makes the output <= 2 controls; this checks the
+/// whole chain stays equivalent and ends in the gate set on circuits that
+/// actually contain wide gates.
+#[test]
+fn phase_c_composition_ends_in_two_control_gate_set() {
+    let mut rng = StdRng::seed_from_u64(0xC0DE_2C);
+    let params = CompressParams {
+        max_iters: 4,
+        local_verify: true,
+        ..CompressParams::default()
+    };
+    for _ in 0..24 {
+        let width = rng.random_range(16..=24usize);
+        let n = rng.random_range(20..=80usize);
+        let mut gates: Vec<XGate> = Vec::new();
+        for _ in 0..n {
+            let t = rng.random_range(0..width) as u16;
+            // bias toward wide gates (k up to 6) to force lowering + any
+            // fcompress re-widening
+            let k = rng.random_range(0..=6usize).min(width - 1);
+            let mut ctrls: Vec<(u16, bool)> = Vec::new();
+            while ctrls.len() < k {
+                let w = rng.random_range(0..width) as u16;
+                if w != t && !ctrls.iter().any(|&(x, _)| x == w) {
+                    ctrls.push((w, rng.random_bool(0.5)));
+                }
+            }
+            let mut g = XGate::conj(t, ctrls).unwrap();
+            g.comp = rng.random_bool(0.5);
+            gates.push(g);
+        }
+        let (l1, r1) = lower_wide_gates(&gates, width, 2);
+        if r1.wide_in == 0 {
+            continue; // nothing wide drawn this time
+        }
+        let (p1, _) = push_nots(&l1, width);
+        let (comp, _) = compress(p1, width, &params);
+        let (l2, _) = lower_wide_gates(&comp, width, 2);
+        let (final_c, _) = push_nots(&l2, width);
+        assert!(
+            final_c.iter().all(|x| x.ctrls.len() <= 2),
+            "phase C left a wide gate (fcompress re-widening not re-lowered)"
+        );
+        equal_on(&final_c, &gates, width);
     }
 }
