@@ -60,7 +60,7 @@ pub fn run() {
     std::process::exit(code);
 }
 
-const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
+const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--descent 512,128,48,32,16,8] [--descent-stop-fraction 0.01] [--cleanup-fcompress-iters 10] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96] [--probe-inputs 8192] [--threads T] [--label tdp]
 tdp_adaptive help";
 
@@ -75,7 +75,7 @@ const SWITCHES: [&str; 6] = [
     "--help",
 ];
 
-const RUN_OPTIONS: [&str; 33] = [
+const RUN_OPTIONS: [&str; 36] = [
     "input",
     "source-c",
     "n",
@@ -87,6 +87,9 @@ const RUN_OPTIONS: [&str; 33] = [
     "threads",
     "max-rounds",
     "stop-fraction",
+    "descent",
+    "descent-stop-fraction",
+    "cleanup-fcompress-iters",
     "seeds-per-block",
     "time-limit",
     "restarts",
@@ -249,6 +252,19 @@ fn params_of(a: &Args) -> Result<DriverParams, AdaptiveError> {
     let mut p = DriverParams::default();
     p.max_rounds = a.usize_or("max-rounds", p.max_rounds)?;
     p.stop_fraction = a.f64_or("stop-fraction", p.stop_fraction)?;
+    if let Some(s) = a.get("descent") {
+        p.descent = s
+            .split(',')
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| {
+                t.parse::<usize>()
+                    .map_err(|_| AdaptiveError::Usage(format!("--descent: {t:?} is not a cap")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    p.descent_stop_fraction = a.f64_or("descent-stop-fraction", p.descent_stop_fraction)?;
+    p.cleanup_fcompress_iters = a.usize_or("cleanup-fcompress-iters", p.cleanup_fcompress_iters)?;
     p.canonical_order = !a.flag("no-canonical-order");
     p.keep_round_circuits = a.flag("keep-round-circuits");
     p.probe_inputs = a.usize_or("probe-inputs", p.probe_inputs)?;

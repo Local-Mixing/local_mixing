@@ -572,3 +572,106 @@ fn wrong_n_fails_fast_with_exit_4() {
     );
     let _ = fs::remove_dir_all(dir);
 }
+
+/// The multi-scale descent (phase B): after one large-block round the run
+/// descends through a few small caps, each with an exact NOT-push +
+/// fcompress cleanup between them. The published circuit must still equal
+/// the input and satisfy the zero slice, the cleanup dirs must appear, and
+/// the descent parameters must be in the report. A second run on the same
+/// out-dir resumes without recomputing.
+#[test]
+fn descent_runs_cleanups_and_stays_equivalent() {
+    if std::env::var_os("TDP_ADAPTIVE_SKIP_SLOW").is_some() {
+        eprintln!("TDP_ADAPTIVE_SKIP_SLOW set: skipping the run");
+        return;
+    }
+    let dir = scratch();
+    let (g, c, s) = gen_fixture(&dir);
+    let out = dir.join("out");
+    let seed_file = dir.join("seed");
+    fs::write(&seed_file, "20261101\n").unwrap();
+    let args = {
+        let mut v = vec![
+            "run",
+            "--input",
+            p(&g),
+            "--source-c",
+            p(&c),
+            "--n",
+            "8",
+            "--sandwich",
+            p(&s),
+            "--out-dir",
+            p(&out),
+            "--seed-file",
+            p(&seed_file),
+            "--restarts",
+            "4",
+        ];
+        v.extend_from_slice(&SMALL_CAPS); // large-block cap 400
+        // Make every stage stall after two rounds (stop fraction ~1), with
+        // round headroom, so phase A ends and the two descent caps each run
+        // with a cleanup between.
+        v.extend_from_slice(&[
+            "--max-rounds",
+            "12",
+            "--stop-fraction",
+            "0.99",
+            "--descent",
+            "120,40",
+            "--descent-stop-fraction",
+            "0.99",
+            "--cleanup-fcompress-iters",
+            "4",
+        ]);
+        v
+    };
+
+    let o = adaptive(&args);
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        o.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        o.status.code()
+    );
+    assert!(!stdout.contains("20261101"), "the seed leaked into stdout");
+
+    let report = fs::read_to_string(out.join("adaptive.report")).unwrap();
+    assert_eq!(kv(&report, "status"), "ok");
+    assert_eq!(kv(&report, "param.descent"), "120,40");
+    assert_eq!(kv(&report, "param.cleanup_fcompress_iters"), "4");
+
+    // Two descent stages => cleanup0 and cleanup1 directories, each with a
+    // cleaned circuit and its report.
+    for i in 0..2 {
+        let cdir = out.join(format!("cleanup{i}"));
+        assert!(
+            cdir.join("cleanup.report").is_file(),
+            "cleanup{i}.report missing"
+        );
+        assert!(
+            cdir.join("output.mpmct1").is_file(),
+            "cleanup{i}/output.mpmct1 missing"
+        );
+    }
+
+    // The published circuit equals the input and satisfies the zero slice.
+    let (input, wi) = read_mpmct(p(&g)).unwrap();
+    let (final_c, wf) = read_mpmct(p(&out.join("final.mpmct1"))).unwrap();
+    assert_eq!(wi, wf);
+    equivalent(&input, &final_c, wi, 8);
+    let cg = read_g57_file(p(&c)).unwrap();
+    zero_slice(&cg, &final_c, 8, wf);
+
+    // A second run on the same out-dir recomputes nothing.
+    let o2 = adaptive(&args);
+    assert!(o2.status.success());
+    let stdout2 = String::from_utf8_lossy(&o2.stdout);
+    assert!(
+        !stdout2.contains("blocks synthesized in"),
+        "resume recomputed a synthesis group:\n{stdout2}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}

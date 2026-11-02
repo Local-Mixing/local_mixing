@@ -34,7 +34,7 @@
 //! ```
 use super::boundary;
 use super::round::{
-    AdaptiveError, Leakage, Log, RoundContext, RoundParams, RoundResult, leakage_kv,
+    AdaptiveError, Leakage, Log, RoundContext, RoundParams, RoundResult, gates_digest, leakage_kv,
     load_or_census, parse_kv, path_str, read_bounds_file, reload_round, run_round,
     write_text_atomic,
 };
@@ -43,6 +43,7 @@ use super::types::{Census, Source};
 use crate::canonicalization::gate_order::xgate_canonicalize;
 use crate::circuit::formats::{read_g57_file, read_mpmct, write_mpmct_atomic};
 use crate::circuit::xgate::XGate;
+use crate::stages::post_processing::compression::{CompressParams, compress, push_nots};
 use crate::stages::packing::pyrand::PyRandom;
 use crate::stages::packing::verify::{Lanes, eval_gates_lanes16, random_lanes};
 use crate::stages::unpacking::types::MAX_STATE_WIRES;
@@ -92,6 +93,17 @@ pub struct DriverParams {
     pub max_rounds: usize,
     pub stop_fraction: f64,
     pub round: RoundParams,
+    /// Phase B (the multi-scale descent): block-gate caps run after the
+    /// large-block rounds plateau, each to its own stall, with an exact
+    /// NOT-push + fcompress cleanup between them. Empty = phase A only (the
+    /// classic behaviour). Caps are planned C-blind (the leak guard still
+    /// vetoes a leakier block); compression, not exposure, is their job.
+    pub descent: Vec<usize>,
+    /// The per-cap stall threshold of phase B (joint two-round compression
+    /// below this ends a cap and moves to the next smaller one).
+    pub descent_stop_fraction: f64,
+    /// fcompress iterations in the between-cap cleanup (0 = NOT-push only).
+    pub cleanup_fcompress_iters: usize,
     /// Canonical gate order of the final circuit (checked equivalent).
     pub canonical_order: bool,
     /// Keep every round's `output.mpmct1` and the synthesis group caches
@@ -107,6 +119,9 @@ impl Default for DriverParams {
             max_rounds: 0,
             stop_fraction: DEFAULT_STOP_FRACTION,
             round: RoundParams::default(),
+            descent: Vec::new(),
+            descent_stop_fraction: 0.01,
+            cleanup_fcompress_iters: 10,
             canonical_order: true,
             keep_round_circuits: false,
             probe_inputs: boundary::DEFAULT_PROBE_INPUTS,
@@ -125,6 +140,18 @@ impl DriverParams {
                 "stop fraction {}: must be in [0, 1)",
                 self.stop_fraction
             ));
+        }
+        if !(self.descent_stop_fraction >= 0.0 && self.descent_stop_fraction < 1.0) {
+            return Err(format!(
+                "descent stop fraction {}: must be in [0, 1)",
+                self.descent_stop_fraction
+            ));
+        }
+        if self.descent.iter().any(|&c| c == 0) {
+            return Err("descent caps must be positive".into());
+        }
+        if self.descent.windows(2).any(|w| w[0] <= w[1]) {
+            return Err("descent caps must be strictly decreasing".into());
         }
         if self.probe_inputs == 0 {
             return Err("probe inputs must be positive".into());
@@ -584,6 +611,26 @@ pub fn final_report_text(
     let _ = writeln!(s, "param.threads={}", inputs.threads);
     let _ = writeln!(s, "param.max_rounds={}", params.max_rounds);
     let _ = writeln!(s, "param.stop_fraction={}", params.stop_fraction);
+    let _ = writeln!(
+        s,
+        "param.descent={}",
+        params
+            .descent
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let _ = writeln!(
+        s,
+        "param.descent_stop_fraction={}",
+        params.descent_stop_fraction
+    );
+    let _ = writeln!(
+        s,
+        "param.cleanup_fcompress_iters={}",
+        params.cleanup_fcompress_iters
+    );
     let _ = writeln!(s, "param.seeds_per_block={}", p.seeds_per_block);
     let _ = writeln!(s, "param.time_limit={}", p.base_time_limit);
     let _ = writeln!(s, "param.restarts={}", p.block.synth.restarts);
@@ -729,6 +776,105 @@ fn prune_round_circuits(out_dir: &Path, rounds: &[RoundResult], final_round: Opt
                 }
             }
         }
+    }
+}
+
+/// The exact NOT-push + fcompress cleanup run between the descent caps.
+/// Returns the cleaned circuit when it is strictly smaller than the input
+/// and verified equivalent on `equiv_batches` x 1024 random full states,
+/// else `None`. Resumable: `dir/cleanup.report` records the before/after
+/// gate counts (and the input digest for diagnostics) and `dir/output.mpmct1`
+/// the cleaned circuit; on resume the reload is keyed on the input GATE
+/// COUNT (`current.count`, known from the reports), never on the input
+/// circuit, which a completed run prunes. The input circuit is loaded only
+/// on the compute path.
+fn cleanup_pass(
+    current: &mut Current,
+    width: usize,
+    fcompress_iters: usize,
+    equiv_batches: usize,
+    dir: &Path,
+    log: Log<'_>,
+) -> Result<Option<Vec<XGate>>, AdaptiveError> {
+    let in_count = current.count;
+    let out_path = dir.join("output.mpmct1");
+    let report = dir.join("cleanup.report");
+    if let Ok(t) = fs::read_to_string(&report) {
+        let kv = parse_kv(&t);
+        if kv.get("input_gates").and_then(|s| s.parse::<usize>().ok()) == Some(in_count)
+            && let Some(out_gates) = kv.get("output_gates").and_then(|s| s.parse::<usize>().ok())
+        {
+            if out_gates >= in_count {
+                log(&format!(
+                    "cleanup {} reloaded: {in_count} gates, not smaller (kept)",
+                    dir.display(),
+                ));
+                return Ok(None);
+            }
+            let (g, w) = read_mpmct(path_str(&out_path)?)
+                .map_err(|e| AdaptiveError::Input(format!("{}: {e}", out_path.display())))?;
+            if w == width && g.len() == out_gates {
+                log(&format!(
+                    "cleanup {} reloaded: {in_count} -> {} gates",
+                    dir.display(),
+                    g.len()
+                ));
+                return Ok(Some(g));
+            }
+        }
+    }
+    fs::create_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
+    let t0 = Instant::now();
+    let input = current.load(width)?;
+    let digest = format!("{:032x}", gates_digest(input));
+    let (pushed, nr) = push_nots(input, width);
+    let cleaned = if fcompress_iters == 0 {
+        pushed
+    } else {
+        let params = CompressParams {
+            max_iters: fcompress_iters,
+            local_verify: true,
+            ..CompressParams::default()
+        };
+        let (out, _) = compress(pushed, width, &params);
+        out
+    };
+    // Exact by construction, but re-check globally like a round does.
+    if !same_function(input, &cleaned, width, equiv_batches, CHECK_SEED ^ 0xC1EA) {
+        return Err(AdaptiveError::Verify(format!(
+            "cleanup {}: the cleaned circuit ({} gates) differs from its input ({} gates)",
+            dir.display(),
+            cleaned.len(),
+            input.len()
+        )));
+    }
+    write_mpmct_atomic(path_str(&out_path)?, &cleaned, width)
+        .map_err(|e| AdaptiveError::io(&out_path, e))?;
+    write_text_atomic(
+        &report,
+        &format!(
+            "cleanup_report=1\ninput_digest={digest}\ninput_gates={}\noutput_gates={}\nnots_absorbed={}\nnoops_dropped={}\ntrailing_nots={}\n",
+            input.len(),
+            cleaned.len(),
+            nr.nots_absorbed,
+            nr.noops_dropped,
+            nr.trailing_nots,
+        ),
+    )?;
+    log(&format!(
+        "cleanup {}: {} -> {} gates (NOT-push absorbed {}, dropped {} no-ops; fcompress {} iters; {:.1}s)",
+        dir.display(),
+        input.len(),
+        cleaned.len(),
+        nr.nots_absorbed,
+        nr.noops_dropped,
+        fcompress_iters,
+        t0.elapsed().as_secs_f64(),
+    ));
+    if cleaned.len() < input.len() {
+        Ok(Some(cleaned))
+    } else {
+        Ok(None)
     }
 }
 
@@ -883,66 +1029,135 @@ pub fn run(
         count: input_gates,
     };
     let mut rounds: Vec<RoundResult> = Vec::new();
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut prev_bounds: Vec<usize> = Vec::new();
-    let mut stalled = 0usize;
     let mut stop_reason = String::from("round cap");
     let mut r = 0usize;
-    loop {
-        r += 1;
-        if params.max_rounds > 0 && r > params.max_rounds {
-            break;
-        }
-        let rdir = inputs.out_dir.join(format!("round{r}"));
-        // a completed round is reloaded from its report alone; only a
-        // round that must run reads the current circuit (so a completed
-        // run, whose non-final round outputs are pruned, reruns from its
-        // reports)
-        let mut res = match reload_round(&rdir, r, current.count, say)? {
-            Some(res) => res,
-            None => {
-                let g = current.load(width)?;
-                run_round(&ctx, r, g, &prev_bounds, &rdir, say)?
-            }
+    let mut plateau = false;
+    let mut hit_round_cap = false;
+    // The stages: phase A (the classic large-block rounds, with the run's
+    // own blind flag and stop fraction) followed by phase B, one stall per
+    // descent cap (planned C-blind). An exact NOT-push + fcompress cleanup
+    // runs after a stage when phase B is active.
+    struct Stage {
+        cap: usize,
+        blind: bool,
+        stop_fraction: f64,
+    }
+    let mut stages: Vec<Stage> = vec![Stage {
+        cap: params.round.plan.max_block_gates,
+        blind: params.round.blind,
+        stop_fraction: params.stop_fraction,
+    }];
+    for &cap in &params.descent {
+        stages.push(Stage {
+            cap,
+            blind: true,
+            stop_fraction: params.descent_stop_fraction,
+        });
+    }
+    let cleanup_on = !params.descent.is_empty();
+    'stages: for (si, stage) in stages.iter().enumerate() {
+        let mut rp = params.round.clone();
+        rp.plan.max_block_gates = stage.cap;
+        rp.blind = stage.blind;
+        let sctx = RoundContext {
+            source: &source,
+            width,
+            stage_seed: inputs.seed,
+            params: &rp,
         };
-        let output = res.output.take();
-        pairs.push((res.input_gates, res.output_gates));
-        let shrank = res.output_gates < res.input_gates;
-        if shrank {
-            prev_bounds = if res.reloaded {
-                read_bounds_file(&rdir.join("bounds.out"))?
-            } else {
-                res.output_boundaries.clone()
-            };
+        if si > 0 {
+            say(&format!(
+                "descent cap {} gates (stage {si}/{}), blind, stop fraction {}",
+                stage.cap,
+                stages.len() - 1,
+                stage.stop_fraction
+            ));
         }
-        let count = res.output_gates;
-        rounds.push(res);
-        write_text_atomic(
-            &inputs.out_dir.join("progress.txt"),
-            &progress_text(&rounds),
-        )?;
-        if shrank {
-            current = Current {
-                gates: output,
-                path: rdir.join("output.mpmct1"),
-                round: Some(r),
-                count,
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let mut prev_bounds: Vec<usize> = Vec::new();
+        let mut stalled = 0usize;
+        loop {
+            r += 1;
+            if params.max_rounds > 0 && r > params.max_rounds {
+                hit_round_cap = true;
+                break 'stages;
+            }
+            let rdir = inputs.out_dir.join(format!("round{r}"));
+            // a completed round is reloaded from its report alone; only a
+            // round that must run reads the current circuit (so a completed
+            // run, whose non-final round outputs are pruned, reruns from its
+            // reports)
+            let mut res = match reload_round(&rdir, r, current.count, say)? {
+                Some(res) => res,
+                None => {
+                    let g = current.load(width)?;
+                    run_round(&sctx, r, g, &prev_bounds, &rdir, say)?
+                }
             };
+            let output = res.output.take();
+            pairs.push((res.input_gates, res.output_gates));
+            let shrank = res.output_gates < res.input_gates;
+            if shrank {
+                prev_bounds = if res.reloaded {
+                    read_bounds_file(&rdir.join("bounds.out"))?
+                } else {
+                    res.output_boundaries.clone()
+                };
+            }
+            let count = res.output_gates;
+            rounds.push(res);
+            write_text_atomic(
+                &inputs.out_dir.join("progress.txt"),
+                &progress_text(&rounds),
+            )?;
+            if shrank {
+                current = Current {
+                    gates: output,
+                    path: rdir.join("output.mpmct1"),
+                    round: Some(r),
+                    count,
+                };
+            }
+            if let Some(reason) = stop_rule(&pairs, &mut stalled, stage.stop_fraction) {
+                stop_reason = reason;
+                break;
+            }
         }
-        if let Some(reason) = stop_rule(&pairs, &mut stalled, params.stop_fraction) {
-            stop_reason = reason;
-            break;
+        plateau = stalled >= 2;
+        // An exact cleanup between/after stages: the next cap (and the final
+        // publish) then works on the smaller, NOT-normalized circuit.
+        if cleanup_on {
+            let cdir = inputs.out_dir.join(format!("cleanup{si}"));
+            let round = current.round;
+            if let Some(cleaned) = cleanup_pass(
+                &mut current,
+                width,
+                params.cleanup_fcompress_iters,
+                params.round.equiv_batches,
+                &cdir,
+                say,
+            )? {
+                current = Current {
+                    count: cleaned.len(),
+                    gates: Some(cleaned),
+                    path: cdir.join("output.mpmct1"),
+                    round,
+                };
+                write_text_atomic(
+                    &inputs.out_dir.join("progress.txt"),
+                    &progress_text(&rounds),
+                )?;
+            }
         }
     }
-    let plateau = stalled >= 2;
+    if hit_round_cap {
+        stop_reason = "round cap".into();
+        plateau = false;
+    }
     say(&format!(
         "rounds done: {} rounds, {input_gates} -> {} gates ({})",
         rounds.len(),
-        pairs
-            .iter()
-            .map(|p| p.1.min(p.0))
-            .min()
-            .unwrap_or(input_gates),
+        current.count.min(input_gates),
         stop_reason
     ));
 
