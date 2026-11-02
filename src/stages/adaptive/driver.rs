@@ -43,7 +43,9 @@ use super::types::{Census, Source};
 use crate::canonicalization::gate_order::xgate_canonicalize;
 use crate::circuit::formats::{read_g57_file, read_mpmct, write_mpmct_atomic};
 use crate::circuit::xgate::XGate;
-use crate::stages::post_processing::compression::{CompressParams, compress, push_nots};
+use crate::stages::post_processing::compression::{
+    CompressParams, compress, lower_wide_gates, push_nots,
+};
 use crate::stages::packing::pyrand::PyRandom;
 use crate::stages::packing::verify::{Lanes, eval_gates_lanes16, random_lanes};
 use crate::stages::unpacking::types::MAX_STATE_WIRES;
@@ -104,6 +106,12 @@ pub struct DriverParams {
     pub descent_stop_fraction: f64,
     /// fcompress iterations in the between-cap cleanup (0 = NOT-push only).
     pub cleanup_fcompress_iters: usize,
+    /// Phase C: after the descent, rewrite every gate wider than this many
+    /// controls into 2-control gates (the exact dirty-ancilla Barenco
+    /// decomposition) and run one more exact cleanup, so the published
+    /// circuit is in the deliverable's gate set. `None` = leave stage 5's
+    /// wide gates in place (the classic behaviour).
+    pub lower_controls: Option<usize>,
     /// Canonical gate order of the final circuit (checked equivalent).
     pub canonical_order: bool,
     /// Keep every round's `output.mpmct1` and the synthesis group caches
@@ -122,6 +130,7 @@ impl Default for DriverParams {
             descent: Vec::new(),
             descent_stop_fraction: 0.01,
             cleanup_fcompress_iters: 10,
+            lower_controls: None,
             canonical_order: true,
             keep_round_circuits: false,
             probe_inputs: boundary::DEFAULT_PROBE_INPUTS,
@@ -152,6 +161,9 @@ impl DriverParams {
         }
         if self.descent.windows(2).any(|w| w[0] <= w[1]) {
             return Err("descent caps must be strictly decreasing".into());
+        }
+        if self.lower_controls.is_some_and(|c| c < 2) {
+            return Err("lower controls: at least 2".into());
         }
         if self.probe_inputs == 0 {
             return Err("probe inputs must be positive".into());
@@ -631,6 +643,13 @@ pub fn final_report_text(
         "param.cleanup_fcompress_iters={}",
         params.cleanup_fcompress_iters
     );
+    let _ = writeln!(
+        s,
+        "param.lower_controls={}",
+        params
+            .lower_controls
+            .map_or_else(|| "none".to_string(), |c| c.to_string())
+    );
     let _ = writeln!(s, "param.seeds_per_block={}", p.seeds_per_block);
     let _ = writeln!(s, "param.time_limit={}", p.base_time_limit);
     let _ = writeln!(s, "param.restarts={}", p.block.synth.restarts);
@@ -876,6 +895,106 @@ fn cleanup_pass(
     } else {
         Ok(None)
     }
+}
+
+/// Phase C: lower every gate wider than `max_controls` to 2-control gates
+/// (exact Barenco), then one exact NOT-push + fcompress cleanup, and make
+/// the result the published circuit. Exact and verified on `equiv_batches`
+/// x 1024 states. Returns the new circuit (the gate SET changed, so this is
+/// unconditional, not size-gated) or `None` when there were no wide gates.
+/// Resumable keyed on the input gate count (the `lower/` dir).
+fn lower_and_clean(
+    current: &mut Current,
+    width: usize,
+    max_controls: usize,
+    fcompress_iters: usize,
+    equiv_batches: usize,
+    dir: &Path,
+    log: Log<'_>,
+) -> Result<Option<Vec<XGate>>, AdaptiveError> {
+    let in_count = current.count;
+    let out_path = dir.join("output.mpmct1");
+    let report = dir.join("lower.report");
+    if let Ok(t) = fs::read_to_string(&report) {
+        let kv = parse_kv(&t);
+        if kv.get("input_gates").and_then(|s| s.parse::<usize>().ok()) == Some(in_count)
+            && let Some(wide) = kv.get("wide_in").and_then(|s| s.parse::<u64>().ok())
+        {
+            if wide == 0 {
+                log(&format!(
+                    "phase C {} reloaded: no wide gates (kept)",
+                    dir.display()
+                ));
+                return Ok(None);
+            }
+            let (g, w) = read_mpmct(path_str(&out_path)?)
+                .map_err(|e| AdaptiveError::Input(format!("{}: {e}", out_path.display())))?;
+            if w == width {
+                log(&format!(
+                    "phase C {} reloaded: {in_count} -> {} gates",
+                    dir.display(),
+                    g.len()
+                ));
+                return Ok(Some(g));
+            }
+        }
+    }
+    fs::create_dir_all(dir).map_err(|e| AdaptiveError::io(dir, e))?;
+    let t0 = Instant::now();
+    let input = current.load(width)?;
+    let (lowered, lrep) = lower_wide_gates(input, width, max_controls);
+    if lrep.wide_in == 0 {
+        write_text_atomic(
+            &report,
+            &format!("lower_report=1\ninput_gates={in_count}\nwide_in=0\nmax_controls_in={}\n", lrep.max_controls_in),
+        )?;
+        log(&format!(
+            "phase C {}: no gates wider than {max_controls} controls (max seen {})",
+            dir.display(),
+            lrep.max_controls_in
+        ));
+        return Ok(None);
+    }
+    let (pushed, _) = push_nots(&lowered, width);
+    let cleaned = if fcompress_iters == 0 {
+        pushed
+    } else {
+        let params = CompressParams {
+            max_iters: fcompress_iters,
+            local_verify: true,
+            ..CompressParams::default()
+        };
+        compress(pushed, width, &params).0
+    };
+    if !same_function(input, &cleaned, width, equiv_batches, CHECK_SEED ^ 0x10E2) {
+        return Err(AdaptiveError::Verify(format!(
+            "phase C {}: the lowered circuit ({} gates) differs from its input ({in_count} gates)",
+            dir.display(),
+            cleaned.len(),
+        )));
+    }
+    write_mpmct_atomic(path_str(&out_path)?, &cleaned, width)
+        .map_err(|e| AdaptiveError::io(&out_path, e))?;
+    write_text_atomic(
+        &report,
+        &format!(
+            "lower_report=1\ninput_gates={in_count}\noutput_gates={}\nwide_in={}\nmax_controls_in={}\nwide_kept={}\n",
+            cleaned.len(),
+            lrep.wide_in,
+            lrep.max_controls_in,
+            lrep.wide_kept,
+        ),
+    )?;
+    log(&format!(
+        "phase C {}: lowered {} wide gates (max {} controls{}), {in_count} -> {} gates (<= {max_controls} controls); {:.1}s",
+        dir.display(),
+        lrep.wide_in,
+        lrep.max_controls_in,
+        if lrep.wide_kept > 0 { format!(", {} kept", lrep.wide_kept) } else { String::new() },
+        cleaned.len(),
+        t0.elapsed().as_secs_f64(),
+    ));
+    Ok(Some(cleaned))
 }
 
 /// Run the stage. `seed_source` names where the seed came from (`argv`,
@@ -1153,6 +1272,33 @@ pub fn run(
     if hit_round_cap {
         stop_reason = "round cap".into();
         plateau = false;
+    }
+    // Phase C: lower the leftover wide gates into the deliverable's 2-control
+    // gate set, then one more exact cleanup. The gate SET changes, so this is
+    // not size-gated; its output is the published circuit.
+    if let Some(mc) = params.lower_controls {
+        let ldir = inputs.out_dir.join("lower");
+        let round = current.round;
+        if let Some(lowered) = lower_and_clean(
+            &mut current,
+            width,
+            mc,
+            params.cleanup_fcompress_iters,
+            params.round.equiv_batches,
+            &ldir,
+            say,
+        )? {
+            current = Current {
+                count: lowered.len(),
+                gates: Some(lowered),
+                path: ldir.join("output.mpmct1"),
+                round,
+            };
+            write_text_atomic(
+                &inputs.out_dir.join("progress.txt"),
+                &progress_text(&rounds),
+            )?;
+        }
     }
     say(&format!(
         "rounds done: {} rounds, {input_gates} -> {} gates ({})",

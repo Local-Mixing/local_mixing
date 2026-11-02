@@ -623,6 +623,10 @@ fn descent_runs_cleanups_and_stays_equivalent() {
             "0.99",
             "--cleanup-fcompress-iters",
             "4",
+            // phase C: the stage-2 fixture is already <= 2 controls, so this
+            // exercises the wiring and the no-op path (wide_in = 0).
+            "--lower-controls",
+            "2",
         ]);
         v
     };
@@ -641,6 +645,11 @@ fn descent_runs_cleanups_and_stays_equivalent() {
     assert_eq!(kv(&report, "status"), "ok");
     assert_eq!(kv(&report, "param.descent"), "120,40");
     assert_eq!(kv(&report, "param.cleanup_fcompress_iters"), "4");
+    assert_eq!(kv(&report, "param.lower_controls"), "2");
+
+    // Phase C ran (the stage-2 fixture has no wide gates: a recorded no-op).
+    let lower = fs::read_to_string(out.join("lower").join("lower.report")).unwrap();
+    assert_eq!(kv(&lower, "wide_in"), "0");
 
     // Two descent stages => cleanup0 and cleanup1 directories, each with a
     // cleaned circuit and its report.
@@ -656,13 +665,18 @@ fn descent_runs_cleanups_and_stays_equivalent() {
         );
     }
 
-    // The published circuit equals the input and satisfies the zero slice.
+    // The published circuit equals the input, satisfies the zero slice, and
+    // is in the deliverable's gate set (<= 2 controls).
     let (input, wi) = read_mpmct(p(&g)).unwrap();
     let (final_c, wf) = read_mpmct(p(&out.join("final.mpmct1"))).unwrap();
     assert_eq!(wi, wf);
     equivalent(&input, &final_c, wi, 8);
     let cg = read_g57_file(p(&c)).unwrap();
     zero_slice(&cg, &final_c, 8, wf);
+    assert!(
+        final_c.iter().all(|x| x.ctrls.len() <= 2),
+        "the published circuit has a wide gate"
+    );
 
     // A second run on the same out-dir recomputes nothing.
     let o2 = adaptive(&args);
