@@ -1220,7 +1220,12 @@ pub fn run(
                 other => other,
             })?;
             say(&format!(
-                "input payload contract vs the sandwich: ok ({k} inputs over both directions)"
+                "input payload contract vs the sandwich: ok ({k} inputs, {})",
+                if inputs.forward_only {
+                    "forward only"
+                } else {
+                    "both directions"
+                }
             ));
             Some(k)
         }
