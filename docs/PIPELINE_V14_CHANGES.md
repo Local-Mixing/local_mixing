@@ -172,8 +172,12 @@ stage-3 wire-swap twists compensates. The minimum span exceeds a stage-6 block (
 65,536 gates), so a twist's two seams never fall in the same block, where resynthesis could cancel them.
 
 **Cost.** About 2,600 twists per n = 64 run instead of 1,300, each over a window of hundreds of thousands of
-gates (relabelling only the gates on the two swapped wires); each twist adds its two seam brackets. The effect on
-the stage-3 time and on exposure is not measured yet.
+gates (relabelling only the gates on the two swapped wires); each twist adds its two seam brackets. Measured on one
+n = 64 stage-2 trial circuit (380,893 gates), 500,000 stage-3 moves, same seed, preset vs new: 235 vs 514 twists,
+mean window 32,600 vs 305,000 gates, window gates 7.7 vs 157 million (x 20), gates actually relabelled 0.35 vs
+4.8 million (x 14); chain time 175.7 s vs 182.7 s (+4 %), CPU +9 %; final size and store hit rates unchanged. A
+full stage 3 runs about four times as many moves; at n = 128 the circuit is about three times longer, so each twist
+walks proportionally more (not measured there). The effect on exposure is not measured yet.
 
 ## 3. Stage 6: `--forward-only`
 
