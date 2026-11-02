@@ -81,6 +81,10 @@ bincode2 = { package = "bincode", version = "2" }
 lmdb = "0.8.0"
 
 [[bin]]
+name = "fcompress"
+path = "src/programs/fcompress/main.rs"
+
+[[bin]]
 name = "circuit_mixer"
 path = "src/programs/circuit_mixer/main.rs"
 
