@@ -35,20 +35,19 @@
 use super::boundary;
 use super::round::{
     Accept, AdaptiveError, Cost, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams,
-    RoundResult,
-    gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file, reload_round,
-    run_round, write_text_atomic,
+    RoundResult, gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file,
+    reload_round, run_round, write_text_atomic,
 };
 use super::synth::same_function;
 use super::types::{Census, Source};
 use crate::canonicalization::gate_order::xgate_canonicalize;
 use crate::circuit::formats::{read_g57_file, read_mpmct, write_mpmct_atomic};
 use crate::circuit::xgate::XGate;
+use crate::stages::packing::pyrand::PyRandom;
+use crate::stages::packing::verify::{Lanes, eval_gates_lanes16, random_lanes};
 use crate::stages::post_processing::compression::{
     CompressParams, compress, lower_wide_gates, push_nots,
 };
-use crate::stages::packing::pyrand::PyRandom;
-use crate::stages::packing::verify::{Lanes, eval_gates_lanes16, random_lanes};
 use crate::stages::unpacking::types::MAX_STATE_WIRES;
 use crate::stages::unpacking::verify::check_zero_slice_gates;
 use std::collections::BTreeSet;
@@ -906,7 +905,10 @@ fn cleanup_pass(
     if let Some(ctx) = guard {
         let cin = load_or_census(ctx, input, &dir.join("input_census"), true, log)?;
         let cout = load_or_census(ctx, &cleaned, &dir.join("output_census"), true, log)?;
-        let (li, lo) = (Leakage::of(&cin, ctx.source), Leakage::of(&cout, ctx.source));
+        let (li, lo) = (
+            Leakage::of(&cin, ctx.source),
+            Leakage::of(&cout, ctx.source),
+        );
         let e_in = (
             li.validated.affine.deeper_births,
             li.validated.direct.deeper_births,
@@ -926,7 +928,12 @@ fn cleanup_pass(
             log(&format!(
                 "cleanup {} REJECTED: exposure increased (deeper affine {} -> {}, direct {} -> {}, early outputs {} -> {}); kept the input",
                 dir.display(),
-                e_in.0, e_out.0, e_in.1, e_out.1, e_in.2, e_out.2
+                e_in.0,
+                e_out.0,
+                e_in.1,
+                e_out.1,
+                e_in.2,
+                e_out.2
             ));
         }
     }
@@ -1015,7 +1022,10 @@ fn lower_and_clean(
     if lrep.wide_in == 0 {
         write_text_atomic(
             &report,
-            &format!("lower_report=1\ninput_gates={in_count}\nwide_in=0\nmax_controls_in={}\n", lrep.max_controls_in),
+            &format!(
+                "lower_report=1\ninput_gates={in_count}\nwide_in=0\nmax_controls_in={}\n",
+                lrep.max_controls_in
+            ),
         )?;
         log(&format!(
             "phase C {}: no gates wider than {max_controls} controls (max seen {})",

@@ -439,7 +439,10 @@ fn uniform_twist_spans_never_fall_below_the_minimum() {
             + uniform.counters.twist_cnots;
         assert!(twists > 20, "g57 {g57}: twists barely ran: {twists}");
         let mean = uniform.counters.twist_span as f64 / twists as f64;
-        assert!(mean >= 200.0, "g57 {g57}: mean span {mean} below the minimum");
+        assert!(
+            mean >= 200.0,
+            "g57 {g57}: mean span {mean} below the minimum"
+        );
         uniform.global_check();
         // the default draws (log-uniform, truncated) are unchanged
         let mut log = Mixer::new(gates, 16, base);

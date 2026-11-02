@@ -1150,10 +1150,7 @@ pub fn run_round(
             .filter_map(|(k, slot)| {
                 slot.get(&l).filter(|row| row.is_ok()).map(|row| Candidate {
                     seed: k,
-                    gates: row
-                        .gates
-                        .as_deref()
-                        .map_or(row.syn_gates, |g| cost.of(g)),
+                    gates: row.gates.as_deref().map_or(row.syn_gates, |g| cost.of(g)),
                     exposure: exposure_cand.get(k).map_or(0, |e| e[i]),
                 })
             })
@@ -1427,10 +1424,8 @@ pub fn parse_round_report(text: &str) -> Result<RoundResult, String> {
         input_gates: kv_usize(&m, "input_gates")?,
         output_gates: kv_usize(&m, "output_gates")?,
         // reports written before the cost model fall back to the gate counts
-        input_cost: kv_usize(&m, "input_cost")
-            .or_else(|_| kv_usize(&m, "input_gates"))?,
-        output_cost: kv_usize(&m, "output_cost")
-            .or_else(|_| kv_usize(&m, "output_gates"))?,
+        input_cost: kv_usize(&m, "input_cost").or_else(|_| kv_usize(&m, "input_gates"))?,
+        output_cost: kv_usize(&m, "output_cost").or_else(|_| kv_usize(&m, "output_gates"))?,
         blocks: kv_usize(&m, "blocks")?,
         initial_blocks: kv_usize(&m, "initial_blocks")?,
         refinement,
