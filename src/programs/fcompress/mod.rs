@@ -4,7 +4,7 @@ use crate::circuit::formats::expand_packed;
 use crate::circuit::xgate::{XGate, eval_lanes, max_wire};
 use crate::engine::mixer::Mixer;
 use crate::stages::post_processing::compression::{
-    CompressParams, compact, compress_anc, lits_of, pack, pack_census,
+    CompressParams, compact, compress_anc, lits_of, pack, pack_census, push_nots,
 };
 use clap::Parser;
 use rand::Rng;
@@ -79,6 +79,11 @@ pub struct Args {
     /// Disable the per-group exhaustive/sampled verification
     #[arg(long, default_value_t = false)]
     no_local_verify: bool,
+    /// Disable the exact NOT-push cleanup applied before the compression
+    /// passes (absorbs interior NOTs, drops no-ops, reopens merges). Skipped
+    /// automatically when an ancestry sidecar is threaded.
+    #[arg(long, default_value_t = false)]
+    no_not_push: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     /// Per-gate ancestry sidecar for the INPUT circuit (written by circuit_mixer
@@ -135,7 +140,7 @@ pub fn run(args: Args) {
         }
         other => panic!("unknown --input-format {other}"),
     };
-    let gates = if args.pack_first {
+    let mut gates = if args.pack_first {
         let p = compact(&pack(&gates));
         let expanded = expand_packed(&p);
         println!(
@@ -214,6 +219,24 @@ pub fn run(args: Args) {
     });
     let original = gates.clone();
     let t0 = std::time::Instant::now();
+    // Exact NOT-push cleanup first (unless an ancestry sidecar is threaded,
+    // which push_nots would misalign). The global check below still compares
+    // the compressed output against `original`, so it validates push_nots and
+    // the compression passes together.
+    if !args.no_not_push && sidecar.is_none() {
+        let before = gates.len();
+        let (pushed, nr) = push_nots(&gates, wires);
+        println!(
+            "[fcompress] not-push: {} -> {} gates (absorbed {} NOTs, dropped {} no-ops, flipped {} lits, {} trailing)",
+            before,
+            pushed.len(),
+            nr.nots_absorbed,
+            nr.noops_dropped,
+            nr.lits_flipped,
+            nr.trailing_nots
+        );
+        gates = pushed;
+    }
     let anc_sets = sidecar.as_ref().map(|sc| sc.sets.clone());
     let (out, out_anc, rep) = compress_anc(gates, anc_sets, wires, &params);
     let secs = t0.elapsed().as_secs_f64();
