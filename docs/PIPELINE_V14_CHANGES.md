@@ -134,6 +134,11 @@ clear-cut suggestion 2). Its effect is being measured by the paired arms `s2v_n6
 
 ### 2.3 The reverse contract becomes optional (default off)
 
+*Superseded in part by recipe v15 (2026-11-02): the opening guard described here was keyed on the band
+only, so with the band zero it let every value of the register B through; v15 replaces it by the two-layer
+guard keyed on B and the band ([PIPELINE_V15_CHANGES.md](PIPELINE_V15_CHANGES.md)), and this guard is no
+longer built.*
+
 **What.** `preprocessing.reverse_contract = false` (the default in the guarded modes): the opening guard covers all
 2n data wires with the same gate count (its Feistel rounds alternate halves, so each round's uncompute stays
 exact) and there is no closing guard, so only the forward payload is kept; the band seed and reseed stay at both

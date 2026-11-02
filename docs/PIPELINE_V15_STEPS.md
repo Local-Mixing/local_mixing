@@ -5,14 +5,20 @@ This document walks through the six stages of the TDP pipeline as it stands afte
 in order, with the sizes of one complete run: the n = 128 pipeline run of
 2026-11-02 (`port_runs/tdp128_s6`, delivered as `circuits/tdp128_s6_20261102.mpmct1`).
 
-**What v15 is.** Stages 1-5 are the recipe-v14 defaults (pushed to `main` at
-`2b4b6374`) with the stage-3 twist settings of 2026-11-01; stage 6 is the redesigned
-adaptive stage of 2026-11-02 with its recommended settings
-(`docs/notes/stage6_config_search_20261102.md`). The code is on branch
-`ran/stage6-deep`. **Status:** the managed driver (`local_mixing_bin tdp_gen`) runs
-v15's stages 1-5 by default, but its default stage 6 is still v14's (large blocks,
-raw-gate acceptance); v15's stage 6 is selected with `tdp_adaptive` flags (given in
-§6) until the recipe is bumped and the flags are wired into the driver.
+**What v15 is.** Recipe v15 (`tdp_command_recipe=15`) is the managed driver's
+default (`local_mixing_bin tdp_gen`, `configs/tdp.toml`) since 2026-11-02. Against
+recipe v14 (`main` at `2b4b6374`) it changes three things: stage 2's opening guard is
+the two-layer guard keyed on the register and the band (§2, step 2); stage 3 twists
+at rate 0.001 over spans of at least 100,000 gates; stage 6 is the redesigned adaptive
+stage (`docs/notes/stage6_config_search_20261102.md`). The changes and how they were
+chosen: `docs/PIPELINE_V15_CHANGES.md`. Every default: the table at the end.
+
+**About the worked example.** The n = 128 run below was made on 2026-11-02 before the
+guard change: its stage 2 opened with recipe v14's band-keyed guard (2,560 gates). The
+v15 guard is 4,512 gates at n = 128, so a v15 stage 2 is 1,952 gates larger; the other
+stage-2 numbers are unchanged. Its stage 6 used a bounded synthesizer effort (2
+restarts, 12 s budgets, census batches 16); the defaults are 16 restarts, 60 s budgets
+and 96 census batches.
 
 **Conventions.** C is the secret source circuit on n wires. A *g57 gate* is
 `a ^= b OR NOT c`. The *honest slice*: inputs x on wires 0..n-1, every other wire
@@ -23,7 +29,7 @@ with k controls costs 4k - 8 two-control gates when lowered (k > 2).
 | stage | binary | what it produces | n = 128 example | time (Mac, 2026-11-02) |
 |---|---|---|---|---|
 | 1 sandwich | `gen_sandwich_gadget` | C, copy, D, V gadget on 2n wires | 6,761 gates, 256 wires | stages 1-2 together: < 2 min |
-| 2 three-mask preprocessing | (same process) | the masked circuit on 4n wires | 1,141,924 gates, 512 wires | (with stage 1) |
+| 2 three-mask preprocessing | (same process) | the masked circuit on 4n wires | 1,141,924 gates, 512 wires (v14 guard; v15: +1,952) | (with stage 1) |
 | 3 database mixing | `circuit_mixer` | DB-respelled, ~2x | 2,566,339 | 58 min |
 | 4 splitting | `circuit_mixer` | complemented gates split, ~1.9x | 4,739,227 | 5 min |
 | 5 crossing walk | `circuit_mixer` | gates crossed, wide gates, ~1.85x | 8,746,933 | 39 min |
@@ -69,9 +75,32 @@ The frame: **opening guard ; band seed ; masked compute ; band reseed.**
 **1. Widen.** The sandwich's 2n data wires plus a **band** of 2n extra wires (256 at
 n = 128), 4n wires in all. The band is zero on the honest slice.
 
-**2. Opening guard.** A Feistel-style block of 20n gates (2,560 at n = 128) over all
-2n data wires that is the identity exactly when the band is zero. v15 keeps no
-reverse contract: the guard covers all data wires and there is no closing guard.
+**2. Opening guard** (the two-layer guard, RC 2026-11-02). Write A for wires 0..n-1
+(the input x), B for wires n..2n-1 (the register) and the band. As a map the guard is
+G(A, B, band) = (f(A), h(B), band'): the identity on A and B exactly when B and the
+band are zero (the honest slice), A scrambled whenever B or the band is nonzero, B
+scrambled whenever the band is nonzero. It is made of three-control gates, each opened
+into two-control gates through a helper wire:
+- **Layer 1, keyed on the band, scrambles A and B:** n·⌈log2 n⌉ gates t ^= s·u·v (t,
+  u, v data wires, u and v of either polarity, s a band key wire), each emitted as
+  h ^= u·v; t ^= h·s, with h one of a few band helper wires (n/8 of them, 16 at
+  n = 128). The helpers are not restored, since the band is junk; a helper is therefore
+  never a key afterwards, and a short prologue first makes each helper wire a key once,
+  one gate into A and one into B. Every band key wire gates at least two of the
+  three-control gates, alternately into A and B.
+- **Layer 2, keyed on B, scrambles A:** n·⌈log2 n⌉ gates t ^= b·u·v (t, u, v in A, b
+  in B), each emitted as h ^= u·v; t ^= h·b; h ^= u·v, the helper h another B wire,
+  restored, since B carries the payload.
+
+No gate has more than two controls. n = 128: 896 three-control gates per layer,
+4,512 gates in all (2 × 16 prologue + 2 × 896 + 3 × 896). On the honest slice the
+band leaves the guard holding the helpers' products of x, onto which the band seed
+then XORs. Every draw is checked (exhaustively up to 20 wires, by sampling above: the
+slice exact, every single-wire key and 512 weight-2 and 512 random keys disturbing
+A, every nonzero band disturbing B) and redrawn if it fails. v15 keeps no reverse
+contract, so there is no closing guard. The guard is not a setting: recipe v14's
+guard was keyed on the band only, so with the band zero every value of B passed it
+and the circuit evaluated the sandwich off its slice.
 
 **3. Band seed.** Fill the band from the input x, so that masks are not constants on
 the honest slice; **pre-growth** then rewrites the band coordinates that will serve
@@ -99,8 +128,8 @@ as mask sources before any mask references them.
   gate, so a 250-gate window holds pieces of ~13 fires (n = 128).
 
 **5. Band reseed and check.** The band is reseeded at the output end (kept at both
-ends), and the circuit is checked on bit-sliced samples: on (x, 0, 0) wires n..2n-1
-hold C(x).
+ends), and the circuit is checked on bit-sliced samples of the honest slice: on
+(x, 0, 0) wires n..2n-1 hold C(x).
 
 n = 128: 1,141,924 gates on 512 wires, every gate at most two controls; the compute
 is 1,133,642 of them (730,606 fire + 349,419 mask + 45,568 growth + 8,049 migration
@@ -177,12 +206,14 @@ of up to 12 controls (5.27M of them wide).
 
 ## Stage 6: delivery (v15)
 
-`tdp_adaptive run ... --pre-cleanup --cost two-control --max-block-gates 512
---descent 128,32,16 --seeds-per-block 2 --lower-controls 2 --cleanup-fcompress-iters 10
---stop-fraction 0.2 --descent-stop-fraction 0.2 --max-rounds 0 --forward-only`
-(the n = 128 run also used `--restarts 2 --time-limit 12 --census-batches 16`; the
-production synthesizer settings, 16 restarts and 60 s budgets, compress about 6 %
-further at about 3.4x the time).
+The managed driver runs `tdp_adaptive run ... --stop-fraction 0.2 --pre-cleanup
+--cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2
+--max-block-gates 512 --forward-only` (`tdp_adaptive`'s own defaults are recipe v14's
+stage 6, so the v15 settings are passed explicitly); everything else is at its
+default: 2 synthesizer seeds per block, 16 restarts, 60 s budgets, census batches 96,
+10 fcompress iterations per cleanup, no round cap. The n = 128 example used the
+bounded effort `--restarts 2 --time-limit 12 --census-batches 16`; the default effort
+compresses about 6 % further at about 3.4x the time (measured at n = 64).
 
 **1. Pre-cleanup** (one pass, exact)
 - **NOT-push:** absorb the interior NOT gates into the polarity of the downstream
@@ -242,10 +273,107 @@ C values exposed in the census, 0 early C-output copies.
 
 ---
 
+## Default parameters (recipe v15)
+
+Every value below is what `tdp_gen` resolves with no setting (`configs/tdp.toml`
+leaves them commented; the manifest `tdp_command.conf` of a run records them). The
+TOML key and the script flag of each setting: `docs/tdp_pipeline.md`.
+
+**Run and source**
+
+| setting | default |
+|---|---|
+| `source.wires` (n) | 128 in `configs/tdp.toml`; 3..4095, at most 256 when stage 6 runs |
+| `source.gates` (\|C\| = \|D\|) | 1,000 at n = 64, 3,000 at n = 128 (rule `validated`; other n by formula, marked unvalidated) |
+| `source.construction` | `random` (uniform g57 gates; `balanced` = every internal value read exactly twice) |
+| `run.skip_stages` | none: all six stages run |
+| seeds | fresh random 63-bit seeds, kept in the private `SEEDS` file (format 3) |
+| `[leakage_repair]` | off |
+
+**Stage 1 (sandwich)**
+
+| setting | default |
+|---|---|
+| `sandwich.slicing` | false (no slice blocks S1/S2) |
+| `sandwich.layer` | 1 (one gate at a time) |
+| `sandwich.v_gates` (t) | n (128 at n = 128; 0 = the N column of copy CNOTs) |
+| sandwich variant | classic |
+
+**Stage 2 (three-mask preprocessing)**
+
+| setting | default |
+|---|---|
+| `preprocessing.mode` | `three-mask` (outer blocks: preset L8; band seed and reseed with 4 nonlinear products per band wire) |
+| `preprocessing.reverse_contract` | false (no closing guard; forward payload only) |
+| opening guard | the two-layer guard (not a setting): n·⌈log2 n⌉ three-control gates per layer |
+| `three_mask.band_wires` | 0 = auto: the larger of 2n and 128, a multiple of 32 (256 at n = 128) |
+| `three_mask.banks` | 0 (auto; must be 0 under wire turnover) |
+| `three_mask.turnover` | `wire` (cohorts of 16 wires) |
+| `three_mask.interleave` | 4,096 (the reorder window, gates) |
+| `three_mask.pregrow` | true |
+| `three_mask.retire_budget`, `max_retiring`, `rotation`, `maturity`, `visit_sweeps` | 2, 0, 1, 2, 2 |
+| `three_mask.growth`, `warmup`, `segments`, `mask_count` | 8, 4, 6, 3 |
+| `three_mask.random_helpers`, `unique_cover` | true, true |
+
+**Stage 3 (database mixing)**
+
+| setting | default |
+|---|---|
+| `database.regular_dir` | the frozen store `frozen_m1_m11` (required; set in the local config or `FROZEN_DB_DIR`) |
+| `db_mixing.schedule` | `validated`: profile 2,2,2,2,2, moves int(G · 2 · 2 · 1.3) = 5.2 G for a stage-2 circuit of G gates |
+| `db_mixing.twist_rate` | 0.001 per mixer round |
+| `db_mixing.twist_min_span` | 100,000 gates |
+| `db_mixing.twist_spans` | `uniform` (between the minimum and the circuit size, every window inside the circuit) |
+| verification / report interval | every 10,000 / 50,000 moves |
+| `parallel.pieces` | 1 (serial) |
+| caches | lookup 2,048 MB, canon 256 MB, xpoly 1,024 MB |
+
+**Stage 4 (splitting)**: no settings; `circuit_mixer --split --split-stop --p-join 0.8
+--split-reach-k 2 --split-fail-limit 100 --split-canaries 256 --k-max 12` with the
+DB, twists and compression off.
+
+**Stage 5 (crossing walk)**
+
+| setting | default |
+|---|---|
+| `crossing.target_size_factor` | 2 (target = 2 x the stage-4 size) |
+| `crossing.width_penalty_base`, `width_penalty_threshold` | 3, 1 (a split of width c accepted with probability 3^-(c-1)) |
+| `crossing.size_tolerance_divisor` | 25 (temperature max(64, target / 25)) |
+| `crossing.move_budget_factor` | 3 (budget = 3 x target moves) |
+
+**Stage 6 (delivery, adaptive mode)**
+
+| setting | default |
+|---|---|
+| `delivery.mode` | `adaptive` |
+| `adaptive.pre_cleanup` | true |
+| `adaptive.cost` | `two-control` (a gate with k > 2 controls costs 4k - 8) |
+| `adaptive.max_block_gates` | 512 (phase A) |
+| `adaptive.stop_fraction` | 0.2 (phase A's two-round stop rule) |
+| `adaptive.descent` | 128,32,16 (phase B block caps) |
+| `adaptive.descent_stop_fraction` | 0.2 |
+| `adaptive.cleanup_fcompress_iters` | 10 |
+| `adaptive.lower_controls` | 2 (phase C: every published gate has at most 2 controls) |
+| `adaptive.max_rounds` | 0 (until the plateaus) |
+| `adaptive.seeds_per_block` | 2 |
+| `adaptive.time_limit`, `restarts`, `beam` | 60 s per block of at most 1,000 gates (x2 up to 4,000, x4 above), 16, 6 |
+| `adaptive.term_cap` | 131,072 ANF terms |
+| `adaptive.segments`, `avoid_radius` | 16, 64 |
+| `adaptive.refinement_levels`, `min_refine_gates` | 2, 128 |
+| `adaptive.census_batches` | 96 (6,144 honest inputs) |
+| `adaptive.accept` | `smaller-not-leakier` (the leak guard) |
+| `adaptive.canonical_order` | true |
+
+The windowed mode's settings (`[packing]`, `[delivery]`) apply only with
+`delivery.mode = "windowed"`.
+
+---
+
 ## Correctness checks along the way
 
 Every stage is function-preserving on all 4n wires after stage 2 (stage 2 itself is
-checked on the honest slice): stage 2 verifies its payload on samples; stages 3-5
+checked on the honest slice): stage 2 verifies its payload on samples of the honest
+slice; stages 3-5
 verify every DB splice exhaustively and run a global sampled check every 10,000
 moves; stage 6 checks every block, every round, every cleanup and phase C against
 their inputs on random full states. The zero-slice and payload-contract checks at

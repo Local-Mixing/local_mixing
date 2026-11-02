@@ -1,11 +1,15 @@
 # The TDP Pipeline: An Introduction
 
-*Release of 2026-11-01 (recipe schema `config_version = 5`, saved recipe
-v14; the changes since the October release of recipe v13 are listed in
-`docs/PIPELINE_V14_CHANGES.md`): stage 1 is the sandwich without slice blocks,
-with the V gadget on its register; stage 2 is the three-mask compute with
-wire turnover, fire interleaving and pre-growth, and by default without the
-reverse contract. This is the entry point for a reader who has not seen the
+*Release of 2026-11-02 (recipe schema `config_version = 5`, saved recipe
+v15; the changes since recipe v14 are in `docs/PIPELINE_V15_CHANGES.md`, those
+since the October release of recipe v13 in `docs/PIPELINE_V14_CHANGES.md`;
+step by step with every default: `docs/PIPELINE_V15_STEPS.md`): stage 1 is the
+sandwich without slice blocks, with the V gadget on its register; stage 2 is
+the three-mask compute with wire turnover, fire interleaving and pre-growth,
+by default without the reverse contract and with the two-layer opening guard;
+stage 3 twists twice as often over spans of at least 100,000 gates; stage 6
+cleans, resynthesizes in small blocks judged by the 2-control cost and
+publishes a circuit whose gates all have at most two controls. This is the entry point for a reader who has not seen the
 pipeline before. The operational manual (`docs/tdp_pipeline.md`), the full
 reference (`docs/TDP_PIPELINE_REFERENCE.md`) and the design notes listed in
 section 6 hold the details and the evidence. Every number below is taken from
@@ -212,13 +216,22 @@ x (otherwise every mask would be a slice constant), the **reseed** does the
 same for the backward direction, and the two **slice guards** (20n gates
 each) are the identity exactly when the band is zero. At the end, on input
 (x, 0^n, 0^{2n}), wires n..2n hold C(x) and everything else is junk
-(`docs/tdp_pipeline.md`, "Stage 2"). The guards keep the **reverse
-contract**: each junks only the low half, so the reversed circuit still
-carries D⁻¹ of its input on wires n..2n (`preprocessing.reverse_contract =
-true`). The default since recipe v14 (RC, 2026-11-01) is false: the opening
-guard covers all data wires with the same gate count and there is no
-closing guard, so only the forward payload is kept; the band seed and
-reseed stay at both ends. The adaptive stage 6 then checks the sandwich
+(`docs/tdp_pipeline.md`, "Stage 2"). With `preprocessing.reverse_contract =
+true` the guards keep the **reverse contract**: each junks only the low
+half, so the reversed circuit still carries D⁻¹ of its input on wires n..2n.
+The default since recipe v14 (RC, 2026-11-01) is false: there is no closing
+guard, so only the forward payload is kept, and since recipe v15 (RC,
+2026-11-02) the opening guard is the **two-layer guard**, keyed on the
+register (wires n..2n-1) as well as the band, because the honest slice has
+both at zero: as a map (A, B, band) -> (f(A), h(B), band'), the identity on
+the data exactly on the honest slice, A scrambled whenever B or the band is
+nonzero, B whenever the band is. Layer 1 (keyed on the band) and layer 2
+(keyed on B) each hold n·⌈log2 n⌉ three-control gates opened into
+two-control gates through a helper wire (restored in B, not in the junk
+band); 4,512 gates at n = 128. Recipe v14's guard was keyed on the band only,
+so an input with the band zero and any value of B evaluated the sandwich off
+its slice; it is no longer built and the guard is not a setting. The band
+seed and reseed stay at both ends. The adaptive stage 6 checks the sandwich
 payload contract forward only (`tdp_adaptive --forward-only`).
 
 **Embedded masking** (`preprocessing.mode = "embedded-masking"`, preset
@@ -384,9 +397,13 @@ construction-time, C-informed procedure, not an attack.
 
 **Adaptive mode** (`delivery.mode = "adaptive"`, the default; binary
 `tdp_adaptive`, parameters in `[adaptive]`). Designed by RC
-(`~/Codex/output/docs/stage6_adaptive.md` §1-4) and revised into the "v2"
+(`~/Codex/output/docs/stage6_adaptive.md` §1-4), revised into the "v2"
 variant by the review
-(`docs/notes/stage6_adaptive_review_20261021.md`). Each round, on the
+(`docs/notes/stage6_adaptive_review_20261021.md`) and extended on 2026-11-02
+into recipe v15's stage 6 (`docs/notes/stage6_config_search_20261102.md`,
+`docs/ADAPTIVE_STAGE.md`). It first runs one exact **pre-cleanup** of the
+stage-5 circuit (NOT-push, then fcompress for 10 iterations), which alone
+removes about 62 % of the crossing walk's gates. Then each round, on the
 current circuit G:
 
 1. **Census.** The every-cut exposure census (96 × 64 = 6,144 honest inputs)
@@ -395,7 +412,7 @@ current circuit G:
 2. **Planning.** The circuit is partitioned into large variable-length
    blocks: from a start cut the gates are composed into exact ANF until the
    total reaches 131,072 terms at an eligible endpoint or the block reaches
-   65,536 gates (`term_cap`, `max_block_gates`). The boundary is chosen in
+   512 gates (`term_cap`, `max_block_gates`; 65,536 before recipe v15). The boundary is chosen in
    the upper half of the feasible interval by, in order: fewest deeper C
    values affinely exposed at the cut, fewest internal values exposed,
    largest clearance from the exposure intervals, fewest direct proxies,
@@ -409,23 +426,38 @@ current circuit G:
    60 s for a block of at most 1,000 gates, 120 s up to 4,000, 240 s above.
    A block that does not synthesize is split at exposure-aware cuts, two
    levels deep (`refinement_levels`), never below 128 gates.
-4. **Acceptance.** Per block the smallest candidate that exposes no more
-   deeper C values than the original is kept (`accept =
-   "smaller-not-leakier"`; `"smaller"` judges by size only). This is sound
+4. **Acceptance.** Per block the cheapest candidate that exposes no more
+   deeper C values, and no more C output bits before 90 % of the circuit,
+   than the original is kept (`accept = "smaller-not-leakier"`; `"smaller"`
+   judges by cost only). Cost is the 2-control cost (`cost =
+   "two-control"`): a gate with k > 2 controls counts as its 4k - 8 Toffolis,
+   so a synthesis that removes wide gates is not rejected as growing. This is sound
    because the honest-slice state at every retained boundary is fixed, so a
    block's exposure depends only on its own candidate.
 5. **Assembly.** The assembled circuit is checked equivalent to its input
    and its exposure measured.
 
-The run ends when two consecutive rounds compress jointly by less than
-`stop_fraction` = 2 %, after two rounds without decrease, or after
-`max_rounds` (0 = until the plateau). The smallest round output, in
-canonical commuting gate order (`canonical_order = true`, so no block
+These large-block rounds (phase A) end when two consecutive rounds compress
+jointly by less than `stop_fraction` = 20 % or after two rounds without
+decrease. **Phase B**, the descent, runs the same rounds at block caps 128,
+32 and 16 (`descent`; planned without reading C, the leak guard still
+applied), each to the same stall rule (`descent_stop_fraction` = 0.2) and
+followed by an exact cleanup. **Phase C** lowers every gate with more than 2
+controls (`lower_controls` = 2) by the exact Barenco decomposition and cleans
+again, so every gate of the published circuit has at most two controls.
+Every cleanup, like every block, is rejected if it raises the exposure;
+`max_rounds` (0 = until the plateaus) caps all phases together. The result,
+in canonical commuting gate order (`canonical_order = true`, so no block
 boundary survives), is written as `adaptive/final.mpmct1` after a zero-slice
 check against C and the sandwich payload contract, in both directions, or
 forward only (`--forward-only`, which the driver passes when stage 2 keeps no
 reverse contract, the default since recipe v14) (`configs/tdp.toml`,
-`[adaptive]`; `scripts/tdp_gen.sh`, stage 6).
+`[adaptive]`; `scripts/tdp_gen.sh`, stage 6). Recipe v15's stage 6 on the
+default runs: at n = 64 the 2-control cost of the stage-5 circuit, 17.3 M,
+went to 1.25 M (ratio 0.072, 2.35 h on 6 threads), at n = 128 41.6 M went to
+4.43 M (0.106, 4.0 h on 12 threads with a bounded synthesizer effort), each
+with 0 deeper C values and 0 early C outputs exposed in the census; the v2
+stage 6 had reached 0.250 at n = 128 in 4.6 days and left 8 early outputs.
 
 Why v2 rather than boundary choice alone: in RC's matched experiment a
 round whose 3,370 boundaries were all proxy-free still exposed 319 internal
@@ -434,8 +466,8 @@ blocks; the exposure-aware acceptance, the parallel planner, the avoidance
 radius and the size-scaled budget each answer a measured shortcoming of the
 first driver (review, findings 1-5).
 
-Measured on the server campaigns of October 2026
-(`docs/notes/stage2_stage6_campaign_20261021.md`;
+The v2 stage 6 (recipes v13 and v14) as measured on the server campaigns of
+October 2026 (`docs/notes/stage2_stage6_campaign_20261021.md`;
 `docs/notes/campaign_summary_20261026/summary.md` §4-5), n = 64, one
 master seed, arms differing only in stage 2:
 
@@ -551,10 +583,12 @@ resumes with its completed rounds kept. Every stage binary starts from an
 empty environment plus an allow-list; an inherited variable that could
 change the output is a fatal error.
 
-Checks: stage 2 verifies the payload forward and backward, stage 3 runs
-periodic global equivalence checks, and stage 6 checks every round's
-assembly against its input and the final circuit against C on the zero slice
-and against the sandwich payload contract in both directions. The run ends
+Checks: stage 2 verifies the payload on the honest slice (and backward
+under the reverse contract), stage 3 runs periodic global equivalence
+checks, and stage 6 checks every round, cleanup and phase-C output against
+its input and the final circuit against C on the zero slice and against the
+sandwich payload contract (forward only without the reverse contract, the
+default). The run ends
 with `PIPELINE COMPLETE (stages 1-6): <run>/adaptive/final.mpmct1`, or with
 `PIPELINE FINISHED WITH AN ALLOWED FAILURE` and a `NOT_RECOMMENDED` file
 when `adaptive.report` records a status other than `ok` (a failed stage
