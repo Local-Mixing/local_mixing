@@ -44,6 +44,20 @@ use std::time::Instant;
 
 /// Discovery batches of the prototype (6144 inputs).
 pub const DEFAULT_BATCHES: usize = 96;
+
+/// `census_batches` value meaning "the rule below" (`--census-batches auto`).
+pub const AUTO_BATCHES: usize = 0;
+
+/// The census batch rule (RC 2026-11-02, recipe v15): ceil((width + 512) /
+/// 64) batches of 64 inputs, a 512-sample margin over the circuit width. An
+/// exact (direct or affine) exposure satisfies its relation on every sample,
+/// so fewer samples never miss one; a value that is not affine fits the
+/// samples by chance with probability about 2^-(samples - width), here about
+/// 2^-511, and the validation pass rechecks every hit on fresh inputs. 12 at
+/// n = 64 (256 wires), 16 at n = 128 (512 wires).
+pub fn batches_for_width(width: usize) -> usize {
+    (width + 512).div_ceil(64)
+}
 /// The prototype's `HonestSamples` seed.
 pub const DISCOVERY_SEED: u64 = 20_261_016;
 /// Fresh random inputs of the audit.

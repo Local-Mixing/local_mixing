@@ -174,3 +174,37 @@ fn lowered_cost_counts_wide_gates_as_their_barenco_ladder() {
     let (low, _) = lower_wide_gates(std::slice::from_ref(&k6), 16, 2);
     assert_eq!(low.len(), lowered_cost(std::slice::from_ref(&k6)));
 }
+
+/// Random helper wires (stage 6's phase-C guard retries): still exact, the
+/// helpers never the target or a control, and the choice varies with the
+/// seed.
+#[test]
+fn seeded_helpers_stay_exact_and_vary() {
+    let width = 16;
+    let g = gate(
+        0,
+        &[(1, true), (2, false), (3, true), (4, true), (5, false)],
+        true,
+    );
+    let mut outs = Vec::new();
+    for seed in 0..6u64 {
+        let (out, rep) = lower_wide_gates_with(
+            std::slice::from_ref(&g),
+            width,
+            2,
+            HelperChoice::Seeded(seed),
+        );
+        assert_eq!((rep.wide_in, rep.wide_kept), (1, 0));
+        assert!(out.iter().all(|x| x.ctrls.len() <= 2));
+        equal_on(&out, std::slice::from_ref(&g), width);
+        outs.push(out);
+    }
+    assert!(
+        outs.windows(2).any(|w| w[0] != w[1]),
+        "the seed never changed the helpers"
+    );
+    let (lowest, _) = lower_wide_gates(std::slice::from_ref(&g), width, 2);
+    let (lowest2, _) =
+        lower_wide_gates_with(std::slice::from_ref(&g), width, 2, HelperChoice::Lowest);
+    assert_eq!(lowest, lowest2);
+}

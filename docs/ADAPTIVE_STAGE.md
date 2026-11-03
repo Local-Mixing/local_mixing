@@ -51,7 +51,9 @@ the managed driver's config validation applies both limits to the stage-2
 width before a run starts.
 
 1. **Census** (`census::census`). Every cut of $G$ is scanned on
-   `census_batches` × 64 honest inputs (6,144 by default; seed 20261016, the
+   `census_batches` × 64 honest inputs (the binary's default 96 batches =
+   6,144; `--census-batches auto`, the managed default since recipe v15, is
+   the census batch rule ⌈(width + 512) / 64⌉, 1,024 inputs at n = 128; seed 20261016, the
    prototype's) with an incremental GF(2) basis over the live wire values:
    for every birth of $C$ the intervals of cuts at which it is affinely
    recoverable, with the witnessing locations and the constant, and every
@@ -132,7 +134,8 @@ Defaults: `tdp_adaptive`'s own defaults are recipe v14's stage 6 (phase A
 only, blocks of up to 65,536 gates, raw gate count, stop fraction 0.02, wide
 gates kept). The managed driver's default since recipe v15 passes `--pre-cleanup
 --cost two-control --max-block-gates 512 --descent 128,32,16
---descent-stop-fraction 0.2 --stop-fraction 0.2 --lower-controls 2`
+--descent-stop-fraction 0.2 --stop-fraction 0.2 --lower-controls 2
+--census-batches auto`
 (docs/notes/stage6_config_search_20261102.md, docs/PIPELINE_V15_CHANGES.md).
 
 The run is a sequence of **levels** (steps inside stage 6, not pipeline
@@ -167,7 +170,16 @@ stages), each a sequence of rounds at one block size, run to its own stall:
   Barenco decomposition, then one more exact cleanup, so the published
   circuit is in the deliverable's gate set. The gate set changes, so phase C
   is unconditional (not size-gated) and verified equivalent; resumable in
-  `lower/`. `None` leaves the wide gates in place.
+  `lower/`. `None` leaves the wide gates in place. Under
+  `smaller-not-leakier` phase C is **guarded** like a cleanup (code review,
+  2026-11-02): the Barenco ladders borrow dirty helper wires and fcompress is
+  C-blind, so input and output are censused, and when the output exposes
+  more (validated deeper births, affine or direct, or early C outputs) up to
+  8 lowerings with random helper wires (NOT-push only) are tried; the first
+  that exposes no more is published (`check.phase_c_guard=random_helpers:<k>`).
+  When none does, the least exposed one is published and the report says
+  `status=leakier_lowering` (the driver marks the deliverable not
+  recommended). `check.phase_c_guard=kept` when the first lowering passed.
 
 **Cost model** (`cost`, flag `--cost gates|two-control`). "Smaller" in the
 acceptance, the stop rules and the cleanups means the raw gate count
@@ -189,13 +201,16 @@ The **final circuit** is the smallest circuit (under the cost model) the
 run reaches (phase C's output when it ran, else the smallest round, cleanup
 or pre-cleanup output; the input when nothing shrank). It is put into the canonical commuting gate order
 (`xgate_canonicalize`, `canonical_order = true`; checked equivalent on
-8 × 1,024 random full states) under a guard: the reordered circuit is
-censused, and if its validated deeper exposure (affine or direct) exceeds
-the final round's, the un-reordered round output is published instead
+8 × 1,024 random full states) under a guard: the reordered circuit and the
+circuit it reorders (phase C's or the last cleanup's output, not the last
+round's) are both censused, and if the reordered one exposes more (validated
+deeper births, affine or direct, or early C outputs; before the code review
+of 2026-11-02 only deeper births were compared, against the last round's
+output, and a reorder that moved a C output's first exposure from cut 56 to
+cut 1 was accepted), the circuit as assembled is published instead
 (`canonical_order_applied=false`, `canonical_order_reason=exposure
 increased (…)`; the reordered circuit's census is kept as
-`final_canonical_census/`), since the acceptance rule was evaluated on the
-round output's cut structure and a commuting reorder changes which values
+`final_canonical_census/`), since a commuting reorder changes which values
 are simultaneously live. The published circuit is then checked on the zero slice against $C$ (4,096
 inputs: $x$ on wires $0..n$, zeros elsewhere, $C(x)$ on wires $n..2n$) and
 against the sandwich's payload contract in both directions (8,192 random
@@ -222,7 +237,7 @@ tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwi
     [--lower-controls 2] [--cost gates|two-control] [--pre-cleanup]
     [--seeds-per-block K=2] [--time-limit S=60] [--restarts R=16] [--beam B=6]
     [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64]
-    [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192]
+    [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96|auto] [--probe-inputs 8192]
     [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits]
     [--compose-time-limit 300] [--compose-cap 1048576] [--ancilla-pool 32] [--equiv-batches 8] [--no-postopt]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96]

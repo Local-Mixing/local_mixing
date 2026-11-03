@@ -212,6 +212,7 @@ fn final_report_lists_rounds_and_checks() {
             zero_slice: 4096,
             payload_contract: None,
             payload_forward_only: false,
+            phase_c_guard: Some("kept".into()),
         },
         seconds: 3.0,
     };
@@ -240,6 +241,7 @@ fn final_report_lists_rounds_and_checks() {
         "check.input_payload_contract=skipped",
         "canonical_order_applied=true",
         "canonical_order_reason=ordered",
+        "check.phase_c_guard=kept",
         "param.compose_time_limit=300",
         "final_leakage.validated.affine.deeper_births=0",
     ] {
@@ -260,4 +262,40 @@ fn params_validate() {
         ..Default::default()
     };
     assert!(p.validate().is_err());
+}
+
+/// The leak guard's comparison (code review 2026-11-02): any of the three
+/// counts going up is leakier, an early C output as much as a deeper birth;
+/// the order puts early outputs first; the report status follows phase C.
+#[test]
+fn exposure_counts_early_outputs_as_leakage() {
+    use crate::stages::adaptive::driver::Exposure;
+    let base = Exposure {
+        early_outputs: 0,
+        deeper_affine: 2,
+        deeper_direct: 1,
+    };
+    let more_early = Exposure {
+        early_outputs: 1,
+        ..base
+    };
+    let fewer_deeper = Exposure {
+        deeper_affine: 1,
+        ..base
+    };
+    assert!(more_early.exceeds(&base));
+    assert!(!base.exceeds(&base));
+    assert!(!fewer_deeper.exceeds(&base));
+    assert!(
+        Exposure {
+            deeper_direct: 2,
+            ..fewer_deeper
+        }
+        .exceeds(&base)
+    );
+    assert!(fewer_deeper < more_early);
+    assert_eq!(
+        more_early.to_string(),
+        "deeper affine 2, direct 1, early outputs 1"
+    );
 }

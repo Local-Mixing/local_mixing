@@ -786,6 +786,21 @@ pub fn gates_digest(gates: &[XGate]) -> u128 {
 
 const DIGEST_FILE: &str = "circuit.xxh3";
 
+/// The audited census at `dir` when it is one of exactly `circuit` (the
+/// stamp names the circuit's digest); `None` otherwise. Never computes or
+/// writes anything (the reload half of [`load_or_census`]).
+pub fn reload_census(dir: &Path, circuit: &[XGate]) -> Option<Census> {
+    let digest = format!("{:032x}", gates_digest(circuit));
+    let stamp = fs::read_to_string(dir.join(DIGEST_FILE)).ok()?;
+    let mut f = stamp.split_whitespace();
+    if f.next() != Some(digest.as_str()) || f.next() != Some("audited") {
+        return None;
+    }
+    census::read_dir(dir)
+        .ok()
+        .filter(|c| c.gates == circuit.len())
+}
+
 /// The census of `circuit` at `dir`: reloaded when the directory holds a
 /// census of exactly this circuit (the stamp, written last, names the
 /// circuit and whether the census was audited; an audited census serves a

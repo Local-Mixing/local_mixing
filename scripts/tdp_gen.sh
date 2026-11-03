@@ -225,7 +225,8 @@ usage: tdp_gen.sh --source-wires N --run-directory RUNDIR [options]
                                     are penalized (0 = off)                    [64]
     --adaptive-refinement-levels L  split levels for blocks that do not synthesize [2]
     --adaptive-min-refine-gates G   shortest block that is split                [128]
-    --adaptive-census-batches B     exposure census inputs = 64 B               [96]
+    --adaptive-census-batches B     exposure census inputs = 64 B; auto = ceil((width + 512)
+                                    / 64), resolved by tdp_adaptive (16 at n = 128)  [auto]
     --adaptive-accept A             smaller-not-leakier (default) or smaller
     --adaptive-no-canonical-order   publish the assembly as is (no canonical gate order)
     windowed only (--packing-* above and):
@@ -302,7 +303,7 @@ declare -A TM=()
 DELIV_MODE=adaptive
 AD_MAX_ROUNDS=0; AD_STOP_FRACTION=0.2; AD_SEEDS=2; AD_TIME_LIMIT=60; AD_RESTARTS=16; AD_BEAM=6
 AD_TERM_CAP=131072; AD_MAX_BLOCK_GATES=512; AD_SEGMENTS=16; AD_AVOID_RADIUS=64; AD_REFINEMENT_LEVELS=2
-AD_MIN_REFINE_GATES=128; AD_CENSUS_BATCHES=96; AD_ACCEPT=smaller-not-leakier; AD_CANON=1
+AD_MIN_REFINE_GATES=128; AD_CENSUS_BATCHES=auto; AD_ACCEPT=smaller-not-leakier; AD_CANON=1
 AD_PRE_CLEANUP=1; AD_COST=two-control; AD_DESCENT=128,32,16; AD_DESCENT_STOP_FRACTION=0.2
 AD_CLEANUP_ITERS=10; AD_LOWER_CONTROLS=2
 SCHEDULE=validated; GROWTH=""; HOLD=""; EXPAND=""
@@ -725,7 +726,8 @@ AD_SEGMENTS=$(bounded_uint --adaptive-segments "$AD_SEGMENTS" 1 1024)
 AD_AVOID_RADIUS=$(bounded_uint --adaptive-avoid-radius "$AD_AVOID_RADIUS" 0 1000000)
 AD_REFINEMENT_LEVELS=$(bounded_uint --adaptive-refinement-levels "$AD_REFINEMENT_LEVELS" 0 16)
 AD_MIN_REFINE_GATES=$(bounded_uint --adaptive-min-refine-gates "$AD_MIN_REFINE_GATES" 1 100000000)
-AD_CENSUS_BATCHES=$(bounded_uint --adaptive-census-batches "$AD_CENSUS_BATCHES" 1 4096)
+[ "$AD_CENSUS_BATCHES" = auto ] ||
+  AD_CENSUS_BATCHES=$(bounded_uint --adaptive-census-batches "$AD_CENSUS_BATCHES" 1 4096)
 case "$AD_ACCEPT" in smaller-not-leakier|smaller) ;; *) fatal "--adaptive-accept must be smaller-not-leakier or smaller" ;; esac
 case "$AD_COST" in two-control|gates) ;; *) fatal "--adaptive-cost must be two-control or gates" ;; esac
 if [ "$AD_DESCENT" != none ]; then

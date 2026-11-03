@@ -60,7 +60,7 @@ pub fn run() {
     std::process::exit(code);
 }
 
-const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--descent 512,128,48,32,16,8] [--descent-stop-fraction 0.01] [--cleanup-fcompress-iters 10] [--lower-controls 2] [--cost gates|two-control] [--pre-cleanup] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
+const USAGE: &str = "tdp_adaptive run --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--sandwich S.mpmct1] [--forward-only] [--seed S | --seed-file PATH] [--threads T] [--max-rounds 0] [--stop-fraction 0.02] [--descent 512,128,48,32,16,8] [--descent-stop-fraction 0.01] [--cleanup-fcompress-iters 10] [--lower-controls 2] [--cost gates|two-control] [--pre-cleanup] [--seeds-per-block 2] [--time-limit 60] [--restarts 16] [--beam 6] [--term-cap 131072] [--max-block-gates 65536] [--segments 16] [--avoid-radius 64] [--refinement-levels 2] [--min-refine-gates 128] [--census-batches 96|auto] [--probe-inputs 8192] [--accept smaller|smaller-not-leakier] [--blind] [--no-canonical-order] [--keep-round-circuits] [--no-postopt] [--ancilla-pool 32] [--compose-cap 1048576] [--compose-time-limit 300] [--equiv-batches 8] [--label tdp]
 tdp_adaptive census --input G.mpmct1 --source-c C.g57 --n N --out-dir DIR [--census-batches 96] [--probe-inputs 8192] [--threads T] [--label tdp]
 tdp_adaptive help";
 
@@ -292,7 +292,20 @@ fn params_of(a: &Args) -> Result<DriverParams, AdaptiveError> {
     r.plan.avoid_radius = a.usize_or("avoid-radius", r.plan.avoid_radius)?;
     r.refinement_levels = a.usize_or("refinement-levels", r.refinement_levels)?;
     r.min_refine_gates = a.usize_or("min-refine-gates", r.min_refine_gates)?;
-    r.census_batches = a.usize_or("census-batches", r.census_batches)?;
+    // `auto` = the census batch rule at the input's width (resolved in the
+    // driver); an explicit 0 is refused rather than read as auto
+    r.census_batches = match a.get("census-batches") {
+        Some("auto") => census::AUTO_BATCHES,
+        Some(_) => match a.usize_or("census-batches", r.census_batches)? {
+            0 => {
+                return Err(AdaptiveError::Usage(
+                    "--census-batches: a positive count or auto".into(),
+                ));
+            }
+            b => b,
+        },
+        None => r.census_batches,
+    };
     r.equiv_batches = a.usize_or("equiv-batches", r.equiv_batches)?;
     r.blind = a.flag("blind");
     if let Some(s) = a.get("accept") {

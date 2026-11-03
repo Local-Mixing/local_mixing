@@ -71,6 +71,17 @@ fn barenco_xgate(t: u16, c: &[u16], h: &[u16], out: &mut Vec<XGate>) {
     ladder(k - 2, c, h, out);
 }
 
+/// Which spare wires a wide gate borrows as its dirty helpers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelperChoice {
+    /// The lowest-indexed wires that are neither the target nor a control.
+    Lowest,
+    /// Spare wires drawn at random (a stream seeded once for the pass). The
+    /// helpers' transient values differ between choices, and so does what a
+    /// census of the lowered circuit sees (stage 6's phase-C guard retries).
+    Seeded(u64),
+}
+
 /// Rewrite every gate with more than `max_controls` controls (which must be
 /// at least 2) into 2-control gates, exactly. Other gates pass through
 /// unchanged. Panics never: a wide gate always has enough spare wires on a
@@ -81,7 +92,23 @@ pub fn lower_wide_gates(
     width: usize,
     max_controls: usize,
 ) -> (Vec<XGate>, LowerReport) {
+    lower_wide_gates_with(gates, width, max_controls, HelperChoice::Lowest)
+}
+
+/// [`lower_wide_gates`] with the helper wires chosen by `helpers`.
+pub fn lower_wide_gates_with(
+    gates: &[XGate],
+    width: usize,
+    max_controls: usize,
+    helpers_from: HelperChoice,
+) -> (Vec<XGate>, LowerReport) {
+    use rand::seq::SliceRandom;
+    use rand::{SeedableRng, rngs::StdRng};
     assert!(max_controls >= 2, "max_controls must be at least 2");
+    let mut rng = match helpers_from {
+        HelperChoice::Seeded(seed) => Some(StdRng::seed_from_u64(seed)),
+        HelperChoice::Lowest => None,
+    };
     let mut out: Vec<XGate> = Vec::with_capacity(gates.len());
     let mut rep = LowerReport::default();
     for g in gates {
@@ -100,17 +127,18 @@ pub fn lower_wide_gates(
             .filter(|&&(_, p)| !p)
             .map(|&(w, _)| w)
             .collect();
-        // k - 2 dirty helpers: the lowest-indexed wires that are neither the
-        // target nor a control.
+        // k - 2 dirty helpers among the wires that are neither the target
+        // nor a control: the lowest-indexed ones, or random ones.
         let mut used = vec![false; width];
         used[t as usize] = true;
         for &w in &ctrl_wires {
             used[w as usize] = true;
         }
-        let helpers: Vec<u16> = (0..width as u16)
-            .filter(|&w| !used[w as usize])
-            .take(k - 2)
-            .collect();
+        let mut spare: Vec<u16> = (0..width as u16).filter(|&w| !used[w as usize]).collect();
+        if let Some(rng) = rng.as_mut() {
+            spare.shuffle(rng);
+        }
+        let helpers: Vec<u16> = spare.into_iter().take(k - 2).collect();
         if helpers.len() < k - 2 {
             // Not enough spare wires for the dirty-ancilla chain: keep the
             // wide gate as it is (exact, just not lowered).

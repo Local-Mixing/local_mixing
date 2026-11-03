@@ -7,19 +7,28 @@ in order, with the sizes of one complete run: the n = 128 pipeline run of
 
 **What v15 is.** Recipe v15 (`tdp_command_recipe=15`) is the managed driver's
 default (`local_mixing_bin tdp_gen`, `configs/tdp.toml`) since 2026-11-02. Against
-recipe v14 (`main` at `2b4b6374`) it changes three things: stage 2's opening guard is
-the two-layer guard keyed on the register and the band (§2, step 2); stage 3 twists
-at rate 0.001 over spans of at least 100,000 gates; stage 6 is the redesigned adaptive
-stage (`docs/notes/stage6_config_search_20261102.md`). The changes and how they were
-chosen: `docs/PIPELINE_V15_CHANGES.md`. Every default: the table at the end.
+recipe v14 (`main` at `2b4b6374`) it changes three stages:
+- stage 2: the opening guard is the two-layer guard keyed on the register and the band
+  (§2, step 2), and the band seed and reseed are random g57 gates (steps 3 and 5);
+- stage 3: wire-swap twists at rate 0.001 over spans of at least 100,000 gates;
+- stage 6: the redesigned adaptive stage (`docs/notes/stage6_config_search_20261102.md`),
+  with the leak guard on every block acceptance, every cleanup, phase C and the
+  canonical order.
+
+The changes and how they were chosen: `docs/PIPELINE_V15_CHANGES.md`. Every default:
+the table at the end.
 
 **About the worked example.** The n = 128 run below was made on 2026-11-02 before the
 stage-2 change: its stage 2 opened with recipe v14's band-keyed guard (2,560 gates) and
-seeded the band with about 2,800 gates at each end. In v15 the guard is 9,380 gates
-and each band seed 7,168 at n = 128, so a v15 stage 2 is about 15,500 gates (1.4 %)
+seeded the band with about 2,860 gates at each end. In v15 the guard is 9,380 gates
+and each band seed 7,168 at n = 128, so a v15 stage 2 is about 15,400 gates (1.4 %)
 larger; the compute is unchanged. Its stage 6 used a bounded synthesizer effort (2
-restarts, 12 s budgets, census batches 16); the defaults are 16 restarts, 60 s budgets
-and 96 census batches.
+restarts, 12 s budgets) and 16 census batches, which is what the v15 census batch rule
+gives at n = 128, and took 4.0 h, 2.8 h of it in the census. With the default effort
+(16 restarts, 60 s budgets) stage 6 at n = 128 is estimated at about 7 h on this Mac
+(about 2.8 h census, 3 h synthesis, 0.7 h cleanups), the whole pipeline at about 9 h;
+at n = 64 about 2-2.5 h in all (estimates; the default effort has not been run at
+n = 128).
 
 **Conventions.** C is the secret source circuit on n wires. A *g57 gate* is
 `a ^= b OR NOT c`. The *honest slice*: inputs x on wires 0..n-1, every other wire
@@ -29,7 +38,7 @@ with k controls costs 4k - 8 two-control gates when lowered (k > 2).
 
 | stage | binary | what it produces | n = 128 example | time (Mac, 2026-11-02) |
 |---|---|---|---|---|
-| 1 sandwich | `gen_sandwich_gadget` | C, copy, D, V gadget on 2n wires | 6,761 gates, 256 wires | stages 1-2 together: < 2 min |
+| 1 sandwich | `gen_sandwich_gadget` | C, copy, D, V gadget on 2n wires | 6,761 gates, 256 wires | stages 1-2 together: a few seconds |
 | 2 three-mask preprocessing | (same process) | the masked circuit on 4n wires | 1,141,924 gates, 512 wires (v14 guard and seeds; v15: about +15,400) | (with stage 1) |
 | 3 database mixing | `circuit_mixer` | DB-respelled, ~2x | 2,566,339 | 58 min |
 | 4 splitting | `circuit_mixer` | complemented gates split, ~1.9x | 4,739,227 | 5 min |
@@ -106,9 +115,10 @@ has two blocks:
 No gate has more than two controls. n = 128: 9,380 gates (block 1: 3,072 + 32 +
 5,376, block 2: 896, plus 4 repair gates); n = 64: 4,120. Measured on 256 random
 inputs per key: a one-hot band key changes all 128 B wires (and 127-128 of the A
-wires), a one-hot B key flips one A bit on every input (one of 3 wires). Every draw is checked (exhaustively up to 20 wires,
-by sampling above: the slice exact, the one-hot coverage, 512 weight-2 and 512 random
-keys disturbing A) and redrawn if it fails. v15 keeps no reverse contract, so there is
+wires), a one-hot B key flips one A bit on every input (one of 3 wires). Every draw
+is checked (exhaustively up to 20 wires, by sampling above: the slice exact, the
+one-hot coverage, 512 weight-2 and 512 random keys disturbing A) and redrawn if it
+fails. v15 keeps no reverse contract, so there is
 no closing guard. The guard is not a setting: recipe v14's guard was keyed on the band
 only, so with the band zero every value of B passed it and the circuit evaluated the
 sandwich off its slice.
@@ -229,12 +239,19 @@ of up to 12 controls (5.27M of them wide).
 
 The managed driver runs `tdp_adaptive run ... --stop-fraction 0.2 --pre-cleanup
 --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2
---max-block-gates 512 --forward-only` (`tdp_adaptive`'s own defaults are recipe v14's
-stage 6, so the v15 settings are passed explicitly); everything else is at its
-default: 2 synthesizer seeds per block, 16 restarts, 60 s budgets, census batches 96,
-10 fcompress iterations per cleanup, no round cap. The n = 128 example used the
-bounded effort `--restarts 2 --time-limit 12 --census-batches 16`; the default effort
-compresses about 6 % further at about 3.4x the time (measured at n = 64).
+--max-block-gates 512 --census-batches auto --forward-only` (`tdp_adaptive`'s own
+defaults are recipe v14's stage 6, so the v15 settings are passed explicitly);
+everything else is at its default: 2 synthesizer seeds per block, 16 restarts, 60 s
+budgets, 10 fcompress iterations per cleanup, no round cap. `auto` census batches are
+the **census batch rule**, ⌈(W + 512) / 64⌉ batches of 64 honest inputs for a W-wire
+circuit (16 at n = 128, 12 at n = 64): an exact exposure fits every sample, so fewer
+samples never miss one, and with a 512-sample margin over the width a value that is
+not affine fits them by chance with probability about 2^-511; every hit is re-tested
+on fresh and structured inputs anyway. The census time grows with the batch count
+(the former default of 96 batches would make it 6 times longer at n = 128). The n = 128
+example used the bounded effort `--restarts 2 --time-limit 12` (and 16 census batches,
+the rule's value); the default effort compresses about 6 % further at about 3.4x the
+synthesis time (measured at n = 64).
 
 **1. Pre-cleanup** (one pass, exact)
 - **NOT-push:** absorb the interior NOT gates into the polarity of the downstream
@@ -243,7 +260,7 @@ compresses about 6 % further at about 3.4x the time (measured at n = 64).
   past each other where that is exact, for 10 iterations.
 - **Equivalence check** on random full states.
 - **Leak guard:** census before and after; the cleanup is rejected if it exposes
-  more of C.
+  more of C (deeper values, affinely or directly, or C output bits before 90 % depth).
 - n = 128: 8,746,933 -> 3,332,296 gates. This single step removes most of the
   crossing walk's redundancy.
 
@@ -276,13 +293,19 @@ ending at 4,401,829 gates.
 2. **Clean:** NOT-push and fcompress.
 3. **Lower again**, because fcompress can re-widen gates.
 4. **Hard check** that every gate has at most 2 controls, then verify equivalence.
+5. **Leak guard:** census before and after. If the result exposes more (deeper
+   births or early C outputs), retry the lowering with random helper wires (up to
+   8 times, NOT-push only) and publish the first that exposes no more; if none
+   does, publish the least exposed one and report `status=leakier_lowering` (not
+   recommended).
 
 n = 128: 7,065 wide gates were left by this point (most had been resynthesized
 away); the result was 4,427,214 gates.
 
 **5. Finish**
 - **Canonical gate order:** reorder commuting gates into a canonical order, kept
-  only if it does not increase exposure.
+  only if it exposes no more than the circuit it reorders: deeper births (affine
+  or direct) and early C outputs.
 - **Zero slice** (sanity check): x on the input wires, zeros elsewhere, gives C(x)
   on the output wires.
 - **Payload contract** (sanity check) against the sandwich (forward only: the v15
@@ -324,7 +347,7 @@ TOML key and the script flag of each setting: `docs/tdp_pipeline.md`.
 
 | setting | default |
 |---|---|
-| `preprocessing.mode` | `three-mask` (outer blocks: preset L8; band seed and reseed with 4 nonlinear products per band wire) |
+| `preprocessing.mode` | `three-mask` (the compute between the guard and band seeds below) |
 | `preprocessing.reverse_contract` | false (no closing guard; forward payload only) |
 | opening guard | the two-layer guard (not a setting): block 1 = band spread + 3·n·⌈log2 n⌉ three-control gates keyed on the band (2/3 into B, 1/3 into A), block 2 = a partition triple keyed on every B wire (7n gates); 9,380 gates at n = 128 |
 | band seed, band reseed | 8·n·⌈log2 n⌉ random g57 gates each (not a setting): 7,168 at n = 128, 3,072 at n = 64 |
@@ -382,7 +405,7 @@ DB, twists and compression off.
 | `adaptive.term_cap` | 131,072 ANF terms |
 | `adaptive.segments`, `avoid_radius` | 16, 64 |
 | `adaptive.refinement_levels`, `min_refine_gates` | 2, 128 |
-| `adaptive.census_batches` | 96 (6,144 honest inputs) |
+| `adaptive.census_batches` | auto: ⌈(W + 512) / 64⌉ for the W-wire stage-2 circuit, 16 at n = 128 (1,024 honest inputs), 12 at n = 64; an integer overrides it |
 | `adaptive.accept` | `smaller-not-leakier` (the leak guard) |
 | `adaptive.canonical_order` | true |
 
@@ -400,7 +423,10 @@ verify every DB splice exhaustively and run a global sampled check every 10,000
 moves; stage 6 checks every block, every round, every cleanup and phase C against
 their inputs on random full states. The zero-slice and payload-contract checks at
 the end (and on the stage-6 input, before round 1) compare against the original
-specification, C and the sandwich, rather than the previous step.
+specification, C and the sandwich, rather than the previous step. Separately from
+equivalence, stage 6's leak guard censuses both sides of every block acceptance,
+cleanup, phase C and the canonical order, and refuses (or, for phase C, retries)
+any step that exposes more of C.
 
 ## What is published and what stays secret
 

@@ -222,7 +222,9 @@ schedule = "validated"  # "validated" (profile 2,2,2,2,2, moves int(G*2*2*1.3)) 
 # restarts = 16  beam = 6  # the synthesizer's restarts and lookahead width
 #                          # (restarts = 2, time_limit = 12: ~3.4x faster, ~6 % larger)
 # term_cap = 131072  segments = 16  avoid_radius = 64
-# refinement_levels = 2  min_refine_gates = 128  census_batches = 96
+# refinement_levels = 2  min_refine_gates = 128
+# census_batches = 16  # integer 1..4096; default auto = ceil((stage-2 width + 512) / 64)
+#                      # (16 at n = 128, 12 at n = 64); recipe v14 used 96
 # accept = "smaller-not-leakier"  # or "smaller" (size only)
 # canonical_order = true  # bool; false publishes the assembly as is
 

@@ -76,7 +76,8 @@ exposed** if some wire satisfies w_i(t, x) = c_j(x) ⊕ b for a constant b, and
 **affinely exposed** if c_j(x) = b ⊕ XOR_{i in S} w_i(t, x) for a set S of
 wires live at the same cut (`~/Codex/output/docs/stage6_adaptive.md` §1).
 The **census** checks every cut and the whole affine span of the live wires
-on 6,144 honest inputs and re-tests every identity it finds on 8,192 fresh
+on 64 × ⌈(W + 512) / 64⌉ honest inputs for a W-wire circuit (1,024 at n = 128;
+6,144 before recipe v15) and re-tests every identity it finds on 8,192 fresh
 and about 8,000 structured inputs
 (`docs/notes/campaign_summary_20261026/summary.md` §1).
 
@@ -412,7 +413,7 @@ stage-5 circuit (NOT-push, then fcompress for 10 iterations), which alone
 removes about 62 % of the crossing walk's gates. Then each round, on the
 current circuit G:
 
-1. **Census.** The every-cut exposure census (96 × 64 = 6,144 honest inputs)
+1. **Census.** The every-cut exposure census (64 × ⌈(W + 512) / 64⌉ honest inputs, 1,024 at n = 128)
    locates where each internal value of C is directly or affinely
    recoverable from the live wires, as intervals of cuts.
 2. **Planning.** The circuit is partitioned into large variable-length
@@ -667,8 +668,9 @@ of the published circuit.
 - **exposure**, **direct / affine proxy**: a birth equal, on honest inputs,
   to one live wire (up to complement) or to an affine combination of live
   wires at some cut.
-- **census**: the every-cut exposure scan of a circuit against C (6,144
-  honest inputs, witnesses re-tested on fresh and structured inputs).
+- **census**: the every-cut exposure scan of a circuit against C (64 ×
+  ⌈(W + 512) / 64⌉ honest inputs, witnesses re-tested on fresh and structured
+  inputs).
 - **block** (adaptive stage 6): a variable-length stretch of the circuit
   grown by exact ANF composition and resynthesized from its ANF; **window**
   is the fixed-size analogue of the windowed mode.

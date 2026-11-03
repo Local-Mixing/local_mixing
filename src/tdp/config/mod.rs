@@ -744,6 +744,9 @@ pub(crate) struct AdaptiveConfig {
     pub(crate) avoid_radius: u64,
     pub(crate) refinement_levels: u64,
     pub(crate) min_refine_gates: u64,
+    /// Census batches of 64 inputs; 0 = auto (since recipe v15): the census
+    /// batch rule ceil((width + 512) / 64), resolved by `tdp_adaptive` from
+    /// the stage-2 circuit's width (12 at n = 64, 16 at n = 128).
     pub(crate) census_batches: u64,
     /// `smaller-not-leakier` (v2) or `smaller`.
     pub(crate) accept: String,
@@ -779,7 +782,7 @@ impl Default for AdaptiveConfig {
             avoid_radius: 64,
             refinement_levels: 2,
             min_refine_gates: 128,
-            census_batches: 96,
+            census_batches: 0,
             accept: "smaller-not-leakier".into(),
             canonical_order: true,
             pre_cleanup: true,
@@ -856,8 +859,8 @@ impl AdaptiveConfig {
             ),
             (
                 "--adaptive-census-batches",
-                self.census_batches.to_string(),
-                d.census_batches.to_string(),
+                census_text(self.census_batches),
+                census_text(d.census_batches),
             ),
             ("--adaptive-accept", self.accept.clone(), d.accept),
             ("--adaptive-cost", self.cost.clone(), d.cost),
@@ -882,6 +885,15 @@ impl AdaptiveConfig {
 
     pub(crate) fn is_default(&self) -> bool {
         *self == AdaptiveConfig::default()
+    }
+}
+
+/// `adaptive.census_batches` as text: `auto` for 0, else the count.
+pub(crate) fn census_text(batches: u64) -> String {
+    if batches == 0 {
+        "auto".to_string()
+    } else {
+        batches.to_string()
     }
 }
 

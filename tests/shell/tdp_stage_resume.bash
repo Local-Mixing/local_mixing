@@ -297,7 +297,7 @@ grep -q 'PIPELINE COMPLETE (stages 1-6): .*/adaptive/final.mpmct1' "$tmp/w1.log"
 [ "$(count tdp_packing run)" = 0 ]
 for f in adaptive/final.mpmct1 adaptive/adaptive.report delivery.recipe stage6.log; do test -s "$R/$f"; done
 test ! -e "$R/adaptive/attempt.recipe"
-for line in '^delivery_recipe=2$' '^delivery_mode=adaptive$' '^tdp_adaptive_sha256=' '^adaptive_params=--stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --max-block-gates 512$' \
+for line in '^delivery_recipe=2$' '^delivery_mode=adaptive$' '^tdp_adaptive_sha256=' '^adaptive_params=--stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --max-block-gates 512 --census-batches auto$' \
             '^seed_mac.unpack=' '^mac.stage2=' '^mac.stage3=' '^mac.source_c=' '^mac.sandwich=' '^mac.final=' \
             '^status=ok$' '^adaptive_status=ok$' '^rounds=1$' '^stop_reason=two consecutive rounds without size decrease$'; do
   grep -q "$line" "$R/delivery.recipe" || { echo "delivery.recipe lacks $line" >&2; cat "$R/delivery.recipe" >&2; exit 1; }
@@ -326,7 +326,7 @@ grep -q 'stage 6: .* matches its completion marker, skipping' "$tmp/w2.log"
 drive --adaptive-max-rounds 3 --adaptive-time-limit 30 > "$tmp/w3.log" 2>&1
 grep -q 'stage 6: completion marker does not match' "$tmp/w3.log"
 [ "$(count tdp_adaptive run)" = 2 ]
-grep -q '^adaptive_params=--max-rounds 3 --stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --time-limit 30 --max-block-gates 512$' "$R/delivery.recipe"
+grep -q '^adaptive_params=--max-rounds 3 --stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --time-limit 30 --max-block-gates 512 --census-batches auto$' "$R/delivery.recipe"
 grep -q -- '"--max-rounds", "3"' <(tail -1 "$R.calls")
 # a tampered final circuit re-runs stage 6
 printf 'x' >> "$R/adaptive/final.mpmct1"

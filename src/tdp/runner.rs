@@ -1007,7 +1007,7 @@ pub(crate) fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary
             a.avoid_radius,
             a.refinement_levels,
             a.min_refine_gates,
-            a.census_batches,
+            crate::tdp::config::census_text(a.census_batches),
             a.accept,
             a.canonical_order
         );

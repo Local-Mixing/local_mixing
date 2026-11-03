@@ -16,7 +16,9 @@ pub mod notpush;
 pub mod packing;
 pub mod reduce;
 pub mod transport;
-pub use lower2::{LowerReport, lower_wide_gates, lowered_cost};
+pub use lower2::{
+    HelperChoice, LowerReport, lower_wide_gates, lower_wide_gates_with, lowered_cost,
+};
 pub use notpush::{NotPushReport, push_nots};
 pub use packing::{compact, compact_gate, pack, pack_census};
 use reduce::*;

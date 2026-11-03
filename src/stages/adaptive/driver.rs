@@ -33,10 +33,11 @@
 //! DIR/adaptive.log            every progress line, appended across resumes
 //! ```
 use super::boundary;
+use super::census::{AUTO_BATCHES, batches_for_width};
 use super::round::{
     Accept, AdaptiveError, Cost, EARLY_OUTPUT_FRAC, Leakage, Log, RoundContext, RoundParams,
     RoundResult, gates_digest, leakage_kv, load_or_census, parse_kv, path_str, read_bounds_file,
-    reload_round, run_round, write_text_atomic,
+    reload_census, reload_round, run_round, write_text_atomic,
 };
 use super::synth::same_function;
 use super::types::{Census, Source};
@@ -46,7 +47,7 @@ use crate::circuit::xgate::XGate;
 use crate::stages::packing::pyrand::PyRandom;
 use crate::stages::packing::verify::{Lanes, eval_gates_lanes16, random_lanes};
 use crate::stages::post_processing::compression::{
-    CompressParams, compress, lower_wide_gates, push_nots,
+    CompressParams, HelperChoice, compress, lower_wide_gates, lower_wide_gates_with, push_nots,
 };
 use crate::stages::unpacking::types::MAX_STATE_WIRES;
 use crate::stages::unpacking::verify::check_zero_slice_gates;
@@ -124,6 +125,10 @@ pub struct DriverParams {
     pub keep_round_circuits: bool,
     /// Probe inputs of the boundary classification.
     pub probe_inputs: usize,
+    /// `round.census_batches` was given as `auto` ([`AUTO_BATCHES`]) and
+    /// resolved by the census batch rule ([`batches_for_width`]) once the
+    /// input's width was known.
+    pub census_batches_auto: bool,
 }
 
 impl Default for DriverParams {
@@ -140,13 +145,19 @@ impl Default for DriverParams {
             canonical_order: true,
             keep_round_circuits: false,
             probe_inputs: boundary::DEFAULT_PROBE_INPUTS,
+            census_batches_auto: false,
         }
     }
 }
 
 impl DriverParams {
     pub fn validate(&self) -> Result<(), String> {
-        self.round.validate()?;
+        // `auto` census batches are resolved from the input's width in `run`
+        let mut round = self.round.clone();
+        if round.census_batches == AUTO_BATCHES {
+            round.census_batches = 1;
+        }
+        round.validate()?;
         if self.max_rounds > 10_000 {
             return Err("max rounds: at most 10000".into());
         }
@@ -203,11 +214,19 @@ pub struct FinalChecks {
     /// the run that wrote it stands (`check.equiv_canonical=reloaded`).
     pub canonical_reloaded: bool,
     /// Whether the canonical order was published: `Some(false)` when the
-    /// reordered circuit exposed more deeper births (validated) than the
-    /// final round's output, or with `--no-canonical-order`; `None` when a
-    /// reloaded final's previous report does not say.
+    /// reordered circuit exposed more than the circuit it reorders (validated
+    /// deeper births, affine or direct, or early C outputs: [`Exposure`]),
+    /// or with `--no-canonical-order`; `None` when a reloaded final's
+    /// previous report does not say.
     pub canonical_applied: Option<bool>,
     pub canonical_reason: String,
+    /// Phase C's leak guard: `kept` (the lowering and cleanup exposed no
+    /// more than phase C's input), `random_helpers:<k>` (it did, and the
+    /// k-th lowering with random helper wires did not), `leakier` (no
+    /// lowering avoided it: the least exposed one is published and the
+    /// report's status is `leakier_lowering`), `off` (guard off); `None`
+    /// when phase C did not run.
+    pub phase_c_guard: Option<String>,
     pub zero_slice: usize,
     /// Payload contract inputs (both directions, or forward only), when a
     /// sandwich was given.
@@ -236,6 +255,77 @@ pub struct FinalReport {
     pub checks: FinalChecks,
     pub seconds: f64,
 }
+
+impl FinalReport {
+    /// `ok`, or `leakier_lowering` when phase C could not lower the wide
+    /// gates without exposing more than its input (the published circuit is
+    /// then not recommended: tdp_gen.sh records an allowed failure).
+    pub fn status(&self) -> &'static str {
+        if self.checks.phase_c_guard.as_deref() == Some("leakier") {
+            "leakier_lowering"
+        } else {
+            "ok"
+        }
+    }
+}
+
+/// What the leak guard compares, from a validated census: deeper births of C
+/// exposed affinely and directly, and C output bits affinely exposed before
+/// [`EARLY_OUTPUT_FRAC`] of the circuit. Ordered early outputs first, so the
+/// minimum is the least exposed circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Exposure {
+    pub early_outputs: usize,
+    pub deeper_affine: usize,
+    pub deeper_direct: usize,
+}
+
+impl Exposure {
+    pub fn of(census: &Census, source: &Source) -> Exposure {
+        let l = Leakage::of(census, source);
+        Exposure {
+            early_outputs: census.early_output_count(EARLY_OUTPUT_FRAC),
+            deeper_affine: l.validated.affine.deeper_births,
+            deeper_direct: l.validated.direct.deeper_births,
+        }
+    }
+
+    /// Any of the three counts above `base`'s: the guarded step is leakier.
+    pub fn exceeds(&self, base: &Exposure) -> bool {
+        self.deeper_affine > base.deeper_affine
+            || self.deeper_direct > base.deeper_direct
+            || self.early_outputs > base.early_outputs
+    }
+}
+
+impl std::fmt::Display for Exposure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "deeper affine {}, direct {}, early outputs {}",
+            self.deeper_affine, self.deeper_direct, self.early_outputs
+        )
+    }
+}
+
+/// Copy a census directory (flat: interval tables, summary, audit, stamp).
+fn copy_census_dir(src: &Path, dst: &Path) -> Result<(), AdaptiveError> {
+    let _ = fs::remove_dir_all(dst);
+    fs::create_dir_all(dst).map_err(|e| AdaptiveError::io(dst, e))?;
+    for entry in fs::read_dir(src).map_err(|e| AdaptiveError::io(src, e))? {
+        let entry = entry.map_err(|e| AdaptiveError::io(src, e))?;
+        let from = entry.path();
+        if from.is_file() {
+            let to = dst.join(entry.file_name());
+            fs::copy(&from, &to).map_err(|e| AdaptiveError::io(&to, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Lowerings with random helper wires phase C tries when the plain one is
+/// leakier than its input.
+const PHASE_C_HELPER_ATTEMPTS: u64 = 8;
 
 // ---------------------------------------------------------------- stop rules
 
@@ -606,7 +696,7 @@ pub fn final_report_text(
     let p = &params.round;
     let mut s = String::new();
     let _ = writeln!(s, "adaptive_report=1");
-    let _ = writeln!(s, "status=ok");
+    let _ = writeln!(s, "status={}", rep.status());
     let _ = writeln!(s, "tool=tdp_adaptive {}", env!("CARGO_PKG_VERSION"));
     let _ = writeln!(s, "input={}", inputs.input.display());
     let _ = writeln!(s, "source_c={}", inputs.source_c.display());
@@ -682,6 +772,15 @@ pub fn final_report_text(
     let _ = writeln!(s, "param.refinement_levels={}", p.refinement_levels);
     let _ = writeln!(s, "param.min_refine_gates={}", p.min_refine_gates);
     let _ = writeln!(s, "param.census_batches={}", p.census_batches);
+    let _ = writeln!(
+        s,
+        "param.census_batches_rule={}",
+        if params.census_batches_auto {
+            "auto"
+        } else {
+            "explicit"
+        }
+    );
     let _ = writeln!(s, "param.probe_inputs={}", params.probe_inputs);
     let _ = writeln!(s, "param.accept={}", p.accept.name());
     let _ = writeln!(s, "param.blind={}", p.blind);
@@ -766,6 +865,11 @@ pub fn final_report_text(
             .map_or("unknown".to_string(), |b| b.to_string())
     );
     let _ = writeln!(s, "canonical_order_reason={}", rep.checks.canonical_reason);
+    let _ = writeln!(
+        s,
+        "check.phase_c_guard={}",
+        rep.checks.phase_c_guard.as_deref().unwrap_or("not_run")
+    );
     let _ = writeln!(s, "check.zero_slice=ok({})", rep.checks.zero_slice);
     let _ = writeln!(
         s,
@@ -977,8 +1081,14 @@ fn cleanup_pass(
 /// (exact Barenco), then one exact NOT-push + fcompress cleanup, and make
 /// the result the published circuit. Exact and verified on `equiv_batches`
 /// x 1024 states. Returns the new circuit (the gate SET changed, so this is
-/// unconditional, not size-gated) or `None` when there were no wide gates.
-/// Resumable keyed on the input gate count (the `lower/` dir).
+/// unconditional, not size-gated) with the leak guard's outcome, or `None`
+/// when there were no wide gates. With `guard` (the leak guard on), the
+/// result may not expose more than the input ([`Exposure`]); when it does,
+/// up to [`PHASE_C_HELPER_ATTEMPTS`] lowerings with random helper wires
+/// (NOT-push only) are tried, and when none avoids it the least exposed
+/// candidate is published with the outcome `leakier`. Resumable keyed on the
+/// input gate count (the `lower/` dir).
+#[allow(clippy::too_many_arguments)]
 fn lower_and_clean(
     current: &mut Current,
     width: usize,
@@ -986,8 +1096,10 @@ fn lower_and_clean(
     fcompress_iters: usize,
     equiv_batches: usize,
     dir: &Path,
+    guard: Option<&RoundContext<'_>>,
+    seed: u64,
     log: Log<'_>,
-) -> Result<Option<Vec<XGate>>, AdaptiveError> {
+) -> Result<Option<(Vec<XGate>, String)>, AdaptiveError> {
     let in_count = current.count;
     let out_path = dir.join("output.mpmct1");
     let report = dir.join("lower.report");
@@ -1005,13 +1117,17 @@ fn lower_and_clean(
             }
             let (g, w) = read_mpmct(path_str(&out_path)?)
                 .map_err(|e| AdaptiveError::Input(format!("{}: {e}", out_path.display())))?;
+            let outcome = kv
+                .get("guard_outcome")
+                .cloned()
+                .unwrap_or_else(|| "off".to_string());
             if w == width {
                 log(&format!(
-                    "phase C {} reloaded: {in_count} -> {} gates",
+                    "phase C {} reloaded: {in_count} -> {} gates (guard {outcome})",
                     dir.display(),
                     g.len()
                 ));
-                return Ok(Some(g));
+                return Ok(Some((g, outcome)));
             }
         }
     }
@@ -1070,12 +1186,99 @@ fn lower_and_clean(
             cleaned.len(),
         )));
     }
+    // The leak guard: the lowering's dirty helpers and the cleanup are C-blind,
+    // so census both sides; a leakier result is retried with random helper
+    // wires (lowering and NOT-push only) and, failing that, the least
+    // exposed candidate is published and flagged.
+    let mut cleaned = cleaned;
+    let mut outcome = String::from("off");
+    let mut guard_kv = String::from("guard=off\n");
+    if let Some(ctx) = guard {
+        let e_in = Exposure::of(
+            &load_or_census(ctx, input, &dir.join("input_census"), true, log)?,
+            ctx.source,
+        );
+        let e_out = Exposure::of(
+            &load_or_census(ctx, &cleaned, &dir.join("output_census"), true, log)?,
+            ctx.source,
+        );
+        guard_kv = format!("guard=on\nexposure_in={e_in}\nexposure_cleaned={e_out}\n");
+        if !e_out.exceeds(&e_in) {
+            outcome = "kept".into();
+        } else {
+            log(&format!(
+                "phase C {}: the lowering exposes more ({e_in} -> {e_out}); retrying with random helper wires",
+                dir.display()
+            ));
+            let mut best = (e_out, None::<Vec<XGate>>);
+            let mut found = None;
+            for attempt in 0..PHASE_C_HELPER_ATTEMPTS {
+                let (l, lr) = lower_wide_gates_with(
+                    input,
+                    width,
+                    max_controls,
+                    HelperChoice::Seeded(seed ^ 0x10E2_C0DE ^ attempt),
+                );
+                let (p, _) = push_nots(&l, width);
+                if lr.wide_kept > 0 || p.iter().any(|g| g.ctrls.len() > max_controls) {
+                    continue;
+                }
+                if !same_function(
+                    input,
+                    &p,
+                    width,
+                    equiv_batches,
+                    CHECK_SEED ^ 0x10E3 ^ attempt,
+                ) {
+                    return Err(AdaptiveError::Verify(format!(
+                        "phase C {}: random-helper lowering {attempt} differs from its input",
+                        dir.display()
+                    )));
+                }
+                let e = Exposure::of(
+                    &load_or_census(
+                        ctx,
+                        &p,
+                        &dir.join(format!("attempt{attempt}_census")),
+                        true,
+                        log,
+                    )?,
+                    ctx.source,
+                );
+                let _ = writeln!(guard_kv, "exposure_attempt{attempt}={e}");
+                if !e.exceeds(&e_in) {
+                    found = Some((attempt, p));
+                    break;
+                }
+                if e < best.0 {
+                    best = (e, Some(p));
+                }
+            }
+            match found {
+                Some((attempt, p)) => {
+                    cleaned = p;
+                    outcome = format!("random_helpers:{attempt}");
+                }
+                None => {
+                    if let Some(p) = best.1 {
+                        cleaned = p;
+                    }
+                    outcome = "leakier".into();
+                    log(&format!(
+                        "phase C {}: WARNING no lowering avoids the extra exposure (least exposed: {}); published, report status leakier_lowering",
+                        dir.display(),
+                        best.0
+                    ));
+                }
+            }
+        }
+    }
     write_mpmct_atomic(path_str(&out_path)?, &cleaned, width)
         .map_err(|e| AdaptiveError::io(&out_path, e))?;
     write_text_atomic(
         &report,
         &format!(
-            "lower_report=1\ninput_gates={in_count}\noutput_gates={}\nwide_in={}\nmax_controls_in={}\nrewidened_by_fcompress={}\nwide_kept={}\n",
+            "lower_report=1\ninput_gates={in_count}\noutput_gates={}\nwide_in={}\nmax_controls_in={}\nrewidened_by_fcompress={}\nwide_kept={}\n{guard_kv}guard_outcome={outcome}\n",
             cleaned.len(),
             lrep.wide_in,
             lrep.max_controls_in,
@@ -1084,7 +1287,7 @@ fn lower_and_clean(
         ),
     )?;
     log(&format!(
-        "phase C {}: lowered {} wide gates (max {} controls), fcompress re-widened {}, {in_count} -> {} gates (all <= {max_controls} controls); {:.1}s",
+        "phase C {}: lowered {} wide gates (max {} controls), fcompress re-widened {}, {in_count} -> {} gates (all <= {max_controls} controls), guard {outcome}; {:.1}s",
         dir.display(),
         lrep.wide_in,
         lrep.max_controls_in,
@@ -1092,7 +1295,7 @@ fn lower_and_clean(
         cleaned.len(),
         t0.elapsed().as_secs_f64(),
     ));
-    Ok(Some(cleaned))
+    Ok(Some((cleaned, outcome)))
 }
 
 /// Run the stage. `seed_source` names where the seed came from (`argv`,
@@ -1125,6 +1328,22 @@ pub fn run(
 
     // ---- inputs
     let Loaded { gates, width, c } = load_inputs(&inputs.input, &inputs.source_c, inputs.n)?;
+    // `--census-batches auto`: the census batch rule at this width
+    let resolved_params;
+    let params = if params.round.census_batches == AUTO_BATCHES {
+        let mut p = params.clone();
+        p.round.census_batches = batches_for_width(width);
+        p.census_batches_auto = true;
+        say(&format!(
+            "census batches: auto, {} for {width} wires ({} inputs)",
+            p.round.census_batches,
+            64 * p.round.census_batches
+        ));
+        resolved_params = p;
+        &resolved_params
+    } else {
+        params
+    };
     let n = inputs.n;
     // the census draws 64 inputs per batch and needs more than width + 128
     // of them (a usage error here, not a panic after hours of synthesis)
@@ -1412,18 +1631,23 @@ pub fn run(
     // Phase C: lower the leftover wide gates into the deliverable's 2-control
     // gate set, then one more exact cleanup. The gate SET changes, so this is
     // not size-gated; its output is the published circuit.
+    let mut phase_c_guard: Option<String> = None;
     if let Some(mc) = params.lower_controls {
         let ldir = inputs.out_dir.join("lower");
         let round = current.round;
-        if let Some(lowered) = lower_and_clean(
+        let guard = (params.round.accept == Accept::SmallerNotLeakier).then_some(&ctx);
+        if let Some((lowered, outcome)) = lower_and_clean(
             &mut current,
             width,
             mc,
             params.cleanup_fcompress_iters,
             params.round.equiv_batches,
             &ldir,
+            guard,
+            inputs.seed,
             say,
         )? {
+            phase_c_guard = Some(outcome);
             current = Current {
                 count: lowered.len(),
                 cost: cost_model.of(&lowered),
@@ -1491,6 +1715,7 @@ pub fn run(
         input_zero_slice,
         input_payload_contract,
         payload_forward_only: inputs.forward_only,
+        phase_c_guard,
         ..Default::default()
     };
     let final_census_dir = inputs.out_dir.join("final_census");
@@ -1545,32 +1770,37 @@ pub fn run(
             FINAL_EQUIV_BATCHES * 1024,
             t.elapsed().as_secs_f64()
         ));
-        // the exposure guard: the acceptance judged the round output's cut
-        // structure, and reordering changes which values are simultaneously
-        // live; the reordered circuit may not expose more deeper births
-        // (validated) than the final round's output does
-        let cc = load_or_census(&ctx, &canon, &final_census_dir, true, say)?;
-        let cl = Leakage::of(&cc, &source);
-        let base: Option<&Leakage> = match final_round {
-            Some(r) => rounds.iter().find(|x| x.round == r).map(|x| &x.leakage_out),
-            None => rounds.first().map(|x| &x.leakage_in),
+        // the exposure guard: reordering changes which values are
+        // simultaneously live, so the reordered circuit may not expose more
+        // than the circuit it reorders (after the cleanups and phase C, not
+        // the last round's output): validated deeper births, affine and
+        // direct, and early C outputs (`Exposure`). The census of the
+        // circuit being reordered is reloaded where phase C left it.
+        let (base_census, base_dir) = {
+            let ldir = inputs.out_dir.join("lower");
+            let mut candidates = vec![ldir.join("output_census")];
+            candidates.extend(
+                (0..PHASE_C_HELPER_ATTEMPTS).map(|k| ldir.join(format!("attempt{k}_census"))),
+            );
+            match candidates
+                .iter()
+                .find_map(|d| reload_census(d, &final_gates).map(|c| (c, d.clone())))
+            {
+                Some(found) => found,
+                None => {
+                    let d = inputs.out_dir.join("precanonical_census");
+                    (load_or_census(&ctx, &final_gates, &d, true, say)?, d)
+                }
+            }
         };
-        let (ca, cd) = (
-            cl.validated.affine.deeper_births,
-            cl.validated.direct.deeper_births,
-        );
-        let (ba, bd) = base.map_or((ca, cd), |b| {
-            (
-                b.validated.affine.deeper_births,
-                b.validated.direct.deeper_births,
-            )
-        });
-        if ca > ba || cd > bd {
+        let base = Exposure::of(&base_census, &source);
+        let cc = load_or_census(&ctx, &canon, &final_census_dir, true, say)?;
+        let ce = Exposure::of(&cc, &source);
+        if ce.exceeds(&base) {
             checks.canonical_applied = Some(false);
-            checks.canonical_reason =
-                format!("exposure increased (deeper affine {ba} -> {ca}, direct {bd} -> {cd})");
+            checks.canonical_reason = format!("exposure increased ({base} -> {ce})");
             say(&format!(
-                "canonical order NOT applied: {}; publishing the round output as assembled",
+                "canonical order NOT applied: {}; publishing the circuit as assembled",
                 checks.canonical_reason
             ));
             // the reordered circuit's census stays on record next to the
@@ -1578,10 +1808,12 @@ pub fn run(
             let keep = inputs.out_dir.join("final_canonical_census");
             let _ = fs::remove_dir_all(&keep);
             fs::rename(&final_census_dir, &keep).map_err(|e| AdaptiveError::io(&keep, e))?;
+            // the published circuit's census at final_census/, as always
+            copy_census_dir(&base_dir, &final_census_dir)?;
+            final_census = Some(base_census);
         } else {
             checks.canonical_applied = Some(true);
-            checks.canonical_reason =
-                format!("ordered (deeper affine {ba} -> {ca}, direct {bd} -> {cd})");
+            checks.canonical_reason = format!("ordered ({base} -> {ce})");
             final_gates = canon;
             final_census = Some(cc);
         }

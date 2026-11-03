@@ -496,7 +496,10 @@ pub(crate) fn recipe_manifest(
         "adaptive_min_refine_gates",
         &ad.min_refine_gates.to_string(),
     );
-    kv("adaptive_census_batches", &ad.census_batches.to_string());
+    kv(
+        "adaptive_census_batches",
+        &crate::tdp::config::census_text(ad.census_batches),
+    );
     kv("adaptive_accept", &ad.accept);
     kv("adaptive_canonical_order", &ad.canonical_order.to_string());
     kv("adaptive_pre_cleanup", &ad.pre_cleanup.to_string());

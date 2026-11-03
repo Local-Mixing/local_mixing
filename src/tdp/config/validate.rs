@@ -880,8 +880,10 @@ where
     }
     if stage_on(6) && matches!(delivery_mode, DeliveryMode::Adaptive) {
         // the census draws 64 inputs per batch and needs more than width + 128
+        // (auto, the default, is the census batch rule, which has a margin of
+        // 512 by construction)
         let batches = adaptive.census_batches as usize;
-        if 64 * batches <= stage2_width + 128 {
+        if batches != 0 && 64 * batches <= stage2_width + 128 {
             return Err(config_error(
                 raw,
                 "adaptive_census_batches",

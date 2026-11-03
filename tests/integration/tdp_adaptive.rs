@@ -703,3 +703,163 @@ fn descent_runs_cleanups_and_stays_equivalent() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+/// The leak guard of the canonical order and of phase C (code review,
+/// 2026-11-02), on the reviewer's two probes (`tests/fixtures/adaptive_guard`:
+/// n = 6, a 1-gate C, 16 wires). Canonical ordering moved a C output's first
+/// exposure from cut 56 to 1 and was accepted because its guard compared
+/// deeper births only; phase C's lowering (with or without the fcompress
+/// cleanup) exposed a C output early with no guard at all. Now the order is
+/// refused, and phase C retries with random helper wires; in no case does a
+/// run report `status=ok` with more early outputs than its input.
+#[test]
+fn canonical_order_and_phase_c_never_add_early_outputs() {
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/adaptive_guard");
+    let dir = scratch();
+    let src = fx.join("source.g57");
+    let common = |input: &str, out: &Path, extra: &[&str]| {
+        let mut v: Vec<String> = [
+            "run",
+            "--source-c",
+            p(&src),
+            "--n",
+            "6",
+            "--max-rounds",
+            "1",
+            "--max-block-gates",
+            "1",
+            "--segments",
+            "1",
+            "--refinement-levels",
+            "0",
+            "--census-batches",
+            "4",
+            "--seeds-per-block",
+            "1",
+            "--restarts",
+            "1",
+            "--time-limit",
+            "0.01",
+            "--threads",
+            "2",
+            "--forward-only",
+            "--input",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        v.push(p(&fx.join(input)).to_string());
+        v.push("--out-dir".into());
+        v.push(p(out).to_string());
+        v.extend(extra.iter().map(|s| s.to_string()));
+        let args: Vec<&str> = v.iter().map(String::as_str).collect();
+        let o = adaptive(&args);
+        assert!(
+            o.status.success(),
+            "exit {:?}\n{}",
+            o.status.code(),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        fs::read_to_string(out.join("adaptive.report")).unwrap()
+    };
+    // canonical ordering: refused, the published circuit as assembled
+    let r = common("canonical_input.mpmct1", &dir.join("canonical"), &[]);
+    assert_eq!(kv(&r, "status"), "ok");
+    assert_eq!(kv(&r, "canonical_order_applied"), "false", "{r}");
+    assert!(
+        kv(&r, "canonical_order_reason")
+            .contains("early outputs 0 -> deeper affine 0, direct 0, early outputs 1"),
+        "{r}"
+    );
+    assert_eq!(kv(&r, "final_leakage.early_outputs"), "0");
+    // phase C, with and without the fcompress cleanup
+    for (name, extra) in [
+        (
+            "lower",
+            vec!["--lower-controls", "2", "--no-canonical-order"],
+        ),
+        (
+            "lower_nofc",
+            vec![
+                "--lower-controls",
+                "2",
+                "--no-canonical-order",
+                "--cleanup-fcompress-iters",
+                "0",
+            ],
+        ),
+    ] {
+        let r = common("lowering_input.mpmct1", &dir.join(name), &extra);
+        let guard = kv(&r, "check.phase_c_guard");
+        let early = kv(&r, "final_leakage.early_outputs");
+        assert!(
+            guard.starts_with("random_helpers:") || guard == "leakier",
+            "{name}: {guard}"
+        );
+        if guard == "leakier" {
+            assert_eq!(kv(&r, "status"), "leakier_lowering", "{name}");
+        } else {
+            assert_eq!(
+                (kv(&r, "status").as_str(), early.as_str()),
+                ("ok", "0"),
+                "{name}: {r}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `--census-batches auto` (recipe v15's managed default): resolved from the
+/// input's width by the census batch rule ceil((width + 512) / 64) and
+/// reported as such; an explicit 0 is refused.
+#[test]
+fn census_batches_auto_follows_the_width() {
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/adaptive_guard");
+    let dir = scratch();
+    let out = dir.join("auto");
+    let zero = dir.join("zero");
+    let (src, input) = (fx.join("source.g57"), fx.join("canonical_input.mpmct1"));
+    let base = [
+        "run",
+        "--source-c",
+        p(&src),
+        "--n",
+        "6",
+        "--input",
+        p(&input),
+        "--max-rounds",
+        "1",
+        "--max-block-gates",
+        "1",
+        "--segments",
+        "1",
+        "--refinement-levels",
+        "0",
+        "--seeds-per-block",
+        "1",
+        "--restarts",
+        "1",
+        "--time-limit",
+        "0.01",
+        "--threads",
+        "2",
+        "--forward-only",
+    ];
+    let mut args = base.to_vec();
+    args.extend(["--out-dir", p(&out), "--census-batches", "auto"]);
+    let o = adaptive(&args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let r = fs::read_to_string(out.join("adaptive.report")).unwrap();
+    // 16 wires: ceil((16 + 512) / 64) = 9
+    assert_eq!(kv(&r, "param.census_batches"), "9");
+    assert_eq!(kv(&r, "param.census_batches_rule"), "auto");
+    let mut args = base.to_vec();
+    args.extend(["--out-dir", p(&zero), "--census-batches", "0"]);
+    let o = adaptive(&args);
+    assert_eq!(
+        o.status.code(),
+        Some(2),
+        "an explicit 0 must be a usage error"
+    );
+    let _ = fs::remove_dir_all(dir);
+}

@@ -1049,7 +1049,7 @@ fn the_exact_default_manifest_text() {
         "adaptive_params=default\nadaptive_max_rounds=0\nadaptive_stop_fraction=0.2\nadaptive_seeds_per_block=2\n",
         "adaptive_time_limit=60\nadaptive_restarts=16\nadaptive_beam=6\nadaptive_term_cap=131072\n",
         "adaptive_max_block_gates=512\nadaptive_segments=16\nadaptive_avoid_radius=64\n",
-        "adaptive_refinement_levels=2\nadaptive_min_refine_gates=128\nadaptive_census_batches=96\n",
+        "adaptive_refinement_levels=2\nadaptive_min_refine_gates=128\nadaptive_census_batches=auto\n",
         "adaptive_accept=smaller-not-leakier\nadaptive_canonical_order=true\n",
         "adaptive_pre_cleanup=true\nadaptive_cost=two-control\nadaptive_descent=128,32,16\n",
         "adaptive_descent_stop_fraction=0.2\nadaptive_cleanup_fcompress_iters=10\n",
@@ -2374,7 +2374,8 @@ fn adaptive_table_follows_the_delivery_mode() {
     assert_eq!((d.cleanup_fcompress_iters, d.lower_controls), (10, 2));
     assert_eq!((d.segments, d.avoid_radius), (16, 64));
     assert_eq!((d.refinement_levels, d.min_refine_gates), (2, 128));
-    assert_eq!(d.census_batches, 96);
+    // 0 = auto, the census batch rule ceil((width + 512) / 64), since v15
+    assert_eq!(d.census_batches, 0);
     assert_eq!(d.accept, "smaller-not-leakier");
     assert!(d.canonical_order);
     for (flag, value, default) in d.flags() {

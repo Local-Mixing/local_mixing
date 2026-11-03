@@ -82,7 +82,7 @@ run_case adaptive --crossing-target-size-factor 2.5 --threads 2 --adaptive-max-r
 run_case adaptive_fwd
 # ... and recipe v14's stage 6 (tdp_adaptive's own defaults: no knob passed)
 run_case adaptive_v14 --adaptive-no-pre-cleanup --adaptive-cost gates --adaptive-max-block-gates 65536 \
-  --adaptive-descent none --adaptive-lower-controls 0 --adaptive-stop-fraction 0.02
+  --adaptive-descent none --adaptive-lower-controls 0 --adaptive-stop-fraction 0.02 --adaptive-census-batches 96
 reject --parallel-pieces 4 --parallel-target-piece-gates 2
 python3 -I - "$tmp" <<'PY'
 from pathlib import Path
@@ -184,7 +184,7 @@ for f in ('crossing.mpmct1', 'stage5.recipe', 'delivery.recipe', 'stage6.log', '
     assert (root / 'adaptive' / f).is_file(), f
 assert not (root / 'adaptive' / 'packing').exists() and not (root / 'adaptive' / 'unpacking').exists()
 marker = (root / 'adaptive' / 'delivery.recipe').read_text()
-assert 'delivery_mode=adaptive\n' in marker and 'adaptive_params=--max-rounds 4 --stop-fraction 0.01 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --seeds-per-block 1 --max-block-gates 512 --accept smaller --no-canonical-order\n' in marker, marker
+assert 'delivery_mode=adaptive\n' in marker and 'adaptive_params=--max-rounds 4 --stop-fraction 0.01 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --seeds-per-block 1 --max-block-gates 512 --census-batches auto --accept smaller --no-canonical-order\n' in marker, marker
 calls = [json.loads(l) for l in (root / 'adaptive_fwd.calls').read_text().splitlines()]
 ad = next(c['args'] for c in calls if c['name'] == 'tdp_adaptive')
 assert '--sandwich' in ad and '--forward-only' in ad, ad
@@ -192,13 +192,14 @@ gen = next(c for c in calls if c['name'] == 'gen_sandwich_gadget')
 assert 'STAGE2_REVERSE_CONTRACT' not in gen['env'], gen['env']
 # recipe v15's stage 6 is passed explicitly (tdp_adaptive's own defaults are v14's)
 for flag, value in (('--stop-fraction', '0.2'), ('--cost', 'two-control'), ('--descent', '128,32,16'),
-                    ('--descent-stop-fraction', '0.2'), ('--lower-controls', '2'), ('--max-block-gates', '512')):
+                    ('--descent-stop-fraction', '0.2'), ('--lower-controls', '2'), ('--max-block-gates', '512'),
+                    ('--census-batches', 'auto')):
     assert ad[ad.index(flag) + 1] == value, (flag, ad)
 assert '--pre-cleanup' in ad and '--cleanup-fcompress-iters' not in ad, ad
-assert 'adaptive_params=--stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --max-block-gates 512\n' in (root / 'adaptive_fwd' / 'delivery.recipe').read_text()
+assert 'adaptive_params=--stop-fraction 0.2 --pre-cleanup --cost two-control --descent 128,32,16 --descent-stop-fraction 0.2 --lower-controls 2 --max-block-gates 512 --census-batches auto\n' in (root / 'adaptive_fwd' / 'delivery.recipe').read_text()
 calls = [json.loads(l) for l in (root / 'adaptive_v14.calls').read_text().splitlines()]
 ad = next(c['args'] for c in calls if c['name'] == 'tdp_adaptive')
-for flag in ('--pre-cleanup', '--cost', '--descent', '--descent-stop-fraction', '--lower-controls', '--max-block-gates', '--stop-fraction'):
+for flag in ('--pre-cleanup', '--cost', '--descent', '--descent-stop-fraction', '--lower-controls', '--max-block-gates', '--stop-fraction', '--census-batches'):
     assert flag not in ad, (flag, ad)
 assert 'adaptive_params=default\n' in (root / 'adaptive_v14' / 'delivery.recipe').read_text()
 calls = [json.loads(l) for l in (root / 'adaptive.calls').read_text().splitlines()]

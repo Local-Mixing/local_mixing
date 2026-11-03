@@ -107,6 +107,7 @@ reject 'adaptive-segments' --adaptive-segments 0
 reject 'adaptive-refinement-levels' --adaptive-refinement-levels 17
 reject 'adaptive-min-refine-gates' --adaptive-min-refine-gates 0
 reject 'adaptive-census-batches' --adaptive-census-batches 0
+reject 'adaptive-census-batches' --adaptive-census-batches automatic
 reject 'adaptive-cost' --adaptive-cost raw
 reject 'adaptive-descent' --adaptive-descent 32,128
 reject 'adaptive-descent' --adaptive-descent 128,128

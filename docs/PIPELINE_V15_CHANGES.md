@@ -81,6 +81,20 @@ the old seed and reseed stay, so the validated chain still reproduces byte for b
 `no_reverse_contract_two_layer_guard_keys_on_the_register_and_the_band` (a whole stage 2: payload on the slice, every
 single bit of B moves the payload off the sandwich's, the reverse payload junked).
 
+## 3. Stage 6: the leak guard on the canonical order and on phase C (code review, 2026-11-02)
+
+A review found that the canonical-order guard compared only deeper births, and against the last round's output rather
+than the circuit being reordered (which by then has been through the cleanups and phase C): on the reviewer's probe
+(n = 6, a 1-gate C) canonical ordering moved a C output's first exposure from cut 56 to cut 1 and was accepted with
+`status=ok`. Phase C had no guard at all: on a second probe its lowering, with or without the fcompress cleanup,
+exposed a C output early. Now both compare the same triple as the cleanups (validated deeper births, affine and
+direct, and early C outputs) against the circuit they change: the canonical order is refused when it exposes more,
+and phase C retries the lowering with random helper wires (up to 8) and, when none exposes no more, publishes the
+least exposed one with `status=leakier_lowering`. On both probes the published circuit now has 0 early outputs
+(phase C found a clean lowering with random helpers). Tests:
+`canonical_order_and_phase_c_never_add_early_outputs` (the reviewer's probes, `tests/fixtures/adaptive_guard`),
+`exposure_counts_early_outputs_as_leakage`, `seeded_helpers_stay_exact_and_vary`.
+
 ## Settings
 
 - Stage 2: no new setting (the opening guard follows from `preprocessing.reverse_contract`); `tdp_stage12_recipe=10`
@@ -92,6 +106,11 @@ single bit of B moves the payload off the sandwich's, the reverse payload junked
   `--adaptive-cost`, `--adaptive-descent`, `--adaptive-descent-stop-fraction`,
   `--adaptive-cleanup-fcompress-iters`, `--adaptive-lower-controls`. All are recorded in the manifest
   (`adaptive_*`).
+- `adaptive.census_batches`: default `auto` (was 96), the census batch rule ⌈(W + 512) / 64⌉ for the W-wire
+  stage-2 circuit, resolved by `tdp_adaptive --census-batches auto` (16 at n = 128, 12 at n = 64). An exact exposure
+  fits every sample, so fewer samples never miss one; the 512-sample margin keeps chance fits near 2^-511, and every
+  hit is re-tested on fresh and structured inputs. The census dominated stage 6 (2.8 of 4.0 h at n = 128 with 16
+  batches); 96 batches would have made it 6 times longer. An explicit integer overrides the rule.
 - `tdp_adaptive`'s own defaults are unchanged (recipe v14's stage 6), so the driver passes the v15 settings
   explicitly and the stage-6 marker lists them (`adaptive_params=--stop-fraction 0.2 --pre-cleanup ...`).
 - The synthesizer effort is unchanged (16 restarts, 60 s budgets). `restarts = 2`, `time_limit = 12` (the
