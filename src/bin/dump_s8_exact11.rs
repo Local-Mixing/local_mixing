@@ -4,7 +4,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use local_mixing::circuit::{base_gates, Gate};
+use local_mixing::circuit::{Gate, base_gates};
 use rustc_hash::FxHashMap;
 
 const S8_ORDER: usize = 40320;
@@ -187,10 +187,8 @@ fn exact_layer<const K: usize>(gens: &[[u16; 3]]) -> FxHashMap<u64, [u8; K]> {
     let mut prev: FxHashMap<u64, [u8; 11]> = FxHashMap::default();
     prev.insert(identity_perm16(), [0u8; 11]);
     for depth in 0..K {
-        let mut next = FxHashMap::with_capacity_and_hasher(
-            prev.len() * gens.len(),
-            Default::default(),
-        );
+        let mut next =
+            FxHashMap::with_capacity_and_hasher(prev.len() * gens.len(), Default::default());
         for (p, word) in &prev {
             for (gi, &gate) in gens.iter().enumerate() {
                 let q = apply_gate_perm16(*p, gate);
@@ -233,14 +231,22 @@ fn six_words_for_all_gens(gens: &[[u16; 3]]) -> Vec<[u8; 6]> {
     let want = apply_gate_perm16(id, [0, 1, 2]);
     assert_eq!(eval_word(&proto, gens), want, "prototype 6-word != (0,1,2)");
     let seven: Vec<u8> = proto.iter().copied().chain([proto_idx]).collect();
-    assert_eq!(eval_word(&seven, gens), id, "6-word ++ G is not a 7-identity");
+    assert_eq!(
+        eval_word(&seven, gens),
+        id,
+        "6-word ++ G is not a 7-identity"
+    );
 
     let mut out = vec![[0u8; 6]; gens.len()];
     for (gi, &[a, b, c]) in gens.iter().enumerate() {
         let d = 6 - a - b - c;
         let sigma = [a, b, c, d];
         let relabel = |g: [u16; 3]| -> [u16; 3] {
-            [sigma[g[0] as usize], sigma[g[1] as usize], sigma[g[2] as usize]]
+            [
+                sigma[g[0] as usize],
+                sigma[g[1] as usize],
+                sigma[g[2] as usize],
+            ]
         };
         let word = proto_gates.map(|g| gate_index(relabel(g)));
         let got = eval_word(&word, gens);
@@ -340,9 +346,7 @@ fn main() {
         }
     }
 
-    let leftover: Vec<usize> = (0..S8_ORDER)
-        .filter(|&i| circuits[i].is_none())
-        .collect();
+    let leftover: Vec<usize> = (0..S8_ORDER).filter(|&i| circuits[i].is_none()).collect();
     eprintln!(
         "constructed {} (odd {}) (id {}) (even≤6 {}); leftover {}",
         S8_ORDER - leftover.len(),
@@ -401,7 +405,10 @@ fn main() {
         }
         eprintln!(
             "L2 {} L4 {} L6 {}; MITM leftover {}",
-            n_l2, n_l4, n_l6, still.len()
+            n_l2,
+            n_l4,
+            n_l6,
+            still.len()
         );
 
         if !still.is_empty() {
@@ -449,8 +456,9 @@ fn main() {
     for idx in 0..S8_ORDER {
         let word = circuits[idx].expect("missing circuit");
         let packed = eval_word(&word, &gens);
-        let pi = induced_pi_otimes_i(packed)
-            .unwrap_or_else(|| panic!("circuit {idx} is not π⊗I: {}", format_circuit(&word, &gens)));
+        let pi = induced_pi_otimes_i(packed).unwrap_or_else(|| {
+            panic!("circuit {idx} is not π⊗I: {}", format_circuit(&word, &gens))
+        });
         let got = lehmer_rank_s8(pi);
         assert_eq!(got, idx, "circuit for rank {idx} realized rank {got}");
         assert!(!seen[idx], "duplicate rank {idx}");

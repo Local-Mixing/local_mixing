@@ -3,7 +3,7 @@
 //! fragment and binary-search Hamming weight with Z3.
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkBody, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkBody, ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs::{self, File};
@@ -337,9 +337,7 @@ fn verify_model(ch: &Challenge, z3out: &str) -> Option<(usize, Vec<bool>)> {
         }
     }
     // If nothing parsed, fail
-    if input.iter().skip(ch.prefix_zeros).all(|&b| !b)
-        && !z3out.contains(" in")
-    {
+    if input.iter().skip(ch.prefix_zeros).all(|&b| !b) && !z3out.contains(" in") {
         // might be all-zero free which is valid; check weight line
     }
     let y = ch.circuit.evaluate_data_bits(&input);
@@ -439,9 +437,7 @@ fn main() {
             x |= 1u128 << i;
         }
     }
-    println!(
-        "DONE gray-box best_wt={best_wt} x=0x{x:x} (baseline={base}, forced={forced})"
-    );
+    println!("DONE gray-box best_wt={best_wt} x=0x{x:x} (baseline={base}, forced={forced})");
 }
 
 fn polish(ch: &Challenge, start: &[bool], samples: usize) -> (usize, Vec<bool>) {

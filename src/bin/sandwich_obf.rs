@@ -2,14 +2,17 @@
 
 use clap::Parser;
 use local_mixing::sandwich::{
-    check_correctness_random, check_correctness_random_dirty_ancilla, sample_and_obfuscate,
-    ChunkBody, ChunkedCircuit,
+    ChunkBody, ChunkedCircuit, check_correctness_random, check_correctness_random_dirty_ancilla,
+    sample_and_obfuscate,
 };
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "Sandwich-obfuscate a random r57 circuit into S_8 / correction chunks")]
+#[command(
+    version,
+    about = "Sandwich-obfuscate a random r57 circuit into S_8 / correction chunks"
+)]
 struct Args {
     /// Number of data wires
     #[arg(short = 'n', long, default_value_t = 32)]
@@ -76,7 +79,10 @@ fn main() {
         }
         match check_correctness_random_dirty_ancilla(&plain, &obf, args.check, &mut rng) {
             Ok(()) => {
-                println!("correctness check (dirty ancilla): {} random inputs OK", args.check)
+                println!(
+                    "correctness check (dirty ancilla): {} random inputs OK",
+                    args.check
+                )
             }
             Err(e) => {
                 eprintln!("dirty-ancilla correctness FAILED: {e}");

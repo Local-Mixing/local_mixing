@@ -1,6 +1,6 @@
 //! Tiny evaluator: print weight for --x-lo / --x-hi on a challenge.
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkedCircuit, hamming_weight};
 use std::fs;
 use std::path::PathBuf;
 

@@ -354,9 +354,8 @@ fn length_fit_line(lengths: &[usize], wires: usize) -> Option<String> {
         return None;
     }
     let (lambda, k) = fit_weibull(lengths)?;
-    let mut line = format!(
-        "length fit  Weibull  P(N)∝ N^(k-1) exp(-λ N^k)  k={k:.4}  λ={lambda:.6e}"
-    );
+    let mut line =
+        format!("length fit  Weibull  P(N)∝ N^(k-1) exp(-λ N^k)  k={k:.4}  λ={lambda:.6e}");
     if wires <= 3 {
         line.push_str(&format!(
             "  (k=2 is Rayleigh; birthday 8!={})",

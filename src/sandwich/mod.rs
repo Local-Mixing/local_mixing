@@ -13,8 +13,8 @@
 
 use crate::circuit::{CircuitSeq, Permutation};
 use primitive_types::U256 as u256;
-use rand::seq::SliceRandom;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -63,8 +63,7 @@ impl SandwichParams {
     pub fn for_n(data_wires: usize) -> Self {
         let mask_k = 6;
         let ancilla_count = data_wires.max(mask_k);
-        let init_gates =
-            (2.0 * data_wires as f64 * (data_wires as f64).log2()).round() as usize;
+        let init_gates = (2.0 * data_wires as f64 * (data_wires as f64).log2()).round() as usize;
         Self {
             ancilla_count,
             mask_k,
@@ -184,7 +183,10 @@ impl ChunkedCircuit {
 
     pub fn to_readable_string(&self) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "# sandwich chunked circuit v3 (single-sided R + EM park)");
+        let _ = writeln!(
+            out,
+            "# sandwich chunked circuit v3 (single-sided R + EM park)"
+        );
         let _ = writeln!(out, "data_wires {}", self.data_wires);
         let _ = writeln!(out, "total_wires {}", self.total_wires);
         let _ = writeln!(out, "n_chunks {}", self.chunks.len());
@@ -438,9 +440,8 @@ fn wire_bounds(circuit: &CircuitSeq, num_wires: usize) -> WireBounds {
 
 fn should_append_r(gate_idx: usize, w: &[u16], bounds: &WireBounds) -> bool {
     // Append `R` unless every wire in this gate is at its last plaintext appearance.
-    w.iter().any(|&wire| {
-        bounds.last.get(wire as usize).copied().flatten() != Some(gate_idx)
-    })
+    w.iter()
+        .any(|&wire| bounds.last.get(wire as usize).copied().flatten() != Some(gate_idx))
 }
 
 fn wires_intersect(a: &[u16], b: &[u16]) -> bool {
@@ -523,10 +524,7 @@ fn sample_gate_ancillas(
     for effective_k in (1..=max_k).rev() {
         for _ in 0..64 {
             let a_s = sample_ancilla_subset(bank, effective_k, rng);
-            let support = union_wires(
-                union_wires(data_support.to_vec(), &unmask_anc),
-                &a_s,
-            );
+            let support = union_wires(union_wires(data_support.to_vec(), &unmask_anc), &a_s);
             if support.len() <= HARD_CHUNK_WIRES {
                 return (support, a_s, effective_k);
             }
@@ -569,16 +567,10 @@ fn drain_unmask_preludes(
         let mut groups: HashMap<Vec<u16>, Vec<u16>> = HashMap::new();
         for p in parks.iter() {
             if data_set.contains(&p.wire) {
-                groups
-                    .entry(p.ancillas.clone())
-                    .or_default()
-                    .push(p.wire);
+                groups.entry(p.ancillas.clone()).or_default().push(p.wire);
             }
         }
-        let Some((anc, mut wires)) = groups
-            .into_iter()
-            .max_by_key(|(_, ws)| ws.len())
-        else {
+        let Some((anc, mut wires)) = groups.into_iter().max_by_key(|(_, ws)| ws.len()) else {
             break;
         };
 
@@ -831,10 +823,7 @@ pub fn write_obfuscated_circuit(
     plain_gates: usize,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
-    let epilogue = obf
-        .chunks
-        .len()
-        .saturating_sub(init_gates + plain_gates);
+    let epilogue = obf.chunks.len().saturating_sub(init_gates + plain_gates);
     writeln!(out, "# obfuscated sandwich circuit (published chunks)")?;
     writeln!(out, "data_wires {}", obf.data_wires)?;
     writeln!(out, "total_wires {}", obf.total_wires)?;
@@ -1126,7 +1115,10 @@ fn bits_to_u64(bits: &[bool]) -> u64 {
 
 fn eval_plain_data_bits(plain: &CircuitSeq, data_bits: &[bool]) -> Vec<bool> {
     let n = data_bits.len();
-    assert!(n <= 256, "plain eval via u256 supports at most 256 data wires");
+    assert!(
+        n <= 256,
+        "plain eval via u256 supports at most 256 data wires"
+    );
     let mut state = u256::zero();
     for (i, &b) in data_bits.iter().enumerate() {
         if b {
@@ -1191,8 +1183,8 @@ pub fn check_correctness_random_dirty_ancilla(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn bits_from_u64(x: u64, n: usize) -> Vec<bool> {
         (0..n).map(|i| ((x >> i) & 1) != 0).collect()
@@ -1370,9 +1362,7 @@ mod tests {
             mask_k: 6,
             init_gates: 32,
         };
-        let bank: Vec<u16> = (0..params.ancilla_count)
-            .map(|i| (n + i) as u16)
-            .collect();
+        let bank: Vec<u16> = (0..params.ancilla_count).map(|i| (n + i) as u16).collect();
         let chunks = emit_init_scramble(n, &bank, params.init_gates, &mut rng);
         for x in 0..256u64 {
             let mut state = bits_from_u64(x, n);

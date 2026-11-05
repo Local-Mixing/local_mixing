@@ -22,6 +22,11 @@ fn main() {
         input[prefix + i] = ((x >> i) & 1) != 0;
     }
     let y = c.evaluate_data_bits(&input);
-    let ones: Vec<_> = y.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect();
+    let ones: Vec<_> = y
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b)
+        .map(|(i, _)| i)
+        .collect();
     println!("wt={} ones={:?}", ones.len(), ones);
 }

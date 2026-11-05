@@ -1,7 +1,7 @@
 //! Black-box / hybrid search for n=128 challenges (64 free bits) using bit vectors.
 
 use clap::{Parser, ValueEnum};
-use local_mixing::sandwich::{hamming_weight, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs;

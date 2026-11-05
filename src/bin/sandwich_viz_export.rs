@@ -2,10 +2,10 @@
 
 use clap::Parser;
 use local_mixing::sandwich::{
-    format_plaintext_circuit, sample_and_obfuscate, write_obfuscated_circuit, SandwichParams,
+    SandwichParams, format_plaintext_circuit, sample_and_obfuscate, write_obfuscated_circuit,
 };
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::io::Write;
 
 #[derive(Parser, Debug)]
@@ -44,13 +44,8 @@ fn main() {
     .expect("write plaintext circuit");
 
     let mut obf_file = std::fs::File::create(&args.obf_out).expect("create obfuscated circuit");
-    write_obfuscated_circuit(
-        &obf,
-        params.init_gates,
-        plain.gates.len(),
-        &mut obf_file,
-    )
-    .expect("write obfuscated circuit");
+    write_obfuscated_circuit(&obf, params.init_gates, plain.gates.len(), &mut obf_file)
+        .expect("write obfuscated circuit");
 
     let mut f = std::fs::File::create(&args.output).expect("create csv");
     writeln!(f, "data_wires,{}", obf.data_wires).unwrap();

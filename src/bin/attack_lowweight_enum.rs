@@ -2,7 +2,7 @@
 //! crossover + polish. Gray-box (chunk tables → CNF).
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkBody, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkBody, ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
@@ -152,9 +152,10 @@ fn residual_circuit(ch: &Challenge) -> (Vec<ResidualPerm>, Vec<Abs>) {
                     let fout = pairs
                         .iter()
                         .find(|(fin, _)| {
-                            in_idx.iter().enumerate().all(|(j, &i)| {
-                                (((fin >> i) & 1) != 0) == (((u >> j) & 1) != 0)
-                            })
+                            in_idx
+                                .iter()
+                                .enumerate()
+                                .all(|(j, &i)| (((fin >> i) & 1) != 0) == (((u >> j) & 1) != 0))
                         })
                         .map(|(_, o)| *o)
                         .unwrap();
@@ -513,7 +514,11 @@ fn main() {
         })
         .collect();
     let n_bb = backbone.iter().filter(|b| b.is_some()).count();
-    println!("elite backbone bits={n_bb}/{} among {} elites", n, elites.len());
+    println!(
+        "elite backbone bits={n_bb}/{} among {} elites",
+        n,
+        elites.len()
+    );
 
     // Crossover: uniform between random elite pairs, then polish
     for t in 0..200 {

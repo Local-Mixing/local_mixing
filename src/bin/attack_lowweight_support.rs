@@ -3,9 +3,9 @@
 //! Often easier for CDCL than cardinality networks.
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkBody, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkBody, ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
-use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, seq::SliceRandom};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -155,9 +155,10 @@ fn residual_circuit(ch: &Challenge) -> (Vec<ResidualPerm>, Vec<Abs>) {
                     let fout = pairs
                         .iter()
                         .find(|(fin, _)| {
-                            in_idx.iter().enumerate().all(|(j, &i)| {
-                                (((fin >> i) & 1) != 0) == (((u >> j) & 1) != 0)
-                            })
+                            in_idx
+                                .iter()
+                                .enumerate()
+                                .all(|(j, &i)| (((fin >> i) & 1) != 0) == (((u >> j) & 1) != 0))
                         })
                         .map(|(_, o)| *o)
                         .unwrap();
@@ -364,10 +365,7 @@ fn main() {
 
     let n_out = core.out_vars.len();
     let n_force = n_out.saturating_sub(args.weight_ub);
-    println!(
-        "force {n_force}/{n_out} outs to 0 (ub={})",
-        args.weight_ub
-    );
+    println!("force {n_force}/{n_out} outs to 0 (ub={})", args.weight_ub);
 
     // Biased supports from known good model zeros
     let seed_x: u64 = 0xa8237049ae982e16;
@@ -407,7 +405,8 @@ fn main() {
             // keep most seed zeros, swap a few
             let mut z = seed_zeros.clone();
             z.shuffle(&mut rng);
-            let mut chosen: Vec<usize> = z.into_iter().take(n_force.min(seed_zeros.len())).collect();
+            let mut chosen: Vec<usize> =
+                z.into_iter().take(n_force.min(seed_zeros.len())).collect();
             // if need more, add random ones-bits from seed
             while chosen.len() < n_force {
                 let i = rng.random_range(0..n_out);
@@ -453,9 +452,7 @@ fn main() {
             let wt = hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &free)));
             let x = free_to_hex(&free);
             let neu = seen.insert(x);
-            println!(
-                "trial {trial}: SAT wt={wt} x=0x{x:016x} new={neu} ({dt:.1}s)"
-            );
+            println!("trial {trial}: SAT wt={wt} x=0x{x:016x} new={neu} ({dt:.1}s)");
             if wt < best_wt {
                 best_wt = wt;
                 best_free = free;

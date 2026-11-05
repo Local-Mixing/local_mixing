@@ -3,7 +3,7 @@
 //! each currently-1 output data bit to 0 and re-solve. Uses chunk truth tables.
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkBody, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkBody, ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs::{self, File};
@@ -230,9 +230,8 @@ fn build_core(ch: &Challenge, residuals: &[ResidualPerm], final_abs: &[Abs]) -> 
         for pat in 0..(1 << k_in) {
             let mut ante = Vec::with_capacity(k_in);
             for (i, &w) in rp.in_wires.iter().enumerate() {
-                let src = cur[w as usize].unwrap_or_else(|| {
-                    panic!("undefined wire {w} at residual {ri}")
-                });
+                let src = cur[w as usize]
+                    .unwrap_or_else(|| panic!("undefined wire {w} at residual {ri}"));
                 if ((pat >> i) & 1) != 0 {
                     ante.push(-src);
                 } else {
@@ -315,12 +314,7 @@ fn cardinality_at_most(core: &CnfCore, ub: usize) -> (i32, Vec<Vec<i32>>) {
     (next - 1, clauses)
 }
 
-fn write_cnf(
-    path: &Path,
-    core: &CnfCore,
-    extra: &[Vec<i32>],
-    nvars: i32,
-) -> std::io::Result<()> {
+fn write_cnf(path: &Path, core: &CnfCore, extra: &[Vec<i32>], nvars: i32) -> std::io::Result<()> {
     let mut f = BufWriter::new(File::create(path)?);
     let nclauses = core.clauses.len() + extra.len();
     writeln!(f, "c kill-bits gray residual")?;
@@ -371,10 +365,7 @@ fn parse_model(out: &str, nvars: i32) -> Option<Vec<bool>> {
 }
 
 fn free_from_assign(core: &CnfCore, assign: &[bool]) -> Vec<bool> {
-    core.free_vars
-        .iter()
-        .map(|&v| assign[v as usize])
-        .collect()
+    core.free_vars.iter().map(|&v| assign[v as usize]).collect()
 }
 
 fn bits_to_input(ch: &Challenge, free: &[bool]) -> Vec<bool> {
@@ -437,8 +428,8 @@ fn polish(ch: &Challenge, start: &[bool], steps: usize, seed: u64) -> (usize, Ve
             flipped.push(i);
         }
         let wt = hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(ch, &cur)));
-        let accept = wt <= cur_wt
-            || rng.random::<f64>() < ((cur_wt as f64 - wt as f64) / temp).exp();
+        let accept =
+            wt <= cur_wt || rng.random::<f64>() < ((cur_wt as f64 - wt as f64) / temp).exp();
         if accept {
             cur_wt = wt;
             if wt < best_wt {
@@ -491,8 +482,10 @@ fn main() {
         parse_hex_u64(&args.seed_x_hi),
         free_n,
     );
-    let mut best_wt =
-        hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &best_free)));
+    let mut best_wt = hamming_weight(
+        &ch.circuit
+            .evaluate_data_bits(&bits_to_input(&ch, &best_free)),
+    );
     println!("seed wt={best_wt}");
 
     // First: get a full SAT assignment consistent with seed free bits (unit-assume free).
@@ -519,7 +512,9 @@ fn main() {
 
     let mut rng = StdRng::seed_from_u64(123);
     for round in 0..args.rounds {
-        let y = ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &best_free));
+        let y = ch
+            .circuit
+            .evaluate_data_bits(&bits_to_input(&ch, &best_free));
         let ones: Vec<usize> = y
             .iter()
             .enumerate()
@@ -563,8 +558,7 @@ fn main() {
             let dt = t1.elapsed().as_secs_f64();
             if let Some(new_assign) = parse_model(&out, nvars_card) {
                 let free = free_from_assign(&core, &new_assign);
-                let wt =
-                    hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &free)));
+                let wt = hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &free)));
                 println!("  kill out[{bit}] SAT wt={wt} ({dt:.1}s)");
                 if wt < best_wt {
                     best_wt = wt;
@@ -599,9 +593,8 @@ fn main() {
                 let dt = t1.elapsed().as_secs_f64();
                 if let Some(new_assign) = parse_model(&out, nvars_card) {
                     let free = free_from_assign(&core, &new_assign);
-                    let wt = hamming_weight(
-                        &ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &free)),
-                    );
+                    let wt =
+                        hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(&ch, &free)));
                     println!("  loose kill out[{bit}] SAT wt={wt} ({dt:.1}s)");
                     if wt < best_wt {
                         best_wt = wt;

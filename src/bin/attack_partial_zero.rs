@@ -117,11 +117,7 @@ fn unpack_free_u256(state: u256, k: usize, n: usize) -> u64 {
 }
 
 fn low_k_zero_u64(state: u64, k: usize) -> bool {
-    let mask = if k >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << k) - 1
-    };
+    let mask = if k >= 64 { u64::MAX } else { (1u64 << k) - 1 };
     state & mask == 0
 }
 
@@ -170,12 +166,7 @@ struct SolveResult {
     elapsed: Duration,
 }
 
-fn forward_u64(
-    gates: &[[u16; 3]],
-    n: usize,
-    k: usize,
-    timeout: Option<Duration>,
-) -> SolveResult {
+fn forward_u64(gates: &[[u16; 3]], n: usize, k: usize, timeout: Option<Duration>) -> SolveResult {
     let free_bits = n - k;
     let n_free = 1u64 << free_bits;
     let stop = Arc::new(AtomicBool::new(false));
@@ -199,32 +190,30 @@ fn forward_u64(
 
     let chunk = (1u64 << free_bits.saturating_sub(8).min(16)).max(1);
     let n_chunks = n_free.div_ceil(chunk);
-    let found = (0..n_chunks)
-        .into_par_iter()
-        .find_map_any(|ci| {
-            if stop.load(Ordering::Relaxed) {
+    let found = (0..n_chunks).into_par_iter().find_map_any(|ci| {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        let start = ci * chunk;
+        let end = (start + chunk).min(n_free);
+        let mut local = 0u64;
+        for x in start..end {
+            if (local & 0xfff) == 0 && stop.load(Ordering::Relaxed) {
+                evals.fetch_add(local, Ordering::Relaxed);
                 return None;
             }
-            let start = ci * chunk;
-            let end = (start + chunk).min(n_free);
-            let mut local = 0u64;
-            for x in start..end {
-                if (local & 0xfff) == 0 && stop.load(Ordering::Relaxed) {
-                    evals.fetch_add(local, Ordering::Relaxed);
-                    return None;
-                }
-                let out = eval_u64(pack_input_u64(x, k), gates);
-                local += 1;
-                if low_k_zero_u64(out, k) {
-                    evals.fetch_add(local, Ordering::Relaxed);
-                    stop.store(true, Ordering::Relaxed);
-                    let y = unpack_free_u64(out, k, n);
-                    return Some((x, y));
-                }
+            let out = eval_u64(pack_input_u64(x, k), gates);
+            local += 1;
+            if low_k_zero_u64(out, k) {
+                evals.fetch_add(local, Ordering::Relaxed);
+                stop.store(true, Ordering::Relaxed);
+                let y = unpack_free_u64(out, k, n);
+                return Some((x, y));
             }
-            evals.fetch_add(local, Ordering::Relaxed);
-            None
-        });
+        }
+        evals.fetch_add(local, Ordering::Relaxed);
+        None
+    });
 
     // Unblock watcher before join.
     stop.store(true, Ordering::Relaxed);
@@ -271,7 +260,12 @@ fn export_mq(c: &CircuitSeq, n: usize, k: usize, path: &Path) -> std::io::Result
 
     writeln!(f, "# Partial-zero MQ over GF(2)")?;
     writeln!(f, "# n={n} m={m} k={k}")?;
-    writeln!(f, "# vars: x0..x{} (inputs), z0..z{} (gate outs)", n - 1, m - 1)?;
+    writeln!(
+        f,
+        "# vars: x0..x{} (inputs), z0..z{} (gate outs)",
+        n - 1,
+        m - 1
+    )?;
     writeln!(f, "# each line: monomials of an equation summed to 0 (XOR)")?;
     writeln!(f, "# monomials are products of vars, or '1' for constant")?;
     writeln!(f, "n_vars {}", n + m)?;
@@ -361,10 +355,7 @@ fn export_cnf(c: &CircuitSeq, n: usize, k: usize, path: &Path) -> std::io::Resul
 
     let n_vars = n + m + m; // inputs + gate outs + tf aux
     let mut f = File::create(path)?;
-    writeln!(
-        f,
-        "c partial-zero r57 n={n} m={m} k={k}"
-    )?;
+    writeln!(f, "c partial-zero r57 n={n} m={m} k={k}")?;
     writeln!(f, "p cnf {n_vars} {}", clauses.len())?;
     for cl in &clauses {
         for lit in cl {
@@ -392,7 +383,9 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(args.seed);
     let circuit = random_circuit(n, m, &mut rng);
 
-    let circ_path = args.out_dir.join(format!("circuit_n{n}_m{m}_s{:x}.repr", args.seed));
+    let circ_path = args
+        .out_dir
+        .join(format!("circuit_n{n}_m{m}_s{:x}.repr", args.seed));
     fs::write(&circ_path, circuit.repr()).expect("write circuit repr");
     println!("wrote circuit {}", circ_path.display());
     println!(
@@ -400,7 +393,9 @@ fn main() {
         args.seed
     );
 
-    let mq_path = args.out_dir.join(format!("mq_n{n}_m{m}_s{:x}.anf", args.seed));
+    let mq_path = args
+        .out_dir
+        .join(format!("mq_n{n}_m{m}_s{:x}.anf", args.seed));
     export_mq(&circuit, n, k, &mq_path).expect("export mq");
     println!(
         "wrote MQ {} ({} vars, {} eqs)",
@@ -410,12 +405,16 @@ fn main() {
     );
 
     if args.export_cnf {
-        let cnf_path = args.out_dir.join(format!("mq_n{n}_m{m}_s{:x}.cnf", args.seed));
+        let cnf_path = args
+            .out_dir
+            .join(format!("mq_n{n}_m{m}_s{:x}.cnf", args.seed));
         export_cnf(&circuit, n, k, &cnf_path).expect("export cnf");
         println!("wrote CNF {}", cnf_path.display());
     }
 
-    let meta_path = args.out_dir.join(format!("meta_n{n}_m{m}_s{:x}.txt", args.seed));
+    let meta_path = args
+        .out_dir
+        .join(format!("meta_n{n}_m{m}_s{:x}.txt", args.seed));
     let mut meta = File::create(&meta_path).expect("meta");
     writeln!(meta, "n={n}").unwrap();
     writeln!(meta, "m={m}").unwrap();

@@ -133,14 +133,7 @@ pub fn emit_monomial_xor(
         2 => emit_and(target, wires[0], wires[1], out),
         3 => {
             assert!(scratches.len() >= 1);
-            emit_and3(
-                target,
-                wires[0],
-                wires[1],
-                wires[2],
-                scratches[0],
-                out,
-            );
+            emit_and3(target, wires[0], wires[1], wires[2], scratches[0], out);
         }
         4 => {
             assert!(scratches.len() >= 2);
@@ -187,10 +180,7 @@ mod tests {
         g.clear();
         emit_and(0, 1, 2, &mut g);
         for x in 0..8usize {
-            assert_eq!(
-                eval(x, &g) & 1,
-                (x & 1) ^ (((x >> 1) & 1) & ((x >> 2) & 1))
-            );
+            assert_eq!(eval(x, &g) & 1, (x & 1) ^ (((x >> 1) & 1) & ((x >> 2) & 1)));
         }
     }
 

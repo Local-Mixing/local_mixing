@@ -2,8 +2,8 @@
 
 use clap::Parser;
 use local_mixing::sandwich::sample_and_obfuscate;
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::fs;
 use std::path::PathBuf;
 
@@ -46,8 +46,16 @@ fn main() {
     let mut header = String::new();
     header.push_str("# LOW-WEIGHT SEARCH CHALLENGE (sealed obfuscated circuit)\n");
     header.push_str("# Goal: minimize Hamming weight (# of 1s) of y = C(0^{prefix} || x)\n");
-    header.push_str(&format!("# data_wires={} prefix_zeros={} free_bits={}\n", args.wires, args.prefix_zeros, args.wires - args.prefix_zeros));
-    header.push_str(&format!("# seed={} gates={} (plaintext NOT included below)\n", args.seed, args.gates));
+    header.push_str(&format!(
+        "# data_wires={} prefix_zeros={} free_bits={}\n",
+        args.wires,
+        args.prefix_zeros,
+        args.wires - args.prefix_zeros
+    ));
+    header.push_str(&format!(
+        "# seed={} gates={} (plaintext NOT included below)\n",
+        args.seed, args.gates
+    ));
     header.push_str(&format!("challenge_prefix_zeros {}\n", args.prefix_zeros));
     header.push_str(&format!("challenge_seed {}\n\n", args.seed));
 

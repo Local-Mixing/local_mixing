@@ -5,7 +5,7 @@
 //! with a sequential-counter cardinality constraint on output weight.
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkBody, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkBody, ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs::{self, File};
@@ -232,9 +232,8 @@ fn emit_cnf(
         for pat in 0..(1 << k_in) {
             let mut ante = Vec::with_capacity(k_in);
             for (i, &w) in rp.in_wires.iter().enumerate() {
-                let src = cur[w as usize].unwrap_or_else(|| {
-                    panic!("undefined wire {w} at residual {ri}")
-                });
+                let src = cur[w as usize]
+                    .unwrap_or_else(|| panic!("undefined wire {w} at residual {ri}"));
                 // matching pat: for bit=1 use ~src in ante of (~ante \/ out)
                 // clause: \/_{bit=0} src  \/  \/_{bit=1} ~src  \/ out_lit
                 if ((pat >> i) & 1) != 0 {
@@ -442,8 +441,8 @@ fn polish(ch: &Challenge, start: &[bool], steps: usize) -> (usize, Vec<bool>) {
             flipped.push(i);
         }
         let wt = hamming_weight(&ch.circuit.evaluate_data_bits(&bits_to_input(ch, &cur)));
-        let accept = wt <= cur_wt
-            || rng.random::<f64>() < ((cur_wt as f64 - wt as f64) / temp).exp();
+        let accept =
+            wt <= cur_wt || rng.random::<f64>() < ((cur_wt as f64 - wt as f64) / temp).exp();
         if accept {
             cur_wt = wt;
             if wt < best_wt {

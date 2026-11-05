@@ -1,9 +1,9 @@
 pub mod bench_support;
 pub mod circuit;
+pub mod mqshare;
 pub mod rainbow;
 pub mod random;
 pub mod replace;
-pub mod mqshare;
 pub mod sandwich;
 use crate::circuit::CircuitSeq;
 use primitive_types::U256 as u256;

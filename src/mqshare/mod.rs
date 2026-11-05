@@ -18,9 +18,9 @@ mod poly;
 
 use crate::circuit::CircuitSeq;
 use gadgets::{emit_and, emit_cnot, emit_monomial_xor, emit_not};
-use poly::{random_quadratic, Poly};
-use rand::seq::SliceRandom;
+use poly::{Poly, random_quadratic};
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::HashSet;
 
 pub use gadgets::{
@@ -42,8 +42,7 @@ pub struct MqShareParams {
 impl MqShareParams {
     pub fn for_n(data_wires: usize) -> Self {
         let ancilla_count = data_wires.max(8);
-        let init_gates =
-            (2.0 * data_wires as f64 * (data_wires as f64).log2()).round() as usize;
+        let init_gates = (2.0 * data_wires as f64 * (data_wires as f64).log2()).round() as usize;
         Self {
             ancilla_count,
             scratch_count: 4,
@@ -448,8 +447,8 @@ pub fn check_correctness_random_dirty_ancilla(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn bits_from_u64(x: u64, n: usize) -> Vec<bool> {
         (0..n).map(|i| ((x >> i) & 1) != 0).collect()

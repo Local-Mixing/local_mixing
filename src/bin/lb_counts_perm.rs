@@ -8,8 +8,8 @@ use std::{
 
 use clap::{Parser, ValueEnum};
 use crossbeam::queue::SegQueue;
+use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use dashmap::{DashMap, DashSet};
 use local_mixing::circuit::{CircuitSeq, Gate, Permutation, base_gates, circuit::iter_ones};
 use nauty_Traces_sys::{SG_FREE, SparseGraph, optionblk, sparsegraph, sparsenauty, statsblk};
 use num_bigint::BigUint;
@@ -424,7 +424,7 @@ fn analyze_prefixes(mut layers: Vec<Vec<CompactPerm>>, nn: usize) {
 /// nodes without the padding of a `(u64, u16)` key.
 struct PermTrie {
     edges: DashMap<u64, u64, FxBuildHasher>,
-    leaves: DashSet<u64, FxBuildHasher>,
+    leaves: DashMap<u64, usize, FxBuildHasher>,
     next_node: AtomicU64,
 }
 
@@ -435,7 +435,7 @@ impl PermTrie {
     fn new() -> Self {
         Self {
             edges: DashMap::with_hasher(FxBuildHasher),
-            leaves: DashSet::with_hasher(FxBuildHasher),
+            leaves: DashMap::with_hasher(FxBuildHasher),
             next_node: AtomicU64::new(1), // node 0 is the root
         }
     }
@@ -449,12 +449,17 @@ impl PermTrie {
         (parent << Self::VALUE_BITS) | value as u64
     }
 
-    /// Returns `(leaf_node, newly_inserted_permutation)`.
+    /// Returns `(first_seen_depth, newly_inserted_permutation)`.
     ///
     /// Threads can alternate winning individual edge insertions for an
     /// identical path, so a separate leaf insertion supplies the one atomic
     /// dedup winner for the complete permutation.
-    fn insert(&self, p: &CompactPerm) -> (u64, bool) {
+    fn insert(&self, p: &CompactPerm) -> (usize, bool) {
+        self.insert_at(p, 0)
+    }
+
+    /// Returns the depth at which this permutation was first inserted.
+    fn insert_at(&self, p: &CompactPerm, depth: usize) -> (usize, bool) {
         let mut parent = 0u64;
 
         let mut push_value = |value: u16| {
@@ -483,8 +488,15 @@ impl PermTrie {
             }
         }
 
-        let inserted = self.leaves.insert(parent);
-        (parent, inserted)
+        let inserted = match self.leaves.entry(parent) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(depth);
+                true
+            }
+        };
+        let first_depth = *self.leaves.get(&parent).unwrap();
+        (first_depth, inserted)
     }
 
     fn permutation_count(&self) -> usize {
@@ -516,9 +528,9 @@ enum Visited {
     Trie(PermTrie),
     /// `DashMap` rather than `DashSet` so we can call `try_reserve` between
     /// BFS layers and avoid mid-layer rehash spikes near the RAM ceiling.
-    Lehmer128(DashMap<u128, (), FxBuildHasher>),
+    Lehmer128(DashMap<u128, usize, FxBuildHasher>),
     Packed384 {
-        map: DashMap<[u64; 6], (), FxBuildHasher>,
+        map: DashMap<[u64; 6], usize, FxBuildHasher>,
         bits: usize,
     },
 }
@@ -566,16 +578,31 @@ impl Visited {
     }
 
     fn insert(&self, permutation: &CompactPerm) -> bool {
+        self.insert_at(permutation, 0).1
+    }
+
+    /// Returns `(first_seen_depth, newly_inserted)`.
+    fn insert_at(&self, permutation: &CompactPerm, depth: usize) -> (usize, bool) {
         match self {
-            Self::Trie(trie) => trie.insert(permutation).1,
+            Self::Trie(trie) => trie.insert_at(permutation, depth),
             Self::Lehmer128(map) => {
                 let rank = lehmer_rank_u128(permutation)
                     .expect("permutation does not have an exact u128 Lehmer rank");
-                map.insert(rank, ()).is_none()
+                match map.entry(rank) {
+                    Entry::Occupied(entry) => (*entry.get(), false),
+                    Entry::Vacant(entry) => {
+                        entry.insert(depth);
+                        (depth, true)
+                    }
+                }
             }
-            Self::Packed384 { map, bits } => {
-                map.insert(pack_perm_u384(permutation, *bits), ()).is_none()
-            }
+            Self::Packed384 { map, bits } => match map.entry(pack_perm_u384(permutation, *bits)) {
+                Entry::Occupied(entry) => (*entry.get(), false),
+                Entry::Vacant(entry) => {
+                    entry.insert(depth);
+                    (depth, true)
+                }
+            },
         }
     }
 
@@ -665,15 +692,17 @@ fn iso_bfs(
     let collected = collect_canonical.then(|| {
         Arc::new(DashMap::<CompactPerm, (usize, usize), FxBuildHasher>::with_hasher(FxBuildHasher))
     });
+    let first_seen_matrix = Arc::new(Mutex::new(vec![vec![0u64; max_m + 1]; max_m + 1]));
 
     // Seed: identity at depth 0 (recorded, not expanded).
     let mut seed_canonical_graph = sparsegraph::default();
     let id_perm = Permutation::id_perm(nn);
-    let (id_canon, id_sphere) =
-        canonicalize(canon_method, &id_perm, n, &mut seed_canonical_graph);
+    let (id_canon, id_sphere) = canonicalize(canon_method, &id_perm, n, &mut seed_canonical_graph);
     let id_key = CompactPerm::from_permutation(&id_canon);
-    let inserted = visited.insert(&id_key);
+    let (id_first_seen, inserted) = visited.insert_at(&id_key, 0);
     assert!(inserted);
+    assert_eq!(id_first_seen, 0);
+    first_seen_matrix.lock().unwrap()[0][0] += 1;
     if let Some(analysis) = &analysis {
         analysis.lock().unwrap()[0].push(id_key.clone());
     }
@@ -693,8 +722,10 @@ fn iso_bfs(
     );
     SG_FREE(&mut seed_canonical_graph);
     let base_key = CompactPerm::from_permutation(&base_canon);
-    let inserted = visited.insert(&base_key);
+    let (base_first_seen, inserted) = visited.insert_at(&base_key, 1);
     assert!(inserted);
+    assert_eq!(base_first_seen, 1);
+    first_seen_matrix.lock().unwrap()[1][1] += 1;
     if let Some(analysis) = &analysis {
         analysis.lock().unwrap()[1].push(base_key.clone());
     }
@@ -727,6 +758,7 @@ fn iso_bfs(
         let layer_started = Instant::now();
         let layer_circuits_done = Arc::new(AtomicU64::new(0));
         let layer_circuit_total = frontier.len() as u64 * gen_size as u64;
+        let matrix_parts = Arc::new(SegQueue::<Vec<u64>>::new());
 
         std::thread::scope(|scope| {
             for tid in 0..num_threads {
@@ -739,6 +771,7 @@ fn iso_bfs(
                 let collected = collected.clone();
                 let gens = gens.clone();
                 let layer_circuits_done = layer_circuits_done.clone();
+                let matrix_parts = matrix_parts.clone();
 
                 scope.spawn(move || {
                     // Reused across every canonicalization performed by this
@@ -749,6 +782,7 @@ fn iso_bfs(
                     let thread_started = Instant::now();
                     let mut last_report = Instant::now();
                     let mut thread_circuits = 0u64;
+                    let mut local_matrix = vec![0u64; (max_m + 1) * (max_m + 1)];
 
                     while let Some(parent) = frontier.pop() {
                         let parent_perm = parent.to_permutation();
@@ -759,7 +793,19 @@ fn iso_bfs(
                                 canonicalize(canon_method, &h, n, &mut canonical_graph_scratch);
                             let key = CompactPerm::from_permutation(&canon);
 
-                            if !visited.insert(&key) {
+                            let (first_seen, newly_inserted) = visited.insert_at(&key, depth);
+
+                            // Do not count duplicate transitions produced by
+                            // this same layer. The winning insertion remains
+                            // on the diagonal, so M[i][i] equals the exact
+                            // number of newly discovered permutations at i.
+                            if !newly_inserted && first_seen == depth {
+                                continue;
+                            }
+
+                            local_matrix[depth * (max_m + 1) + first_seen] += 1;
+
+                            if !newly_inserted {
                                 continue;
                             }
 
@@ -812,10 +858,20 @@ fn iso_bfs(
 
                     *dist_counts.entry(depth).or_default() += new_count;
                     *spheres.entry(depth).or_default() += sphere_count;
+                    matrix_parts.push(local_matrix);
                     SG_FREE(&mut canonical_graph_scratch);
                 });
             }
         });
+
+        let mut matrix = first_seen_matrix.lock().unwrap();
+        while let Some(part) = matrix_parts.pop() {
+            for row in 0..=max_m {
+                for first_seen in 0..=max_m {
+                    matrix[row][first_seen] += part[row * (max_m + 1) + first_seen];
+                }
+            }
+        }
 
         frontier = next_frontier;
     }
@@ -855,6 +911,49 @@ fn iso_bfs(
         layer_counts[m] = count;
         println!("{m} {count:10} {sp:10}");
     }
+
+    let matrix = first_seen_matrix.lock().unwrap();
+    let largest_cell = matrix
+        .iter()
+        .flat_map(|row| row.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let cell_width = largest_cell.to_string().len().max(10) + 2;
+    let row_width = "encountered\\first".len().max(max_m.to_string().len() + 2);
+    let horizontal = |left: &str, junction: &str, right: &str| {
+        let mut line = left.to_string();
+        line.push_str(&"─".repeat(row_width));
+        for column in 0..=max_m {
+            line.push_str(junction);
+            line.push_str(&"─".repeat(cell_width));
+            if column == max_m {
+                line.push_str(right);
+            }
+        }
+        line
+    };
+
+    println!(
+        "\nFirst-seen transition matrix\n\
+         Same-round duplicate transitions are excluded. Diagonal M[i][i] values\n\
+         are exact new-permutation counts; column j < i counts older duplicates."
+    );
+    println!("{}", horizontal("┌", "┬", "┐"));
+    print!("│{:>row_width$}│", "encountered\\first");
+    for first_seen in 0..=max_m {
+        print!("{:>cell_width$}│", first_seen);
+    }
+    println!();
+    println!("{}", horizontal("├", "┼", "┤"));
+    for encountered in 0..=max_m {
+        print!("│{:>row_width$}│", encountered);
+        for first_seen in 0..=max_m {
+            print!("{:>cell_width$}│", matrix[encountered][first_seen]);
+        }
+        println!();
+    }
+    println!("{}", horizontal("└", "┴", "┘"));
 
     if let Some(analysis) = analysis {
         let mut guard = analysis.lock().unwrap();
@@ -1034,9 +1133,7 @@ fn exact_cover_search(
         "Generated group order {group_order} (even {even_sphere_total}, odd {odd_sphere_total}); \
          |Sym_{nn}| = {full_sym}, |Alt_{nn}| = {full_alt}"
     );
-    println!(
-        "Min-length diameter: even orbits ≤ {even_min_diam}, odd orbits ≤ {odd_min_diam}"
-    );
+    println!("Min-length diameter: even orbits ≤ {even_min_diam}, odd orbits ≤ {odd_min_diam}");
     if BigUint::from(group_order) != full_sym {
         println!(
             "warning: min-length ball of radius {max_m} is a proper subgroup/ball; \
@@ -1117,14 +1214,7 @@ fn exact_cover_search(
 
     for depth in 1..=max_m {
         let parents: Vec<CompactPerm> = layer.into_iter().map(|(p, _)| p).collect();
-        layer = expand_exact_layer(
-            &parents,
-            &gens,
-            n,
-            depth,
-            requested_threads,
-            canon_method,
-        );
+        layer = expand_exact_layer(&parents, &gens, n, depth, requested_threads, canon_method);
         report_layer(
             depth,
             &layer,
@@ -1154,16 +1244,14 @@ fn exact_cover_search(
     println!();
     match (first_even, first_odd) {
         (Some(e), Some(o)) => {
-            println!(
-                "First exact length covering every even generated permutation (Alt): {e}"
-            );
+            println!("First exact length covering every even generated permutation (Alt): {e}");
             println!(
                 "First exact length covering every odd generated permutation (Sym \\ Alt): {o}"
             );
         }
-        _ => println!(
-            "Exact-length layers up to {max_m} do not yet cover both parities. Raise -m."
-        ),
+        _ => {
+            println!("Exact-length layers up to {max_m} do not yet cover both parities. Raise -m.")
+        }
     }
     match cover_m {
         Some(m) => {
@@ -1270,7 +1358,8 @@ fn exact_perm16_layer(k: usize, gens: &[[u16; 3]]) -> FxHashSet<u64> {
     let mut layer = FxHashSet::default();
     layer.insert(identity_perm16());
     for _ in 0..k {
-        let mut next = FxHashSet::with_capacity_and_hasher(layer.len() * gens.len(), Default::default());
+        let mut next =
+            FxHashSet::with_capacity_and_hasher(layer.len() * gens.len(), Default::default());
         for &state in &layer {
             for &gate in gens {
                 next.insert(apply_gate_perm16(state, gate));
@@ -1404,7 +1493,8 @@ fn ancilla_s8_bfs(
 
     let visited = Arc::new(atomic_bitset(ANCILLA_INJ));
     let first_odd = Arc::new(atomic_bitset(ANCILLA_INJ));
-    let found_at: Arc<Vec<AtomicU8>> = Arc::new((0..S8_ORDER).map(|_| AtomicU8::new(u8::MAX)).collect());
+    let found_at: Arc<Vec<AtomicU8>> =
+        Arc::new((0..S8_ORDER).map(|_| AtomicU8::new(u8::MAX)).collect());
     let found_count = Arc::new(AtomicUsize::new(0));
     let odd_cycle = Arc::new(AtomicBool::new(false));
     let visited_count = Arc::new(AtomicU64::new(0));
@@ -1498,8 +1588,8 @@ fn ancilla_s8_bfs(
                         }
 
                         thread_ckts += gen_size as u64;
-                        let ckts_done =
-                            layer_done.fetch_add(gen_size as u64, Ordering::Relaxed) + gen_size as u64;
+                        let ckts_done = layer_done.fetch_add(gen_size as u64, Ordering::Relaxed)
+                            + gen_size as u64;
                         if last_report.elapsed() >= Duration::from_secs(2) {
                             let speed = thread_ckts as f64 / thread_started.elapsed().as_secs_f64();
                             let layer_speed =
@@ -1701,8 +1791,8 @@ fn exact_ancilla_s8_layers(
                         }
 
                         thread_ckts += gen_size as u64;
-                        let ckts_done =
-                            layer_done.fetch_add(gen_size as u64, Ordering::Relaxed) + gen_size as u64;
+                        let ckts_done = layer_done.fetch_add(gen_size as u64, Ordering::Relaxed)
+                            + gen_size as u64;
                         if last_report.elapsed() >= Duration::from_secs(2) {
                             let speed = thread_ckts as f64 / thread_started.elapsed().as_secs_f64();
                             let layer_speed =
@@ -1768,9 +1858,8 @@ fn ancilla_s8_identity_bfs(
     let gen_size = gates.len();
     let gens = Arc::new(gates.to_vec());
 
-    let ball: Arc<DashMap<u64, u8, FxBuildHasher>> = Arc::new(
-        DashMap::with_capacity_and_hasher(1 << 20, FxBuildHasher),
-    );
+    let ball: Arc<DashMap<u64, u8, FxBuildHasher>> =
+        Arc::new(DashMap::with_capacity_and_hasher(1 << 20, FxBuildHasher));
     let found_at: Arc<Vec<AtomicU8>> =
         Arc::new((0..S8_ORDER).map(|_| AtomicU8::new(u8::MAX)).collect());
     let found_count = Arc::new(AtomicUsize::new(0));
@@ -1842,8 +1931,8 @@ fn ancilla_s8_identity_bfs(
                         }
 
                         thread_ckts += gen_size as u64;
-                        let ckts_done =
-                            layer_done.fetch_add(gen_size as u64, Ordering::Relaxed) + gen_size as u64;
+                        let ckts_done = layer_done.fetch_add(gen_size as u64, Ordering::Relaxed)
+                            + gen_size as u64;
                         if last_report.elapsed() >= Duration::from_secs(2) {
                             let speed = thread_ckts as f64 / thread_started.elapsed().as_secs_f64();
                             let layer_speed =
@@ -1990,9 +2079,9 @@ fn ancilla_s8_identity_bfs(
 
     match min_cover {
         Some(m) => println!("All of S_8 has a π ⊗ I circuit of length ≤ {m}"),
-        None => println!(
-            "Only {found}/{S8_ORDER} of S_8 found as π ⊗ I within {max_m} gates; raise -m"
-        ),
+        None => {
+            println!("Only {found}/{S8_ORDER} of S_8 found as π ⊗ I within {max_m} gates; raise -m")
+        }
     }
 
     // Exact-length π ⊗ I: +2 padding on min-length, plus whether S_8 parity
@@ -2496,7 +2585,8 @@ mod tests {
 
     #[test]
     fn exact_cover_matches_brute_enumeration() {
-        let result = exact_cover_search(3, 3, false, Some(2), CanonMethod::Nauty, StoreMethod::Auto);
+        let result =
+            exact_cover_search(3, 3, false, Some(2), CanonMethod::Nauty, StoreMethod::Auto);
         for m in 0..=3 {
             let brute = brute_exact_canonical_count(3, m);
             assert_eq!(
@@ -2594,7 +2684,10 @@ mod tests {
         assert_eq!(result.hist_even[2], 27);
         assert_eq!(result.hist_odd[3], 120);
         assert_eq!(result.hist_even[4], 528);
-        assert_eq!(result.hist_odd[0] + result.hist_odd[2] + result.hist_odd[4], 0);
+        assert_eq!(
+            result.hist_odd[0] + result.hist_odd[2] + result.hist_odd[4],
+            0
+        );
         assert_eq!(result.hist_even[1] + result.hist_even[3], 0);
     }
 
@@ -2626,7 +2719,10 @@ mod tests {
         assert_eq!(result.hist_even[2], 27);
         assert_eq!(result.hist_odd[3], 120);
         assert_eq!(result.hist_even[4], 528);
-        assert_eq!(result.hist_odd[0] + result.hist_odd[2] + result.hist_odd[4], 0);
+        assert_eq!(
+            result.hist_odd[0] + result.hist_odd[2] + result.hist_odd[4],
+            0
+        );
         assert_eq!(result.hist_even[1] + result.hist_even[3], 0);
     }
 
@@ -2654,14 +2750,7 @@ mod tests {
 
     fn classify_exact_perm16_s8(
         layer: &FxHashSet<u64>,
-    ) -> (
-        Vec<bool>,
-        Vec<bool>,
-        usize,
-        usize,
-        usize,
-        usize,
-    ) {
+    ) -> (Vec<bool>, Vec<bool>, usize, usize, usize, usize) {
         let mut seen_otimes = vec![false; S8_ORDER];
         let mut seen_borrowed = vec![false; S8_ORDER];
         let mut otimes_even = 0usize;
@@ -2748,10 +2837,12 @@ mod tests {
             std::collections::BTreeMap::new();
         let mut unranked = [0u8; 8];
         for idx in 0..S8_ORDER {
-            if !at5[idx] || !s8_perm_is_even({
-                unrank_s8(idx, &mut unranked);
-                unranked
-            }) {
+            if !at5[idx]
+                || !s8_perm_is_even({
+                    unrank_s8(idx, &mut unranked);
+                    unranked
+                })
+            {
                 continue;
             }
             unrank_s8(idx, &mut unranked);
@@ -2766,7 +2857,11 @@ mod tests {
             "exact-5 even π⊗I: also even-length ≤4: {already_even_len}; first seen at odd 5: {only_odd5}"
         );
         for (ct, n) in &types {
-            let parts: Vec<String> = ct.iter().filter(|&&l| l > 0).map(|l| l.to_string()).collect();
+            let parts: Vec<String> = ct
+                .iter()
+                .filter(|&&l| l > 0)
+                .map(|l| l.to_string())
+                .collect();
             println!("  cycle type [{}]: {n}", parts.join(","));
         }
         assert_eq!(already_even_len, 39);
@@ -3013,7 +3108,9 @@ mod tests {
                 stubborn.push(packed_at[idx]);
             }
         }
-        println!("3-wire min-length-9 odds: {n9_odd}, geodesic with expandable pair: {n9_odd_expand}");
+        println!(
+            "3-wire min-length-9 odds: {n9_odd}, geodesic with expandable pair: {n9_odd_expand}"
+        );
         assert_eq!(n9_odd - n9_odd_expand, stubborn.len());
 
         let l4 = exact_perm16_layer(4, &gens);
@@ -3102,9 +3199,16 @@ mod tests {
             }
             targets.push(packed_at[idx]);
             *types.entry(s8_cycle_type(unranked)).or_default() += 1;
-            println!("3-wire d=10 even π={unranked:?} cycle {:?}", s8_cycle_type(unranked));
+            println!(
+                "3-wire d=10 even π={unranked:?} cycle {:?}",
+                s8_cycle_type(unranked)
+            );
         }
-        println!("3-wire min-length-10 even: {}  cycle types {:?}", targets.len(), types);
+        println!(
+            "3-wire min-length-10 even: {}  cycle types {:?}",
+            targets.len(),
+            types
+        );
         assert_eq!(targets.len(), 56);
 
         let mut layer = FxHashSet::default();
@@ -3132,7 +3236,8 @@ mod tests {
         let l6 = layer;
 
         let in_meet = |t: u64, a: &FxHashSet<u64>, b: &FxHashSet<u64>| -> bool {
-            a.iter().any(|&x| b.contains(&compose_perm16(invert_perm16(x), t)))
+            a.iter()
+                .any(|&x| b.contains(&compose_perm16(invert_perm16(x), t)))
         };
 
         let mut bottlenecks = Vec::new();
@@ -3147,11 +3252,7 @@ mod tests {
             let still_10 = !in_l4 && !in_l6 && !in_l8 && !in_l5 && !in_l7 && !in_l9;
             if still_10 {
                 bottlenecks.push(t);
-                println!(
-                    "bottleneck π={:?} cycle {:?}",
-                    pi,
-                    s8_cycle_type(pi)
-                );
+                println!("bottleneck π={:?} cycle {:?}", pi, s8_cycle_type(pi));
             }
         }
         println!(
@@ -3179,7 +3280,11 @@ mod tests {
             }
         }
         println!("bottleneck even π⊗I in L11: {n_hit}/{}", bottlenecks.len());
-        assert_eq!(n_hit, bottlenecks.len(), "diameter-10 even π⊗I should all sit in L11");
+        assert_eq!(
+            n_hit,
+            bottlenecks.len(),
+            "diameter-10 even π⊗I should all sit in L11"
+        );
 
         let mut d8 = Vec::new();
         for idx in 0..S8_ORDER {

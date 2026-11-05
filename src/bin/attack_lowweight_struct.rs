@@ -4,7 +4,7 @@
 //! Still only uses the obfuscated circuit (forward eval). No plaintext.
 
 use clap::Parser;
-use local_mixing::sandwich::{hamming_weight, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs;
@@ -88,7 +88,12 @@ fn main() {
             }
         }
         if (p + 1) % 16 == 0 {
-            println!("  probed {}/{} ({:.1}s)", p + 1, args.probes, t0.elapsed().as_secs_f64());
+            println!(
+                "  probed {}/{} ({:.1}s)",
+                p + 1,
+                args.probes,
+                t0.elapsed().as_secs_f64()
+            );
         }
     }
 

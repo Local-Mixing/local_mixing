@@ -158,8 +158,8 @@ pub fn random_quadratic(ancillas: &[u16], rng: &mut impl rand::Rng) -> Poly {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn mul_and_degree() {
@@ -173,7 +173,11 @@ mod tests {
         let anc: Vec<u16> = (0..40).collect();
         let q = random_quadratic(&anc, &mut rng);
         // O(n): constant + ≤n linears + ≤n pairs → ≤ 2n+1
-        assert!(q.term_count() <= 2 * anc.len() + 1, "terms={}", q.term_count());
+        assert!(
+            q.term_count() <= 2 * anc.len() + 1,
+            "terms={}",
+            q.term_count()
+        );
         assert!(q.degree() <= 2);
     }
 }

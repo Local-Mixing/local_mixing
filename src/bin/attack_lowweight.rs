@@ -3,7 +3,7 @@
 //! This binary only loads the obfuscated representation — no plaintext.
 
 use clap::{Parser, ValueEnum};
-use local_mixing::sandwich::{hamming_weight, ChunkedCircuit};
+use local_mixing::sandwich::{ChunkedCircuit, hamming_weight};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::fs;
@@ -102,7 +102,10 @@ fn main() {
         ch.prefix_zeros,
         free_bits
     );
-    println!("mode={:?} samples={} seed={}", args.mode, args.samples, args.seed);
+    println!(
+        "mode={:?} samples={} seed={}",
+        args.mode, args.samples, args.seed
+    );
 
     let mut rng = StdRng::seed_from_u64(args.seed);
     let t0 = Instant::now();
