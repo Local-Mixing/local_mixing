@@ -1,17 +1,17 @@
 import subprocess
 import sys
+import math
 
 import numpy as np
 
 WIRES = 128
 SEQ_LEN = 1 << 23
-PAR = 150
+PAR = 100
 
 TEST_PREFIX = f"cargo run --quiet --release --bin block_cipher -- -r {PAR} -l {SEQ_LEN}"
 
-test_lens = np.geomspace(128, 4096, 16).astype(int).tolist()
-
-print(f"{test_lens = }")
+# test_lens = np.geomspace(128, 4096, 16).astype(int).tolist()
+# print(f"{test_lens = }")
 
 def run_test(mode, ckt, m, n, out):
     cmd = TEST_PREFIX + f" -o {mode} -c {ckt} -m {m} -n {n} -f {out}"
@@ -24,17 +24,19 @@ def run_test(mode, ckt, m, n, out):
 
 subprocess.run("mkdir -p out", shell=True)
 
-ckt_types = ['fanout-two', 'balanced', 'random', 'aes']
-mode = 'ofb'
+# 'aes'
+ckt_types = ['fanout-two', 'balanced', 'random', 'staircase']
+# CTR is harder - smaller input deltas.
+mode = 'ctr'
 
 # for mode in ('ctr', 'ofb'):
     # for ckt in ('balanced', 'random'):
 
-n = 128
-for m in test_lens:
-    for ckt in ckt_types:
-        print(mode, ckt, m)
-        run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}.txt")
+# n = 128
+# for m in test_lens:
+#     for ckt in ckt_types:
+#         print(mode, ckt, m)
+#         run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}.txt")
 
 # Exact CMR lengths, matched across the other gate-count modes. Each width's
 # step is round(log2(n)) * log3(n) * n / 3. The middle point is the lattice
@@ -42,15 +44,29 @@ for m in test_lens:
 # 27 wires, step 135: 270, 945, 4050
 # 81 wires, step 648: 648, 1296, 3888
 # 243 wires, step 3240: 3240
-cmr_sizes = {
-    27: [270, 945, 4050],
-    81: [648, 1296, 3888],
-    243: [3240],
-}
-cmr_modes = ['fanout-two', 'balanced', 'random', 'cmr22']
+# cmr_sizes = {
+#     27: [270, 945, 4050],
+#     81: [648, 1296, 3888],
+#     243: [3240],
+# }
+# cmr_modes = ['fanout-two', 'balanced', 'random', 'staircase', 'cmr22']
 
-for n, lengths in cmr_sizes.items():
-    for m in lengths:
-        for ckt in cmr_modes:
-            print("[cmr-cmp]", mode, ckt, n, m)
-            run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-cmr.txt")
+# # for n, lengths in cmr_sizes.items():
+# #     for m in lengths:
+# #         for ckt in cmr_modes:
+# #             print("[cmr-cmp]", mode, ckt, n, m)
+# #             run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-cmr.txt")
+
+# n = 27
+# step = 135
+# for d in range(1, 7):
+#     for ckt in cmr_modes:
+#         m = step * d
+#         print("[cmr-cmp]", mode, ckt, n, m)
+#         run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-cmr.txt")
+
+for n in [32, 64, 128]:
+    for ckt in ckt_types:
+        for log_pow in np.arange(0, 3, 0.5):
+            m = round(n * math.log2(n) ** log_pow)
+            run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-sweep.txt")

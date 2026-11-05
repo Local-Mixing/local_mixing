@@ -17,6 +17,7 @@ parsed as floats and summarized per x-value:
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from statistics import median
 
@@ -66,45 +67,82 @@ def parse_file(path: Path) -> tuple[list[float], list[tuple[float, float, float,
 colors = {
     'ctr.balanced': 'blue',
     'ctr.random': 'green',
+    'ctr.fanout-two': 'magenta',
     'ofb.balanced': 'red',
     'ofb.random': 'orange'
 }
 
-def plot_file(path: Path, ax: plt.Axes) -> None:
+def plot_file(path: Path, ax: plt.Axes, gate_length: int | None = None) -> int | None:
     xs, summaries = parse_file(path)
     if not xs:
         return
 
-    mins = [item[0] for item in summaries]
-    q1s = [item[1] for item in summaries]
-    meds = [item[2] for item in summaries]
-    q3s = [item[3] for item in summaries]
-    maxs = [item[4] for item in summaries]
+    if gate_length is None:
+        plot_xs = xs
+        plot_summaries = summaries
 
-    color = colors.get(path.stem, None)
+        mins = [item[0] for item in plot_summaries]
+        q1s = [item[1] for item in plot_summaries]
+        meds = [item[2] for item in plot_summaries]
+        q3s = [item[3] for item in plot_summaries]
+        maxs = [item[4] for item in plot_summaries]
 
-    L = ax.plot(xs, meds, color=color, linewidth=2.5, label=path.stem.replace('.', ' '))
-    color = L[0].get_color()
-    ax.fill_between(xs, q1s, q3s, color=color, alpha=0.2, linewidth=0)
+        color = colors.get(path.stem.split('.n', 1)[0], None)
 
-    ax.plot(xs, mins, color=color, linewidth=1.0, linestyle=':')
-    ax.plot(xs, maxs, color=color, linewidth=1.0, linestyle=':')
+        L = ax.plot(plot_xs, meds, color=color, linewidth=2.5, label=path.stem.replace('.', ' '))
+        color = L[0].get_color()
+        ax.fill_between(plot_xs, q1s, q3s, color=color, alpha=0.2, linewidth=0)
 
-    # return count
-    return summaries[0][-1]
+        ax.plot(plot_xs, mins, color=color, linewidth=1.0, linestyle=':')
+        ax.plot(plot_xs, maxs, color=color, linewidth=1.0, linestyle=':')
+
+    else:
+        try:
+            summary_index = xs.index(gate_length)
+        except ValueError:
+            raise ValueError(f"{path}: gate length {gate_length} not found") from None
+
+        wire_match = re.search(r"\.n(\d+)(?:\D|$)", path.name)
+        if wire_match is None:
+            raise ValueError(f"{path}: could not extract number of wires from filename")
+
+        plot_xs = [int(wire_match.group(1))]
+        plot_summaries = [summaries[summary_index]]
+
+    return plot_xs[0], plot_summaries[0]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot median/min/max and middle 50% from data files.")
     parser.add_argument("files", nargs="+", type=Path, help="Input file(s) to plot")
     parser.add_argument("--logy", action='store_true', help="Log y axis")
+    parser.add_argument(
+        "--wires",
+        type=int,
+        metavar="GATE_LENGTH",
+        help="Plot this gate length from each file against the wire count in its filename",
+    )
     args = parser.parse_args()
 
     fig, ax = plt.subplots()
-    for file_path in args.files:
-        count = plot_file(file_path, ax)
+
+    if args.wires:
+        (x, d) = list(zip(*(plot_file(f, ax, args.wires) for f in args.files)))
+        (mins, q1s, meds, q3s, maxs, _) = zip(*d)
+
+        L = ax.plot(x, meds, color='red', linewidth=2.5)
+        color = L[0].get_color()
+        ax.fill_between(x, q1s, q3s, color=color, alpha=0.2, linewidth=0)
+
+        ax.plot(x, mins, color=color, linewidth=1.0, linestyle=':')
+        ax.plot(x, maxs, color=color, linewidth=1.0, linestyle=':')
+
+        count = d[0][-1]
+    else:
+        for file_path in args.files:
+            count = plot_file(file_path, ax, args.wires)
 
 
-    ax.set_xlabel("circuit length")
+    ax.set_xlabel("number of wires" if args.wires is not None else "circuit length")
     ax.set_ylabel("# failed tests")
     ax.semilogx(base=2)
 

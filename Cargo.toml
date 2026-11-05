@@ -21,7 +21,7 @@ name = "bench_polycanon"
 path = "src/bench/bench_polycanon.rs"
 
 [profile.release]
-overflow-checks = true
+overflow-checks = false
 
 [dependencies]
 rand = "0.9.0"

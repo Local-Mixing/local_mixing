@@ -96,6 +96,7 @@ fn mask_bits(bits: usize) -> u256 {
 impl CircuitPrg {
     fn new(circuit: CircuitSeq, wires: usize, operation_mode: OperationMode) -> Self {
         assert!(wires > 0, "circuit needs at least one wire");
+        assert!(wires >= circuit.max_wire() + 1);
         Self {
             circuit,
             // Random IV in the low `wires` bits. Wider circuits keep the extra wires at 0.
