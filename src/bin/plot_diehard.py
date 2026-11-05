@@ -17,6 +17,9 @@ parsed as floats and summarized per x-value:
 from __future__ import annotations
 
 import argparse
+import math
+import re
+import sys
 from pathlib import Path
 from statistics import median
 
@@ -70,10 +73,41 @@ colors = {
     'ofb.random': 'orange'
 }
 
-def plot_file(path: Path, ax: plt.Axes) -> None:
+def wire_count(path: Path) -> int:
+    """Wire count from a name like `ofb.balanced.n128` or `ofb.cmr22.n27-cmr`."""
+    match = re.search(r"\.n(\d+)", path.stem)
+    if not match:
+        raise ValueError(f"{path}: expected wire count '.n<digits>' in the filename")
+    n = int(match.group(1))
+    if n <= 2:
+        raise ValueError(f"{path}: wire count {n} is too small to form n (log2 n)^k")
+    return n
+
+
+def length_exponent(gates: float, wires: int) -> float:
+    """k in `gates = wires * (log2 wires)^k`. k = 0 when gates == wires."""
+    log_wires = math.log2(wires)
+    return math.log2(gates / wires) / math.log2(log_wires)
+
+
+def plot_file(path: Path, ax: plt.Axes, normalize: bool) -> int | None:
     xs, summaries = parse_file(path)
     if not xs:
-        return
+        return None
+
+    if normalize:
+        wires = wire_count(path)
+        kept_x: list[float] = []
+        kept_summaries = []
+        for gates, summary in zip(xs, summaries):
+            if gates <= 0:
+                print(f"{path}: skipping non-positive gate count {gates}", file=sys.stderr)
+                continue
+            kept_x.append(length_exponent(gates, wires))
+            kept_summaries.append(summary)
+        xs, summaries = kept_x, kept_summaries
+        if not xs:
+            return None
 
     mins = [item[0] for item in summaries]
     q1s = [item[1] for item in summaries]
@@ -96,17 +130,27 @@ def plot_file(path: Path, ax: plt.Axes) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot median/min/max and middle 50% from data files.")
     parser.add_argument("files", nargs="+", type=Path, help="Input file(s) to plot")
-    parser.add_argument("--logy", action='store_true', help="Log y axis")
+    parser.add_argument("--logy", action="store_true", help="Log y axis")
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="Plot k in m = n (log2 n)^k. n is read from each filename (.n<wires>); k = 0 when m = n",
+    )
     args = parser.parse_args()
 
     fig, ax = plt.subplots()
+    count = None
     for file_path in args.files:
-        count = plot_file(file_path, ax)
+        count = plot_file(file_path, ax, args.normalize) or count
 
-
-    ax.set_xlabel("circuit length")
+    if args.normalize:
+        ax.set_xlabel(r"$k$ in $m = n (\log_2 n)^k$")
+        left, _right = ax.get_xlim()
+        ax.set_xlim(left=min(0.0, left))
+    else:
+        ax.set_xlabel("circuit length")
+        ax.semilogx(base=2)
     ax.set_ylabel("# failed tests")
-    ax.semilogx(base=2)
 
     if args.logy:
         ax.semilogy()
