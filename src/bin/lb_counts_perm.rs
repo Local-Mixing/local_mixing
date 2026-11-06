@@ -692,7 +692,7 @@ fn iso_bfs(
     let collected = collect_canonical.then(|| {
         Arc::new(DashMap::<CompactPerm, (usize, usize), FxBuildHasher>::with_hasher(FxBuildHasher))
     });
-    let first_seen_matrix = Arc::new(Mutex::new(vec![vec![0u64; max_m + 1]; max_m + 1]));
+    let delta_counts = Arc::new(Mutex::new(vec![[0u64; 3]; max_m + 1]));
 
     // Seed: identity at depth 0 (recorded, not expanded).
     let mut seed_canonical_graph = sparsegraph::default();
@@ -702,7 +702,6 @@ fn iso_bfs(
     let (id_first_seen, inserted) = visited.insert_at(&id_key, 0);
     assert!(inserted);
     assert_eq!(id_first_seen, 0);
-    first_seen_matrix.lock().unwrap()[0][0] += 1;
     if let Some(analysis) = &analysis {
         analysis.lock().unwrap()[0].push(id_key.clone());
     }
@@ -725,7 +724,6 @@ fn iso_bfs(
     let (base_first_seen, inserted) = visited.insert_at(&base_key, 1);
     assert!(inserted);
     assert_eq!(base_first_seen, 1);
-    first_seen_matrix.lock().unwrap()[1][1] += 1;
     if let Some(analysis) = &analysis {
         analysis.lock().unwrap()[1].push(base_key.clone());
     }
@@ -758,7 +756,7 @@ fn iso_bfs(
         let layer_started = Instant::now();
         let layer_circuits_done = Arc::new(AtomicU64::new(0));
         let layer_circuit_total = frontier.len() as u64 * gen_size as u64;
-        let matrix_parts = Arc::new(SegQueue::<Vec<u64>>::new());
+        let delta_parts = Arc::new(SegQueue::<[u64; 3]>::new());
 
         std::thread::scope(|scope| {
             for tid in 0..num_threads {
@@ -771,7 +769,7 @@ fn iso_bfs(
                 let collected = collected.clone();
                 let gens = gens.clone();
                 let layer_circuits_done = layer_circuits_done.clone();
-                let matrix_parts = matrix_parts.clone();
+                let delta_parts = delta_parts.clone();
 
                 scope.spawn(move || {
                     // Reused across every canonicalization performed by this
@@ -782,7 +780,7 @@ fn iso_bfs(
                     let thread_started = Instant::now();
                     let mut last_report = Instant::now();
                     let mut thread_circuits = 0u64;
-                    let mut local_matrix = vec![0u64; (max_m + 1) * (max_m + 1)];
+                    let mut local_deltas = [0u64; 3];
 
                     while let Some(parent) = frontier.pop() {
                         let parent_perm = parent.to_permutation();
@@ -796,14 +794,21 @@ fn iso_bfs(
                             let (first_seen, newly_inserted) = visited.insert_at(&key, depth);
 
                             // Do not count duplicate transitions produced by
-                            // this same layer. The winning insertion remains
-                            // on the diagonal, so M[i][i] equals the exact
-                            // number of newly discovered permutations at i.
+                            // this same layer. New permutations are the +1
+                            // transitions relative to their parent depth.
                             if !newly_inserted && first_seen == depth {
                                 continue;
                             }
 
-                            local_matrix[depth * (max_m + 1) + first_seen] += 1;
+                            let parent_depth = depth - 1;
+                            let delta = first_seen as isize - parent_depth as isize;
+                            let column = match delta {
+                                -1 => 0,
+                                0 => 1,
+                                1 => 2,
+                                _ => unreachable!("BFS transition changed depth by more than one"),
+                            };
+                            local_deltas[column] += 1;
 
                             if !newly_inserted {
                                 continue;
@@ -858,18 +863,17 @@ fn iso_bfs(
 
                     *dist_counts.entry(depth).or_default() += new_count;
                     *spheres.entry(depth).or_default() += sphere_count;
-                    matrix_parts.push(local_matrix);
+                    delta_parts.push(local_deltas);
                     SG_FREE(&mut canonical_graph_scratch);
                 });
             }
         });
 
-        let mut matrix = first_seen_matrix.lock().unwrap();
-        while let Some(part) = matrix_parts.pop() {
-            for row in 0..=max_m {
-                for first_seen in 0..=max_m {
-                    matrix[row][first_seen] += part[row * (max_m + 1) + first_seen];
-                }
+        let mut deltas = delta_counts.lock().unwrap();
+        let row = &mut deltas[depth - 1];
+        while let Some(part) = delta_parts.pop() {
+            for column in 0..3 {
+                row[column] += part[column];
             }
         }
 
@@ -912,22 +916,22 @@ fn iso_bfs(
         println!("{m} {count:10} {sp:10}");
     }
 
-    let matrix = first_seen_matrix.lock().unwrap();
-    let largest_cell = matrix
+    let deltas = delta_counts.lock().unwrap();
+    let largest_cell = deltas
         .iter()
         .flat_map(|row| row.iter())
         .copied()
         .max()
         .unwrap_or(0);
     let cell_width = largest_cell.to_string().len().max(10) + 2;
-    let row_width = "encountered\\first".len().max(max_m.to_string().len() + 2);
+    let row_width = "parent min length".len().max(max_m.to_string().len() + 2);
     let horizontal = |left: &str, junction: &str, right: &str| {
         let mut line = left.to_string();
         line.push_str(&"─".repeat(row_width));
-        for column in 0..=max_m {
+        for column in 0..3 {
             line.push_str(junction);
-            line.push_str(&"─".repeat(cell_width));
-            if column == max_m {
+            line.push_str(&"─".repeat(cell_width + 1));
+            if column == 2 {
                 line.push_str(right);
             }
         }
@@ -935,21 +939,21 @@ fn iso_bfs(
     };
 
     println!(
-        "\nFirst-seen transition matrix\n\
-         Same-round duplicate transitions are excluded. Diagonal M[i][i] values\n\
-         are exact new-permutation counts; column j < i counts older duplicates."
+        "\nMinimum-length transition matrix\n\
+         Rows are parent minimum lengths; columns are child length deltas.\n\
+         Same-round duplicate transitions are excluded."
     );
     println!("{}", horizontal("┌", "┬", "┐"));
-    print!("│{:>row_width$}│", "encountered\\first");
-    for first_seen in 0..=max_m {
-        print!("{:>cell_width$}│", first_seen);
+    print!("│{:^row_width$}│", "parent min length");
+    for label in ["-1", "0", "+1"] {
+        print!("{:^cell_width$} │", label);
     }
     println!();
     println!("{}", horizontal("├", "┼", "┤"));
-    for encountered in 0..=max_m {
-        print!("│{:>row_width$}│", encountered);
-        for first_seen in 0..=max_m {
-            print!("{:>cell_width$}│", matrix[encountered][first_seen]);
+    for parent_depth in 1..max_m {
+        print!("│{:^row_width$}│", parent_depth);
+        for column in 0..3 {
+            print!("{:>cell_width$} │", deltas[parent_depth][column]);
         }
         println!();
     }
