@@ -17,7 +17,9 @@ parsed as floats and summarized per x-value:
 from __future__ import annotations
 
 import argparse
+import math
 import re
+import sys
 from pathlib import Path
 from statistics import median
 
@@ -67,84 +69,92 @@ def parse_file(path: Path) -> tuple[list[float], list[tuple[float, float, float,
 colors = {
     'ctr.balanced': 'blue',
     'ctr.random': 'green',
-    'ctr.fanout-two': 'magenta',
     'ofb.balanced': 'red',
     'ofb.random': 'orange'
 }
 
-def plot_file(path: Path, ax: plt.Axes, gate_length: int | None = None) -> int | None:
-    xs, summaries = parse_file(path)
+def wire_count(path: Path) -> int:
+    """Wire count from a name like `ofb.balanced.n128` or `ofb.cmr22.n27-cmr`."""
+    match = re.search(r"\.n(\d+)", path.stem)
+    if not match:
+        raise ValueError(f"{path}: expected wire count '.n<digits>' in the filename")
+    n = int(match.group(1))
+    if n <= 2:
+        raise ValueError(f"{path}: wire count {n} is too small to form n (log2 n)^k")
+    return n
+
+
+def length_exponent(gates: float, wires: int) -> float:
+    """k in `gates = wires * (log2 wires)^k`. k = 0 when gates == wires."""
+    log_wires = math.log2(wires)
+    return math.log2(gates / wires) / math.log2(log_wires)
+
+
+def plot_file(path: Path, ax: plt.Axes, normalize: bool) -> int | None:
+    try:
+        xs, summaries = parse_file(path)
+    except FileNotFoundError:
+        return None
+
     if not xs:
-        return
+        return None
 
-    if gate_length is None:
-        plot_xs = xs
-        plot_summaries = summaries
+    if normalize:
+        wires = wire_count(path)
+        kept_x: list[float] = []
+        kept_summaries = []
+        for gates, summary in zip(xs, summaries):
+            if gates <= 0:
+                print(f"{path}: skipping non-positive gate count {gates}", file=sys.stderr)
+                continue
+            kept_x.append(length_exponent(gates, wires))
+            kept_summaries.append(summary)
+        xs, summaries = kept_x, kept_summaries
+        if not xs:
+            return None
 
-        mins = [item[0] for item in plot_summaries]
-        q1s = [item[1] for item in plot_summaries]
-        meds = [item[2] for item in plot_summaries]
-        q3s = [item[3] for item in plot_summaries]
-        maxs = [item[4] for item in plot_summaries]
+    mins = [item[0] for item in summaries]
+    q1s = [item[1] for item in summaries]
+    meds = [item[2] for item in summaries]
+    q3s = [item[3] for item in summaries]
+    maxs = [item[4] for item in summaries]
 
-        color = colors.get(path.stem.split('.n', 1)[0], None)
+    color = colors.get(path.stem, None)
 
-        L = ax.plot(plot_xs, meds, color=color, linewidth=2.5, label=path.stem.replace('.', ' '))
-        color = L[0].get_color()
-        ax.fill_between(plot_xs, q1s, q3s, color=color, alpha=0.2, linewidth=0)
+    L = ax.plot(xs, meds, color=color, linewidth=2.5, label=path.stem.replace('.', ' '))
+    color = L[0].get_color()
+    ax.fill_between(xs, q1s, q3s, color=color, alpha=0.2, linewidth=0)
 
-        ax.plot(plot_xs, mins, color=color, linewidth=1.0, linestyle=':')
-        ax.plot(plot_xs, maxs, color=color, linewidth=1.0, linestyle=':')
+    ax.plot(xs, mins, color=color, linewidth=1.0, linestyle=':')
+    ax.plot(xs, maxs, color=color, linewidth=1.0, linestyle=':')
 
-    else:
-        try:
-            summary_index = xs.index(gate_length)
-        except ValueError:
-            raise ValueError(f"{path}: gate length {gate_length} not found") from None
-
-        wire_match = re.search(r"\.n(\d+)(?:\D|$)", path.name)
-        if wire_match is None:
-            raise ValueError(f"{path}: could not extract number of wires from filename")
-
-        plot_xs = [int(wire_match.group(1))]
-        plot_summaries = [summaries[summary_index]]
-
-    return plot_xs[0], plot_summaries[0]
+    # return count
+    return summaries[0][-1]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot median/min/max and middle 50% from data files.")
     parser.add_argument("files", nargs="+", type=Path, help="Input file(s) to plot")
-    parser.add_argument("--logy", action='store_true', help="Log y axis")
+    parser.add_argument("--logy", action="store_true", help="Log y axis")
     parser.add_argument(
-        "--wires",
-        type=int,
-        metavar="GATE_LENGTH",
-        help="Plot this gate length from each file against the wire count in its filename",
+        "--normalize",
+        action="store_true",
+        help="Plot k in m = n (log2 n)^k. n is read from each filename (.n<wires>); k = 0 when m = n",
     )
     args = parser.parse_args()
 
     fig, ax = plt.subplots()
+    count = None
+    for file_path in args.files:
+        count = plot_file(file_path, ax, args.normalize) or count
 
-    if args.wires:
-        (x, d) = list(zip(*(plot_file(f, ax, args.wires) for f in args.files)))
-        (mins, q1s, meds, q3s, maxs, _) = zip(*d)
-
-        L = ax.plot(x, meds, color='red', linewidth=2.5)
-        color = L[0].get_color()
-        ax.fill_between(x, q1s, q3s, color=color, alpha=0.2, linewidth=0)
-
-        ax.plot(x, mins, color=color, linewidth=1.0, linestyle=':')
-        ax.plot(x, maxs, color=color, linewidth=1.0, linestyle=':')
-
-        count = d[0][-1]
+    if args.normalize:
+        ax.set_xlabel(r"$\kappa$ for $m = n (\log_2 n)^\kappa$")
+        left, _right = ax.get_xlim()
+        ax.set_xlim(left=min(0.0, left))
     else:
-        for file_path in args.files:
-            count = plot_file(file_path, ax, args.wires)
-
-
-    ax.set_xlabel("number of wires" if args.wires is not None else "circuit length")
+        ax.set_xlabel("circuit length")
+        ax.semilogx(base=2)
     ax.set_ylabel("# failed tests")
-    ax.semilogx(base=2)
 
     if args.logy:
         ax.semilogy()
@@ -154,7 +164,7 @@ def main() -> int:
     ax.grid(True, alpha=0.3)
     ax.legend()
 
-    plt.title(f"Diehard(er) results ({count} circuits each)")
+    plt.title(f"Diehard(er) results (avg of {count} circuits each)")
 
     fig.tight_layout()
     plt.savefig('out.png', dpi=300)
