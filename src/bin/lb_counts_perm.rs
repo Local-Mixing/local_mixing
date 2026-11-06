@@ -180,15 +180,26 @@ fn canonicalize_perm_brute(p: &Permutation, n: usize) -> (Permutation, usize) {
 
 /// Packed truth-table. For domain size ≤ 256 (`n ≤ 8`) each image fits in a
 /// `u8`; otherwise `u16` (enough through `n = 16`).
+///
+/// Four-wire permutations (`len == 16`) stay inline. A `Box<[u8]>` per frontier
+/// state is a separate heap allocation, and the frontier of a deep layer is
+/// hundreds of millions of those states.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 enum CompactPerm {
     U8(Box<[u8]>),
     U16(Box<[u16]>),
+    Inline16([u8; 16]),
 }
 
 impl CompactPerm {
     fn from_permutation(p: &Permutation) -> Self {
-        if p.data.len() <= 256 {
+        if p.data.len() == 16 {
+            let mut data = [0u8; 16];
+            for (slot, &value) in data.iter_mut().zip(p.data.iter()) {
+                *slot = value as u8;
+            }
+            CompactPerm::Inline16(data)
+        } else if p.data.len() <= 256 {
             CompactPerm::U8(p.data.iter().map(|&x| x as u8).collect())
         } else {
             CompactPerm::U16(p.data.iter().map(|&x| x as u16).collect())
@@ -196,38 +207,40 @@ impl CompactPerm {
     }
 
     fn to_permutation(&self) -> Permutation {
-        match self {
-            CompactPerm::U8(d) => Permutation {
-                data: d.iter().map(|&x| x as usize).collect(),
-            },
-            CompactPerm::U16(d) => Permutation {
-                data: d.iter().map(|&x| x as usize).collect(),
-            },
-        }
+        let data = match self {
+            CompactPerm::U8(d) => d.iter().map(|&x| x as usize).collect(),
+            CompactPerm::U16(d) => d.iter().map(|&x| x as usize).collect(),
+            CompactPerm::Inline16(d) => d.iter().map(|&x| x as usize).collect(),
+        };
+        Permutation { data }
     }
 
     fn len(&self) -> usize {
         match self {
             CompactPerm::U8(values) => values.len(),
             CompactPerm::U16(values) => values.len(),
+            CompactPerm::Inline16(_) => 16,
+        }
+    }
+
+    fn value(&self, index: usize) -> u16 {
+        match self {
+            CompactPerm::U8(values) => values[index] as u16,
+            CompactPerm::U16(values) => values[index],
+            CompactPerm::Inline16(values) => values[index] as u16,
         }
     }
 
     fn lcp(&self, other: &Self) -> usize {
-        match (self, other) {
-            (CompactPerm::U8(a), CompactPerm::U8(b)) => {
-                a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
-            }
-            (CompactPerm::U16(a), CompactPerm::U16(b)) => {
-                a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
-            }
-            _ => 0,
-        }
+        let n = self.len().min(other.len());
+        (0..n)
+            .take_while(|&i| self.value(i) == other.value(i))
+            .count()
     }
 
     fn symbol_bytes(&self) -> usize {
         match self {
-            CompactPerm::U8(_) => 1,
+            CompactPerm::U8(_) | CompactPerm::Inline16(_) => 1,
             CompactPerm::U16(_) => 2,
         }
     }
@@ -239,11 +252,7 @@ impl CompactPerm {
 /// so their complete truth tables have a collision-free 128-bit key. The
 /// remaining-values bitset makes ranking O(N), with no allocation.
 fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
-    let values: Vec<u16> = match p {
-        CompactPerm::U8(values) => values.iter().map(|&value| value as u16).collect(),
-        CompactPerm::U16(values) => values.to_vec(),
-    };
-    let n = values.len();
+    let n = p.len();
     if n > 64 {
         return None;
     }
@@ -251,7 +260,8 @@ fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
     let mut remaining = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
     let mut rank = 0u128;
 
-    for (index, &value) in values.iter().enumerate() {
+    for index in 0..n {
+        let value = p.value(index);
         if value as usize >= n {
             return None;
         }
@@ -268,6 +278,10 @@ fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
     }
 
     Some(rank)
+}
+
+fn lehmer_rank_u64(p: &CompactPerm) -> Option<u64> {
+    u64::try_from(lehmer_rank_u128(p)?).ok()
 }
 
 /// Number of bits needed to store one image value of an `nn`-element
@@ -296,17 +310,8 @@ fn pack_perm_u384(p: &CompactPerm, bits: usize) -> [u64; 6] {
             packed[word + 1] |= value >> (64 - offset);
         }
     };
-    match p {
-        CompactPerm::U8(values) => {
-            for (index, &value) in values.iter().enumerate() {
-                place(index, value as u64);
-            }
-        }
-        CompactPerm::U16(values) => {
-            for (index, &value) in values.iter().enumerate() {
-                place(index, value as u64);
-            }
-        }
+    for index in 0..p.len() {
+        place(index, p.value(index) as u64);
     }
     packed
 }
@@ -327,7 +332,13 @@ fn unpack_perm_u384(packed: &[u64; 6], nn: usize, bits: usize) -> CompactPerm {
             (raw & mask) as u8
         })
         .collect();
-    CompactPerm::U8(values.into_boxed_slice())
+    if nn == 16 {
+        let mut data = [0u8; 16];
+        data.copy_from_slice(&values);
+        CompactPerm::Inline16(data)
+    } else {
+        CompactPerm::U8(values.into_boxed_slice())
+    }
 }
 
 fn analyze_prefixes(mut layers: Vec<Vec<CompactPerm>>, nn: usize) {
@@ -475,17 +486,8 @@ impl PermTrie {
             };
         };
 
-        match p {
-            CompactPerm::U8(values) => {
-                for &value in values.iter() {
-                    push_value(value as u16);
-                }
-            }
-            CompactPerm::U16(values) => {
-                for &value in values.iter() {
-                    push_value(value);
-                }
-            }
+        for index in 0..p.len() {
+            push_value(p.value(index));
         }
 
         let inserted = match self.leaves.entry(parent) {
@@ -508,12 +510,99 @@ impl PermTrie {
     }
 }
 
+/// Lehmer rank with the first-seen depth packed into the spare high bits.
+///
+/// Equality and hashing ignore the depth, so the map dedups permutations while
+/// the stored key still records when the orbit was discovered. The map value
+/// stays `()`: a `usize` beside a `u128` key pads each hash bucket from 16
+/// bytes to 32, which is what pushed `-n 4 -m 9` over a 256 GB machine.
+#[derive(Copy, Clone)]
+struct StampedU64(u64);
+#[derive(Copy, Clone)]
+struct StampedU128(u128);
+
+impl StampedU64 {
+    const SHIFT: u32 = 56;
+
+    fn new(rank: u64, depth: usize) -> Self {
+        assert!(
+            depth <= u8::MAX as usize,
+            "stamped Lehmer keys store depth in 8 bits"
+        );
+        assert!(
+            rank < (1u64 << Self::SHIFT),
+            "Lehmer rank does not fit below the depth byte"
+        );
+        Self(rank | ((depth as u64) << Self::SHIFT))
+    }
+
+    fn depth(self) -> usize {
+        (self.0 >> Self::SHIFT) as usize
+    }
+
+    fn rank(self) -> u64 {
+        self.0 & ((1u64 << Self::SHIFT) - 1)
+    }
+}
+
+impl PartialEq for StampedU64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.rank() == other.rank()
+    }
+}
+impl Eq for StampedU64 {}
+impl std::hash::Hash for StampedU64 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.rank().hash(state);
+    }
+}
+
+impl StampedU128 {
+    /// `32!` is 118 bits, so a depth byte fits above bit 119.
+    const SHIFT: u32 = 120;
+
+    fn new(rank: u128, depth: usize) -> Self {
+        assert!(
+            depth <= u8::MAX as usize,
+            "stamped Lehmer keys store depth in 8 bits"
+        );
+        assert!(
+            rank < (1u128 << Self::SHIFT),
+            "Lehmer rank does not fit below the depth byte"
+        );
+        Self(rank | ((depth as u128) << Self::SHIFT))
+    }
+
+    fn depth(self) -> usize {
+        (self.0 >> Self::SHIFT) as usize
+    }
+
+    fn rank(self) -> u128 {
+        self.0 & ((1u128 << Self::SHIFT) - 1)
+    }
+}
+
+impl PartialEq for StampedU128 {
+    fn eq(&self, other: &Self) -> bool {
+        self.rank() == other.rank()
+    }
+}
+impl Eq for StampedU128 {}
+impl std::hash::Hash for StampedU128 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.rank().hash(state);
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum StoreMethod {
-    /// Use exact Lehmer ranks when they fit in `u128`, otherwise use the trie.
+    /// Exact Lehmer ranks when they fit, otherwise the trie.
+    /// `n <= 4` uses `u64` keys, `n = 5` uses `u128`, `n = 6` uses packed keys.
     Auto,
     /// Concurrent value-prefix trie.
     Trie,
+    /// Exact `u64` Lehmer ranks. Supports at most 16 values (`n <= 4`).
+    Lehmer64,
     /// Exact `u128` Lehmer ranks. Supports at most 32 values (`n <= 5`).
     Lehmer128,
     /// Exact bit-packed `[u64; 6]` keys. Supports at most 64 values (`n <= 6`).
@@ -528,7 +617,9 @@ enum Visited {
     Trie(PermTrie),
     /// `DashMap` rather than `DashSet` so we can call `try_reserve` between
     /// BFS layers and avoid mid-layer rehash spikes near the RAM ceiling.
-    Lehmer128(DashMap<u128, usize, FxBuildHasher>),
+    /// The value is `()`; depth lives in the high bits of [`StampedU64`].
+    Lehmer64(DashMap<StampedU64, (), FxBuildHasher>),
+    Lehmer128(DashMap<StampedU128, (), FxBuildHasher>),
     Packed384 {
         map: DashMap<[u64; 6], usize, FxBuildHasher>,
         bits: usize,
@@ -538,6 +629,7 @@ enum Visited {
 impl Visited {
     fn new(method: StoreMethod, permutation_len: usize) -> Self {
         let selected = match method {
+            StoreMethod::Auto if permutation_len <= 16 => StoreMethod::Lehmer64,
             StoreMethod::Auto if permutation_len <= 32 => StoreMethod::Lehmer128,
             StoreMethod::Auto if permutation_len <= PACKED_U384_MAX_VALUES => {
                 StoreMethod::Packed384
@@ -548,6 +640,17 @@ impl Visited {
 
         match selected {
             StoreMethod::Trie => Self::Trie(PermTrie::new()),
+            StoreMethod::Lehmer64 => {
+                assert!(
+                    permutation_len <= 16,
+                    "exact u64 Lehmer keys support at most 16 values (n <= 4)"
+                );
+                Self::Lehmer64(DashMap::with_capacity_and_hasher_and_shard_amount(
+                    0,
+                    FxBuildHasher,
+                    VISITED_SHARDS,
+                ))
+            }
             StoreMethod::Lehmer128 => {
                 assert!(
                     permutation_len <= 32,
@@ -585,13 +688,26 @@ impl Visited {
     fn insert_at(&self, permutation: &CompactPerm, depth: usize) -> (usize, bool) {
         match self {
             Self::Trie(trie) => trie.insert_at(permutation, depth),
+            Self::Lehmer64(map) => {
+                let rank = lehmer_rank_u64(permutation)
+                    .expect("permutation does not have an exact u64 Lehmer rank");
+                let probe = StampedU64::new(rank, depth);
+                match map.entry(probe) {
+                    Entry::Occupied(entry) => (entry.key().depth(), false),
+                    Entry::Vacant(entry) => {
+                        entry.insert(());
+                        (depth, true)
+                    }
+                }
+            }
             Self::Lehmer128(map) => {
                 let rank = lehmer_rank_u128(permutation)
                     .expect("permutation does not have an exact u128 Lehmer rank");
-                match map.entry(rank) {
-                    Entry::Occupied(entry) => (*entry.get(), false),
+                let probe = StampedU128::new(rank, depth);
+                match map.entry(probe) {
+                    Entry::Occupied(entry) => (entry.key().depth(), false),
                     Entry::Vacant(entry) => {
-                        entry.insert(depth);
+                        entry.insert(());
                         (depth, true)
                     }
                 }
@@ -609,6 +725,7 @@ impl Visited {
     fn len(&self) -> usize {
         match self {
             Self::Trie(trie) => trie.permutation_count(),
+            Self::Lehmer64(map) => map.len(),
             Self::Lehmer128(map) => map.len(),
             Self::Packed384 { map, .. } => map.len(),
         }
@@ -617,6 +734,7 @@ impl Visited {
     fn description(&self) -> &'static str {
         match self {
             Self::Trie(_) => "prefix trie",
+            Self::Lehmer64(_) => "exact u64 Lehmer keys",
             Self::Lehmer128(_) => "exact u128 Lehmer keys",
             Self::Packed384 { .. } => "exact bit-packed [u64; 6] keys",
         }
@@ -641,6 +759,7 @@ impl Visited {
         let per_shard = additional.div_ceil(VISITED_SHARDS);
         let result = match self {
             Self::Trie(_) => return,
+            Self::Lehmer64(map) => map.try_reserve(per_shard),
             Self::Lehmer128(map) => map.try_reserve(per_shard),
             Self::Packed384 { map, .. } => map.try_reserve(per_shard),
         };
@@ -743,14 +862,30 @@ fn iso_bfs(
     let mut frontier = Arc::new(SegQueue::<CompactPerm>::new());
     frontier.push(base_key);
 
+    // Novelty of the layer just finished, so the next reserve tracks the
+    // observed branching factor instead of `frontier × generators`. The
+    // worst-case product is what exhausted RAM at the start of a deep layer:
+    // hashbrown rounds that request up to the next power of two and touches
+    // every control byte immediately, right after the previous workers join.
+    let mut observed_new: Option<usize> = None;
+    let mut observed_trials = 0usize;
+
     for depth in 2..=max_m {
-        // Worst-case every generator neighbour is new. Reserving before the
-        // layer avoids a mid-layer 2× rehash spike when the table is already
-        // near the machine's RAM limit.
-        let layer_capacity = frontier.len().saturating_mul(gen_size);
+        let frontier_len = frontier.len();
+        let worst = frontier_len.saturating_mul(gen_size);
+        let additional = match observed_new {
+            Some(new_keys) if observed_trials > 0 => {
+                let predicted =
+                    (new_keys as u128).saturating_mul(worst as u128) / (observed_trials as u128);
+                let with_headroom = predicted.saturating_add(predicted / 4).saturating_add(1);
+                usize::try_from(with_headroom).unwrap_or(worst).min(worst)
+            }
+            _ => worst,
+        };
+        let before_len = visited.len();
         Arc::get_mut(&mut visited)
             .expect("visited Arc uniquely owned between BFS layers")
-            .reserve_additional(layer_capacity);
+            .reserve_additional(additional);
 
         let next_frontier = Arc::new(SegQueue::<CompactPerm>::new());
         let layer_started = Instant::now();
@@ -796,6 +931,8 @@ fn iso_bfs(
                             // Do not count duplicate transitions produced by
                             // this same layer. New permutations are the +1
                             // transitions relative to their parent depth.
+                            // Cells accumulate the child orbit size |W·f|, so
+                            // the +1 column matches that layer's sphere total.
                             if !newly_inserted && first_seen == depth {
                                 continue;
                             }
@@ -808,7 +945,7 @@ fn iso_bfs(
                                 1 => 2,
                                 _ => unreachable!("BFS transition changed depth by more than one"),
                             };
-                            local_deltas[column] += 1;
+                            local_deltas[column] += sphere as u64;
 
                             if !newly_inserted {
                                 continue;
@@ -876,7 +1013,10 @@ fn iso_bfs(
                 row[column] += part[column];
             }
         }
+        drop(deltas);
 
+        observed_new = Some(visited.len().saturating_sub(before_len));
+        observed_trials = worst;
         frontier = next_frontier;
     }
 
@@ -941,6 +1081,7 @@ fn iso_bfs(
     println!(
         "\nMinimum-length transition matrix\n\
          Rows are parent minimum lengths; columns are child length deltas.\n\
+         Cells sum child sphere sizes |W·f|, not canonical-permutation counts.\n\
          Same-round duplicate transitions are excluded."
     );
     println!("{}", horizontal("┌", "┬", "┐"));
@@ -2204,8 +2345,9 @@ struct Args {
     #[arg(long, value_enum, default_value_t = CanonMethod::Nauty)]
     canon: CanonMethod,
 
-    /// Exact visited-set representation. `auto` uses compact Lehmer ranks for
-    /// n <= 5 and falls back to the prefix trie for larger permutations.
+    /// Exact visited-set representation. `auto` uses `u64` Lehmer ranks for
+    /// n <= 4, `u128` ranks for n = 5, packed keys for n = 6, and the trie
+    /// after that.
     #[arg(long, value_enum, default_value_t = StoreMethod::Auto)]
     store: StoreMethod,
 
@@ -2412,19 +2554,33 @@ mod tests {
     #[test]
     fn parallel_bfs_is_level_synchronous() {
         let expected = vec![1, 1, 22, 369, 6544, 111_903];
-        for threads in [1, 8] {
-            let actual = iso_bfs(
-                4,
-                5,
-                false,
-                Some(threads),
-                CanonMethod::Nauty,
-                StoreMethod::Lehmer128,
-                false,
-            )
-            .0;
-            assert_eq!(actual, expected, "wrong spheres with {threads} workers");
+        for store in [
+            StoreMethod::Auto,
+            StoreMethod::Lehmer64,
+            StoreMethod::Lehmer128,
+        ] {
+            for threads in [1, 8] {
+                let actual =
+                    iso_bfs(4, 5, false, Some(threads), CanonMethod::Nauty, store, false).0;
+                assert_eq!(
+                    actual, expected,
+                    "wrong spheres with {store:?} and {threads} workers"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn stamped_lehmer_keeps_first_depth() {
+        assert_eq!(std::mem::size_of::<StampedU64>(), 8);
+        assert_eq!(std::mem::size_of::<StampedU128>(), 16);
+        assert!(std::mem::size_of::<CompactPerm>() <= 24);
+
+        let visited = Visited::new(StoreMethod::Lehmer64, 16);
+        let key = CompactPerm::from_permutation(&Permutation::id_perm(16));
+        assert!(matches!(key, CompactPerm::Inline16(_)));
+        assert_eq!(visited.insert_at(&key, 3), (3, true));
+        assert_eq!(visited.insert_at(&key, 9), (3, false));
     }
 
     /// Deterministic pseudo-random reversible functions: compose `k` random
