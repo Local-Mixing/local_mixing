@@ -34,8 +34,6 @@ db-tools = [
 # Explicit (it is also the release default): wrapping arithmetic is relied on in
 # hot paths, while debug builds retain overflow checks for tests.
 overflow-checks = false
-lto = "thin"
-codegen-units = 1
 
 [profile.profiling]
 inherits = "release"
@@ -73,6 +71,9 @@ lru = { version = "0.12", optional = true }
 # in-RAM BinaryFuse8 miss filter, bincode2 decodes the persisted filters.bin.
 xorf = { version = "0.12", features = ["serde", "bincode"] }
 bincode2 = { package = "bincode", version = "2" }
+cryptography-rs = "0.8.0"
+rng-entropy = "0.7.1"
+indicatif = "0.18.6"
 
 # Main command and TDP stages
 
@@ -107,6 +108,10 @@ path = "tests/integration/frozen_roundtrip.rs"
 [[test]]
 name = "mixer_db_replacement"
 path = "tests/integration/mixer_db_replacement.rs"
+
+[[bin]]
+name = "block_cipher"
+path = "src/bin/block_cipher.rs"
 
 # Database generation and analysis
 

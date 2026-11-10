@@ -9,7 +9,7 @@ construct_uint! {
 
 impl Gate {
     // Evaluate a bit string after a single gate under gate r57
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index(state: usize, gate: [u16; 3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
@@ -17,7 +17,7 @@ impl Gate {
     }
 
     // Evaluate up to 128 bits
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_128(state: u128, gate: [u16; 3]) -> u128 {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
@@ -28,7 +28,7 @@ impl Gate {
     // cost ~6 full-width ops per gate where 3 u64 ops suffice. Wires must be
     // in range (the old full-width shifts silently evaluated out-of-range
     // wires as zero; dispatchers pick the kernel by max touched wire).
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_256(mut state: u256, gate: [u16; 3]) -> u256 {
         debug_assert!(gate[0] < 256 && gate[1] < 256 && gate[2] < 256);
         let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
@@ -37,7 +37,7 @@ impl Gate {
         state
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_512(mut state: u512, gate: [u16; 3]) -> u512 {
         debug_assert!(gate[0] < 512 && gate[1] < 512 && gate[2] < 512);
         let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
@@ -46,7 +46,7 @@ impl Gate {
         state
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_1024(mut state: U1024, gate: [u16; 3]) -> U1024 {
         debug_assert!(gate[0] < 1024 && gate[1] < 1024 && gate[2] < 1024);
         let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
@@ -56,7 +56,7 @@ impl Gate {
     }
 
     // Evaluate a list of gates
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list(state: usize, gates: &[[u16; 3]]) -> usize {
         let mut current_wires = state;
         for g in gates {
@@ -70,7 +70,7 @@ impl Gate {
     /// The narrowest kernel: the whole state lives in one register, so the
     /// walk is a pure dependency chain with no memory traffic beyond the gate
     /// stream. Dispatchers pick it when every touched wire is below 64.
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list_64(state: u64, gates: &[[u16; 3]]) -> u64 {
         let mut s = state;
         for &g in gates {
@@ -82,7 +82,7 @@ impl Gate {
         s
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list_128(state: u128, gates: &[[u16; 3]]) -> u128 {
         let mut limbs = [state as u64, (state >> 64) as u64];
         eval_limbs::<2>(&mut limbs, gates);
@@ -93,19 +93,19 @@ impl Gate {
     // bignum by value made the loop copy 32/64/128 bytes per gate on top of
     // that. Running the limb array in place instead keeps one stack slot live
     // for the entire walk (measured 11.2 -> 3.4 ns/gate at 256 bits).
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list_256(mut state: u256, gates: &[[u16; 3]]) -> u256 {
         eval_limbs::<4>(&mut state.0, gates);
         state
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list_512(mut state: u512, gates: &[[u16; 3]]) -> u512 {
         eval_limbs::<8>(&mut state.0, gates);
         state
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn evaluate_index_list_1024(mut state: U1024, gates: &[[u16; 3]]) -> U1024 {
         eval_limbs::<16>(&mut state.0, gates);
         state
@@ -152,7 +152,7 @@ pub fn lane_state_len(wires: usize) -> usize {
 /// `t ^= pos OR NOT neg`, with every wire index split into (limb, bit) exactly
 /// as the fixed-width kernels above do. `L` is a const parameter so the limb
 /// index masks fold to constants and the array stays in one stack slot.
-#[inline(always)]
+#[inline]
 fn apply_limbs<const L: usize>(state: &mut [u64; L], gate: [u16; 3]) {
     debug_assert!(
         (gate[0] as usize) < L * 64 && (gate[1] as usize) < L * 64 && (gate[2] as usize) < L * 64
@@ -169,7 +169,7 @@ fn apply_limbs<const L: usize>(state: &mut [u64; L], gate: [u16; 3]) {
 }
 
 /// Walk a gate list against a limb array in place.
-#[inline(always)]
+#[inline]
 fn eval_limbs<const L: usize>(state: &mut [u64; L], gates: &[[u16; 3]]) {
     for &g in gates {
         apply_limbs::<L>(state, g);

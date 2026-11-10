@@ -120,23 +120,17 @@ impl CircuitSeq {
     /// Wire format is [active] [positive control] [negative control]
     pub fn to_hex(&self, num_wires: usize) -> String {
         assert!(num_wires > 0, "Hex output requires at least one wire");
-        let mut width = 1;
-        let mut limit = 16usize;
-        while num_wires > limit {
-            width += 1;
-            limit *= 16;
-        }
+        let width = (num_wires as f64).log(16.0).ceil() as usize;
 
         let mut output = String::new();
-        for (gate_index, gate) in self.gates.iter().enumerate() {
-            if gate_index != 0 {
-                output.push('\n');
-            }
-            output.push_str(&format!("{:0width$x}", gate[0], width = width));
-            output.push(' ');
-            output.push_str(&format!("{:0width$x}", gate[1], width = width));
-            output.push(' ');
-            output.push_str(&format!("{:0width$x}", gate[2], width = width));
+        for gate in self.gates.iter() {
+            output.push_str(&format!(
+                "{:0width$x} {:0width$x} {:0width$x}\n",
+                gate[0],
+                gate[1],
+                gate[2],
+                width = width
+            ));
         }
         output
     }
