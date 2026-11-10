@@ -52,6 +52,25 @@ impl CircuitSource {
             let (gates, wires) =
                 format::read_mpmct(path).map_err(|e| format!("cannot read {path}: {e}"))?;
             (Representation::General(gates), wires as usize)
+        } else if bytes
+            .split(|&b| b == b'\n')
+            .next()
+            .map(|line| {
+                let fields: Vec<&[u8]> = line
+                    .split(|b| b.is_ascii_whitespace())
+                    .filter(|field| !field.is_empty())
+                    .collect();
+                fields.len() == 3
+                    && fields.iter().all(|field| {
+                        !field.is_empty()
+                            && field.iter().all(|b| b.is_ascii_hexdigit())
+                    })
+            })
+            .unwrap_or(false)
+        {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| format!("cannot read hexadecimal G57 file {path}: {e}"))?;
+            (Representation::G57(CircuitSeq::from_hex(text)), 0)
         } else {
             (Representation::G57(CircuitSeq::from_bytes(&raw)), 0)
         };

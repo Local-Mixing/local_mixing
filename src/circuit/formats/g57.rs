@@ -116,6 +116,54 @@ impl CircuitSeq {
         Self::from_bytes(s.as_bytes())
     }
 
+    /// Output as a newline-delimited hexadecimal string.
+    /// Wire format is [active] [positive control] [negative control]
+    pub fn to_hex(&self, num_wires: usize) -> String {
+        assert!(num_wires > 0, "Hex output requires at least one wire");
+        let mut width = 1;
+        let mut limit = 16usize;
+        while num_wires > limit {
+            width += 1;
+            limit *= 16;
+        }
+
+        let mut output = String::new();
+        for (gate_index, gate) in self.gates.iter().enumerate() {
+            if gate_index != 0 {
+                output.push('\n');
+            }
+            output.push_str(&format!("{:0width$x}", gate[0], width = width));
+            output.push(' ');
+            output.push_str(&format!("{:0width$x}", gate[1], width = width));
+            output.push(' ');
+            output.push_str(&format!("{:0width$x}", gate[2], width = width));
+        }
+        output
+    }
+
+    pub fn from_hex(s: &str) -> Self {
+        fn decode_wire(value: &str) -> u16 {
+            assert!(!value.is_empty(), "Empty hex wire");
+            u16::from_str_radix(value, 16)
+                .unwrap_or_else(|_| panic!("Invalid hex wire: {:?}", value))
+        }
+
+        let gates = s
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let wires: Vec<&str> = line.split_whitespace().collect();
+                assert_eq!(wires.len(), 3, "Each line must contain exactly 3 wires");
+                [
+                    decode_wire(wires[0]),
+                    decode_wire(wires[1]),
+                    decode_wire(wires[2]),
+                ]
+            })
+            .collect();
+        CircuitSeq { gates }
+    }
+
     /// Parse the base-83 `repr()` encoding straight from bytes.
     ///
     /// The encoding is ASCII, so this is the same grammar `from_string` accepts
