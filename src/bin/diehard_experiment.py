@@ -44,18 +44,18 @@ mode = 'ctr'
 # 27 wires, step 135: 270, 945, 4050
 # 81 wires, step 648: 648, 1296, 3888
 # 243 wires, step 3240: 3240
-# cmr_sizes = {
-#     27: [270, 945, 4050],
-#     81: [648, 1296, 3888],
-#     243: [3240],
-# }
-# cmr_modes = ['fanout-two', 'balanced', 'random', 'staircase', 'cmr22']
+cmr_sizes = {
+    27: [135 * i for i in range(1, 11)],
+    81: [648 * i for i in range(1, 6)],
+    243: [3240 * i for i in range(1, 6)],
+}
+# cmr_modes = ['cmr22']
+ckt = 'cmr22'
 
-# # for n, lengths in cmr_sizes.items():
-# #     for m in lengths:
-# #         for ckt in cmr_modes:
-# #             print("[cmr-cmp]", mode, ckt, n, m)
-# #             run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-cmr.txt")
+for n, lengths in cmr_sizes.items():
+    for m in lengths:
+        print("[cmr-cmp]", mode, n, m)
+        run_test(mode, ckt, m, n, f"out/{mode}.{ckt}.n{n}-cmr.txt")
 
 # n = 27
 # step = 135
