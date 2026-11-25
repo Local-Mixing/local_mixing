@@ -124,7 +124,7 @@ fn main() {
         eprintln!("failed to read {}: {e}", args.circuit);
         process::exit(2);
     });
-    let circuit = CircuitSeq::from_bytes(&raw);
+    let circuit = CircuitSeq::from_auto(&raw);
 
     if let Some(bench_n) = args.bench_evals {
         let mut x = 1u64;

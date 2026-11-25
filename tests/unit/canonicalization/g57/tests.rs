@@ -117,6 +117,21 @@ fn opt_equiv_from_bytes_keeps_whitespace_and_empty_segment_handling() {
 }
 
 #[test]
+fn hex_gate_list_roundtrips_and_is_distinct_from_base83() {
+    let circuit = random_circuit(48, 30);
+    let hex = circuit.to_hex(48);
+    assert!(CircuitSeq::is_hex_g57(hex.as_bytes()));
+    assert_eq!(CircuitSeq::from_hex(&hex).gates, circuit.gates);
+    assert_eq!(CircuitSeq::from_auto(hex.as_bytes()).gates, circuit.gates);
+    let base83 = circuit.repr();
+    assert!(!CircuitSeq::is_hex_g57(base83.as_bytes()));
+    assert_eq!(
+        CircuitSeq::from_auto(base83.as_bytes()).gates,
+        circuit.gates
+    );
+}
+
+#[test]
 #[should_panic(expected = "Invalid wire char")]
 fn from_bytes_rejects_a_non_alphabet_character() {
     CircuitSeq::from_string("01 2;");

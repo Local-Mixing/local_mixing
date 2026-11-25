@@ -52,6 +52,10 @@ impl CircuitSource {
             let (gates, wires) =
                 format::read_mpmct(path).map_err(|e| format!("cannot read {path}: {e}"))?;
             (Representation::General(gates), wires as usize)
+        } else if CircuitSeq::is_hex_g57(bytes) {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|e| format!("cannot read hexadecimal G57 file {path}: {e}"))?;
+            (Representation::G57(CircuitSeq::from_hex(text)), 0)
         } else {
             (Representation::G57(CircuitSeq::from_bytes(&raw)), 0)
         };

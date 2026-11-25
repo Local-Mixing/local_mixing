@@ -18,6 +18,7 @@
 //!       [--pad 64] [--out-bits 64] [--dp-bits 16]
 //!       [--workers N] [--seed S] [--max-evals N]
 //!       [--out report.json] [--bench-evals N]
+//!       [--progress-secs 10] [--progress-log PATH]
 
 use local_mixing::circuit::{CircuitSeq, Gate, lane_state_len};
 use primitive_types::U256;
@@ -25,11 +26,13 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 struct TrailRec {
@@ -48,13 +51,16 @@ struct Args {
     out: Option<String>,
     self_check: bool,
     bench_evals: Option<u64>,
+    progress_secs: f64,
+    progress_log: Option<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: rho_collision CIRCUIT.g57 [--pad 64] [--out-bits 64] \
          [--dp-bits 16] [--workers N] [--seed S] [--max-evals N] \
-         [--out report.json] [--self-check] [--bench-evals N]"
+         [--out report.json] [--self-check] [--bench-evals N] \
+         [--progress-secs 10] [--progress-log PATH]"
     );
     process::exit(2);
 }
@@ -66,11 +72,42 @@ fn parse_usize(s: &str, name: &str) -> usize {
     })
 }
 
+fn parse_f64(s: &str, name: &str) -> f64 {
+    s.parse().unwrap_or_else(|_| {
+        eprintln!("invalid {name}: {s}");
+        process::exit(2);
+    })
+}
+
 fn parse_u64(s: &str, name: &str) -> u64 {
     s.parse().unwrap_or_else(|_| {
         eprintln!("invalid {name}: {s}");
         process::exit(2);
     })
+}
+
+fn timeval_seconds(tv: libc::timeval) -> f64 {
+    tv.tv_sec as f64 + tv.tv_usec as f64 * 1e-6
+}
+
+/// User + system CPU time of this process, summed across threads.
+fn process_cpu_seconds() -> f64 {
+    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if rc != 0 {
+        return 0.0;
+    }
+    timeval_seconds(usage.ru_utime) + timeval_seconds(usage.ru_stime)
+}
+
+fn emit_line(line: &str, log: &mut Option<File>) {
+    let mut err = io::stderr().lock();
+    let _ = writeln!(err, "{line}");
+    let _ = err.flush();
+    if let Some(file) = log {
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+    }
 }
 
 fn parse_args() -> Args {
@@ -92,6 +129,8 @@ fn parse_args() -> Args {
         out: None,
         self_check: false,
         bench_evals: None,
+        progress_secs: 10.0,
+        progress_log: None,
     };
     while let Some(flag) = argv.next() {
         match flag.as_str() {
@@ -116,6 +155,13 @@ fn parse_args() -> Args {
                     &argv.next().unwrap_or_else(|| usage()),
                     "bench-evals",
                 ))
+            }
+            "--progress-secs" => {
+                args.progress_secs =
+                    parse_f64(&argv.next().unwrap_or_else(|| usage()), "progress-secs")
+            }
+            "--progress-log" => {
+                args.progress_log = Some(argv.next().unwrap_or_else(|| usage()))
             }
             _ => usage(),
         }
@@ -268,7 +314,7 @@ fn main() {
         eprintln!("failed to read {}: {e}", args.circuit);
         process::exit(2);
     });
-    let circuit = CircuitSeq::from_bytes(&raw);
+    let circuit = CircuitSeq::from_auto(&raw);
     let touched = circuit
         .gates
         .iter()
@@ -324,20 +370,24 @@ fn main() {
     let mbits = msg_bits(args.out_bits);
     let mmask = msg_mask(args.out_bits);
     let in_bits = 2 * args.out_bits; // full message width (2λ); search uses mbits ≤ 64
-    eprintln!(
-        "[rho] circuit={} gates={} layout pad={} width={} in_bits={} message_subspace={} out={} \
-         dp_bits={} workers={} seed={} max_evals={}",
-        args.circuit,
-        circuit.gates.len(),
-        args.pad,
-        width,
-        in_bits,
-        mbits,
-        args.out_bits,
-        args.dp_bits,
-        args.workers,
-        args.seed,
-        args.max_evals
+    emit_line(
+        &format!(
+            "[rho] circuit={} gates={} layout pad={} width={} in_bits={} message_subspace={} \
+             out={} dp_bits={} workers={} seed={} max_evals={} progress_secs={}",
+            args.circuit,
+            circuit.gates.len(),
+            args.pad,
+            width,
+            in_bits,
+            mbits,
+            args.out_bits,
+            args.dp_bits,
+            args.workers,
+            args.seed,
+            args.max_evals,
+            args.progress_secs
+        ),
+        &mut None,
     );
 
     let gates = Arc::new(circuit.gates.clone());
@@ -349,6 +399,69 @@ fn main() {
     let reconstruct_fail = Arc::new(AtomicU64::new(0));
     let result: Arc<Mutex<Option<(u64, u64, u64)>>> = Arc::new(Mutex::new(None));
     let t0 = Instant::now();
+    let stop_report = Arc::new(AtomicBool::new(false));
+    let reporter = if args.progress_secs > 0.0 {
+        let stop = Arc::clone(&stop_report);
+        let found_flag = Arc::clone(&found);
+        let evals_flag = Arc::clone(&evals);
+        let dps_flag = Arc::clone(&dps);
+        let conflicts_flag = Arc::clone(&dp_conflicts);
+        let recon_flag = Arc::clone(&reconstruct_fail);
+        let table_flag = Arc::clone(&table);
+        let every = args.progress_secs;
+        let log_path = args.progress_log.clone();
+        Some(thread::spawn(move || {
+            let mut log = match log_path {
+                Some(path) => match OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)
+                {
+                    Ok(file) => Some(file),
+                    Err(e) => {
+                        emit_line(&format!("[rho] progress log {path}: {e}"), &mut None);
+                        None
+                    }
+                },
+                None => None,
+            };
+            let mut last_evals = 0u64;
+            let mut last_mark = Instant::now();
+            loop {
+                thread::sleep(Duration::from_millis(200));
+                if stop.load(Ordering::Relaxed) || found_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                if last_mark.elapsed().as_secs_f64() < every {
+                    continue;
+                }
+                let now = Instant::now();
+                let dt = now.duration_since(last_mark).as_secs_f64().max(1e-9);
+                let e = evals_flag.load(Ordering::Relaxed);
+                let elapsed = t0.elapsed().as_secs_f64();
+                let interval = e.saturating_sub(last_evals) as f64 / dt / 1e6;
+                let overall = e as f64 / elapsed.max(1e-9) / 1e6;
+                let table_len = table_flag.lock().unwrap().len();
+                emit_line(
+                    &format!(
+                        "[rho] t={elapsed:.1}s cpu={:.1}s evals={e} \
+                         rate={overall:.2} Meval/s interval={interval:.2} Meval/s \
+                         dps={} conflicts={} recon_fail={} table={table_len}",
+                        process_cpu_seconds(),
+                        dps_flag.load(Ordering::Relaxed),
+                        conflicts_flag.load(Ordering::Relaxed),
+                        recon_flag.load(Ordering::Relaxed),
+                    ),
+                    &mut log,
+                );
+                last_evals = e;
+                last_mark = now;
+            }
+        }))
+    } else {
+        None
+    };
 
     let worker_seeds: Vec<u64> = (0..args.workers)
         .map(|i| args.seed.wrapping_add(i as u64 * 0x9E37_79B9_7F4A_7C15))
@@ -452,24 +565,14 @@ fn main() {
                     }
                 }
 
-                let e = evals.load(Ordering::Relaxed);
-                if e > 0 && e % 25_000_000 == 0 {
-                    let elapsed = t0.elapsed().as_secs_f64().max(1e-9);
-                    eprintln!(
-                        "[rho] evals={e} ({:.2} Meval/s) dps={} conflicts={} \
-                         recon_fail={} table={} elapsed={:.1}s",
-                        e as f64 / elapsed / 1e6,
-                        dps.load(Ordering::Relaxed),
-                        dp_conflicts.load(Ordering::Relaxed),
-                        reconstruct_fail.load(Ordering::Relaxed),
-                        table.lock().unwrap().len(),
-                        elapsed
-                    );
-                }
             }
             evals.fetch_add(local_evals, Ordering::Relaxed);
         });
     });
+    stop_report.store(true, Ordering::Relaxed);
+    if let Some(reporter) = reporter {
+        reporter.join().ok();
+    }
 
     let elapsed = t0.elapsed();
     let evaluated = evals.load(Ordering::Relaxed);

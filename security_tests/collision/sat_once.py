@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Solve one collision CNF (parent enforces wall-clock via subprocess timeout).
 
-Usage: sat_once.py CIRCUIT.mpmct1 ENCODER λ
+Usage: sat_once.py CIRCUIT.mpmct1 ENCODER λ [--progress-conflicts N] [--progress-log FILE]
+
 Prints one JSON object on stdout. Exit 0 on solve, 1 on error.
-On success, includes a decoded witness (x1_hex, x2_hex, digest_hex).
+On success, includes a decoded witness (x1_hex, x2_hex, digest_hex) and the
+full circuit outputs (output1_hex, output2_hex), garbage wires included.
+
+Progress is written to stderr (and --progress-log) after each Glucose slice.
+Glucose has no live statistics during a single solve() call, so the search
+runs in conflict-budget slices. Learned clauses are kept between slices.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import resource
 import subprocess
 import sys
 import tempfile
@@ -37,10 +45,45 @@ def padded_hex(value: int, bits: int) -> str:
     return "0x" + format(value, f"0{(bits + 3) // 4}x")
 
 
+def emit_progress(line: str, log_path: Path | None) -> None:
+    print(line, file=sys.stderr, flush=True)
+    if log_path is not None:
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+
+def child_cpu_seconds() -> float:
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
 def main() -> int:
-    circuit = Path(sys.argv[1])
-    encoder = Path(sys.argv[2])
-    lam = int(sys.argv[3])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("circuit", type=Path)
+    parser.add_argument("encoder", type=Path)
+    parser.add_argument("lam", type=int)
+    parser.add_argument(
+        "--progress-conflicts",
+        type=int,
+        default=20_000,
+        help="Conflict budget of each Glucose slice (learned clauses are kept)",
+    )
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        help="Also append [sat] progress lines to this file",
+    )
+    args = parser.parse_args()
+    if args.progress_conflicts <= 0:
+        raise SystemExit("--progress-conflicts must be positive")
+
+    circuit = args.circuit
+    encoder = args.encoder
+    lam = args.lam
+    if args.progress_log is not None:
+        args.progress_log.parent.mkdir(parents=True, exist_ok=True)
+        args.progress_log.write_text("")
+
     in_bits = 2 * lam
     pad = lam
     out_bits = lam
@@ -50,6 +93,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         cnf = Path(tmp) / "c.cnf"
         t0 = time.perf_counter()
+        encode_cpu0 = child_cpu_seconds()
         enc = subprocess.run(
             [
                 str(encoder),
@@ -66,6 +110,7 @@ def main() -> int:
             text=True,
         )
         encode_secs = time.perf_counter() - t0
+        encode_cpu = child_cpu_seconds() - encode_cpu0
         if enc.returncode != 0:
             print(
                 json.dumps(
@@ -88,21 +133,58 @@ def main() -> int:
             if lits:
                 clauses.append(lits)
 
+        emit_progress(
+            f"[sat] encoded clauses={len(clauses)} encode_wall={encode_secs:.3f}s "
+            f"progress_conflicts={args.progress_conflicts}",
+            args.progress_log,
+        )
         t1 = time.perf_counter()
-        with Glucose3(bootstrap_with=clauses) as solver:
-            sat = bool(solver.solve())
+        # Model must be read before the solver context exits.
+        model = None
+        cpu0 = time.process_time()
+        wall0 = time.perf_counter()
+        slices = 0
+        stats: dict = {}
+        with Glucose3(bootstrap_with=clauses, use_timer=True) as solver:
+            status = None
+            while status is None:
+                solver.conf_budget(args.progress_conflicts)
+                status = solver.solve_limited()
+                slices += 1
+                stats = solver.accum_stats()
+                cpu = time.process_time() - cpu0
+                wall_now = time.perf_counter() - wall0
+                state = "running" if status is None else ("sat" if status else "unsat")
+                emit_progress(
+                    "[sat] {state} slice={slices} cpu={cpu:.3f}s wall={wall:.3f}s "
+                    "conflicts={conflicts} decisions={decisions} "
+                    "propagations={propagations} restarts={restarts}".format(
+                        state=state,
+                        slices=slices,
+                        cpu=cpu,
+                        wall=wall_now,
+                        **stats,
+                    ),
+                    args.progress_log,
+                )
+            sat = bool(status)
             model = solver.get_model() if sat else None
+            solve_cpu = time.process_time() - cpu0
         wall = time.perf_counter() - t1
 
         record: dict = {
             "ok": bool(sat),
             "wall_secs": wall,
-            "cpu_hours": (encode_secs + wall) / 3600.0,
-            "cpu_seconds": encode_secs + wall,
+            "cpu_hours": (encode_cpu + solve_cpu) / 3600.0,
+            "cpu_seconds": encode_cpu + solve_cpu,
+            "encode_cpu_seconds": encode_cpu,
+            "solve_cpu_seconds": solve_cpu,
             "threads": 1,
             "encode_secs": encode_secs,
             "clauses": len(clauses),
             "sat": bool(sat),
+            "slices": slices,
+            "stats": stats,
         }
         if not sat or model is None:
             print(json.dumps(record))
@@ -158,6 +240,8 @@ def main() -> int:
             "x1_hex": padded_hex(x1, in_bits),
             "x2_hex": padded_hex(x2, in_bits),
             "digest_hex": padded_hex(d1, out_bits),
+            "output1_hex": padded_hex(out1, wires),
+            "output2_hex": padded_hex(out2, wires),
             "search": "sat_glucose3",
             "verified": True,
         }

@@ -1,6 +1,6 @@
 //! Generate a random G57 circuit.
 use super::shared::parse_wires;
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use local_mixing::circuit::random_circuit;
 use std::fs;
 
@@ -31,6 +31,12 @@ pub fn command() -> Command {
                 .value_parser(clap::value_parser!(usize))
                 .help("Number of gates in the circuit"),
         )
+        .arg(
+            Arg::new("hex")
+                .long("hex")
+                .action(ArgAction::SetTrue)
+                .help("Write gates as hexadecimal triples, one gate per line"),
+        )
 }
 
 pub fn run(sub: &ArgMatches) -> Result<(), String> {
@@ -41,5 +47,10 @@ pub fn run(sub: &ArgMatches) -> Result<(), String> {
         return Err("random G57 generation requires 3..=1024 wires".into());
     }
     let circuit = random_circuit(n, m);
-    fs::write(destination, circuit.repr()).map_err(|e| format!("cannot write {destination}: {e}"))
+    let body = if sub.get_flag("hex") {
+        circuit.to_hex(n)
+    } else {
+        circuit.repr()
+    };
+    fs::write(destination, body).map_err(|e| format!("cannot write {destination}: {e}"))
 }

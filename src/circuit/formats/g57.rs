@@ -116,6 +116,86 @@ impl CircuitSeq {
         Self::from_bytes(s.as_bytes())
     }
 
+    /// Newline-delimited hexadecimal gates.
+    /// Each line is `target positive_control negative_control`.
+    /// Wire width grows with `num_wires` (one hex digit through 16 wires).
+    pub fn to_hex(&self, num_wires: usize) -> String {
+        assert!(num_wires > 0, "Hex output requires at least one wire");
+        let mut width = 1;
+        let mut limit = 16usize;
+        while num_wires > limit {
+            width += 1;
+            limit *= 16;
+        }
+
+        let mut output = String::new();
+        for (gate_index, gate) in self.gates.iter().enumerate() {
+            if gate_index != 0 {
+                output.push('\n');
+            }
+            output.push_str(&format!("{:0width$x}", gate[0], width = width));
+            output.push(' ');
+            output.push_str(&format!("{:0width$x}", gate[1], width = width));
+            output.push(' ');
+            output.push_str(&format!("{:0width$x}", gate[2], width = width));
+        }
+        output
+    }
+
+    /// Parse the hexadecimal gate list written by `to_hex`.
+    pub fn from_hex(s: &str) -> Self {
+        fn decode_wire(value: &str) -> u16 {
+            assert!(!value.is_empty(), "Empty hex wire");
+            u16::from_str_radix(value, 16).unwrap_or_else(|_| panic!("Invalid hex wire: {value:?}"))
+        }
+
+        let gates = s
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let wires: Vec<&str> = line.split_whitespace().collect();
+                assert_eq!(wires.len(), 3, "Each line must contain exactly 3 wires");
+                [
+                    decode_wire(wires[0]),
+                    decode_wire(wires[1]),
+                    decode_wire(wires[2]),
+                ]
+            })
+            .collect();
+        CircuitSeq { gates }
+    }
+
+    /// True when `raw` begins with one hexadecimal gate line (`aa bb cc`).
+    pub fn is_hex_g57(raw: &[u8]) -> bool {
+        let mut rest = raw;
+        while let Some((first, tail)) = rest.split_first() {
+            if first.is_ascii_whitespace() {
+                rest = tail;
+            } else {
+                break;
+            }
+        }
+        let line = rest.split(|&b| b == b'\n').next().unwrap_or(rest);
+        let fields: Vec<&[u8]> = line
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|field| !field.is_empty())
+            .collect();
+        fields.len() == 3
+            && fields
+                .iter()
+                .all(|field| !field.is_empty() && field.iter().all(|b| b.is_ascii_hexdigit()))
+    }
+
+    /// Load either a hexadecimal gate list or a base-83 `repr()` body.
+    pub fn from_auto(raw: &[u8]) -> Self {
+        if Self::is_hex_g57(raw) {
+            let text = std::str::from_utf8(raw).expect("hexadecimal G57 file is not UTF-8");
+            Self::from_hex(text)
+        } else {
+            Self::from_bytes(raw)
+        }
+    }
+
     /// Parse the base-83 `repr()` encoding straight from bytes.
     ///
     /// The encoding is ASCII, so this is the same grammar `from_string` accepts
